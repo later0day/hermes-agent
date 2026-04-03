@@ -1754,6 +1754,7 @@ Be specific with file paths, commands, line numbers, and results.]
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
+Write the summary in the same language the user was using in the conversation.
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:
