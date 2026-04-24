@@ -1272,21 +1272,6 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
-    # Seconds to wait at agent-build time for in-flight MCP server discovery
-    # to finish before the agent snapshots its tool list.  MCP discovery runs
-    # in a background thread so a slow/dead server can't freeze startup; this
-    # bounds how long the first agent build blocks on it.  The wait returns
-    # the INSTANT discovery completes, so users with no MCP servers (the common
-    # case) or fast servers pay ~0s regardless of this value — the bound is
-    # only reached when a server is genuinely still connecting.  The old 0.75s
-    # default was a touch short for HTTP/OAuth servers on a cold connect; a
-    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
-    # only a turn-1 latency/UX knob: a server that misses this window is still
-    # picked up automatically on the next turn by the between-turns refresh
-    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
-    # small so a slow/dead server adds little to first-response latency.
-    "mcp_discovery_timeout": 1.5,
-
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -1306,6 +1291,21 @@ DEFAULT_CONFIG = {
         "max_lines": 2000,
         "max_line_length": 2000,
     },
+
+    # Seconds to wait at agent-build time for in-flight MCP server discovery
+    # to finish before the agent snapshots its tool list.  MCP discovery runs
+    # in a background thread so a slow/dead server can't freeze startup; this
+    # bounds how long the first agent build blocks on it.  The wait returns
+    # the INSTANT discovery completes, so users with no MCP servers (the common
+    # case) or fast servers pay ~0s regardless of this value — the bound is
+    # only reached when a server is genuinely still connecting.  The old 0.75s
+    # default was a touch short for HTTP/OAuth servers on a cold connect; a
+    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
+    # only a turn-1 latency/UX knob: a server that misses this window is still
+    # picked up automatically on the next turn by the between-turns refresh
+    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
+    # small so a slow/dead server adds little to first-response latency.
+    "mcp_discovery_timeout": 1.5,
 
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;
