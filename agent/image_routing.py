@@ -317,19 +317,12 @@ def decide_image_input_mode(
     return "text"
 
 
-# Image size handling is REACTIVE rather than proactive: we attempt native
-# attachment at full size regardless of provider, and rely on
-# ``run_agent._try_shrink_image_parts_in_messages`` to shrink + retry if
-# the provider rejects the request (e.g. Anthropic's hard 5 MB per-image
-# ceiling returned as HTTP 400 "image exceeds 5 MB maximum").
-#
-# Why reactive: our knowledge of provider ceilings is partial and evolving
-# (OpenAI accepts 49 MB+, Anthropic 5 MB, Gemini 100 MB, others unknown).
-# A proactive per-provider table would be stale the moment a provider raises
-# or lowers its limit, and silently degrading quality for users on providers
-# that would have accepted the full image is the worse failure mode.
-# The shrink-on-reject path loses 1 API call + maybe 1s of Pillow work when
-# it fires, which is cheaper than permanent quality loss.
+# Native image size handling has two layers:
+# 1. A configurable proactive cap (``agent.native_image_max_base64_bytes``)
+#    shrinks very large cached images before they are attached to the main
+#    model.  This keeps IM image turns fast without degrading small screenshots.
+# 2. ``run_agent._try_shrink_image_parts_in_messages`` still shrinks and retries
+#    if a provider rejects the request despite the proactive cap.
 
 
 def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
@@ -393,14 +386,33 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     }.get(suffix, "image/jpeg")
 
 
-def _file_to_data_url(path: Path) -> Optional[str]:
+def _configured_native_image_max_base64_bytes() -> int:
+    """Return the proactive native-image resize threshold.
+
+    ``0`` means disabled.  Invalid config values also disable proactively
+    shrinking rather than risking accidental quality loss.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        agent_cfg = cfg.get("agent") or {}
+        if not isinstance(agent_cfg, dict):
+            return 0
+        raw = agent_cfg.get("native_image_max_base64_bytes", 0)
+        value = int(raw)
+        return value if value > 0 else 0
+    except Exception:
+        return 0
+
+
+def _file_to_data_url(path: Path, max_base64_bytes: Optional[int] = None) -> Optional[str]:
     """Encode a local image as a base64 data URL at its native size.
 
-    Size limits are NOT enforced here — the agent retry loop
-    (``run_agent._try_shrink_image_parts_in_messages``) shrinks on the
-    provider's first rejection. Keeping this simple means providers that
-    accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
-    quality tax just because one other provider is stricter.
+    When ``max_base64_bytes`` is positive, oversized images are proactively
+    resized via ``tools.vision_tools._resize_image_for_vision``.  The caller
+    can pass ``0`` to disable this.  If ``None`` is passed, the value is read
+    from ``agent.native_image_max_base64_bytes``.
 
     Returns None only if the file can't be read (missing, permission
     denied, etc.); the caller reports those paths in ``skipped``.
@@ -411,6 +423,33 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
+    if max_base64_bytes is None:
+        max_base64_bytes = _configured_native_image_max_base64_bytes()
+    if max_base64_bytes and max_base64_bytes > 0:
+        estimated_b64 = (len(raw) * 4) // 3 + 100
+        if estimated_b64 > max_base64_bytes:
+            try:
+                from tools.vision_tools import _resize_image_for_vision
+
+                resized = _resize_image_for_vision(
+                    path,
+                    mime_type=mime,
+                    max_base64_bytes=max_base64_bytes,
+                )
+                if resized and len(resized) < estimated_b64:
+                    logger.info(
+                        "native image routing: proactively resized %s from %.1f MB to %.1f MB",
+                        path,
+                        estimated_b64 / (1024 * 1024),
+                        len(resized) / (1024 * 1024),
+                    )
+                    return resized
+            except Exception as exc:
+                logger.warning(
+                    "native image routing: proactive resize failed for %s — %s; using original",
+                    path,
+                    exc,
+                )
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 
@@ -419,6 +458,8 @@ def build_native_content_parts(
     user_text: str,
     image_paths: List[str],
     image_urls: Optional[List[str]] = None,
+    *,
+    max_base64_bytes: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
@@ -444,10 +485,10 @@ def build_native_content_parts(
     ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
     <path>``) so behaviour is consistent across both image input modes.
 
-    Images are attached at their native size. If a provider rejects the
-    request because an image is too large (e.g. Anthropic's 5 MB per-image
-    ceiling), the agent's retry loop transparently shrinks and retries
-    once — see ``run_agent._try_shrink_image_parts_in_messages``.
+    Images larger than ``agent.native_image_max_base64_bytes`` are resized
+    before attachment. If a provider still rejects the request because an
+    image is too large, the agent's retry loop transparently shrinks and
+    retries once — see ``run_agent._try_shrink_image_parts_in_messages``.
 
     Returns (content_parts, skipped). Skipped entries are local paths
     that couldn't be read from disk; URLs are never skipped (they're
@@ -463,7 +504,7 @@ def build_native_content_parts(
         if not p.exists() or not p.is_file():
             skipped.append(str(raw_path))
             continue
-        data_url = _file_to_data_url(p)
+        data_url = _file_to_data_url(p, max_base64_bytes=max_base64_bytes)
         if not data_url:
             skipped.append(str(raw_path))
             continue

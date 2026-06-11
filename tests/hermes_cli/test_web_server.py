@@ -201,6 +201,20 @@ class TestWebServerEndpoints:
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
 
+    def test_dashboard_theme_schema_includes_pure_ink_themes(self):
+        resp = self.client.get("/api/config/schema")
+        assert resp.status_code == 200
+        options = resp.json()["fields"]["dashboard.theme"]["options"]
+        assert "pure-ink-light" in options
+        assert "pure-ink-dark" in options
+
+    def test_get_dashboard_themes_includes_pure_ink_themes(self):
+        resp = self.client.get("/api/dashboard/themes")
+        assert resp.status_code == 200
+        names = {theme["name"] for theme in resp.json()["themes"]}
+        assert "pure-ink-light" in names
+        assert "pure-ink-dark" in names
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200
@@ -213,6 +227,8 @@ class TestWebServerEndpoints:
         data = resp.json()
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
+        assert "DINGTALK_ROBOT_CODE" in data
+        assert "DINGTALK_ALLOW_ALL_USERS" in data
 
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
@@ -374,6 +390,34 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_schema_has_dingtalk_card_template_id(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        assert "dingtalk.card_template_id" in CONFIG_SCHEMA
+        assert CONFIG_SCHEMA["dingtalk.card_template_id"]["category"] == "dingtalk"
+
+    def test_schema_has_dingtalk_card_content_key(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        assert "dingtalk.card_content_key" in CONFIG_SCHEMA
+        assert CONFIG_SCHEMA["dingtalk.card_content_key"]["type"] == "string"
+        assert CONFIG_SCHEMA["dingtalk.card_content_key"]["category"] == "dingtalk"
+
+    def test_schema_has_dingtalk_reply_at_sender(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        assert "dingtalk.reply_at_sender" in CONFIG_SCHEMA
+        assert CONFIG_SCHEMA["dingtalk.reply_at_sender"]["type"] == "boolean"
+
+    def test_schema_has_dingtalk_allow_all_users(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        assert "dingtalk.allow_all_users" in CONFIG_SCHEMA
+        assert CONFIG_SCHEMA["dingtalk.allow_all_users"]["type"] == "boolean"
+
+    def test_schema_has_dingtalk_reserved_app_fields(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        for key in ("dingtalk.app_code", "dingtalk.corp_id", "dingtalk.agent_id"):
+            assert key in CONFIG_SCHEMA
+            assert CONFIG_SCHEMA[key]["category"] == "dingtalk"
+            assert CONFIG_SCHEMA[key]["type"] == "string"
+
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
         test_config = {"model": "test", "nested": {"key": "val"}}
@@ -391,6 +435,12 @@ class TestBuildSchemaFromConfig:
         from hermes_cli.web_server import CONFIG_SCHEMA
         if "agent.max_turns" in CONFIG_SCHEMA:
             assert CONFIG_SCHEMA["agent.max_turns"]["category"] == "agent"
+
+    def test_schema_has_native_image_resize_threshold(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        assert "agent.native_image_max_base64_bytes" in CONFIG_SCHEMA
+        assert CONFIG_SCHEMA["agent.native_image_max_base64_bytes"]["type"] == "number"
+        assert CONFIG_SCHEMA["agent.native_image_max_base64_bytes"]["category"] == "agent"
 
     def test_category_merge_applied(self):
         """Small categories should be merged into larger ones."""
@@ -509,6 +559,47 @@ class TestConfigRoundTrip:
         # Restore
         web_config["agent"]["max_turns"] = original_turns
         self.client.put("/api/config", json={"config": web_config})
+
+    def test_dingtalk_reserved_app_fields_round_trip(self):
+        """DingTalk app fields should survive the dashboard config API."""
+        from hermes_cli.config import load_config
+
+        web_config = self.client.get("/api/config").json()
+        web_config.setdefault("dingtalk", {})
+        web_config["dingtalk"].update({
+            "app_code": "app-123",
+            "corp_id": "corp-123",
+            "agent_id": "agent-123",
+        })
+
+        resp = self.client.put("/api/config", json={"config": web_config})
+
+        assert resp.status_code == 200
+        saved = load_config()["dingtalk"]
+        assert saved["app_code"] == "app-123"
+        assert saved["corp_id"] == "corp-123"
+        assert saved["agent_id"] == "agent-123"
+
+        reloaded = self.client.get("/api/config").json()["dingtalk"]
+        assert reloaded["app_code"] == "app-123"
+        assert reloaded["corp_id"] == "corp-123"
+        assert reloaded["agent_id"] == "agent-123"
+
+    def test_dingtalk_card_content_key_round_trip(self):
+        """DingTalk AI Card content key should be editable from Dashboard."""
+        from hermes_cli.config import load_config
+
+        web_config = self.client.get("/api/config").json()
+        web_config.setdefault("dingtalk", {})
+        web_config["dingtalk"]["card_content_key"] = "content"
+
+        resp = self.client.put("/api/config", json={"config": web_config})
+
+        assert resp.status_code == 200
+        saved = load_config()["dingtalk"]
+        assert saved["card_content_key"] == "content"
+        reloaded = self.client.get("/api/config").json()["dingtalk"]
+        assert reloaded["card_content_key"] == "content"
 
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
@@ -690,8 +781,9 @@ class TestNewEndpoints:
         assert wrapper_path.exists()
         assert wrapper_path.read_text() == '#!/bin/sh\nexec hermes -p writer "$@"\n'
 
-    def test_profiles_create_with_clone_from_default_copies_default_skills(self, monkeypatch):
+    def test_profiles_create_with_clone_from_default_skips_default_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import NO_BUNDLED_SKILLS_MARKER
         import hermes_cli.profiles as profiles_mod
 
         monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
@@ -706,21 +798,20 @@ class TestNewEndpoints:
 
         assert resp.status_code == 200
         cloned_skill = get_hermes_home() / "profiles" / "cloned" / "skills" / "custom" / "new-skill" / "SKILL.md"
-        assert cloned_skill.exists()
+        assert not cloned_skill.exists()
+        assert (get_hermes_home() / "profiles" / "cloned" / NO_BUNDLED_SKILLS_MARKER).exists()
         profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
-        assert profiles["cloned"]["skill_count"] == 1
+        assert profiles["cloned"]["skill_count"] == 0
 
-    def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
+    def test_profiles_create_without_clone_skips_bundled_seed(self, monkeypatch):
         from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import NO_BUNDLED_SKILLS_MARKER
         import hermes_cli.profiles as profiles_mod
 
         monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
 
         def fake_seed(profile_dir, quiet=False):
-            skill_dir = profile_dir / "skills" / "software-development" / "plan"
-            skill_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text("---\nname: plan\n---\n", encoding="utf-8")
-            return {"copied": ["plan"]}
+            raise AssertionError("Dashboard profile creation should not seed skills")
 
         monkeypatch.setattr(profiles_mod, "seed_profile_skills", fake_seed)
 
@@ -731,9 +822,10 @@ class TestNewEndpoints:
 
         assert resp.status_code == 200
         seeded_skill = get_hermes_home() / "profiles" / "fresh" / "skills" / "software-development" / "plan" / "SKILL.md"
-        assert seeded_skill.exists()
+        assert not seeded_skill.exists()
+        assert (get_hermes_home() / "profiles" / "fresh" / NO_BUNDLED_SKILLS_MARKER).exists()
         profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
-        assert profiles["fresh"]["skill_count"] == 1
+        assert profiles["fresh"]["skill_count"] == 0
 
     def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
         from hermes_constants import get_hermes_home
@@ -2445,4 +2537,3 @@ class TestDashboardPluginStaticAssetAllowlist:
         # 403 traversal-blocked OR 404 (depending on URL decode order)
         # — never 200.
         assert resp.status_code in (403, 404)
-

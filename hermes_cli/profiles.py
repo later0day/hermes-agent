@@ -42,6 +42,7 @@ _PROFILE_DIRS = [
     "skins",
     "logs",
     "plans",
+    "scripts",
     "workspace",
     "cron",
     # Per-profile HOME for subprocesses: isolates system tool configs (git,
@@ -453,6 +454,9 @@ class ProfileInfo:
     # surfaces a "review" badge in this case so the user can edit or
     # accept.
     description_auto: bool = False
+    # Reusable profile template. Template profiles are still normal profiles;
+    # this flag only helps UI/IM clone flows surface them as sources.
+    template: bool = False
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -549,18 +553,19 @@ def read_profile_meta(profile_dir: Path) -> dict:
     """
     path = _profile_yaml_path(profile_dir)
     if not path.is_file():
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "template": False}
     try:
         import yaml
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except Exception:
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "template": False}
     if not isinstance(data, dict):
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "template": False}
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
+        "template": bool(data.get("template", False)),
     }
 
 
@@ -569,6 +574,7 @@ def write_profile_meta(
     *,
     description: Optional[str] = None,
     description_auto: Optional[bool] = None,
+    template: Optional[bool] = None,
 ) -> None:
     """Update ``<profile_dir>/profile.yaml`` in place.
 
@@ -593,6 +599,8 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
+    if template is not None:
+        existing["template"] = bool(template)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
 
@@ -626,6 +634,7 @@ def list_profiles() -> List[ProfileInfo]:
             distribution_source=dist_source,
             description=meta.get("description", ""),
             description_auto=meta.get("description_auto", False),
+            template=bool(meta.get("template", False)),
         ))
 
     # Named profiles
@@ -656,6 +665,7 @@ def list_profiles() -> List[ProfileInfo]:
                 distribution_source=dist_source,
                 description=meta.get("description", ""),
                 description_auto=meta.get("description_auto", False),
+                template=bool(meta.get("template", False)),
             ))
 
     return profiles
@@ -666,6 +676,8 @@ def create_profile(
     clone_from: Optional[str] = None,
     clone_all: bool = False,
     clone_config: bool = False,
+    clone_env: bool = True,
+    clone_skills: bool = True,
     no_alias: bool = False,
     no_skills: bool = False,
     description: Optional[str] = None,
@@ -682,22 +694,29 @@ def create_profile(
     clone_all:
         If True, do a full copytree of the source (all state).
     clone_config:
-        If True, copy config files (config.yaml, .env, SOUL.md), installed
-        skills, and selected profile identity files from the source profile.
+        If True, copy config files and selected profile identity files from
+        the source profile. ``clone_env`` and ``clone_skills`` control whether
+        .env secrets and installed skills are included.
+    clone_env:
+        If False, skip copying .env during clone_config. Defaults to True for
+        existing CLI compatibility.
+    clone_skills:
+        If False, skip copying installed skills during clone_config. Defaults
+        to True for existing CLI compatibility.
     no_alias:
         If True, skip wrapper script creation.
     no_skills:
-        If True, create an empty profile with no bundled skills, and write
+        If True, create a profile with no bundled skills, and write
         a marker file so ``hermes update`` skips re-seeding this profile's
-        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
-        explicitly copy skills from the source).
+        skills. Mutually exclusive with ``clone_all`` and with clone_config
+        flows that also copy skills from the source.
 
     Returns
     -------
     Path
         The newly created profile directory.
     """
-    if no_skills and (clone_config or clone_all):
+    if no_skills and (clone_all or (clone_config and clone_skills)):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
@@ -749,6 +768,8 @@ def create_profile(
         # Clone config files from source
         if source_dir is not None:
             for filename in _CLONE_CONFIG_FILES:
+                if filename == ".env" and not clone_env:
+                    continue
                 src = source_dir / filename
                 if src.exists():
                     dst = profile_dir / filename
@@ -763,13 +784,13 @@ def create_profile(
                         except OSError:
                             pass
 
-            # Clone installed skills from the source profile. The dashboard's
-            # "clone from default" flow is expected to preserve both bundled
-            # and user-installed skills so the new profile immediately has the
-            # same agent capabilities as the source profile.
-            source_skills = source_dir / "skills"
-            if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+            if clone_skills:
+                # Clone installed skills from the source profile for legacy
+                # CLI clone semantics. Dashboard/IM agent creation passes
+                # clone_skills=False so new agents start skill-empty.
+                source_skills = source_dir / "skills"
+                if source_skills.is_dir():
+                    shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
@@ -1011,6 +1032,41 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         pass
 
     print(f"\nProfile '{canon}' deleted.")
+    return profile_dir
+
+
+def delete_profile_noninteractive(name: str) -> Path:
+    """Delete a profile without prompts or service-env mutation.
+
+    Gateway/IM command handlers use this instead of ``delete_profile()`` so
+    they never block on input and never mutate process-wide ``HERMES_HOME`` for
+    service cleanup. Existing service files are left for explicit CLI cleanup.
+    """
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+
+    if canon == "default":
+        raise ValueError(
+            "Cannot delete the default profile (~/.hermes). "
+            "To remove everything, use: hermes uninstall"
+        )
+
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+
+    if _check_gateway_running(profile_dir):
+        _stop_gateway_process(profile_dir)
+
+    remove_wrapper_script(canon)
+    shutil.rmtree(profile_dir)
+
+    try:
+        if get_active_profile() == canon:
+            set_active_profile("default")
+    except Exception:
+        pass
+
     return profile_dir
 
 

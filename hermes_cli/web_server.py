@@ -15,7 +15,9 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -330,7 +332,17 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",
-        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+        "options": [
+            "default",
+            "default-large",
+            "midnight",
+            "ember",
+            "mono",
+            "cyberpunk",
+            "rose",
+            "pure-ink-light",
+            "pure-ink-dark",
+        ],
     },
     "display.resume_display": {
         "type": "select",
@@ -372,10 +384,50 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    "agent.native_image_max_base64_bytes": {
+        "type": "number",
+        "description": "Proactive native-image resize threshold in base64 bytes (0 = disabled)",
+        "category": "agent",
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
         "options": ["", "low", "medium", "high"],
+    },
+    "dingtalk.app_code": {
+        "type": "string",
+        "description": "Optional DingTalk appCode; stored for future DingTalk APIs",
+        "category": "dingtalk",
+    },
+    "dingtalk.corp_id": {
+        "type": "string",
+        "description": "Optional DingTalk CorpId; stored for future DingTalk APIs",
+        "category": "dingtalk",
+    },
+    "dingtalk.agent_id": {
+        "type": "string",
+        "description": "Optional DingTalk AgentId; stored for future DingTalk APIs",
+        "category": "dingtalk",
+    },
+    "dingtalk.card_template_id": {
+        "type": "string",
+        "description": "DingTalk AI Card template ID; blank uses DingTalk's default markdown card",
+        "category": "dingtalk",
+    },
+    "dingtalk.card_content_key": {
+        "type": "string",
+        "description": "DingTalk AI Card content variable key; blank uses msgContent",
+        "category": "dingtalk",
+    },
+    "dingtalk.reply_at_sender": {
+        "type": "boolean",
+        "description": "@ the sender on final DingTalk group replies",
+        "category": "dingtalk",
+    },
+    "dingtalk.allow_all_users": {
+        "type": "boolean",
+        "description": "Allow all DingTalk users without an allowlist",
+        "category": "dingtalk",
     },
 }
 
@@ -829,11 +881,25 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             sessions = db.list_sessions_rich(limit=limit, offset=offset)
             total = db.session_count()
             now = time.time()
-            for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
+            binding_store = _source_binding_store()
+            try:
+                for s in sessions:
+                    s["is_active"] = (
+                        s.get("ended_at") is None
+                        and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    )
+                    binding_key = _session_source_binding_key(str(s.get("id") or ""))
+                    s["source_binding_key"] = binding_key
+                    s["session_profile"] = _session_profile_name(str(s.get("id") or ""))
+                    if binding_key:
+                        binding = binding_store.get_binding(binding_key)
+                        s["bound_profile"] = binding.profile_name if binding else "default"
+                        s["can_bind_profile"] = True
+                    else:
+                        s["bound_profile"] = None
+                        s["can_bind_profile"] = False
+            finally:
+                binding_store.close()
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -2623,6 +2689,7 @@ class CronJobCreate(BaseModel):
     schedule: str
     name: str = ""
     deliver: str = "local"
+    run_profile: Optional[str] = None
 
 
 class CronJobUpdate(BaseModel):
@@ -2657,24 +2724,42 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     return canon, profiles_mod.get_profile_dir(canon)
 
 
-def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+def _cron_job_owner(job: Dict[str, Any]) -> str:
+    owner = str(job.get("owner_profile") or "").strip()
+    if owner:
+        return owner
+    run_profile = str(job.get("run_profile") or job.get("profile") or "").strip()
+    return run_profile or "default"
+
+
+def _annotate_cron_job(job: Dict[str, Any]) -> Dict[str, Any]:
     annotated = dict(job)
-    annotated["profile"] = profile
-    annotated["profile_name"] = profile
-    annotated["hermes_home"] = str(home)
-    annotated["is_default_profile"] = profile == "default"
+    owner_profile = _cron_job_owner(annotated)
+    run_profile = str(annotated.get("run_profile") or annotated.get("profile") or "").strip() or None
+    try:
+        owner_profile, home = _cron_profile_home(owner_profile)
+        annotated["hermes_home"] = str(home)
+        annotated["is_default_profile"] = owner_profile == "default"
+    except HTTPException:
+        annotated["hermes_home"] = None
+        annotated["is_default_profile"] = False
+    annotated["owner_profile"] = owner_profile
+    annotated["profile_name"] = owner_profile
+    annotated["run_profile"] = run_profile
+    # Backward compatibility: API clients still expect `profile` to describe
+    # the runtime profile. Dashboard ownership is exposed as owner_profile.
+    annotated["profile"] = run_profile
     return annotated
 
 
-def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
-    """Run cron.jobs helpers against the selected profile's cron directory.
+def _call_cron_store(func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers against the single dashboard cron store.
 
-    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
-    from the process HERMES_HOME at import time. The dashboard is a single
-    process that can inspect many profiles, so temporarily retarget those
-    globals while holding a lock and restore them immediately after the call.
+    Cron V1 keeps physical cron storage centralized under the default Hermes
+    home. Profile isolation is logical: owner_profile filters management views,
+    while run_profile/profile controls the runtime profile for execution.
     """
-    profile_name, home = _cron_profile_home(profile)
+    _profile_name, home = _cron_profile_home("default")
     with _CRON_PROFILE_LOCK:
         from cron import jobs as cron_jobs
 
@@ -2691,21 +2776,48 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
             cron_jobs.JOBS_FILE = old_jobs_file
             cron_jobs.OUTPUT_DIR = old_output_dir
 
-    if isinstance(result, list):
-        return [_annotate_cron_job(j, profile_name, home) for j in result]
+    return result
+
+
+def _cron_job_matches_owner(job_ref: str, owner_profile: str) -> bool:
+    for job in _call_cron_store("list_jobs", True):
+        if job.get("id") == job_ref or job.get("name") == job_ref:
+            return _cron_job_owner(job) == owner_profile
+    return False
+
+
+def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers for jobs owned by the selected profile."""
+    profile_name, _home = _cron_profile_home(profile)
+
+    if func_name == "list_jobs":
+        result = _call_cron_store(func_name, *args, **kwargs)
+        return [
+            _annotate_cron_job(job)
+            for job in result
+            if _cron_job_owner(job) == profile_name
+        ]
+
+    if func_name == "create_job":
+        kwargs.setdefault("owner_profile", profile_name)
+        kwargs.setdefault("run_profile", profile_name)
+        return _annotate_cron_job(_call_cron_store(func_name, *args, **kwargs))
+
+    if func_name in {"get_job", "update_job", "pause_job", "resume_job", "trigger_job", "remove_job"}:
+        job_ref = str(args[0]) if args else ""
+        if not _cron_job_matches_owner(job_ref, profile_name):
+            return False if func_name == "remove_job" else None
+
+    result = _call_cron_store(func_name, *args, **kwargs)
     if isinstance(result, dict):
-        return _annotate_cron_job(result, profile_name, home)
+        return _annotate_cron_job(result)
     return result
 
 
 def _find_cron_job_profile(job_id: str) -> Optional[str]:
-    for profile in _cron_profile_dicts():
-        name = str(profile.get("name") or "")
-        if not name:
-            continue
-        jobs = _call_cron_for_profile(name, "list_jobs", True)
-        if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
-            return name
+    for job in _call_cron_store("list_jobs", True):
+        if job.get("id") == job_id or job.get("name") == job_id:
+            return _cron_job_owner(job)
     return None
 
 
@@ -2715,16 +2827,7 @@ async def list_cron_jobs(profile: str = "all"):
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
 
-    jobs: List[Dict[str, Any]] = []
-    for item in _cron_profile_dicts():
-        name = str(item.get("name") or "")
-        if not name:
-            continue
-        try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
-        except Exception:
-            _log.exception("Failed to list cron jobs for profile %s", name)
-    return jobs
+    return [_annotate_cron_job(job) for job in _call_cron_store("list_jobs", True)]
 
 
 @app.get("/api/cron/jobs/{job_id}")
@@ -2748,6 +2851,7 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
             schedule=body.schedule,
             name=body.name,
             deliver=body.deliver,
+            run_profile=body.run_profile or profile,
         )
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
@@ -2816,12 +2920,13 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
-# Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
+# Profile management endpoints
 # ---------------------------------------------------------------------------
 
 
 class ProfileCreate(BaseModel):
     name: str
+    clone_from: Optional[str] = None
     clone_from_default: bool = False
     no_skills: bool = False
 
@@ -2834,6 +2939,50 @@ class ProfileSoulUpdate(BaseModel):
     content: str
 
 
+class ProfileModelUpdate(BaseModel):
+    provider: str
+    model: str
+
+
+class ProfileTemplateUpdate(BaseModel):
+    template: bool
+
+
+class ProfileMetadataUpdate(BaseModel):
+    description: Optional[str] = None
+    description_auto: Optional[bool] = None
+    template: Optional[bool] = None
+
+
+class ProfileDescribeRequest(BaseModel):
+    overwrite: bool = False
+
+
+class ProfileSkillsCopy(BaseModel):
+    source_profile: str = "default"
+    skills: Optional[List[str]] = None
+
+
+class ProfileMemoryFileUpdate(BaseModel):
+    content: str
+
+
+class ProfileSkillManifestUpdate(BaseModel):
+    content: str
+
+
+class SourceBindingUpdate(BaseModel):
+    source_binding_key: str
+    profile_name: str
+
+
+class SourceBindingTaskCreate(BaseModel):
+    source_binding_key: str
+    profile_name: str = "default"
+    task: str
+    board: Optional[str] = None
+
+
 def _profile_attr(info, name: str, default: Any = None) -> Any:
     try:
         return getattr(info, name)
@@ -2842,14 +2991,22 @@ def _profile_attr(info, name: str, default: Any = None) -> Any:
 
 
 def _profile_to_dict(info) -> Dict[str, Any]:
+    name = str(_profile_attr(info, "name", "") or "")
+    binding_summary = _profile_binding_summary(name)
     return {
-        "name": _profile_attr(info, "name", ""),
+        "name": name,
+        "agent_id": name or "default",
         "path": str(_profile_attr(info, "path", "")),
         "is_default": bool(_profile_attr(info, "is_default", False)),
         "model": _profile_attr(info, "model"),
         "provider": _profile_attr(info, "provider"),
         "has_env": bool(_profile_attr(info, "has_env", False)),
+        "binding_count": binding_summary["total"],
+        "binding_summary": binding_summary,
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+        "description": _profile_attr(info, "description", ""),
+        "description_auto": bool(_profile_attr(info, "description_auto", False)),
+        "template": bool(_profile_attr(info, "template", False)),
     }
 
 
@@ -2864,14 +3021,22 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     default_home = profiles_mod._get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
+        meta = _safe(lambda: profiles_mod.read_profile_meta(default_home), {})
+        binding_summary = _profile_binding_summary("default")
         profiles.append({
             "name": "default",
+            "agent_id": "default",
             "path": str(default_home),
             "is_default": True,
             "model": model,
             "provider": provider,
             "has_env": (default_home / ".env").exists(),
+            "binding_count": binding_summary["total"],
+            "binding_summary": binding_summary,
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
+            "description": meta.get("description", ""),
+            "description_auto": bool(meta.get("description_auto", False)),
+            "template": bool(meta.get("template", False)),
         })
 
     profiles_root = profiles_mod._get_profiles_root()
@@ -2880,14 +3045,22 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
             model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            meta = _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry), {})
+            binding_summary = _profile_binding_summary(entry.name)
             profiles.append({
                 "name": entry.name,
+                "agent_id": entry.name,
                 "path": str(entry),
                 "is_default": False,
                 "model": model,
                 "provider": provider,
                 "has_env": (entry / ".env").exists(),
+                "binding_count": binding_summary["total"],
+                "binding_summary": binding_summary,
                 "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
+                "description": meta.get("description", ""),
+                "description_auto": bool(meta.get("description_auto", False)),
+                "template": bool(meta.get("template", False)),
             })
 
     return profiles
@@ -2903,6 +3076,761 @@ def _resolve_profile_dir(name: str) -> Path:
     if not profiles_mod.profile_exists(name):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
     return profiles_mod.get_profile_dir(name)
+
+
+def _load_profile_config_raw_with_error(name: str) -> tuple[Dict[str, Any], Optional[str]]:
+    config_path = _resolve_profile_dir(name) / "config.yaml"
+    if not config_path.exists():
+        return {}, None
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        detail = f"Could not read profile config: {exc}"
+        _log.debug("Profile %s config read failed: %s", name, exc)
+        return {}, detail
+    except yaml.YAMLError as exc:
+        detail = f"Invalid profile config: {exc}"
+        _log.debug("Profile %s config parse failed: %s", name, exc)
+        return {}, detail
+    if not isinstance(loaded, dict):
+        return {}, "Profile config must be a YAML mapping."
+    return loaded, None
+
+
+def _load_profile_config_raw(name: str) -> Dict[str, Any]:
+    cfg, _error = _load_profile_config_raw_with_error(name)
+    return cfg
+
+
+def _save_profile_config_raw(name: str, config: Dict[str, Any]) -> None:
+    from utils import atomic_yaml_write
+
+    config_path = _resolve_profile_dir(name) / "config.yaml"
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_yaml_write(config_path, config)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write profile config: {exc}")
+
+
+def _profile_model_summary(name: str) -> Dict[str, str]:
+    cfg = _load_profile_config_raw(name)
+    return _profile_model_summary_from_config(cfg)
+
+
+def _profile_model_summary_from_config(cfg: Dict[str, Any]) -> Dict[str, str]:
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        return {
+            "provider": str(model_cfg.get("provider", "") or ""),
+            "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+        }
+    return {"provider": "", "model": str(model_cfg or "")}
+
+
+def _safe_binding_fallback_extra(extra: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(extra, dict):
+        return None
+    safe: Dict[str, Any] = {}
+    for key, value in extra.items():
+        key_str = str(key)
+        key_lower = key_str.lower()
+        if key_lower == "session_webhook":
+            safe["session_webhook_configured"] = bool(value)
+            continue
+        if key_lower == "session_webhook_expired_time":
+            safe[key_str] = value
+            continue
+        if any(part in key_lower for part in ("webhook", "token", "secret", "password", "key")):
+            safe[key_str] = "[REDACTED]" if value else value
+            continue
+        safe[key_str] = value
+    return safe
+
+
+def _binding_webhook_status(extra: Any) -> Dict[str, Any]:
+    """Return a display-safe webhook status without exposing webhook URLs."""
+    if not isinstance(extra, dict):
+        return {
+            "configured": False,
+            "state": "missing",
+            "kind": "none",
+            "expires_at": None,
+            "expired": False,
+            "label": "missing",
+        }
+
+    webhook = str(extra.get("session_webhook") or "").strip()
+    if not webhook:
+        return {
+            "configured": False,
+            "state": "missing",
+            "kind": "none",
+            "expires_at": None,
+            "expired": False,
+            "label": "missing",
+        }
+
+    try:
+        expires_ms = int(extra.get("session_webhook_expired_time") or 0)
+    except (TypeError, ValueError):
+        expires_ms = 0
+
+    if expires_ms and expires_ms <= int(time.time() * 1000):
+        return {
+            "configured": True,
+            "state": "expired",
+            "kind": "temporary",
+            "expires_at": expires_ms,
+            "expired": True,
+            "label": "expired",
+        }
+
+    if expires_ms:
+        return {
+            "configured": True,
+            "state": "configured",
+            "kind": "temporary",
+            "expires_at": expires_ms,
+            "expired": False,
+            "label": "temporary",
+        }
+
+    return {
+        "configured": True,
+        "state": "configured",
+        "kind": "permanent",
+        "expires_at": None,
+        "expired": False,
+        "label": "permanent",
+    }
+
+
+def _binding_target_summary(target: Any, source_key: str) -> Dict[str, Any]:
+    """Return a human-readable IM target summary for Dashboard display."""
+    target_dict = target if isinstance(target, dict) else {}
+    parts = str(source_key or "").split(":")
+
+    platform = str(target_dict.get("platform") or "").strip()
+    chat_type = str(target_dict.get("chat_type") or "").strip()
+    chat_id = str(target_dict.get("chat_id") or "").strip()
+    thread_id = target_dict.get("thread_id")
+    user_name = str(target_dict.get("user_name") or "").strip()
+    user_id = str(
+        target_dict.get("user_id_alt")
+        or target_dict.get("user_id")
+        or ""
+    ).strip()
+
+    if not platform and len(parts) >= 2 and parts[0] == "source":
+        platform = parts[1]
+    if not chat_type and len(parts) >= 3 and parts[0] == "source":
+        chat_type = parts[2]
+    if not chat_id and len(parts) >= 4 and parts[0] == "source":
+        chat_id = parts[3]
+
+    chat_name = str(target_dict.get("chat_name") or "").strip()
+    label = chat_name or chat_id or source_key
+
+    scope_parts = [part for part in (chat_type, user_name or user_id) if part]
+    if thread_id:
+        scope_parts.append(f"thread {thread_id}")
+    scope = " / ".join(scope_parts) if scope_parts else "source"
+
+    return {
+        "platform": platform or "unknown",
+        "chat_type": chat_type or "unknown",
+        "chat_id": chat_id or None,
+        "chat_name": chat_name or None,
+        "thread_id": thread_id,
+        "user_name": user_name or None,
+        "user_id": user_id or None,
+        "label": label,
+        "scope": scope,
+    }
+
+
+def _binding_to_dict(binding) -> Dict[str, Any]:
+    webhook_status = _binding_webhook_status(binding.fallback_extra)
+    target_summary = _binding_target_summary(
+        binding.fallback_target,
+        binding.source_binding_key,
+    )
+    return {
+        "source_binding_key": binding.source_binding_key,
+        "profile_name": binding.profile_name,
+        "agent_id": binding.agent_id,
+        "fallback_target": binding.fallback_target,
+        "fallback_extra": _safe_binding_fallback_extra(binding.fallback_extra),
+        "target_summary": target_summary,
+        "webhook_status": webhook_status,
+        "created_at": binding.created_at,
+        "updated_at": binding.updated_at,
+        "created_by": binding.created_by,
+        "updated_by": binding.updated_by,
+    }
+
+
+def _source_binding_store():
+    from gateway.source_agent_binding import SourceAgentBindingStore
+
+    return SourceAgentBindingStore()
+
+
+def _source_from_binding_or_key(binding: Any, source_key: str):
+    """Best-effort source recovery for Dashboard-created Kanban tasks."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    target = getattr(binding, "fallback_target", None)
+    if isinstance(target, dict) and target.get("platform") and target.get("chat_id"):
+        try:
+            return SessionSource.from_dict(target)
+        except Exception:
+            pass
+
+    parts = str(source_key or "").split(":")
+    if len(parts) < 4 or parts[0] != "source":
+        return None
+    try:
+        platform = Platform(parts[1])
+    except Exception:
+        return None
+
+    chat_type = parts[2] or "dm"
+    chat_id = parts[3]
+    if not chat_id:
+        return None
+
+    thread_id = None
+    user_id = None
+    if chat_type == "dm":
+        thread_id = parts[4] if len(parts) >= 5 else None
+    elif len(parts) >= 6:
+        thread_id = parts[4]
+        user_id = parts[5]
+    elif len(parts) == 5:
+        user_id = parts[4]
+
+    return SessionSource(
+        platform=platform,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+
+def _active_dashboard_notifier_profile() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
+_DINGTALK_SESSION_WEBHOOK_RE = re.compile(r"^https://(?:api|oapi)\.dingtalk\.com/")
+
+
+def _delete_profile_im_notification_text(profile_name: str) -> str:
+    return (
+        f"### Hermes agent `{profile_name}` 已删除\n\n"
+        "该 Agent 已从 Dashboard 删除，当前 IM 会话绑定已清除，后续将回到 `default` agent。\n\n"
+        "如需重新绑定，请发送 `/agent use <profile>`。"
+    )
+
+
+def _binding_delete_notification_webhook(binding: Dict[str, Any]) -> Optional[str]:
+    target = binding.get("fallback_target")
+    extra = binding.get("fallback_extra")
+    source_key = str(binding.get("source_binding_key") or "")
+    platform = ""
+    if isinstance(target, dict):
+        platform = str(target.get("platform") or "").strip().lower()
+    if platform and platform != "dingtalk":
+        return None
+    if not platform and not source_key.startswith("source:dingtalk:"):
+        return None
+    if not isinstance(extra, dict):
+        return None
+
+    webhook = str(extra.get("session_webhook") or "").strip()
+    if not webhook or not _DINGTALK_SESSION_WEBHOOK_RE.match(webhook):
+        return None
+    try:
+        expires_ms = int(extra.get("session_webhook_expired_time") or 0)
+    except (TypeError, ValueError):
+        expires_ms = 0
+    if expires_ms and expires_ms <= int(time.time() * 1000):
+        return None
+    return webhook
+
+
+def _send_dingtalk_session_webhook(session_webhook: str, text: str) -> None:
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "Hermes agent deleted",
+            "text": text,
+        },
+    }
+    request = urllib.request.Request(
+        session_webhook,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        status = getattr(response, "status", response.getcode())
+        body = response.read(512)
+    if int(status) >= 300:
+        raise RuntimeError(f"DingTalk webhook returned HTTP {status}: {body[:200]!r}")
+
+
+async def _notify_profile_delete_bindings(
+    profile_name: str,
+    bindings: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    summary = {"attempted": 0, "sent": 0, "failed": 0, "skipped": 0}
+    text = _delete_profile_im_notification_text(profile_name)
+    for binding in bindings:
+        webhook = _binding_delete_notification_webhook(binding)
+        if not webhook:
+            summary["skipped"] += 1
+            continue
+        summary["attempted"] += 1
+        try:
+            await asyncio.to_thread(_send_dingtalk_session_webhook, webhook, text)
+            summary["sent"] += 1
+        except Exception as exc:
+            summary["failed"] += 1
+            _log.warning(
+                "Failed to notify IM binding %s before deleting profile %s: %s",
+                binding.get("source_binding_key"),
+                profile_name,
+                exc,
+            )
+    return summary
+
+
+def _session_source_binding_key(session_id: str) -> Optional[str]:
+    parts = str(session_id or "").split(":")
+    if len(parts) >= 4 and parts[0] == "agent":
+        return "source:" + ":".join(parts[2:])
+    return None
+
+
+def _session_profile_name(session_id: str) -> Optional[str]:
+    parts = str(session_id or "").split(":")
+    if len(parts) >= 2 and parts[0] == "agent":
+        return "default" if parts[1] in {"", "main", "default"} else parts[1]
+    return None
+
+
+def _profile_bindings(name: str) -> List[Dict[str, Any]]:
+    store = _source_binding_store()
+    try:
+        return [_binding_to_dict(b) for b in store.list_bindings(profile_name=name)]
+    finally:
+        store.close()
+
+
+def _profile_binding_count(name: str) -> int:
+    if not name:
+        return 0
+    store = _source_binding_store()
+    try:
+        return len(store.list_bindings(profile_name=name))
+    except Exception:
+        return 0
+    finally:
+        store.close()
+
+
+def _profile_binding_summary(name: str) -> Dict[str, int]:
+    if not name:
+        return {
+            "total": 0,
+            "webhook_configured": 0,
+            "webhook_expired": 0,
+            "webhook_permanent": 0,
+            "webhook_temporary": 0,
+        }
+    store = _source_binding_store()
+    try:
+        bindings = store.list_bindings(profile_name=name)
+    except Exception:
+        return {
+            "total": 0,
+            "webhook_configured": 0,
+            "webhook_expired": 0,
+            "webhook_permanent": 0,
+            "webhook_temporary": 0,
+        }
+    finally:
+        store.close()
+
+    statuses = [_binding_webhook_status(binding.fallback_extra) for binding in bindings]
+    return {
+        "total": len(bindings),
+        "webhook_configured": sum(1 for status in statuses if status.get("configured")),
+        "webhook_expired": sum(1 for status in statuses if status.get("expired")),
+        "webhook_permanent": sum(1 for status in statuses if status.get("kind") == "permanent"),
+        "webhook_temporary": sum(
+            1
+            for status in statuses
+            if status.get("kind") == "temporary" and not status.get("expired")
+        ),
+    }
+
+
+def _profile_kanban_summary(name: str) -> Dict[str, Any]:
+    try:
+        from hermes_cli import kanban_db as kb
+
+        conn = kb.connect()
+        try:
+            tasks = kb.list_tasks(conn, assignee=name, include_archived=False)
+        finally:
+            conn.close()
+        by_status: Dict[str, int] = {}
+        for task in tasks:
+            status = str(getattr(task, "status", "") or "unknown")
+            by_status[status] = by_status.get(status, 0) + 1
+        return {
+            "total": len(tasks),
+            "by_status": by_status,
+            "active": sum(count for status, count in by_status.items() if status not in {"done", "archived"}),
+        }
+    except Exception as exc:
+        return {"total": 0, "by_status": {}, "active": 0, "error": str(exc)}
+
+
+_LOG_RECORD_START_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[,.]\d{3}\s+")
+
+
+def _iter_log_records(lines: list[str]) -> list[str]:
+    records: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if _LOG_RECORD_START_RE.match(line) and current:
+            text = "\n".join(current).strip()
+            if text:
+                records.append(text)
+            current = [line]
+        else:
+            current.append(line)
+    text = "\n".join(current).strip()
+    if text:
+        records.append(text)
+    return records
+
+
+def _is_non_critical_profile_warning(
+    line: str,
+    *,
+    is_default_profile: bool = False,
+    config_valid: bool = True,
+) -> bool:
+    """Warnings that should not make an agent/profile look unhealthy."""
+    if config_valid and (
+        "gateway.config: Failed to process config.yaml" in line
+        or "hermes_cli.config: Failed to parse" in line
+        or (
+            "hermes_cli.web_server: Profile " in line
+            and " config parse failed:" in line
+        )
+    ):
+        return True
+    if (
+        "tools.terminal_tool: Terminal requirements check failed: [Errno 2] No such file or directory"
+        in line
+        and "os.getcwd()" in line
+    ):
+        return True
+    if (
+        "dingtalk_stream.client:" in line
+        or "gateway.platforms.dingtalk:" in line
+        or "gateway.platforms.base: [Dingtalk]" in line
+        or "gateway.run: kanban notifier tick failed:" in line
+        or "gateway.run: kanban notifier: send failed" in line
+        or "gateway.run: kanban notifier: dropping subscription" in line
+        or "gateway.run: Shutdown context:" in line
+        or "asyncio: Exception in callback Connection.connection_lost" in line
+    ):
+        return True
+    return (
+        "agent.title_generator: Title generation failed" in line
+        or "agent.auxiliary_client: Auxiliary" in line
+        or "agent.stream_diag: Stream drop mid tool-call" in line
+    )
+
+
+def _profile_recent_error(
+    profile_dir: Path,
+    *,
+    is_default_profile: bool = False,
+    config_valid: bool = True,
+) -> Optional[str]:
+    errors_path = profile_dir / "logs" / "errors.log"
+    if not errors_path.exists():
+        return None
+    try:
+        lines = errors_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for text in reversed(_iter_log_records(lines)):
+        if text and not _is_non_critical_profile_warning(
+            text,
+            is_default_profile=is_default_profile,
+            config_valid=config_valid,
+        ):
+            return text[-500:]
+    return None
+
+
+def _profile_health(name: str, profile_dir: Path) -> Dict[str, Any]:
+    cfg, config_error = _load_profile_config_raw_with_error(name)
+    model = _profile_model_summary_from_config(cfg)
+    checks = {
+        "config_exists": (profile_dir / "config.yaml").exists(),
+        "config_valid": config_error is None,
+        "env_exists": (profile_dir / ".env").exists(),
+        "model_configured": bool(model.get("model")),
+        "soul_exists": (profile_dir / "SOUL.md").exists(),
+        "workspace_exists": (profile_dir / "workspace").exists(),
+    }
+    recent_error = _profile_recent_error(
+        profile_dir,
+        is_default_profile=name == "default",
+        config_valid=config_error is None,
+    )
+    status = "ok"
+    if not checks["config_exists"] or not checks["model_configured"]:
+        status = "warning"
+    if config_error:
+        status = "warning"
+    if recent_error and " ERROR " in recent_error:
+        status = "warning"
+    return {
+        "status": status,
+        "checks": checks,
+        "recent_error": recent_error,
+        "config_error": config_error,
+    }
+
+
+def _profile_workspace_descriptor(profile_dir: Path) -> Dict[str, Any]:
+    workspace_path = profile_dir / "workspace"
+    return {
+        "provider": "local",
+        "kind": "profile",
+        "ref": str(workspace_path),
+        "display_path": str(workspace_path),
+        "sandbox_id": None,
+        "capabilities": {
+            "local_path": True,
+            "open_path": True,
+            "sandbox": False,
+        },
+    }
+
+
+def _profile_skills_summary(profile_dir: Path, limit: Optional[int] = 100) -> Dict[str, Any]:
+    skills_dir = profile_dir / "skills"
+    names: List[str] = []
+    if skills_dir.is_dir():
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            rel = skill_md.parent.relative_to(skills_dir)
+            rel_text = str(rel)
+            if rel_text.startswith(".hub") or "/.git/" in f"/{rel_text}/":
+                continue
+            names.append(rel_text)
+    names = sorted(set(names))
+    visible_names = names if limit is None else names[:limit]
+    return {
+        "count": len(names),
+        "names": visible_names,
+        "truncated": limit is not None and len(names) > limit,
+    }
+
+
+def _normalize_skill_copy_name(name: str) -> str:
+    skill = str(name or "").strip().replace("\\", "/")
+    parts = [part for part in skill.split("/") if part]
+    if not parts or skill.startswith("/") or any(part in {".", ".."} for part in parts):
+        raise HTTPException(status_code=400, detail=f"Invalid skill name: {name}")
+    return "/".join(parts)
+
+
+def _copy_profile_skill(source_skills: Path, target_skills: Path, skill_name: str) -> str:
+    safe_name = _normalize_skill_copy_name(skill_name)
+    parts = safe_name.split("/")
+    src = source_skills.joinpath(*parts)
+    if not src.is_dir() or not (src / "SKILL.md").is_file():
+        raise HTTPException(status_code=404, detail=f"Skill '{safe_name}' not found in source profile")
+    if any(part in {".hub", ".git"} for part in parts):
+        raise HTTPException(status_code=400, detail=f"Skill '{safe_name}' cannot be copied")
+    dest = target_skills.joinpath(*parts)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dest, dirs_exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not copy skill '{safe_name}': {exc}")
+    return safe_name
+
+
+def _delete_profile_skill(profile_dir: Path, skill_name: str) -> str:
+    safe_name = _normalize_skill_copy_name(skill_name)
+    parts = safe_name.split("/")
+    if any(part in {".hub", ".git"} for part in parts):
+        raise HTTPException(status_code=400, detail=f"Skill '{safe_name}' cannot be deleted")
+
+    skills_dir = profile_dir / "skills"
+    target = skills_dir.joinpath(*parts)
+    if not target.is_dir() or not (target / "SKILL.md").is_file():
+        raise HTTPException(status_code=404, detail=f"Skill '{safe_name}' not found in profile")
+
+    try:
+        shutil.rmtree(target)
+        parent = target.parent
+        while parent != skills_dir and parent.is_dir():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not delete skill '{safe_name}': {exc}")
+    return safe_name
+
+
+_PROFILE_MEMORY_FILES = {"MEMORY.md", "USER.md"}
+
+
+def _resolve_profile_memory_file(profile_dir: Path, filename: str) -> Path:
+    safe_name = str(filename or "").strip()
+    if safe_name not in _PROFILE_MEMORY_FILES:
+        raise HTTPException(status_code=400, detail="memory file must be MEMORY.md or USER.md")
+    return profile_dir / "memories" / safe_name
+
+
+def _resolve_profile_skill_manifest(
+    profile_dir: Path,
+    skill_name: str,
+    *,
+    require_exists: bool = True,
+) -> tuple[str, Path]:
+    safe_name = _normalize_skill_copy_name(skill_name)
+    parts = safe_name.split("/")
+    if any(part in {".hub", ".git"} for part in parts):
+        raise HTTPException(status_code=400, detail=f"Skill '{safe_name}' cannot be edited")
+    manifest = profile_dir / "skills"
+    manifest = manifest.joinpath(*parts) / "SKILL.md"
+    if require_exists and not manifest.is_file():
+        raise HTTPException(status_code=404, detail=f"Skill '{safe_name}' not found in profile")
+    return safe_name, manifest
+
+
+def _profile_memory_summary(name: str, profile_dir: Path) -> Dict[str, Any]:
+    cfg = _load_profile_config_raw(name)
+    memory_cfg = cfg.get("memory", {})
+    provider = ""
+    if isinstance(memory_cfg, dict):
+        provider = str(memory_cfg.get("provider") or "")
+    memory_dir = profile_dir / "memories"
+    memory_file_count = 0
+    memory_bytes = 0
+    if memory_dir.is_dir():
+        for item in memory_dir.rglob("*"):
+            if not item.is_file():
+                continue
+            memory_file_count += 1
+            try:
+                memory_bytes += item.stat().st_size
+            except OSError:
+                pass
+    state_db = profile_dir / "state.db"
+    try:
+        state_db_size = state_db.stat().st_size if state_db.exists() else 0
+    except OSError:
+        state_db_size = 0
+
+    def _preview_file(filename: str, limit: int = 2000) -> Dict[str, Any]:
+        path = memory_dir / filename
+        exists = path.is_file()
+        size = 0
+        content = ""
+        truncated = False
+        if exists:
+            try:
+                size = path.stat().st_size
+                raw = path.read_text(encoding="utf-8", errors="replace")
+                truncated = len(raw) > limit
+                content = raw[:limit]
+                try:
+                    from agent.redact import redact_sensitive_text
+
+                    content = redact_sensitive_text(content, force=True)
+                except Exception:
+                    pass
+            except OSError:
+                exists = False
+        return {
+            "name": filename,
+            "path": str(path),
+            "exists": exists,
+            "bytes": size,
+            "content": content,
+            "truncated": truncated,
+        }
+
+    return {
+        "provider": provider,
+        "memory_dir": str(memory_dir),
+        "memory_dir_exists": memory_dir.is_dir(),
+        "memory_file_count": memory_file_count,
+        "memory_bytes": memory_bytes,
+        "state_db": str(state_db),
+        "state_db_exists": state_db.exists(),
+        "state_db_bytes": state_db_size,
+        "previews": [
+            _preview_file("MEMORY.md"),
+            _preview_file("USER.md"),
+        ],
+    }
+
+
+def _profile_audit_events(name: str, limit: int = 5) -> List[Dict[str, Any]]:
+    try:
+        from gateway.agent_audit import list_agent_audit_events
+
+        return list_agent_audit_events(profile_name=name, limit=limit)
+    except Exception:
+        return []
+
+
+def _delete_cron_jobs_for_profile(profile_name: str) -> int:
+    """Remove centralized cron jobs owned by a profile that is being deleted."""
+    removed = 0
+    for job in list(_call_cron_store("list_jobs", True)):
+        if _cron_job_owner(job) != profile_name:
+            continue
+        job_ref = str(job.get("id") or job.get("name") or "")
+        if not job_ref:
+            continue
+        try:
+            if _call_cron_store("remove_job", job_ref):
+                removed += 1
+        except Exception:
+            _log.debug(
+                "Failed to remove cron job %s while deleting profile %s",
+                job_ref,
+                profile_name,
+                exc_info=True,
+            )
+    return removed
 
 
 def _profile_setup_command(name: str) -> str:
@@ -2921,23 +3849,227 @@ async def list_profiles_endpoint():
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
+@app.get("/api/profiles/{name}/details")
+async def get_profile_details(name: str):
+    from hermes_cli import profiles as profiles_mod
+
+    profile_dir = _resolve_profile_dir(name)
+    cron_jobs = _call_cron_for_profile(name, "list_jobs", True)
+    model = _profile_model_summary(name)
+    meta = profiles_mod.read_profile_meta(profile_dir)
+    return {
+        "profile": {
+            "name": name,
+            "path": str(profile_dir),
+            "is_default": name == "default",
+            "model": model.get("model") or None,
+            "provider": model.get("provider") or None,
+            "has_env": (profile_dir / ".env").exists(),
+            "description": meta.get("description", ""),
+            "description_auto": bool(meta.get("description_auto", False)),
+            "template": bool(meta.get("template", False)),
+        },
+        "model": model,
+        "bindings": _profile_bindings(name),
+        "health": _profile_health(name, profile_dir),
+        "kanban": _profile_kanban_summary(name),
+        "cron": {
+            "owner_jobs": cron_jobs,
+            "owner_job_count": len(cron_jobs),
+        },
+        "paths": {
+            "workspace": str(profile_dir / "workspace"),
+            "scripts": str(profile_dir / "scripts"),
+            "sessions": str(profile_dir / "sessions"),
+        },
+        "workspace": _profile_workspace_descriptor(profile_dir),
+        "skills": _profile_skills_summary(profile_dir),
+        "memory": _profile_memory_summary(name, profile_dir),
+        "audit": {
+            "events": _profile_audit_events(name, 5),
+        },
+    }
+
+
+@app.get("/api/profiles/{name}/model")
+async def get_profile_model(name: str):
+    _resolve_profile_dir(name)
+    return _profile_model_summary(name)
+
+
+@app.get("/api/profiles/{name}/model/options")
+async def get_profile_model_options(name: str):
+    current = _profile_model_summary(name)
+    payload = get_model_options()
+    payload["provider"] = current.get("provider", "")
+    payload["model"] = current.get("model", "")
+    for provider in payload.get("providers") or []:
+        provider["is_current"] = bool(
+            current.get("provider") and provider.get("slug") == current.get("provider")
+        )
+    return payload
+
+
+@app.post("/api/profiles/{name}/model")
+async def set_profile_model(name: str, body: ProfileModelUpdate):
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    if not provider or not model:
+        raise HTTPException(status_code=400, detail="provider and model required")
+    _resolve_profile_dir(name)
+    cfg = load_config() if name == "default" else _load_profile_config_raw(name)
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    model_cfg["provider"] = provider
+    model_cfg["default"] = model
+    if model_cfg.get("base_url"):
+        model_cfg["base_url"] = ""
+    model_cfg.pop("context_length", None)
+    cfg["model"] = model_cfg
+    if name == "default":
+        save_config(cfg)
+    else:
+        _save_profile_config_raw(name, cfg)
+    return {"ok": True, "provider": provider, "model": model}
+
+
+@app.get("/api/profiles/{name}/bindings")
+async def list_profile_bindings(name: str):
+    _resolve_profile_dir(name)
+    return {"bindings": _profile_bindings(name)}
+
+
+@app.post("/api/source-bindings")
+async def set_source_binding(body: SourceBindingUpdate):
+    source_key = (body.source_binding_key or "").strip()
+    if not source_key.startswith("source:"):
+        raise HTTPException(status_code=400, detail="source_binding_key must start with 'source:'")
+    from hermes_cli.profiles import normalize_profile_name
+
+    profile_name = normalize_profile_name(body.profile_name or "default")
+    _resolve_profile_dir(profile_name)
+    store = _source_binding_store()
+    try:
+        binding = store.set_binding(
+            source_binding_key=source_key,
+            profile_name=profile_name,
+            agent_id=profile_name,
+            actor_user_id="dashboard",
+        )
+        return {"ok": True, "binding": _binding_to_dict(binding)}
+    finally:
+        store.close()
+
+
+@app.delete("/api/source-bindings/{source_binding_key:path}")
+async def delete_source_binding(source_binding_key: str):
+    source_key = urllib.parse.unquote(source_binding_key).strip()
+    if not source_key.startswith("source:"):
+        raise HTTPException(status_code=400, detail="source_binding_key must start with 'source:'")
+    store = _source_binding_store()
+    try:
+        deleted = store.delete_binding(source_key)
+        return {"ok": True, "deleted": deleted}
+    finally:
+        store.close()
+
+
+@app.post("/api/source-bindings/tasks")
+async def create_source_binding_task(body: SourceBindingTaskCreate):
+    source_key = (body.source_binding_key or "").strip()
+    if not source_key.startswith("source:"):
+        raise HTTPException(status_code=400, detail="source_binding_key must start with 'source:'")
+
+    from gateway.kanban_delegate import DelegateTaskError, create_delegated_kanban_task
+    from gateway.agent_audit import append_agent_audit_event
+    from hermes_cli.profiles import normalize_profile_name
+
+    try:
+        profile_name = normalize_profile_name(body.profile_name or "default")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _resolve_profile_dir(profile_name)
+
+    task_text = (body.task or "").strip()
+    if not task_text:
+        raise HTTPException(status_code=400, detail="task is required")
+
+    store = _source_binding_store()
+    try:
+        binding = store.get_binding(source_key)
+    finally:
+        store.close()
+
+    source = _source_from_binding_or_key(binding, source_key)
+    try:
+        delegated = create_delegated_kanban_task(
+            assignee=profile_name,
+            task_text=task_text,
+            board=body.board,
+            source=source,
+            created_by="dashboard",
+            notifier_profile=_active_dashboard_notifier_profile(),
+        )
+    except DelegateTaskError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _log.exception("POST /api/source-bindings/tasks failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    try:
+        append_agent_audit_event(
+            "delegate.create",
+            actor_user_id="dashboard",
+            actor_user_name="Dashboard",
+            profile_name=profile_name,
+            before=None,
+            after={
+                "task_id": delegated.task_id,
+                "assignee": delegated.assignee,
+                "title": delegated.title,
+                "auto_route": delegated.auto_route,
+                "board": delegated.board_slug,
+                "workspace": delegated.workspace,
+                "priority": delegated.priority,
+                "max_runtime_seconds": delegated.max_runtime_seconds,
+                "skills": delegated.skills,
+            },
+            extra={
+                "source_binding_key": source_key,
+                "subscribed": delegated.subscribed,
+                "entry": "dashboard.sessions",
+            },
+        )
+    except Exception:
+        _log.debug("Failed to append dashboard delegate audit event", exc_info=True)
+
+    return {
+        "ok": True,
+        "task_id": delegated.task_id,
+        "board": delegated.board_slug,
+        "profile_name": profile_name,
+        "title": delegated.title,
+        "subscribed": delegated.subscribed,
+    }
+
+
 @app.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
     try:
+        clone_source = (body.clone_from or "").strip() or ("default" if body.clone_from_default else None)
         path = profiles_mod.create_profile(
             name=body.name,
-            clone_from="default" if body.clone_from_default else None,
-            clone_config=body.clone_from_default,
-            no_skills=body.no_skills,
+            clone_from=clone_source,
+            clone_config=bool(clone_source),
+            clone_env=False,
+            clone_skills=False,
+            no_skills=True,
         )
-        # Match the CLI's profile-create flow: fresh named profiles get the
-        # bundled skills installed. When cloning from default, create_profile()
-        # has already copied the source profile's skills, including any
-        # user-installed skills. When no_skills=True, create_profile() wrote
-        # the opt-out marker and seed_profile_skills() will no-op.
-        if not body.clone_from_default:
-            profiles_mod.seed_profile_skills(path, quiet=True)
+        # Dashboard-created agents intentionally start without skills. Users
+        # can copy a selected subset from default later through the profile
+        # details panel, and the opt-out marker prevents future bulk seeding.
 
         # Match the CLI's profile-create flow: named profiles should get a
         # wrapper in ~/.local/bin when the alias is safe to create.
@@ -2950,6 +4082,336 @@ async def create_profile_endpoint(body: ProfileCreate):
         _log.exception("POST /api/profiles failed")
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "name": body.name, "path": str(path)}
+
+
+@app.post("/api/profiles/{name}/template")
+async def set_profile_template(name: str, body: ProfileTemplateUpdate):
+    from hermes_cli import profiles as profiles_mod
+    from gateway.agent_audit import append_agent_audit_event
+
+    profile_dir = _resolve_profile_dir(name)
+    try:
+        before_meta = profiles_mod.read_profile_meta(profile_dir)
+        profiles_mod.write_profile_meta(profile_dir, template=body.template)
+        try:
+            append_agent_audit_event(
+                "agent.template_create" if body.template else "agent.template_clear",
+                actor_user_id="dashboard",
+                actor_user_name="Dashboard",
+                profile_name=name,
+                before={"template": bool(before_meta.get("template", False))},
+                after={"template": bool(body.template)},
+            )
+        except Exception:
+            _log.debug("Failed to append profile template audit event", exc_info=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write profile metadata: {exc}")
+    return {"ok": True, "name": name, "template": body.template}
+
+
+@app.patch("/api/profiles/{name}/metadata")
+async def update_profile_metadata(name: str, body: ProfileMetadataUpdate):
+    from hermes_cli import profiles as profiles_mod
+    from gateway.agent_audit import append_agent_audit_event
+
+    profile_dir = _resolve_profile_dir(name)
+    if body.description is None and body.description_auto is None and body.template is None:
+        meta = profiles_mod.read_profile_meta(profile_dir)
+        return {"ok": True, "name": name, "metadata": meta}
+
+    try:
+        before_meta = profiles_mod.read_profile_meta(profile_dir)
+        profiles_mod.write_profile_meta(
+            profile_dir,
+            description=body.description,
+            description_auto=body.description_auto,
+            template=body.template,
+        )
+        after_meta = profiles_mod.read_profile_meta(profile_dir)
+        try:
+            append_agent_audit_event(
+                "agent.metadata_update",
+                actor_user_id="dashboard",
+                actor_user_name="Dashboard",
+                profile_name=name,
+                before=before_meta,
+                after=after_meta,
+            )
+        except Exception:
+            _log.debug("Failed to append profile metadata audit event", exc_info=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write profile metadata: {exc}")
+    return {"ok": True, "name": name, "metadata": after_meta}
+
+
+@app.post("/api/profiles/{name}/describe")
+async def describe_profile_endpoint(name: str, body: ProfileDescribeRequest):
+    _resolve_profile_dir(name)
+    from hermes_cli import profile_describer
+
+    outcome = profile_describer.describe_profile(name, overwrite=body.overwrite)
+    return {
+        "ok": bool(outcome.ok),
+        "name": outcome.profile_name,
+        "reason": outcome.reason,
+        "description": outcome.description,
+    }
+
+
+@app.get("/api/profiles/{name}/skills")
+async def get_profile_skills(name: str):
+    profile_dir = _resolve_profile_dir(name)
+    return {"skills": _profile_skills_summary(profile_dir, limit=None)}
+
+
+@app.get("/api/profiles/{name}/memory/{memory_file:path}")
+async def get_profile_memory_file(name: str, memory_file: str):
+    profile_dir = _resolve_profile_dir(name)
+    path = _resolve_profile_memory_file(profile_dir, memory_file)
+    if not path.exists():
+        return {
+            "name": path.name,
+            "path": str(path),
+            "exists": False,
+            "content": "",
+            "bytes": 0,
+        }
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        size = path.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read {path.name}: {exc}")
+    return {
+        "name": path.name,
+        "path": str(path),
+        "exists": True,
+        "content": content,
+        "bytes": size,
+    }
+
+
+@app.put("/api/profiles/{name}/memory/{memory_file:path}")
+async def update_profile_memory_file(name: str, memory_file: str, body: ProfileMemoryFileUpdate):
+    from gateway.agent_audit import append_agent_audit_event
+
+    profile_dir = _resolve_profile_dir(name)
+    path = _resolve_profile_memory_file(profile_dir, memory_file)
+    before_exists = path.exists()
+    before_bytes = 0
+    if before_exists:
+        try:
+            before_bytes = path.stat().st_size
+        except OSError:
+            before_bytes = 0
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body.content, encoding="utf-8")
+        after_bytes = path.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write {path.name}: {exc}")
+    try:
+        append_agent_audit_event(
+            "agent.memory_update",
+            actor_user_id="dashboard",
+            actor_user_name="Dashboard",
+            profile_name=name,
+            before={"file": path.name, "exists": before_exists, "bytes": before_bytes},
+            after={"file": path.name, "exists": True, "bytes": after_bytes},
+        )
+    except Exception:
+        _log.debug("Failed to append profile memory audit event", exc_info=True)
+    return {
+        "ok": True,
+        "name": path.name,
+        "path": str(path),
+        "bytes": after_bytes,
+        "memory": _profile_memory_summary(name, profile_dir),
+    }
+
+
+@app.post("/api/profiles/{name}/skills/copy")
+async def copy_profile_skills(name: str, body: ProfileSkillsCopy):
+    from hermes_cli import profiles as profiles_mod
+    from gateway.agent_audit import append_agent_audit_event
+
+    target_name = profiles_mod.normalize_profile_name(name)
+    source_name = profiles_mod.normalize_profile_name(body.source_profile or "default")
+    if target_name == source_name:
+        raise HTTPException(status_code=400, detail="source_profile must be different from target profile")
+    target_dir = _resolve_profile_dir(target_name)
+    source_dir = _resolve_profile_dir(source_name)
+    source_skills = source_dir / "skills"
+    requested = body.skills
+    if not source_skills.is_dir():
+        if requested:
+            for skill_name in requested:
+                _normalize_skill_copy_name(skill_name)
+            raise HTTPException(status_code=404, detail=f"Source profile '{source_name}' has no skills")
+        return {
+            "ok": True,
+            "source_profile": source_name,
+            "target_profile": target_name,
+            "copied_skills": [],
+            "skills": _profile_skills_summary(target_dir),
+        }
+
+    target_skills = target_dir / "skills"
+    target_skills.mkdir(parents=True, exist_ok=True)
+    copied: List[str] = []
+    if requested:
+        for skill_name in sorted(set(requested)):
+            copied.append(_copy_profile_skill(source_skills, target_skills, skill_name))
+    else:
+        for item in source_skills.iterdir():
+            if item.name in {".hub", ".git"}:
+                continue
+            dest = target_skills / item.name
+            try:
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                    copied.append(item.name)
+                elif item.is_file():
+                    shutil.copy2(item, dest)
+                    copied.append(item.name)
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"Could not copy skills: {exc}")
+
+    result = {
+        "ok": True,
+        "source_profile": source_name,
+        "target_profile": target_name,
+        "copied_skills": sorted(copied),
+        "skills": _profile_skills_summary(target_dir),
+    }
+    try:
+        append_agent_audit_event(
+            "agent.skills_copy",
+            actor_user_id="dashboard",
+            actor_user_name="Dashboard",
+            profile_name=target_name,
+            before={"count": len(requested or []) if requested else None},
+            after={
+                "source_profile": source_name,
+                "copied_skills": result["copied_skills"],
+                "skill_count": result["skills"]["count"],
+            },
+        )
+    except Exception:
+        _log.debug("Failed to append profile skills copy audit event", exc_info=True)
+    return result
+
+
+@app.get("/api/profiles/{name}/skills/{skill_path:path}/manifest")
+async def get_profile_skill_manifest(name: str, skill_path: str):
+    profile_dir = _resolve_profile_dir(name)
+    safe_name, manifest = _resolve_profile_skill_manifest(profile_dir, skill_path)
+    try:
+        content = manifest.read_text(encoding="utf-8", errors="replace")
+        size = manifest.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read skill '{safe_name}': {exc}")
+    return {
+        "skill": safe_name,
+        "path": str(manifest),
+        "content": content,
+        "bytes": size,
+    }
+
+
+@app.put("/api/profiles/{name}/skills/{skill_path:path}/manifest")
+async def update_profile_skill_manifest(
+    name: str,
+    skill_path: str,
+    body: ProfileSkillManifestUpdate,
+):
+    from hermes_cli import profiles as profiles_mod
+    from gateway.agent_audit import append_agent_audit_event
+
+    target_name = profiles_mod.normalize_profile_name(name)
+    if target_name == "default":
+        raise HTTPException(status_code=400, detail="Default profile skills cannot be edited from the dashboard")
+    profile_dir = _resolve_profile_dir(target_name)
+    safe_name, manifest = _resolve_profile_skill_manifest(profile_dir, skill_path)
+    try:
+        before_bytes = manifest.stat().st_size
+        manifest.write_text(body.content, encoding="utf-8")
+        after_bytes = manifest.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write skill '{safe_name}': {exc}")
+    try:
+        append_agent_audit_event(
+            "agent.skill_update",
+            actor_user_id="dashboard",
+            actor_user_name="Dashboard",
+            profile_name=target_name,
+            before={"skill": safe_name, "bytes": before_bytes},
+            after={"skill": safe_name, "bytes": after_bytes},
+        )
+    except Exception:
+        _log.debug("Failed to append profile skill update audit event", exc_info=True)
+    return {
+        "ok": True,
+        "skill": safe_name,
+        "path": str(manifest),
+        "bytes": after_bytes,
+        "skills": _profile_skills_summary(profile_dir),
+    }
+
+
+@app.delete("/api/profiles/{name}/skills/{skill_path:path}")
+async def delete_profile_skill(name: str, skill_path: str):
+    from hermes_cli import profiles as profiles_mod
+    from gateway.agent_audit import append_agent_audit_event
+
+    target_name = profiles_mod.normalize_profile_name(name)
+    if target_name == "default":
+        raise HTTPException(status_code=400, detail="Default profile skills cannot be deleted from the dashboard")
+    profile_dir = _resolve_profile_dir(target_name)
+    deleted_skill = _delete_profile_skill(profile_dir, skill_path)
+    result = {
+        "ok": True,
+        "profile": target_name,
+        "deleted_skill": deleted_skill,
+        "skills": _profile_skills_summary(profile_dir),
+    }
+    try:
+        append_agent_audit_event(
+            "agent.skill_delete",
+            actor_user_id="dashboard",
+            actor_user_name="Dashboard",
+            profile_name=target_name,
+            before={"skill": deleted_skill},
+            after={"skill_count": result["skills"]["count"]},
+        )
+    except Exception:
+        _log.debug("Failed to append profile skill delete audit event", exc_info=True)
+    return result
+
+
+@app.get("/api/agent/audit")
+async def list_agent_audit(
+    profile: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    max_scan_lines: int = 5000,
+):
+    from gateway.agent_audit import list_agent_audit_events
+    from hermes_cli import profiles as profiles_mod
+
+    profile_name = None
+    if profile:
+        profile_name = profiles_mod.normalize_profile_name(profile)
+        _resolve_profile_dir(profile_name)
+    return {
+        "events": list_agent_audit_events(
+            profile_name=profile_name,
+            limit=limit,
+            offset=offset,
+            max_scan_lines=max_scan_lines,
+        ),
+        "limit": max(1, min(int(limit), 200)),
+        "offset": max(0, int(offset)),
+    }
 
 
 @app.get("/api/profiles/{name}/setup-command")
@@ -3032,8 +4494,54 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+    from gateway.agent_audit import append_agent_audit_event
+
     try:
-        path = profiles_mod.delete_profile(name, yes=True)
+        profile_name = profiles_mod.normalize_profile_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if profile_name == "default":
+        raise HTTPException(status_code=400, detail="Cannot delete the default profile (~/.hermes).")
+
+    profile_dir = profiles_mod.get_profile_dir(profile_name)
+    if not profile_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Profile '{profile_name}' does not exist.")
+
+    store = _source_binding_store()
+    try:
+        bindings_before = [b.to_dict() for b in store.list_bindings(profile_name=profile_name)]
+    finally:
+        store.close()
+
+    try:
+        removed_cron_jobs = _delete_cron_jobs_for_profile(profile_name)
+        path = profiles_mod.delete_profile(profile_name, yes=True)
+        store = _source_binding_store()
+        try:
+            removed_bindings = store.delete_bindings_for_profile(profile_name)
+        finally:
+            store.close()
+        notification_summary = await _notify_profile_delete_bindings(profile_name, bindings_before)
+        try:
+            append_agent_audit_event(
+                "agent.delete",
+                actor_user_id="dashboard",
+                actor_user_name="Dashboard",
+                profile_name=profile_name,
+                before={
+                    "profile_name": profile_name,
+                    "profile_dir": str(path),
+                    "bindings": bindings_before,
+                },
+                after=None,
+                extra={
+                    "removed_bindings": removed_bindings,
+                    "removed_cron_jobs": removed_cron_jobs,
+                    "notification": notification_summary,
+                },
+            )
+        except Exception:
+            _log.debug("Failed to append dashboard profile delete audit event", exc_info=True)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -3953,6 +5461,8 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "pure-ink-light", "label": "Pure Ink Light", "description": "Pure grayscale light theme adapted from Hermes Web UI"},
+    {"name": "pure-ink-dark", "label": "Pure Ink Dark", "description": "Pure grayscale dark theme adapted from Hermes Web UI"},
 ]
 
 

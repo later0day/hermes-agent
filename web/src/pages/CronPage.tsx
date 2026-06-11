@@ -71,11 +71,52 @@ function getJobState(job: CronJob): string {
 }
 
 function getJobProfile(job: CronJob): string {
-  return asText(job.profile) || asText(job.profile_name) || "default";
+  return asText(job.owner_profile) || asText(job.profile_name) || asText(job.profile) || "default";
 }
 
 function getJobKey(job: CronJob): string {
   return `${getJobProfile(job)}:${job.id}`;
+}
+
+function redactIdentifier(value: string): string {
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 8)}...${value.slice(-4)}`;
+}
+
+function formatOriginTarget(origin: CronJob["origin"]): string {
+  if (!origin) return "";
+
+  const platform = asText(origin.platform);
+  const chatName = asText(origin.chat_name);
+  const chatId = asText(origin.chat_id);
+  const threadId = asText(origin.thread_id);
+  const target = chatName || (chatId ? redactIdentifier(chatId) : "");
+
+  const parts = [platform, target].filter(Boolean);
+  if (threadId) parts.push(`thread ${redactIdentifier(threadId)}`);
+  return parts.join(" / ");
+}
+
+function getJobDeliveryDestination(job: CronJob): string {
+  const deliver = asText(job.deliver) || "local";
+  if (deliver === "local") return "local only";
+
+  const originTarget = formatOriginTarget(job.origin);
+  const parts = deliver
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) return deliver;
+
+  return parts
+    .map((part) => {
+      if (part === "origin") {
+        return originTarget ? `origin -> ${originTarget}` : "origin -> unbound";
+      }
+      return part;
+    })
+    .join(", ");
 }
 
 function splitJobKey(key: string): { profile: string; id: string } {
@@ -151,6 +192,7 @@ export default function CronPage() {
           schedule: schedule.trim(),
           name: name.trim() || undefined,
           deliver,
+          run_profile: createProfile,
         },
         createProfile,
       );
@@ -437,6 +479,7 @@ export default function CronPage() {
           const deliver = asText(job.deliver);
           const profile = getJobProfile(job);
           const jobKey = getJobKey(job);
+          const deliveryDestination = getJobDeliveryDestination(job);
 
           return (
             <Card key={jobKey}>
@@ -459,6 +502,9 @@ export default function CronPage() {
                       {truncateText(promptText, 100)}
                     </p>
                   )}
+                  <p className="text-xs text-muted-foreground truncate mb-1">
+                    {t.cron.deliverTo}: {deliveryDestination}
+                  </p>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span className="font-mono">{getJobScheduleDisplay(job)}</span>
                     <span>
@@ -471,6 +517,11 @@ export default function CronPage() {
                   {job.last_error && (
                     <p className="text-xs text-destructive mt-1">
                       {job.last_error}
+                    </p>
+                  )}
+                  {job.last_delivery_error && (
+                    <p className="text-xs text-warning mt-1">
+                      Delivery failed: {job.last_delivery_error}
                     </p>
                   )}
                 </div>

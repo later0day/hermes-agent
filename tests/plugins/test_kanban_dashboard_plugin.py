@@ -76,6 +76,7 @@ def test_board_empty(client):
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
+    assert data["history"] == []
     assert data["latest_event_id"] == 0
 
 
@@ -112,6 +113,32 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_board_history_includes_done_and_archived_tasks_by_default(client):
+    done_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "ship worker result", "assignee": "worker"},
+    ).json()["task"]
+    archived_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "old archived card", "assignee": "worker"},
+    ).json()["task"]
+
+    assert client.patch(
+        f"/api/plugins/kanban/tasks/{done_task['id']}",
+        json={"status": "done", "result": "shipped"},
+    ).status_code == 200
+    assert client.patch(
+        f"/api/plugins/kanban/tasks/{archived_task['id']}",
+        json={"status": "archived"},
+    ).status_code == 200
+
+    data = client.get("/api/plugins/kanban/board").json()
+    history = data["history"]
+    assert {task["id"] for task in history} >= {done_task["id"], archived_task["id"]}
+    assert any(task["status"] == "archived" for task in history)
+    assert "archived" not in {column["name"] for column in data["columns"]}
 
 
 def test_scheduled_tasks_have_their_own_column_not_todo(client):

@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import (
     SessionSource,
     SessionStore,
@@ -18,6 +18,32 @@ from gateway.session import (
 # canonical_whatsapp_identifier.  Keep the tests referencing the old name
 # working without duplicating the suite.
 normalize_whatsapp_identifier = canonical_whatsapp_identifier
+
+
+class TestMediaPlaceholder:
+    def test_photo_event_with_document_mime_stays_file_placeholder(self):
+        from gateway.run import _build_media_placeholder
+
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            media_urls=["/tmp/report.pdf"],
+            media_types=["application/pdf"],
+        )
+
+        assert _build_media_placeholder(event) == "[User sent a file: /tmp/report.pdf]"
+
+    def test_photo_event_without_mime_keeps_legacy_image_placeholder(self):
+        from gateway.run import _build_media_placeholder
+
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            media_urls=["/tmp/photo.jpg"],
+            media_types=[],
+        )
+
+        assert _build_media_placeholder(event) == "[User sent an image: /tmp/photo.jpg]"
 
 
 class TestSessionSourceRoundtrip:
@@ -498,6 +524,40 @@ class TestSenderPrefixWithBackfill:
         assert "[Alice] [Bob]" not in result
         assert "[Alice] [Charlie" not in result
         assert "[Alice] [Recent" not in result
+
+    @pytest.mark.asyncio
+    async def test_document_attachment_not_lost_when_message_type_is_photo(self, runner, source):
+        """Mixed DingTalk rich-text events may set PHOTO while carrying files too."""
+        event = MessageEvent(
+            text="see attached",
+            source=source,
+            message_type=MessageType.PHOTO,
+            media_urls=["/tmp/doc_123_report.pdf"],
+            media_types=["application/pdf"],
+        )
+
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+
+        assert "The user sent a document: 'report.pdf'" in result
+        assert "[Alice] see attached" in result
+
+    @pytest.mark.asyncio
+    async def test_media_download_error_becomes_context_note(self, runner, source):
+        event = MessageEvent(
+            text="@bot 看图",
+            source=source,
+            message_type=MessageType.PHOTO,
+            media_errors=["DingTalk media download failed: 502 Bad Gateway"],
+        )
+
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+
+        assert "Hermes could not download it: DingTalk media download failed" in result
+        assert "[Alice] @bot 看图" in result
 
 
 class TestSessionStoreRewriteTranscript:

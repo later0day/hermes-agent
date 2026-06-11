@@ -111,6 +111,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("status", "Show session info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
+    CommandDef("agent", "Manage this chat's bound agent profile", "Session",
+               gateway_only=True,
+               args_hint="[status|list|use|clear|webhook|create|delete]",
+               subcommands=("status", "list", "use", "clear", "webhook", "create", "delete")),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -183,6 +187,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc")),
+    CommandDef("delegate", "Delegate a task to another agent profile",
+               "Tools & Skills", gateway_only=True,
+               args_hint="[--board b] [--skill s] [--workspace mode] [--priority n] [--max-runtime d] <profile|auto> <task>"),
+    CommandDef("swarm", "Create a Kanban swarm graph from IM",
+               "Tools & Skills", cli_only=True,
+               gateway_config_gate="gateway.swarm_command",
+               args_hint='"<goal>" --worker profile:title --verifier profile --synthesizer profile'),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -1070,22 +1081,42 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
-    # First pass: canonical names (so they win slots if we hit the cap).
+    # First pass: everyday aliases that should survive Slack's 50-command cap.
+    alias_priority = {"reset": 0, "bg": 1, "btw": 2, "q": 3}
+    priority_alias_entries: list[tuple[int, int, str, CommandDef]] = []
+    ordinal = 0
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            if alias in alias_priority:
+                priority_alias_entries.append((alias_priority[alias], ordinal, alias, cmd))
+                ordinal += 1
+    for _priority, _ordinal, alias, cmd in sorted(priority_alias_entries):
+        _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Second pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Third pass: aliases. Keep high-frequency aliases ahead of lower-value
+    # aliases so Slack's 50-command cap does not silently drop everyday usage.
+    alias_entries: list[tuple[int, int, str, CommandDef]] = []
+    ordinal = 0
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         for alias in cmd.aliases:
-            # Skip aliases that only differ from canonical by case/punctuation
-            # normalization (already covered by _add dedup).
-            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+            alias_entries.append((alias_priority.get(alias, 100), ordinal, alias, cmd))
+            ordinal += 1
+    for _priority, _ordinal, alias, cmd in sorted(alias_entries):
+        # Skip aliases that only differ from canonical by case/punctuation
+        # normalization (already covered by _add dedup).
+        _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Third pass: plugin commands.
+    # Fourth pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 

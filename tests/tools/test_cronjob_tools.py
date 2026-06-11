@@ -230,6 +230,30 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_from_gateway_captures_chat_type(self):
+        from cron.jobs import get_job
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(
+            platform="dingtalk",
+            chat_id="cid-private",
+            chat_type="dm",
+        )
+        try:
+            created = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check",
+                    schedule="every 1h",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["origin"]["chat_type"] == "dm"
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 
@@ -418,3 +442,132 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+    def test_gateway_list_is_scoped_to_current_chat(self):
+        from cron.jobs import create_job
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        create_job(
+            prompt="Group A report",
+            schedule="every 1h",
+            name="Group A",
+            origin={"platform": "dingtalk", "chat_id": "group-a"},
+        )
+        create_job(
+            prompt="Group B report",
+            schedule="every 1h",
+            name="Group B",
+            origin={"platform": "dingtalk", "chat_id": "group-b"},
+        )
+        create_job(prompt="Local task", schedule="every 1h", name="Local")
+
+        tokens = set_session_vars(
+            platform="dingtalk",
+            chat_id="group-a",
+            chat_type="group",
+        )
+        try:
+            listing = json.loads(cronjob(action="list", include_disabled=True))
+        finally:
+            clear_session_vars(tokens)
+
+        assert listing["success"] is True
+        assert listing["count"] == 1
+        assert [job["name"] for job in listing["jobs"]] == ["Group A"]
+
+    def test_gateway_manage_rejects_jobs_from_other_chats(self):
+        from cron.jobs import create_job, get_job
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        visible = create_job(
+            prompt="Group A report",
+            schedule="every 1h",
+            name="Group A",
+            origin={"platform": "dingtalk", "chat_id": "group-a"},
+        )
+        hidden = create_job(
+            prompt="Group B report",
+            schedule="every 1h",
+            name="Group B",
+            origin={"platform": "dingtalk", "chat_id": "group-b"},
+        )
+
+        tokens = set_session_vars(
+            platform="dingtalk",
+            chat_id="group-a",
+            chat_type="group",
+        )
+        try:
+            blocked = json.loads(cronjob(action="pause", job_id=hidden["id"]))
+            allowed = json.loads(cronjob(action="pause", job_id=visible["id"]))
+        finally:
+            clear_session_vars(tokens)
+
+        assert blocked["success"] is False
+        assert "not found" in blocked["error"]
+        assert get_job(hidden["id"])["state"] == "scheduled"
+        assert allowed["success"] is True
+        assert get_job(visible["id"])["state"] == "paused"
+
+    def test_gateway_name_lookup_ignores_hidden_ambiguous_jobs(self):
+        from cron.jobs import create_job, get_job
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        visible = create_job(
+            prompt="Group A report",
+            schedule="every 1h",
+            name="Daily",
+            origin={"platform": "dingtalk", "chat_id": "group-a"},
+        )
+        hidden = create_job(
+            prompt="Group B report",
+            schedule="every 1h",
+            name="Daily",
+            origin={"platform": "dingtalk", "chat_id": "group-b"},
+        )
+
+        tokens = set_session_vars(
+            platform="dingtalk",
+            chat_id="group-a",
+            chat_type="group",
+        )
+        try:
+            result = json.loads(cronjob(action="pause", job_id="Daily"))
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["success"] is True
+        assert get_job(visible["id"])["state"] == "paused"
+        assert get_job(hidden["id"])["state"] == "scheduled"
+
+    def test_gateway_context_from_rejects_hidden_jobs(self):
+        from cron.jobs import create_job
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        hidden = create_job(
+            prompt="Group B source",
+            schedule="every 1h",
+            name="Group B Source",
+            origin={"platform": "dingtalk", "chat_id": "group-b"},
+        )
+
+        tokens = set_session_vars(
+            platform="dingtalk",
+            chat_id="group-a",
+            chat_type="group",
+        )
+        try:
+            result = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Use upstream output",
+                    schedule="every 1h",
+                    context_from=hidden["id"],
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["success"] is False
+        assert "context_from job" in result["error"]
+        assert "not found" in result["error"]

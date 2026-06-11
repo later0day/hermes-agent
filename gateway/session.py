@@ -597,6 +597,52 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def build_source_binding_key(
+    source: SessionSource,
+    *,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
+    """Build the source-only key used for IM conversation -> agent binding.
+
+    This intentionally does not include the currently selected agent/profile.
+    It mirrors the existing session isolation rules so binding scope matches
+    normal gateway conversation scope.
+    """
+    platform = source.platform.value
+    if source.chat_type == "dm":
+        dm_chat_id = source.chat_id
+        if source.platform == Platform.WHATSAPP:
+            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+
+        if dm_chat_id:
+            if source.thread_id:
+                return f"source:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"source:{platform}:dm:{dm_chat_id}"
+        if source.thread_id:
+            return f"source:{platform}:dm:{source.thread_id}"
+        return f"source:{platform}:dm"
+
+    participant_id = source.user_id_alt or source.user_id
+    if participant_id and source.platform == Platform.WHATSAPP:
+        participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
+
+    key_parts = ["source", platform, source.chat_type]
+    if source.chat_id:
+        key_parts.append(source.chat_id)
+    if source.thread_id:
+        key_parts.append(source.thread_id)
+
+    isolate_user = group_sessions_per_user
+    if source.thread_id and not thread_sessions_per_user:
+        isolate_user = False
+
+    if isolate_user and participant_id:
+        key_parts.append(str(participant_id))
+
+    return ":".join(key_parts)
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
@@ -665,6 +711,26 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def profile_scoped_session_key(session_key: str, profile_name: str) -> str:
+    """Return a session key scoped to the target profile/agent.
+
+    The legacy/default profile keeps ``agent:main`` for backward
+    compatibility. Named profiles use ``agent:<profile_name>`` so sessions,
+    interrupts, approvals, and cached agents do not collide across agents.
+    """
+    raw_key = str(session_key or "")
+    if not raw_key:
+        return raw_key
+    agent_id = str(profile_name or "default").strip()
+    if agent_id in {"", "default", "main"}:
+        agent_id = "main"
+    if raw_key.startswith("agent:main:"):
+        return f"agent:{agent_id}:{raw_key[len('agent:main:'):]}"
+    if raw_key == "agent:main":
+        return f"agent:{agent_id}"
+    return raw_key
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -673,10 +739,17 @@ class SessionStore:
     Falls back to legacy JSONL files if SQLite is unavailable.
     """
     
-    def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+    def __init__(
+        self,
+        sessions_dir: Path,
+        config: GatewayConfig,
+        has_active_processes_fn=None,
+        state_db_path: Path | None = None,
+        agent_profile_name: str = "main",
+    ):
         self.sessions_dir = sessions_dir
         self.config = config
+        self.agent_profile_name = agent_profile_name or "main"
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
@@ -686,7 +759,7 @@ class SessionStore:
         self._db = None
         try:
             from hermes_state import SessionDB
-            self._db = SessionDB()
+            self._db = SessionDB(db_path=state_db_path) if state_db_path else SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
     
@@ -743,11 +816,12 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        return build_session_key(
+        base_key = build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
+        return profile_scoped_session_key(base_key, self.agent_profile_name)
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

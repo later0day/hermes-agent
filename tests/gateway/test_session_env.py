@@ -1,5 +1,8 @@
 import asyncio
+import ast
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +11,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
     get_session_env,
+    get_workspace_cwd,
     set_session_vars,
     clear_session_vars,
     _VAR_MAP,
@@ -47,6 +51,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
@@ -57,9 +62,11 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("HERMES_SESSION_DINGTALK_WEBHOOK") == ""
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -69,6 +76,47 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_set_session_env_sets_workspace_cwd_without_touching_terminal_cwd(monkeypatch, tmp_path):
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(platform=Platform.DINGTALK, chat_id="chat-1")
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    workspace = tmp_path / "profiles" / "worker" / "workspace"
+    monkeypatch.setenv("TERMINAL_CWD", "/global/project")
+
+    tokens = runner._set_session_env(context, workspace_cwd=str(workspace))
+
+    assert get_workspace_cwd() == str(workspace)
+    assert os.environ["TERMINAL_CWD"] == "/global/project"
+
+    runner._clear_session_env(tokens)
+    assert get_workspace_cwd() == ""
+
+
+def test_workspace_cwd_is_contextvar_isolated(monkeypatch, tmp_path):
+    monkeypatch.setenv("TERMINAL_CWD", "/global/project")
+    results = {}
+
+    async def handler(name: str, delay: float):
+        workspace = tmp_path / name / "workspace"
+        tokens = set_session_vars(session_key=name, workspace_cwd=str(workspace))
+        try:
+            await asyncio.sleep(delay)
+            results[name] = get_workspace_cwd()
+        finally:
+            clear_session_vars(tokens)
+
+    async def run():
+        task_a = asyncio.create_task(handler("profile-a", 0.15))
+        await asyncio.sleep(0.05)
+        task_b = asyncio.create_task(handler("profile-b", 0.05))
+        await asyncio.gather(task_a, task_b)
+
+    asyncio.run(run())
+
+    assert results["profile-a"].endswith("profile-a/workspace")
+    assert results["profile-b"].endswith("profile-b/workspace")
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)
@@ -76,6 +124,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
@@ -101,9 +150,41 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == ""
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
     assert get_session_env("HERMES_SESSION_USER_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+    assert get_session_env("HERMES_SESSION_DINGTALK_WEBHOOK") == ""
+
+
+def test_set_session_env_exposes_dingtalk_session_webhook(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DINGTALK,
+        chat_id="cidUKHyy+TSBvzQY6P34TpjPA==",
+        chat_type="group",
+        user_id="user-1",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    event = SimpleNamespace(
+        raw_message=SimpleNamespace(
+            session_webhook="https://api.dingtalk.com/robot/sendBySession?session=abc",
+            session_webhook_expired_time=9999999999999,
+        )
+    )
+
+    monkeypatch.delenv("HERMES_SESSION_DINGTALK_WEBHOOK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_DINGTALK_WEBHOOK_EXPIRES", raising=False)
+
+    tokens = runner._set_session_env(context, event=event)
+
+    assert (
+        get_session_env("HERMES_SESSION_DINGTALK_WEBHOOK")
+        == "https://api.dingtalk.com/robot/sendBySession?session=abc"
+    )
+    assert get_session_env("HERMES_SESSION_DINGTALK_WEBHOOK_EXPIRES") == "9999999999999"
+
+    runner._clear_session_env(tokens)
 
 
 def test_get_session_env_falls_back_to_os_environ(monkeypatch):
@@ -253,6 +334,32 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     assert results["session-B"] == "session-B", (
         f"Session B got '{results['session-B']}' instead of 'session-B' — race condition!"
     )
+
+
+def test_gateway_runner_does_not_write_session_key_to_process_env():
+    """Gateway turns must not publish per-session keys through process env."""
+    source = Path("gateway/run.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def _is_session_key_env_write(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Subscript):
+            return False
+        if not isinstance(node.value, ast.Attribute):
+            return False
+        if not (
+            isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "os"
+            and node.value.attr == "environ"
+        ):
+            return False
+        key = node.slice
+        return isinstance(key, ast.Constant) and key.value == "HERMES_SESSION_KEY"
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = getattr(node, "targets", None) or [getattr(node, "target", None)]
+            if any(target is not None and _is_session_key_env_write(target) for target in targets):
+                pytest.fail("gateway/run.py must use contextvars for HERMES_SESSION_KEY")
 
 
 @pytest.mark.asyncio

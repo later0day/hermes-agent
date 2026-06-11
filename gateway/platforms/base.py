@@ -1317,6 +1317,7 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    media_errors: List[str] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None

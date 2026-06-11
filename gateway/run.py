@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import sys
 import signal
@@ -39,6 +40,7 @@ import threading
 import time
 import sqlite3
 from collections import OrderedDict
+from contextlib import contextmanager
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
@@ -66,6 +68,31 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_IMAGE_ATTACHED_PATH_RE = re.compile(r"\[Image attached at:\s*(?P<path>[^\]\n]+)\]")
+_DINGTALK_TOP_LEVEL_HOME_ENV_KEYS = {
+    "DINGTALK_HOME_CHANNEL",
+    "DINGTALK_HOME_CHANNEL_NAME",
+    "DINGTALK_HOME_CHANNEL_THREAD_ID",
+}
+_DINGTALK_SESSION_WEBHOOK_PREFIXES = (
+    "https://api.dingtalk.com/",
+    "https://oapi.dingtalk.com/",
+)
+_RECENT_IMAGE_WORD_RE = re.compile(r"(图|图片|照片|截图|image|photo|picture|screenshot)", re.IGNORECASE)
+_RECENT_IMAGE_RESEND_RE = re.compile(
+    r"(重发|重新\s*发|重新\s*发送|再发|resend|send\s+again|again)",
+    re.IGNORECASE,
+)
+_RECENT_IMAGE_REFERENCE_RE = re.compile(
+    r"(刚才|上一张|上个|最近|那个|这张|last|previous|recent)",
+    re.IGNORECASE,
+)
+_RECENT_IMAGE_SEND_TO_ME_RE = re.compile(
+    r"(发给我|发一下|发送给我|send\s+me)",
+    re.IGNORECASE,
+)
+_RECENT_IMAGE_RESEND_NOT_HANDLED = object()
+_RUNTIME_ENV_OVERLAY_LOCK = threading.RLock()
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -803,7 +830,11 @@ if _config_path.exists():
         _cfg = _expand_env_vars(_cfg)
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
-            if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
+            if (
+                isinstance(_val, (str, int, float, bool))
+                and _key not in os.environ
+                and _key not in _DINGTALK_TOP_LEVEL_HOME_ENV_KEYS
+            ):
                 os.environ[_key] = str(_val)
         # Terminal config is nested — bridge to TERMINAL_* env vars.
         # config.yaml overrides .env for these since it's the documented config path.
@@ -1032,6 +1063,7 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
+    build_source_binding_key,
     build_session_key,
     is_shared_multi_user_session,
 )
@@ -1068,7 +1100,39 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+@contextmanager
+def _temporary_runtime_env_overlay(hermes_home: Path | None = None):
+    """Temporarily expose profile .env/config to legacy env/config resolvers."""
+    from hermes_cli.env_loader import collect_hermes_dotenv_values
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = hermes_home or _hermes_home
+    overlay = collect_hermes_dotenv_values(
+        hermes_home=home,
+        project_env=Path(__file__).resolve().parents[1] / ".env",
+    )
+    sentinel = object()
+    with _RUNTIME_ENV_OVERLAY_LOCK:
+        previous = {key: os.environ.get(key, sentinel) for key in overlay}
+        token = set_hermes_home_override(home)
+        try:
+            for key, value in overlay.items():
+                os.environ[key] = value
+            yield
+        finally:
+            reset_hermes_home_override(token)
+            for key, old_value in previous.items():
+                if old_value is sentinel:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old_value
+
+
+def _resolve_runtime_agent_kwargs(
+    hermes_home: Path | None = None,
+    *,
+    target_model: str | None = None,
+) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
     Provider is read from ``config.yaml`` ``model.provider`` (the single
@@ -1087,23 +1151,30 @@ def _resolve_runtime_agent_kwargs() -> dict:
     )
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
-    try:
-        runtime = resolve_runtime_provider()
-    except AuthError as auth_exc:
-        # Distinguish a transient rate-limit/quota cap (credentials are fine,
-        # re-auth cannot help) from a genuine auth failure (expired/revoked
-        # token). Both fall through to the fallback chain, but the log message
-        # must not mislabel a quota exhaustion as an auth failure (#32790).
-        if is_rate_limited_auth_error(auth_exc):
-            logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
-        else:
-            logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
-        if fb_config is not None:
-            return fb_config
-        raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
-    except Exception as exc:
-        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+    with _temporary_runtime_env_overlay(hermes_home):
+        try:
+            runtime = resolve_runtime_provider(
+                requested=os.getenv("HERMES_INFERENCE_PROVIDER") or None,
+                target_model=target_model,
+            )
+        except AuthError as auth_exc:
+            # Distinguish a transient rate-limit/quota cap (credentials are fine,
+            # re-auth cannot help) from a genuine auth failure (expired/revoked
+            # token). Both fall through to the fallback chain, but the log message
+            # must not mislabel a quota exhaustion as an auth failure (#32790).
+            if is_rate_limited_auth_error(auth_exc):
+                logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
+            else:
+                logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
+            fb_config = _try_resolve_fallback_provider(
+                hermes_home=hermes_home,
+                target_model=target_model,
+            )
+            if fb_config is not None:
+                return fb_config
+            raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+        except Exception as exc:
+            raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
     return {
         "api_key": runtime.get("api_key"),
@@ -1116,12 +1187,16 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
-def _try_resolve_fallback_provider() -> dict | None:
+def _try_resolve_fallback_provider(
+    hermes_home: Path | None = None,
+    *,
+    target_model: str | None = None,
+) -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         import yaml as _y
-        cfg_path = _hermes_home / "config.yaml"
+        cfg_path = (hermes_home or _hermes_home) / "config.yaml"
         if not cfg_path.exists():
             return None
         with open(cfg_path, encoding="utf-8") as _f:
@@ -1138,11 +1213,13 @@ def _try_resolve_fallback_provider() -> dict | None:
                     ).strip()
                     if key_env:
                         explicit_api_key = os.getenv(key_env, "").strip() or None
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"),
-                    explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=explicit_api_key,
-                )
+                with _temporary_runtime_env_overlay(hermes_home):
+                    runtime = resolve_runtime_provider(
+                        requested=entry.get("provider"),
+                        explicit_base_url=entry.get("base_url"),
+                        explicit_api_key=explicit_api_key,
+                        target_model=entry.get("model") or target_model,
+                    )
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the
                 # OpenAI-compatible path and would otherwise be logged as
@@ -1183,13 +1260,50 @@ def _build_media_placeholder(event) -> str:
     media_types = getattr(event, "media_types", None) or []
     for i, url in enumerate(media_urls):
         mtype = media_types[i] if i < len(media_types) else ""
-        if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
+        if mtype.startswith("image/") or (
+            not mtype and getattr(event, "message_type", None) == MessageType.PHOTO
+        ):
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
+
+
+def _wants_recent_image_resend(text: str) -> bool:
+    """Return True when text clearly asks to resend a recent image."""
+    text = str(text or "").strip()
+    if not text or not _RECENT_IMAGE_WORD_RE.search(text):
+        return False
+    if _RECENT_IMAGE_RESEND_RE.search(text):
+        return True
+    return bool(
+        _RECENT_IMAGE_REFERENCE_RE.search(text)
+        and _RECENT_IMAGE_SEND_TO_ME_RE.search(text)
+    )
+
+
+def _find_latest_attached_image_path(messages: List[Dict[str, Any]]) -> Optional[str]:
+    """Find the newest local image cache path recorded in session history."""
+    for msg in reversed(messages or []):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            text_parts = [
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict)
+            ]
+            content = "\n".join(text_parts)
+        if not isinstance(content, str) or "[Image attached at:" not in content:
+            continue
+        for match in reversed(list(_IMAGE_ATTACHED_PATH_RE.finditer(content))):
+            path = match.group("path").strip()
+            if path and Path(path).is_file():
+                return path
+    return None
 
 
 def _format_duration(seconds: float) -> str:
@@ -1710,6 +1824,7 @@ class GatewayRunner:
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
+        self._profile_runtime_cache: Dict[str, Dict[str, Any]] = {}
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -2212,18 +2327,123 @@ class GatewayRunner:
 
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
-        if hasattr(self, "session_store") and self.session_store is not None:
-            try:
-                session_key = self.session_store._generate_session_key(source)
-                if isinstance(session_key, str) and session_key:
-                    return session_key
-            except Exception:
-                pass
+        try:
+            runtime_context = self._resolve_profile_runtime_context(source)
+            if runtime_context.session_key:
+                return runtime_context.session_key
+        except Exception:
+            logger.debug("Profile runtime session-key resolution failed", exc_info=True)
         config = getattr(self, "config", None)
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+        )
+
+    def _get_profile_runtime_components(self, profile_name: str) -> dict[str, Any]:
+        from gateway.profile_runtime import (
+            load_profile_config,
+            profile_agent_id,
+            profile_config_mtime,
+            resolve_profile_home,
+            resolve_profile_workspace_cwd,
+        )
+
+        profile = str(profile_name or "default").strip() or "default"
+        profile_home = resolve_profile_home(profile)
+        config_mtime = profile_config_mtime(profile_home)
+        cache = getattr(self, "_profile_runtime_cache", None)
+        if cache is None:
+            cache = {}
+            self._profile_runtime_cache = cache
+
+        cached = cache.get(profile)
+        if (
+            cached
+            and cached.get("profile_home") == profile_home
+            and cached.get("config_mtime") == config_mtime
+        ):
+            return cached
+
+        config = load_profile_config(profile_home)
+        session_store = cached.get("session_store") if cached else None
+        session_db = cached.get("session_db") if cached else None
+        if session_store is None:
+            if profile == "default" and getattr(self, "session_store", None) is not None:
+                session_store = self.session_store
+                session_db = getattr(self, "_session_db", None) or getattr(session_store, "_db", None)
+            else:
+                from tools.process_registry import process_registry
+
+                session_store = SessionStore(
+                    profile_home / "sessions",
+                    self.config,
+                    has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+                    state_db_path=profile_home / "state.db",
+                    agent_profile_name=profile_agent_id(profile),
+                )
+                session_db = getattr(session_store, "_db", None)
+
+        components = {
+            "profile_name": profile,
+            "agent_id": profile_agent_id(profile),
+            "profile_home": profile_home,
+            "config": config,
+            "config_mtime": config_mtime,
+            "session_store": session_store,
+            "session_db": session_db,
+            "workspace_cwd": resolve_profile_workspace_cwd(profile, profile_home, config),
+        }
+        cache[profile] = components
+        return components
+
+    def _resolve_profile_runtime_context(self, source: SessionSource):
+        from gateway.profile_runtime import ProfileRuntimeContext
+
+        cfg = getattr(self, "config", None)
+        source_binding_key = build_source_binding_key(
+            source,
+            group_sessions_per_user=getattr(cfg, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(cfg, "thread_sessions_per_user", False),
+        )
+
+        binding = None
+        profile_name = "default"
+        try:
+            binding = self._get_source_agent_binding_store().get_binding(source_binding_key)
+        except Exception:
+            binding = None
+        if binding is not None:
+            profile_name = binding.profile_name
+            try:
+                from hermes_cli.profiles import profile_exists
+
+                if profile_name != "default" and not profile_exists(profile_name):
+                    logger.warning(
+                        "Ignoring stale source-agent binding %s -> %s; profile is missing",
+                        source_binding_key,
+                        profile_name,
+                    )
+                    binding = None
+                    profile_name = "default"
+            except Exception:
+                pass
+
+        components = self._get_profile_runtime_components(profile_name)
+        session_store = components["session_store"]
+        session_key = session_store._generate_session_key(source)
+        return ProfileRuntimeContext(
+            profile_name=components["profile_name"],
+            agent_id=components["agent_id"],
+            profile_home=components["profile_home"],
+            config=components["config"],
+            session_store=session_store,
+            session_db=components.get("session_db"),
+            session_key=session_key,
+            source_binding_key=source_binding_key,
+            workspace_cwd=components["workspace_cwd"],
+            binding=binding,
+            config_mtime=components["config_mtime"],
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
@@ -2325,9 +2545,10 @@ class GatewayRunner:
         self,
         source: SessionSource,
         session_entry,
+        session_db=None,
     ) -> None:
         """Persist the Telegram topic -> Hermes session binding for topic lanes."""
-        session_db = getattr(self, "_session_db", None)
+        session_db = session_db or getattr(self, "_session_db", None)
         if session_db is None or not source.chat_id or not source.thread_id:
             return
         session_db.bind_telegram_topic(
@@ -2344,6 +2565,7 @@ class GatewayRunner:
         session_entry,
         *,
         reason: str,
+        session_db=None,
     ) -> None:
         """Update the topic binding to point at ``session_entry.session_id``.
 
@@ -2358,7 +2580,7 @@ class GatewayRunner:
         if not self._is_telegram_topic_lane(source):
             return
         try:
-            self._record_telegram_topic_binding(source, session_entry)
+            self._record_telegram_topic_binding(source, session_entry, session_db=session_db)
         except Exception:
             logger.debug(
                 "telegram topic binding refresh failed (%s)", reason, exc_info=True,
@@ -2367,6 +2589,7 @@ class GatewayRunner:
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
+        session_db=None,
     ) -> Optional[str]:
         """Pin DM-topic routing to the user's last-active topic.
 
@@ -2395,7 +2618,7 @@ class GatewayRunner:
             # as a new independent lane below instead of hijacking the latest
             # existing topic binding.
             return None
-        session_db = getattr(self, "_session_db", None)
+        session_db = session_db or getattr(self, "_session_db", None)
         if session_db is None:
             return None
         try:
@@ -2422,6 +2645,7 @@ class GatewayRunner:
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        profile_home: Optional[Path] = None,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session, honoring session-scoped /model overrides.
 
@@ -2466,7 +2690,15 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs(
+                profile_home,
+                target_model=(override.get("model") if override else model),
+            )
+        except TypeError:
+            # Backward-compatible with tests/plugins that monkeypatch the
+            # module helper with the old zero-arg callable.
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -3936,6 +4168,14 @@ class GatewayRunner:
                 continue
 
             source = entry.origin
+            if source.platform == Platform.DINGTALK:
+                logger.info(
+                    "Skipping auto-resume for %s: DingTalk requires fresh inbound "
+                    "message context for AI Card/session_webhook delivery",
+                    entry.session_key,
+                )
+                continue
+
             adapter = self.adapters.get(source.platform)
             if adapter is None:
                 logger.debug(
@@ -5141,9 +5381,18 @@ class GatewayRunner:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            if (
+                                send_result is False
+                                or getattr(send_result, "success", True) is False
+                            ):
+                                error = (
+                                    getattr(send_result, "error", None)
+                                    or "adapter returned success=False"
+                                )
+                                raise RuntimeError(str(error))
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -7061,7 +7310,8 @@ class GatewayRunner:
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
-        _quick_key = self._session_key_for_source(source)
+        _profile_runtime_context = self._resolve_profile_runtime_context(source)
+        _quick_key = _profile_runtime_context.session_key
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -7438,6 +7688,22 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "delegate":
+                return await self._handle_delegate_command(event)
+
+            if _cmd_def_inner and _cmd_def_inner.name == "swarm":
+                return await self._handle_swarm_command(event)
+
+            if _cmd_def_inner and _cmd_def_inner.name == "agent":
+                _agent_arg = (event.get_command_args() or "").strip()
+                _agent_sub = (_agent_arg.split(None, 1)[0].lower() if _agent_arg else "status")
+                if _agent_sub in {"status", "list", "webhook"}:
+                    return await self._handle_agent_command(event)
+                return (
+                    "Agent is running - use /agent status/list/webhook mid-run, "
+                    "or /stop before changing bindings."
+                )
+
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -7737,6 +8003,9 @@ class GatewayRunner:
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
+        if canonical == "agent":
+            return await self._handle_agent_command(event)
+
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
@@ -7781,6 +8050,12 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "delegate":
+            return await self._handle_delegate_command(event)
+
+        if canonical == "swarm":
+            return await self._handle_swarm_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -8055,7 +8330,13 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_result = await self._handle_message_with_agent(
+                event,
+                source,
+                _quick_key,
+                _run_generation,
+                runtime_context=_profile_runtime_context,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -8073,7 +8354,7 @@ class GatewayRunner:
                 # on error. Let the user drive the next turn.
                 if _final_text.strip():
                     try:
-                        session_entry = self.session_store.get_or_create_session(source)
+                        session_entry = _profile_runtime_context.session_store.get_or_create_session(source)
                     except Exception:
                         session_entry = None
                     if session_entry is not None:
@@ -8105,6 +8386,7 @@ class GatewayRunner:
         event: MessageEvent,
         source: SessionSource,
         history: List[Dict[str, Any]],
+        runtime_context=None,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
@@ -8126,7 +8408,11 @@ class GatewayRunner:
         # Use the same helper every other call site uses so the write key here
         # matches the consume key at the run_conversation site — even if the
         # session store overrides build_session_key's default behavior.
-        session_key = self._session_key_for_source(source)
+        session_key = (
+            runtime_context.session_key
+            if runtime_context is not None and getattr(runtime_context, "session_key", "")
+            else self._session_key_for_source(source)
+        )
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
@@ -8145,6 +8431,18 @@ class GatewayRunner:
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
+        media_errors = [
+            str(err).strip()
+            for err in (getattr(event, "media_errors", None) or [])
+            if str(err).strip()
+        ]
+        if media_errors:
+            media_note = "\n".join(
+                f"[The user sent a media attachment, but Hermes could not download it: {err}]"
+                for err in media_errors
+            )
+            message_text = f"{media_note}\n\n{message_text}" if message_text else media_note
+
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
@@ -8154,7 +8452,9 @@ class GatewayRunner:
             audio_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
+                if mtype.startswith("image/") or (
+                    not mtype and event.message_type == MessageType.PHOTO
+                ):
                     image_paths.append(path)
                 # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
                 # MessageType.VOICE = voice message (Opus/OGG) — always STT
@@ -8241,7 +8541,7 @@ class GatewayRunner:
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if event.media_urls:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
@@ -8298,11 +8598,20 @@ class GatewayRunner:
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length
 
-                _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
-                _msg_runtime = _resolve_runtime_agent_kwargs()
+                _msg_cwd = (
+                    str(getattr(runtime_context, "workspace_cwd", "") or "")
+                    or os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                )
+                _msg_runtime = _resolve_runtime_agent_kwargs(
+                    getattr(runtime_context, "profile_home", None),
+                )
                 _msg_config_ctx = None
                 try:
-                    _msg_cfg = _load_gateway_config()
+                    _msg_cfg = (
+                        getattr(runtime_context, "config", None)
+                        if runtime_context is not None
+                        else _load_gateway_config()
+                    )
                     _msg_model_cfg = _msg_cfg.get("model", {})
                     if isinstance(_msg_model_cfg, dict):
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
@@ -8378,7 +8687,80 @@ class GatewayRunner:
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _maybe_resend_recent_image(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_db,
+        session_id: str,
+    ):
+        """Handle explicit "resend the last image" requests without an LLM turn."""
+        if source.platform != Platform.DINGTALK:
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        if getattr(event, "media_urls", None):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        if not _wants_recent_image_resend(getattr(event, "text", "")):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        if session_db is None:
+            return "我没法读取当前会话历史，所以找不到上一张图片。"
+
+        image_path = _find_latest_attached_image_path(session_db.get_messages(session_id))
+        if not image_path:
+            return "我在当前会话里没找到可重新发送的本地图片。"
+
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return "当前平台适配器不可用，没法重新发送图片。"
+
+        metadata = self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+        )
+        try:
+            result = await adapter.send_image_file(
+                chat_id=source.chat_id,
+                image_path=image_path,
+                caption="最近一张图片重新发给你。",
+                reply_to=self._reply_anchor_for_event(event),
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.warning("Recent image resend failed: %s", exc, exc_info=True)
+            return f"重新发送图片失败：{exc}"
+
+        if not getattr(result, "success", False):
+            return f"重新发送图片失败：{getattr(result, 'error', 'unknown error')}"
+
+        logger.info(
+            "Recent image resent via native adapter: platform=%s chat=%s path=%s",
+            source.platform.value if hasattr(source.platform, "value") else source.platform,
+            source.chat_id,
+            image_path,
+        )
+        try:
+            session_db.append_message(
+                session_id,
+                "user",
+                getattr(event, "text", "") or "",
+                platform_message_id=getattr(event, "message_id", None),
+            )
+            session_db.append_message(
+                session_id,
+                "assistant",
+                f"[resent image attachment: {image_path}]",
+            )
+        except Exception:
+            logger.debug("Failed to persist recent-image resend shortcut", exc_info=True)
+        return None
+
+    async def _handle_message_with_agent(
+        self,
+        event,
+        source,
+        _quick_key: str,
+        run_generation: int,
+        runtime_context=None,
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -8389,11 +8771,16 @@ class GatewayRunner:
             source.chat_id or "unknown", _msg_preview,
         )
 
+        if runtime_context is None:
+            runtime_context = self._resolve_profile_runtime_context(source)
+        session_store = runtime_context.session_store
+        session_db = runtime_context.session_db
+
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
         # last-active topic so a cross-topic Reply or stripped plain reply
         # doesn't fragment the conversation across sessions.
-        recovered = self._recover_telegram_topic_thread_id(source)
+        recovered = self._recover_telegram_topic_thread_id(source, session_db=session_db)
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
@@ -8404,16 +8791,27 @@ class GatewayRunner:
                 event.source = source
             except Exception:
                 pass
+            runtime_context = self._resolve_profile_runtime_context(source)
+            session_store = runtime_context.session_store
+            session_db = runtime_context.session_db
 
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
+        recent_image_resend = await self._maybe_resend_recent_image(
+            event,
+            source,
+            session_db,
+            session_entry.session_id,
+        )
+        if recent_image_resend is not _RECENT_IMAGE_RESEND_NOT_HANDLED:
+            return recent_image_resend
         if self._is_telegram_topic_lane(source):
             try:
-                binding = self._session_db.get_telegram_topic_binding(
+                binding = session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
-                ) if self._session_db else None
+                ) if session_db else None
             except Exception:
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
@@ -8425,9 +8823,9 @@ class GatewayRunner:
                 # reloading the oversized parent transcript (#20470/#29712/
                 # #33414). Returns the input unchanged when the session isn't
                 # a compression parent, so this is cheap and safe.
-                if bound_session_id and self._session_db is not None:
+                if bound_session_id and session_db is not None:
                     try:
-                        canonical_session_id = self._session_db.get_compression_tip(
+                        canonical_session_id = session_db.get_compression_tip(
                             bound_session_id,
                         )
                     except Exception:
@@ -8447,7 +8845,7 @@ class GatewayRunner:
                     # lane session is ended cleanly. Mutating session_entry in
                     # place here created a split-brain state where the JSON
                     # index pointed at one id but code downstream used another.
-                    switched = self.session_store.switch_session(session_key, bound_session_id)
+                    switched = session_store.switch_session(session_key, bound_session_id)
                     if switched is not None:
                         session_entry = switched
                 # If the stored binding pointed at a parent, rewrite it to the
@@ -8457,11 +8855,11 @@ class GatewayRunner:
                     and bound_session_id != str(binding.get("session_id") or "")
                 ):
                     self._sync_telegram_topic_binding(
-                        source, session_entry, reason="compression-tip-walk",
+                        source, session_entry, reason="compression-tip-walk", session_db=session_db,
                     )
             else:
                 try:
-                    self._record_telegram_topic_binding(source, session_entry)
+                    self._record_telegram_topic_binding(source, session_entry, session_db=session_db)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
         if getattr(session_entry, "was_auto_reset", False):
@@ -8496,12 +8894,16 @@ class GatewayRunner:
         context = build_session_context(source, self.config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(
+            context,
+            event=event,
+            workspace_cwd=str(runtime_context.workspace_cwd),
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         try:
-            _pcfg = _load_gateway_config()
+            _pcfg = runtime_context.config
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
             pass
@@ -8526,7 +8928,7 @@ class GatewayRunner:
             # - the platform is excluded (e.g. api_server, webhook)
             # - the expired session had no activity (nothing was cleared)
             try:
-                policy = self.session_store.config.get_reset_policy(
+                policy = session_store.config.get_reset_policy(
                     platform=source.platform,
                     session_type=getattr(source, 'chat_type', 'dm'),
                 )
@@ -8610,7 +9012,7 @@ class GatewayRunner:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
         # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
+        history = session_store.load_transcript(session_entry.session_id)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -8651,7 +9053,7 @@ class GatewayRunner:
             _hyg_api_key = None
             _hyg_data = {}
             try:
-                _hyg_data = _load_gateway_config()
+                _hyg_data = runtime_context.config
                 if _hyg_data:
                     # Resolve model name (same logic as run_sync)
                     _model_cfg = _hyg_data.get("model", {})
@@ -8693,6 +9095,7 @@ class GatewayRunner:
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                        profile_home=runtime_context.profile_home,
                     )
                     _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
                     _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
@@ -8796,6 +9199,7 @@ class GatewayRunner:
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                            profile_home=runtime_context.profile_home,
                         )
                         if _hyg_runtime.get("api_key"):
                             _hyg_msgs = [
@@ -8834,13 +9238,14 @@ class GatewayRunner:
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
                                         session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
+                                        session_store._save()
                                         self._sync_telegram_topic_binding(
                                             source, session_entry,
                                             reason="hygiene-compression",
+                                            session_db=session_db,
                                         )
 
-                                    self.session_store.rewrite_transcript(
+                                    session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
                                     )
                                     # Reset stored token count — transcript was rewritten
@@ -8931,7 +9336,7 @@ class GatewayRunner:
                         )
 
         # First-message onboarding -- only on the very first interaction ever
-        if not history and not self.session_store.has_any_sessions():
+        if not history and not session_store.has_any_sessions():
             context_prompt += (
                 "\n\n[System note: This is the user's very first message ever. "
                 "Briefly introduce yourself and mention that /help shows available commands. "
@@ -8990,6 +9395,7 @@ class GatewayRunner:
             event=event,
             source=source,
             history=history,
+            runtime_context=runtime_context,
         )
         if message_text is None:
             return
@@ -9025,6 +9431,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                runtime_context=runtime_context,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9085,7 +9492,7 @@ class GatewayRunner:
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 self._clear_restart_failure_count(session_key)
                 try:
-                    self.session_store.clear_resume_pending(session_key)
+                    session_store.clear_resume_pending(session_key)
                 except Exception as _e:
                     logger.debug(
                         "clear_resume_pending failed for %s: %s",
@@ -9103,16 +9510,16 @@ class GatewayRunner:
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
-                self.session_store._save()
+                session_store._save()
                 self._sync_telegram_topic_binding(
-                    source, session_entry, reason="agent-result-compression",
+                    source, session_entry, reason="agent-result-compression", session_db=session_db,
                 )
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
                 from gateway.display_config import resolve_display_setting as _rds
                 _show_reasoning_effective = _rds(
-                    _load_gateway_config(),
+                    runtime_context.config,
                     _platform_config_key(source.platform),
                     "show_reasoning",
                     getattr(self, "_show_reasoning", False),
@@ -9139,12 +9546,12 @@ class GatewayRunner:
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
+                    user_config=runtime_context.config,
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                    cwd=str(runtime_context.workspace_cwd),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -9251,7 +9658,7 @@ class GatewayRunner:
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                self.session_store.reset_session(session_key)
+                session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
@@ -9272,7 +9679,7 @@ class GatewayRunner:
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
                 tool_defs = agent_result.get("tools", [])
-                self.session_store.append_to_transcript(
+                session_store.append_to_transcript(
                     session_entry.session_id,
                     {
                         "role": "session_meta",
@@ -9297,7 +9704,7 @@ class GatewayRunner:
                 _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
-                self.session_store.append_to_transcript(
+                session_store.append_to_transcript(
                     session_entry.session_id,
                     _user_entry,
                 )
@@ -9310,12 +9717,12 @@ class GatewayRunner:
                     _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
-                    self.session_store.append_to_transcript(
+                    session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
                     )
                     if response:
-                        self.session_store.append_to_transcript(
+                        session_store.append_to_transcript(
                             session_entry.session_id,
                             {"role": "assistant", "content": response, "timestamp": ts}
                         )
@@ -9324,7 +9731,7 @@ class GatewayRunner:
                     # _flush_messages_to_session_db(), so skip the DB write here
                     # to prevent the duplicate-write bug (#860).  We still write
                     # to JSONL for backward compatibility and as a backup.
-                    agent_persisted = self._session_db is not None
+                    agent_persisted = session_db is not None
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution
                     # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
@@ -9344,7 +9751,7 @@ class GatewayRunner:
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
-                        self.session_store.append_to_transcript(
+                        session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
@@ -9352,7 +9759,7 @@ class GatewayRunner:
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
-            self.session_store.update_session(
+            session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
@@ -9584,14 +9991,17 @@ class GatewayRunner:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
+        runtime_context = self._resolve_profile_runtime_context(source)
+        session_store = runtime_context.session_store
+        session_db = runtime_context.session_db
         
         # Get existing session key
-        session_key = self._session_key_for_source(source)
+        session_key = runtime_context.session_key
         self._invalidate_session_run_generation(session_key, reason="session_reset")
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
-        old_entry = self.session_store._entries.get(session_key)
+        old_entry = session_store._entries.get(session_key)
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
@@ -9625,7 +10035,7 @@ class GatewayRunner:
             pass
 
         # Reset the session
-        new_entry = self.session_store.reset_session(session_key)
+        new_entry = session_store.reset_session(session_key)
 
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
@@ -9672,13 +10082,13 @@ class GatewayRunner:
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default")
         else:
             # No existing session, just create one
-            new_entry = self.session_store.get_or_create_session(source, force_new=True)
+            new_entry = session_store.get_or_create_session(source, force_new=True)
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
 
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
         _title_note = ""
-        if _title_arg and self._session_db and new_entry:
+        if _title_arg and session_db and new_entry:
             from hermes_state import SessionDB
             try:
                 sanitized = SessionDB.sanitize_title(_title_arg)
@@ -9687,7 +10097,7 @@ class GatewayRunner:
                 _title_note = t("gateway.reset.title_rejected", error=str(e))
             if sanitized:
                 try:
-                    self._session_db.set_session_title(new_entry.session_id, sanitized)
+                    session_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
@@ -9705,7 +10115,7 @@ class GatewayRunner:
         # top of _handle_message_with_agent would switch right back.
         if self._is_telegram_topic_lane(source) and new_entry is not None:
             try:
-                self._record_telegram_topic_binding(source, new_entry)
+                self._record_telegram_topic_binding(source, new_entry, session_db=session_db)
             except Exception:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
 
@@ -9743,6 +10153,993 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+    def _get_source_agent_binding_store(self):
+        store = getattr(self, "_source_agent_binding_store", None)
+        if store is None:
+            from gateway.source_agent_binding import SourceAgentBindingStore
+
+            store = SourceAgentBindingStore()
+            self._source_agent_binding_store = store
+        return store
+
+    def _agent_source_binding_key(self, source: SessionSource) -> str:
+        cfg = getattr(self, "config", None)
+        return build_source_binding_key(
+            source,
+            group_sessions_per_user=getattr(cfg, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(cfg, "thread_sessions_per_user", False),
+        )
+
+    @staticmethod
+    def _agent_source_fallback_target(source: SessionSource | None) -> dict:
+        if source is None:
+            return {}
+        try:
+            return source.to_dict()
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _agent_extract_session_webhook(event: MessageEvent) -> dict | None:
+        raw = getattr(event, "raw_message", None)
+        candidates: list[object] = []
+        if raw is not None:
+            candidates.append(raw)
+            data = getattr(raw, "data", None)
+            if data is not None:
+                if isinstance(data, str):
+                    try:
+                        data = json.loads(data)
+                    except Exception:
+                        data = None
+                if data is not None:
+                    candidates.append(data)
+
+        for item in candidates:
+            if isinstance(item, dict):
+                webhook = (
+                    item.get("sessionWebhook")
+                    or item.get("session_webhook")
+                    or item.get("sessionWebhookUrl")
+                    or item.get("session_webhook_url")
+                    or ""
+                )
+                expires = (
+                    item.get("sessionWebhookExpiredTime")
+                    or item.get("session_webhook_expired_time")
+                    or 0
+                )
+            else:
+                webhook = getattr(item, "session_webhook", None) or getattr(
+                    item, "sessionWebhook", ""
+                )
+                expires = getattr(item, "session_webhook_expired_time", None) or getattr(
+                    item, "sessionWebhookExpiredTime", 0
+                )
+            webhook = str(webhook or "").strip()
+            if not webhook:
+                continue
+            try:
+                expires_int = int(expires or 0)
+            except (TypeError, ValueError):
+                expires_int = 0
+            return {
+                "session_webhook": webhook,
+                "session_webhook_expired_time": expires_int,
+            }
+        return None
+
+    @staticmethod
+    def _agent_binding_has_webhook(binding) -> bool:
+        extra = getattr(binding, "fallback_extra", None) or {}
+        if not isinstance(extra, dict):
+            return False
+        webhook = str(extra.get("session_webhook") or "").strip()
+        if not webhook:
+            return False
+        expires = extra.get("session_webhook_expired_time") or 0
+        try:
+            expires_ms = int(expires)
+        except (TypeError, ValueError):
+            expires_ms = 0
+        return not expires_ms or expires_ms > int(time.time() * 1000)
+
+    @staticmethod
+    def _agent_delete_notice_text(profile_name: str) -> str:
+        return (
+            f"### Hermes agent `{profile_name}` 已删除\n\n"
+            "该 Agent 已被删除，当前 IM 会话绑定已清除，后续将回到 `default` agent。\n\n"
+            "如需重新绑定，请发送 `/agent use <profile>`。"
+        )
+
+    @staticmethod
+    def _agent_binding_valid_session_webhook(binding_data: dict) -> str | None:
+        extra = binding_data.get("fallback_extra")
+        if not isinstance(extra, dict):
+            return None
+        webhook = str(extra.get("session_webhook") or "").strip()
+        if not webhook.startswith(("http://", "https://")):
+            return None
+        try:
+            expires_ms = int(extra.get("session_webhook_expired_time") or 0)
+        except (TypeError, ValueError):
+            expires_ms = 0
+        if expires_ms and expires_ms <= int(time.time() * 1000):
+            return None
+        return webhook
+
+    async def _notify_agent_delete_bindings(
+        self,
+        profile_name: str,
+        bindings: list[dict],
+        *,
+        current_source_key: str | None = None,
+    ) -> dict[str, int]:
+        summary = {"attempted": 0, "sent": 0, "failed": 0, "skipped": 0}
+        text = self._agent_delete_notice_text(profile_name)
+        for binding_data in bindings:
+            if binding_data.get("source_binding_key") == current_source_key:
+                summary["skipped"] += 1
+                continue
+            target = binding_data.get("fallback_target")
+            if not isinstance(target, dict):
+                summary["skipped"] += 1
+                continue
+            try:
+                source = SessionSource.from_dict(target)
+            except Exception:
+                summary["skipped"] += 1
+                continue
+            adapter = getattr(self, "adapters", {}).get(source.platform)
+            if adapter is None:
+                summary["skipped"] += 1
+                continue
+
+            metadata = self._thread_metadata_for_source(source) or {}
+            if source.platform == Platform.DINGTALK:
+                webhook = self._agent_binding_valid_session_webhook(binding_data)
+                if webhook:
+                    metadata["session_webhook"] = webhook
+            summary["attempted"] += 1
+            try:
+                result = await adapter.send(source.chat_id, text, metadata=metadata or None)
+                if getattr(result, "success", False):
+                    summary["sent"] += 1
+                else:
+                    summary["failed"] += 1
+                    logger.warning(
+                        "agent delete notification failed for %s via %s: %s",
+                        binding_data.get("source_binding_key"),
+                        source.platform.value,
+                        getattr(result, "error", None),
+                    )
+            except Exception as exc:
+                summary["failed"] += 1
+                logger.warning(
+                    "agent delete notification raised for %s: %s",
+                    binding_data.get("source_binding_key"),
+                    exc,
+                )
+        return summary
+
+    def _append_agent_audit(self, action: str, event: MessageEvent, **kwargs) -> None:
+        try:
+            from gateway.agent_audit import append_agent_audit_event
+
+            append_agent_audit_event(
+                action,
+                audit_path=getattr(self, "_agent_audit_path", None),
+                source=getattr(event, "source", None),
+                actor_user_id=getattr(getattr(event, "source", None), "user_id", None),
+                actor_user_name=getattr(getattr(event, "source", None), "user_name", None),
+                **kwargs,
+            )
+        except Exception as exc:
+            logger.debug("Agent audit append failed for %s: %s", action, exc)
+
+    async def _handle_agent_command(self, event: MessageEvent) -> str:
+        """Handle /agent profile binding commands for gateway conversations."""
+        source = getattr(event, "source", None)
+        if source is None:
+            return "No message source is available for /agent."
+
+        raw_args = (event.get_command_args() or "").strip()
+        try:
+            tokens = shlex.split(raw_args) if raw_args else []
+        except ValueError as exc:
+            return f"Invalid /agent arguments: {exc}"
+
+        subcommand = (tokens[0].lower() if tokens else "status") or "status"
+        args = tokens[1:]
+        store = self._get_source_agent_binding_store()
+        source_key = self._agent_source_binding_key(source)
+        binding = store.get_binding(source_key)
+
+        def _current_profile() -> str:
+            return binding.profile_name if binding else "default"
+
+        def _usage() -> str:
+            return (
+                "Usage:\n"
+                "  /agent status\n"
+                "  /agent list\n"
+                "  /agent use <profile>\n"
+                "  /agent clear\n"
+                "  /agent webhook [session_webhook_url]\n"
+                "  /agent create <name> [--from <profile>|--from-template <profile>] "
+                "[--with-env] [--orchestrator] [--description <text>]"
+            )
+
+        if subcommand in {"help", "-h", "--help"}:
+            return _usage()
+
+        if subcommand == "status":
+            profile = _current_profile()
+            lines = [
+                "Agent binding status",
+                f"Source: `{source_key}`",
+                f"Profile: `{profile}`" + (" (default)" if binding is None else ""),
+                f"Agent ID: `{binding.agent_id if binding else profile}`",
+            ]
+            if source.platform == Platform.DINGTALK:
+                lines.append(
+                    "DingTalk fallback webhook: "
+                    + ("configured" if self._agent_binding_has_webhook(binding) else "missing")
+                )
+            return "\n".join(lines)
+
+        if subcommand == "list":
+            from hermes_cli.profiles import list_profiles
+
+            current = _current_profile()
+            lines = ["Available agent profiles:"]
+            for profile in list_profiles():
+                marker = "*" if profile.name == current else "-"
+                model_bits = []
+                if profile.provider:
+                    model_bits.append(str(profile.provider))
+                if profile.model:
+                    model_bits.append(str(profile.model))
+                model = "/".join(model_bits) if model_bits else "model unset"
+                template = ", template" if getattr(profile, "template", False) else ""
+                desc = f" - {profile.description}" if profile.description else ""
+                lines.append(
+                    f"{marker} `{profile.name}` ({model}, skills: {profile.skill_count}{template}){desc}"
+                )
+            return "\n".join(lines)
+
+        if subcommand == "use":
+            if not args:
+                return "Usage: /agent use <profile>"
+            from hermes_cli.profiles import normalize_profile_name, profile_exists
+
+            try:
+                profile_name = normalize_profile_name(args[0])
+            except ValueError as exc:
+                return str(exc)
+            if not profile_exists(profile_name):
+                return f"Unknown profile `{profile_name}`. Use `/agent list` first."
+            before = binding.to_dict() if binding else None
+            if profile_name == "default":
+                deleted = store.delete_binding(source_key)
+                self._append_agent_audit(
+                    "agent.clear",
+                    event,
+                    profile_name="default",
+                    before=before,
+                    after=None,
+                    extra={"source_binding_key": source_key, "via": "use default"},
+                )
+                return (
+                    "Cleared this chat's agent binding; it now uses `default`."
+                    if deleted
+                    else "This chat already uses `default`."
+                )
+
+            webhook_extra = self._agent_extract_session_webhook(event)
+            fallback_extra = webhook_extra or (binding.fallback_extra if binding else None)
+            new_binding = store.set_binding(
+                source_key,
+                profile_name,
+                agent_id=profile_name,
+                fallback_target=self._agent_source_fallback_target(source),
+                fallback_extra=fallback_extra,
+                actor_user_id=source.user_id,
+                actor_user_name=source.user_name,
+            )
+            self._append_agent_audit(
+                "agent.use",
+                event,
+                profile_name=profile_name,
+                before=before,
+                after=new_binding.to_dict(),
+                extra={"source_binding_key": source_key},
+            )
+            lines = [f"Bound this chat to agent `{profile_name}`."]
+            if source.platform == Platform.DINGTALK and not self._agent_binding_has_webhook(new_binding):
+                lines.append(
+                    "DingTalk fallback webhook is missing. Send `/agent webhook` from this chat "
+                    "after a fresh DingTalk message so delayed agent notifications can route back."
+                )
+            return "\n".join(lines)
+
+        if subcommand == "clear":
+            before = binding.to_dict() if binding else None
+            deleted = store.delete_binding(source_key)
+            self._append_agent_audit(
+                "agent.clear",
+                event,
+                profile_name=before.get("profile_name") if before else "default",
+                before=before,
+                after=None,
+                extra={"source_binding_key": source_key},
+            )
+            return (
+                "Cleared this chat's agent binding; it now uses `default`."
+                if deleted
+                else "No agent binding was set for this chat."
+            )
+
+        if subcommand == "webhook":
+            manual_webhook = args[0].strip() if args else ""
+            webhook_extra = None
+            if manual_webhook:
+                if not manual_webhook.startswith(("http://", "https://")):
+                    return "Usage: /agent webhook [session_webhook_url]"
+                webhook_extra = {
+                    "session_webhook": manual_webhook,
+                    "session_webhook_expired_time": 0,
+                }
+            else:
+                webhook_extra = self._agent_extract_session_webhook(event)
+            if not webhook_extra:
+                return (
+                    "No DingTalk session_webhook was found on this message. "
+                    "Send `/agent webhook` from a fresh DingTalk chat message, or pass the URL explicitly."
+                )
+
+            profile_name = _current_profile()
+            before = binding.to_dict() if binding else None
+            new_binding = store.set_binding(
+                source_key,
+                profile_name,
+                agent_id=profile_name,
+                fallback_target=self._agent_source_fallback_target(source),
+                fallback_extra=webhook_extra,
+                actor_user_id=source.user_id,
+                actor_user_name=source.user_name,
+            )
+            self._append_agent_audit(
+                "agent.webhook",
+                event,
+                profile_name=profile_name,
+                before=before,
+                after=new_binding.to_dict(),
+                extra={"source_binding_key": source_key},
+            )
+            expires = webhook_extra.get("session_webhook_expired_time") or 0
+            suffix = ""
+            try:
+                if int(expires) and int(expires) <= int(time.time() * 1000):
+                    suffix = "\nWarning: captured DingTalk session_webhook is already expired."
+            except (TypeError, ValueError):
+                pass
+            return f"Stored DingTalk fallback webhook for agent `{profile_name}`.{suffix}"
+
+        if subcommand == "delete":
+            return await self._handle_agent_delete_command(event, args, binding, source_key)
+
+        if subcommand == "create":
+            return await self._handle_agent_create_command(event, args, binding, source_key)
+
+        return f"Unknown /agent subcommand `{subcommand}`.\n{_usage()}"
+
+    async def _handle_agent_create_command(
+        self,
+        event: MessageEvent,
+        args: list[str],
+        current_binding,
+        source_key: str,
+    ) -> str:
+        if not args:
+            return (
+                "Usage: /agent create <name> [--from <profile>|--from-template <profile>] "
+                "[--with-env] [--orchestrator] [--description <text>]"
+            )
+
+        from hermes_cli.profiles import create_profile, normalize_profile_name
+
+        name: str | None = None
+        clone_from = current_binding.profile_name if current_binding else "default"
+        from_template = False
+        with_env = False
+        orchestrator = False
+        description: str | None = None
+        i = 0
+        while i < len(args):
+            tok = args[i]
+            if tok == "--with-env":
+                with_env = True
+                i += 1
+                continue
+            if tok == "--orchestrator":
+                orchestrator = True
+                i += 1
+                continue
+            if tok == "--no-skills":
+                i += 1
+                continue
+            if tok == "--from":
+                if i + 1 >= len(args):
+                    return "Usage: /agent create <name> --from <profile>"
+                clone_from = args[i + 1]
+                i += 2
+                continue
+            if tok.startswith("--from="):
+                clone_from = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok == "--from-template":
+                if i + 1 >= len(args):
+                    return "Usage: /agent create <name> --from-template <profile>"
+                clone_from = args[i + 1]
+                from_template = True
+                i += 2
+                continue
+            if tok.startswith("--from-template="):
+                clone_from = tok.split("=", 1)[1]
+                from_template = True
+                i += 1
+                continue
+            if tok in {"--description", "--desc"}:
+                if i + 1 >= len(args):
+                    return "Usage: /agent create <name> --description <text>"
+                description = " ".join(args[i + 1:]).strip()
+                break
+            if tok.startswith("--"):
+                return f"Unknown /agent create option `{tok}`."
+            if name is None:
+                name = tok
+                i += 1
+                continue
+            return f"Unexpected /agent create argument `{tok}`."
+
+        if not name:
+            return (
+                "Usage: /agent create <name> [--from <profile>|--from-template <profile>] "
+                "[--with-env] [--orchestrator] [--description <text>]"
+            )
+        try:
+            profile_name = normalize_profile_name(name)
+            source_profile = normalize_profile_name(clone_from) if clone_from else None
+            if from_template:
+                from hermes_cli.profiles import get_profile_dir, profile_exists, read_profile_meta
+
+                if not source_profile or not profile_exists(source_profile):
+                    return f"Unknown template profile `{source_profile}`."
+                source_meta = read_profile_meta(get_profile_dir(source_profile))
+                if not source_meta.get("template", False):
+                    return f"Profile `{source_profile}` is not marked as a template."
+            profile_dir = create_profile(
+                profile_name,
+                clone_from=source_profile,
+                clone_config=True,
+                clone_env=with_env,
+                clone_skills=False,
+                no_alias=True,
+                no_skills=True,
+                description=description,
+            )
+            if orchestrator:
+                self._enable_profile_toolset(profile_dir, "kanban")
+        except Exception as exc:
+            return f"Could not create agent `{name}`: {exc}"
+
+        self._append_agent_audit(
+            "agent.template_clone" if from_template else "agent.create",
+            event,
+            profile_name=profile_name,
+            before=None,
+            after={
+                "profile_name": profile_name,
+                "profile_dir": str(profile_dir),
+                "clone_from": source_profile,
+                "from_template": from_template,
+                "with_env": with_env,
+                "no_skills": True,
+                "orchestrator": orchestrator,
+            },
+            extra={"source_binding_key": source_key},
+        )
+        env_note = ".env copied" if with_env else ".env not copied"
+        orchestrator_note = "; kanban orchestrator tools enabled" if orchestrator else ""
+        source_note = f"cloned config from `{source_profile}`; no skills copied"
+        return (
+            f"Created agent profile `{profile_name}` ({source_note}; {env_note}{orchestrator_note}).\n"
+            f"Bind this chat with `/agent use {profile_name}`."
+        )
+
+    def _enable_profile_toolset(self, profile_dir, toolset: str) -> None:
+        """Enable a top-level profile toolset in config.yaml without duplication."""
+        import yaml
+
+        config_path = profile_dir / "config.yaml"
+        config: dict = {}
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as handle:
+                loaded = yaml.safe_load(handle) or {}
+            if isinstance(loaded, dict):
+                config = loaded
+
+        existing = config.get("toolsets")
+        if isinstance(existing, str):
+            toolsets = [existing] if existing else []
+        elif isinstance(existing, list):
+            toolsets = [str(item) for item in existing if str(item)]
+        else:
+            toolsets = []
+
+        if toolset not in toolsets:
+            toolsets.append(toolset)
+        config["toolsets"] = toolsets
+
+        with open(config_path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(config, handle, sort_keys=False, default_flow_style=False)
+
+    async def _handle_agent_delete_command(
+        self,
+        event: MessageEvent,
+        args: list[str],
+        current_binding,
+        source_key: str,
+    ) -> str:
+        if not args:
+            return "Usage: /agent delete <profile> [confirmation_code]"
+
+        confirm_code: str | None = None
+        if args[0].lower() == "confirm":
+            if len(args) < 3:
+                return "Usage: /agent delete confirm <profile> <confirmation_code>"
+            profile_arg = args[1]
+            confirm_code = args[2]
+        else:
+            profile_arg = args[0]
+            if len(args) >= 2:
+                confirm_code = args[1]
+
+        from hermes_cli.profiles import (
+            delete_profile_noninteractive,
+            normalize_profile_name,
+            profile_exists,
+        )
+
+        try:
+            profile_name = normalize_profile_name(profile_arg)
+        except ValueError as exc:
+            return str(exc)
+        if profile_name == "default":
+            return "Refusing to delete `default`. The default profile is protected."
+        if not profile_exists(profile_name):
+            return f"Unknown profile `{profile_name}`. Use `/agent list` first."
+
+        pending = getattr(self, "_agent_delete_confirmations", None)
+        if pending is None:
+            pending = {}
+            self._agent_delete_confirmations = pending
+        pending_key = (source_key, profile_name)
+        ttl_seconds = int(getattr(self, "_agent_delete_confirm_ttl", 300))
+
+        if not confirm_code:
+            code_factory = getattr(self, "_agent_delete_code_factory", None)
+            code = str(code_factory() if code_factory else secrets.token_hex(3).upper())
+            pending[pending_key] = {
+                "code": code,
+                "expires_at": time.time() + ttl_seconds,
+                "requested_by": getattr(event.source, "user_id", None),
+            }
+            self._append_agent_audit(
+                "agent.delete.request",
+                event,
+                profile_name=profile_name,
+                before={"profile_name": profile_name},
+                after=None,
+                extra={"source_binding_key": source_key, "ttl_seconds": ttl_seconds},
+            )
+            return (
+                f"Delete request created for agent `{profile_name}`.\n"
+                f"This permanently removes its config, memory, sessions, skills, workspace, and cron data.\n"
+                f"Confirm within {ttl_seconds}s with: `/agent delete {profile_name} {code}`"
+            )
+
+        request = pending.get(pending_key)
+        if not request:
+            return (
+                f"No pending delete request for `{profile_name}` in this chat. "
+                f"Run `/agent delete {profile_name}` first."
+            )
+        if time.time() > float(request.get("expires_at", 0)):
+            pending.pop(pending_key, None)
+            self._append_agent_audit(
+                "agent.delete.expired",
+                event,
+                profile_name=profile_name,
+                before={"profile_name": profile_name},
+                after=None,
+                extra={"source_binding_key": source_key},
+            )
+            return f"Delete confirmation for `{profile_name}` expired. Run `/agent delete {profile_name}` again."
+        expected = str(request.get("code") or "")
+        if confirm_code.strip() != expected:
+            self._append_agent_audit(
+                "agent.delete.failed",
+                event,
+                profile_name=profile_name,
+                before={"profile_name": profile_name},
+                after=None,
+                extra={"source_binding_key": source_key, "reason": "bad_code"},
+            )
+            return f"Confirmation code is incorrect for `{profile_name}`."
+
+        store = self._get_source_agent_binding_store()
+        bindings_before = [b.to_dict() for b in store.list_bindings(profile_name=profile_name)]
+        try:
+            deleted_path = delete_profile_noninteractive(profile_name)
+        except Exception as exc:
+            return f"Could not delete agent `{profile_name}`: {exc}"
+
+        removed_bindings = store.delete_bindings_for_profile(profile_name)
+        notification_summary = await self._notify_agent_delete_bindings(
+            profile_name,
+            bindings_before,
+            current_source_key=source_key,
+        )
+        pending.pop(pending_key, None)
+        self._append_agent_audit(
+            "agent.delete",
+            event,
+            profile_name=profile_name,
+            before={
+                "profile_name": profile_name,
+                "profile_dir": str(deleted_path),
+                "bindings": bindings_before,
+            },
+            after=None,
+            extra={
+                "source_binding_key": source_key,
+                "removed_bindings": removed_bindings,
+                "notification": notification_summary,
+            },
+        )
+        return f"Deleted agent profile `{profile_name}` and removed {removed_bindings} binding(s)."
+
+    async def _handle_delegate_command(self, event: MessageEvent) -> str:
+        """Handle /delegate <profile|auto> <task> as a thin Kanban wrapper."""
+        usage = (
+            "Usage: /delegate [--board <board>] [--skill <skill>] "
+            "[--workspace <mode>] [--priority <n>] [--max-runtime <duration>] "
+            "<profile|auto> <task>"
+        )
+        raw_args = (event.get_command_args() or "").strip()
+        if not raw_args:
+            return usage
+        try:
+            tokens = shlex.split(raw_args)
+        except ValueError as exc:
+            return f"Could not parse /delegate arguments: {exc}"
+
+        board: str | None = None
+        workspace = "scratch"
+        priority = 0
+        max_runtime_arg: str | None = None
+        skills: list[str] = []
+        positionals: list[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "--":
+                positionals.extend(tokens[i + 1:])
+                break
+            if tok in {"--board", "--workspace", "--priority", "--max-runtime", "--skill"}:
+                if i + 1 >= len(tokens):
+                    return f"{tok} requires a value.\n{usage}"
+                value = tokens[i + 1]
+                if tok == "--board":
+                    board = value
+                elif tok == "--workspace":
+                    workspace = value
+                elif tok == "--priority":
+                    try:
+                        priority = int(value)
+                    except ValueError:
+                        return f"--priority must be an integer, got `{value}`."
+                elif tok == "--max-runtime":
+                    max_runtime_arg = value
+                elif tok == "--skill":
+                    skills.append(value)
+                i += 2
+                continue
+            if tok.startswith("--board="):
+                board = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("--workspace="):
+                workspace = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("--priority="):
+                value = tok.split("=", 1)[1]
+                try:
+                    priority = int(value)
+                except ValueError:
+                    return f"--priority must be an integer, got `{value}`."
+                i += 1
+                continue
+            if tok.startswith("--max-runtime="):
+                max_runtime_arg = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("--skill="):
+                skills.append(tok.split("=", 1)[1])
+                i += 1
+                continue
+            if tok.startswith("--"):
+                return f"Unknown /delegate option `{tok}`.\n{usage}"
+            positionals.append(tok)
+            i += 1
+
+        if len(positionals) < 2:
+            return usage
+
+        from hermes_cli.profiles import normalize_profile_name
+
+        auto_route = positionals[0].casefold() == "auto"
+        assignee: str | None = None
+        try:
+            if not auto_route:
+                assignee = normalize_profile_name(positionals[0])
+        except ValueError as exc:
+            return str(exc)
+
+        task_text = " ".join(positionals[1:]).strip()
+        if not task_text:
+            return usage
+        source = event.source
+        created_by = (
+            f"{source.platform.value}:{source.user_id or source.user_name or 'unknown'}"
+            if source and source.platform
+            else "gateway"
+        )
+
+        from gateway.kanban_delegate import DelegateTaskError, create_delegated_kanban_task
+
+        try:
+            delegated = create_delegated_kanban_task(
+                assignee=assignee,
+                task_text=task_text,
+                board=board,
+                workspace=workspace,
+                priority=priority,
+                max_runtime_arg=max_runtime_arg,
+                skills=skills,
+                source=source,
+                created_by=created_by,
+                notifier_profile=getattr(self, "_kanban_notifier_profile", None),
+                auto_route=auto_route,
+            )
+        except DelegateTaskError as exc:
+            message = str(exc)
+            if message.startswith("Invalid delegate option:"):
+                message = message.replace("Invalid delegate option:", "Invalid /delegate option:", 1)
+            return message
+        except Exception as exc:
+            return f"Could not delegate task to `{assignee}`: {exc}"
+
+        self._append_agent_audit(
+            "delegate.create",
+            event,
+            profile_name=assignee or "auto",
+            before=None,
+            after={
+                "task_id": delegated.task_id,
+                "assignee": delegated.assignee,
+                "title": delegated.title,
+                "auto_route": delegated.auto_route,
+                "board": delegated.board_slug,
+                "workspace": workspace,
+                "priority": priority,
+                "max_runtime_seconds": delegated.max_runtime_seconds,
+                "skills": delegated.skills,
+            },
+            extra={
+                "source_binding_key": self._agent_source_binding_key(source) if source else "",
+                "subscribed": delegated.subscribed,
+            },
+        )
+        if auto_route:
+            return (
+                f"Delegated triage task `{delegated.task_id}` on board `{delegated.board_slug}` "
+                "for automatic Kanban routing.\n"
+                "Subscription: current chat is subscribed to terminal task updates; "
+                "current agent binding is unchanged."
+            )
+        return (
+            f"Delegated task `{delegated.task_id}` on board `{delegated.board_slug}` "
+            f"to `{delegated.assignee}` via Kanban.\n"
+            "Subscription: current chat is subscribed to terminal task updates; "
+            "current agent binding is unchanged."
+        )
+
+    async def _handle_swarm_command(self, event: MessageEvent) -> str:
+        """Handle /swarm as a friendly wrapper over Kanban Swarm v1."""
+        usage = (
+            'Usage: /swarm "<goal>" --worker profile:title[:skill,skill] '
+            "--verifier <profile> --synthesizer <profile> "
+            "[--board <board>] [--workspace <mode>] [--priority <n>]"
+        )
+        raw_args = (event.get_command_args() or "").strip()
+        if not raw_args:
+            return usage
+        try:
+            tokens = shlex.split(raw_args)
+        except ValueError as exc:
+            return f"Could not parse /swarm arguments: {exc}"
+
+        goal_parts: list[str] = []
+        worker_args: list[str] = []
+        verifier: str | None = None
+        synthesizer: str | None = None
+        board: str | None = None
+        workspace = "scratch"
+        priority = 0
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok in {"--worker", "--verifier", "--synthesizer", "--board", "--workspace", "--priority"}:
+                if i + 1 >= len(tokens):
+                    return f"{tok} requires a value.\n{usage}"
+                value = tokens[i + 1]
+                if tok == "--worker":
+                    worker_args.append(value)
+                elif tok == "--verifier":
+                    verifier = value
+                elif tok == "--synthesizer":
+                    synthesizer = value
+                elif tok == "--board":
+                    board = value
+                elif tok == "--workspace":
+                    workspace = value
+                elif tok == "--priority":
+                    try:
+                        priority = int(value)
+                    except ValueError:
+                        return f"--priority must be an integer, got `{value}`."
+                i += 2
+                continue
+            if tok.startswith("--worker="):
+                worker_args.append(tok.split("=", 1)[1])
+                i += 1
+                continue
+            if tok.startswith("--verifier="):
+                verifier = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("--synthesizer="):
+                synthesizer = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("--board="):
+                board = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("--workspace="):
+                workspace = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("--priority="):
+                value = tok.split("=", 1)[1]
+                try:
+                    priority = int(value)
+                except ValueError:
+                    return f"--priority must be an integer, got `{value}`."
+                i += 1
+                continue
+            if tok.startswith("--"):
+                return f"Unknown /swarm option `{tok}`.\n{usage}"
+            goal_parts.append(tok)
+            i += 1
+
+        goal = " ".join(goal_parts).strip()
+        if not goal or not worker_args or not verifier or not synthesizer:
+            return usage
+
+        try:
+            from hermes_cli import kanban_db as kb
+            from hermes_cli import kanban_swarm as ks
+            from hermes_cli.kanban import _parse_workspace_flag
+            from hermes_cli.profiles import normalize_profile_name, profile_exists
+
+            board_slug = kb._normalize_board_slug(board) if board else None
+            if board_slug and board_slug != kb.DEFAULT_BOARD and not kb.board_exists(board_slug):
+                return (
+                    f"Unknown Kanban board `{board_slug}`. "
+                    f"Create it with `hermes kanban boards create {board_slug}` first."
+                )
+            workspace_kind, workspace_path = _parse_workspace_flag(workspace)
+            workers = [ks.parse_worker_arg(raw) for raw in worker_args]
+            verifier_name = normalize_profile_name(verifier)
+            synthesizer_name = normalize_profile_name(synthesizer)
+            missing = []
+            for profile in [*(worker.profile for worker in workers), verifier_name, synthesizer_name]:
+                candidate = normalize_profile_name(profile)
+                if not profile_exists(candidate):
+                    missing.append(candidate)
+            if missing:
+                return "Unknown agent profile(s): " + ", ".join(sorted(set(missing)))
+
+            source = event.source
+            created_by = (
+                f"{source.platform.value}:{source.user_id or source.user_name or 'unknown'}"
+                if source and source.platform
+                else "gateway"
+            )
+            conn = kb.connect(board=board_slug)
+            try:
+                created = ks.create_swarm(
+                    conn,
+                    goal=goal,
+                    workers=workers,
+                    verifier_assignee=verifier_name,
+                    synthesizer_assignee=synthesizer_name,
+                    created_by=created_by,
+                    workspace_kind=workspace_kind,
+                    workspace_path=workspace_path,
+                    priority=priority,
+                )
+                if source and source.platform and source.chat_id:
+                    for task_id in [
+                        created.root_id,
+                        *created.worker_ids,
+                        created.verifier_id,
+                        created.synthesizer_id,
+                    ]:
+                        kb.add_notify_sub(
+                            conn,
+                            task_id=task_id,
+                            platform=source.platform.value,
+                            chat_id=source.chat_id,
+                            thread_id=source.thread_id,
+                            user_id=source.user_id,
+                            notifier_profile=getattr(self, "_kanban_notifier_profile", None),
+                        )
+            finally:
+                conn.close()
+        except Exception as exc:
+            return f"Could not create swarm: {exc}"
+
+        self._append_agent_audit(
+            "swarm.create",
+            event,
+            profile_name=synthesizer_name,
+            before=None,
+            after={
+                **created.as_dict(),
+                "goal": goal,
+                "board": board_slug or "default",
+                "workspace": workspace,
+                "priority": priority,
+            },
+            extra={
+                "source_binding_key": self._agent_source_binding_key(event.source) if event.source else "",
+                "subscribed": bool(event.source and event.source.platform and event.source.chat_id),
+            },
+        )
+        return (
+            f"Created swarm root `{created.root_id}`.\n"
+            f"Workers: {', '.join(created.worker_ids)}\n"
+            f"Verifier: `{created.verifier_id}`\n"
+            f"Synthesizer: `{created.synthesizer_id}`"
+        )
 
 
     def _check_slash_access(
@@ -14887,7 +16284,59 @@ class GatewayRunner:
 
         return delivered
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    @staticmethod
+    def _extract_dingtalk_session_webhook(event: MessageEvent | None) -> tuple[str, str]:
+        """Extract DingTalk's per-message session webhook for same-turn tools."""
+        raw = getattr(event, "raw_message", None) if event is not None else None
+        candidates: list[Any] = []
+        if raw is not None:
+            candidates.append(raw)
+        if isinstance(raw, dict):
+            for key in ("data", "message", "event"):
+                value = raw.get(key)
+                if value is not None:
+                    candidates.append(value)
+
+        for item in candidates:
+            if isinstance(item, dict):
+                webhook = (
+                    item.get("sessionWebhook")
+                    or item.get("session_webhook")
+                    or item.get("sessionWebhookUrl")
+                    or item.get("session_webhook_url")
+                    or ""
+                )
+                expires = (
+                    item.get("sessionWebhookExpiredTime")
+                    or item.get("session_webhook_expired_time")
+                    or ""
+                )
+            else:
+                webhook = (
+                    getattr(item, "session_webhook", None)
+                    or getattr(item, "sessionWebhook", None)
+                    or getattr(item, "session_webhook_url", None)
+                    or getattr(item, "sessionWebhookUrl", None)
+                    or ""
+                )
+                expires = (
+                    getattr(item, "session_webhook_expired_time", None)
+                    or getattr(item, "sessionWebhookExpiredTime", None)
+                    or ""
+                )
+            webhook = str(webhook or "").strip()
+            if not webhook.startswith(_DINGTALK_SESSION_WEBHOOK_PREFIXES):
+                continue
+            return webhook, str(expires or "").strip()
+        return "", ""
+
+    def _set_session_env(
+        self,
+        context: SessionContext,
+        *,
+        event: MessageEvent | None = None,
+        workspace_cwd: str = "",
+    ) -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -14897,15 +16346,26 @@ class GatewayRunner:
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        dingtalk_webhook = ""
+        dingtalk_webhook_expires = ""
+        if context.source.platform == Platform.DINGTALK:
+            dingtalk_webhook, dingtalk_webhook_expires = (
+                self._extract_dingtalk_session_webhook(event)
+            )
+
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
+            chat_type=context.source.chat_type or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            workspace_cwd=workspace_cwd,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            dingtalk_session_webhook=dingtalk_webhook,
+            dingtalk_session_webhook_expires=dingtalk_webhook_expires,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -16235,6 +17695,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        runtime_context=None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16248,6 +17709,14 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        if runtime_context is None:
+            runtime_context = self._resolve_profile_runtime_context(source)
+        user_config = runtime_context.config
+        session_db = runtime_context.session_db
+        profile_home = runtime_context.profile_home
+        profile_workspace_cwd = runtime_context.workspace_cwd
+        session_store = runtime_context.session_store
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -16269,7 +17738,6 @@ class GatewayRunner:
                 return True
             return self._is_session_run_current(session_key, run_generation)
         
-        user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
@@ -16385,7 +17853,7 @@ class GatewayRunner:
                             mark_seen,
                             tool_progress_hint_gateway,
                         )
-                        _cfg = _load_gateway_config()
+                        _cfg = user_config
                         gate_on = is_truthy_value(
                             cfg_get(_cfg, "display", "tool_progress_command"),
                             default=False,
@@ -16393,7 +17861,7 @@ class GatewayRunner:
                         if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
                             long_tool_hint_fired[0] = True
                             progress_queue.put(tool_progress_hint_gateway())
-                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                            mark_seen(profile_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
                 return
@@ -16923,12 +18391,9 @@ class GatewayRunner:
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
-            # session_key is now set via contextvars in _set_session_env()
-            # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
-            os.environ["HERMES_SESSION_KEY"] = session_key or ""
-
             # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _max_turns = (user_config.get("agent") or {}).get("max_turns") if isinstance(user_config, dict) else None
+            max_iterations = int(_max_turns or os.getenv("HERMES_MAX_ITERATIONS", "90"))
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -16943,16 +18408,12 @@ class GatewayRunner:
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart). Keep config.yaml authoritative for
-            # runtime budget settings bridged into env vars.
-            _reload_runtime_env_preserving_config_authority()
-
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                    profile_home=profile_home,
                 )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
@@ -17140,7 +18601,7 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
-                    session_db=self._session_db,
+                    session_db=session_db,
                     fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:
@@ -17455,7 +18916,7 @@ class GatewayRunner:
             _resume_entry = None
             if session_key:
                 try:
-                    _resume_entry = self.session_store._entries.get(session_key)
+                    _resume_entry = session_store._entries.get(session_key)
                 except Exception:
                     _resume_entry = None
             _is_resume_pending = bool(
@@ -17977,6 +19438,32 @@ class GatewayRunner:
 
         _notify_task = asyncio.create_task(_notify_long_running())
 
+        def run_sync_with_profile_home():
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+            token = set_hermes_home_override(profile_home)
+            try:
+                return run_sync()
+            finally:
+                reset_hermes_home_override(token)
+
+        _task_env_override_key = None
+        if session_id and profile_workspace_cwd:
+            try:
+                from tools.terminal_tool import register_task_env_overrides
+
+                register_task_env_overrides(
+                    session_id,
+                    {"cwd": str(profile_workspace_cwd)},
+                )
+                _task_env_override_key = session_id
+            except Exception:
+                logger.debug(
+                    "Failed to register profile workspace override for session %s",
+                    session_id,
+                    exc_info=True,
+                )
+
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
             # timeout instead of a wall-clock limit: the agent can run for
@@ -17993,7 +19480,7 @@ class GatewayRunner:
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
             _executor_task = asyncio.ensure_future(
-                self._run_in_executor_with_context(run_sync)
+                self._run_in_executor_with_context(run_sync_with_profile_home)
             )
 
             _inactivity_timeout = False
@@ -18354,6 +19841,7 @@ class GatewayRunner:
                         event=pending_event,
                         source=next_source,
                         history=updated_history,
+                        runtime_context=runtime_context,
                     )
                     if next_message is None:
                         return result
@@ -18384,6 +19872,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    runtime_context=runtime_context,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
@@ -18434,6 +19923,18 @@ class GatewayRunner:
                 )
             if self._draining:
                 self._update_runtime_status("draining")
+
+            if _task_env_override_key:
+                try:
+                    from tools.terminal_tool import clear_task_env_overrides
+
+                    clear_task_env_overrides(_task_env_override_key)
+                except Exception:
+                    logger.debug(
+                        "Failed to clear profile workspace override for session %s",
+                        _task_env_override_key,
+                        exc_info=True,
+                    )
             
             # Wait for cancelled tasks
             for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:

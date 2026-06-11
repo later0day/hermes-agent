@@ -1060,6 +1060,38 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
     adapter.handle_message.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_startup_auto_resume_skips_dingtalk_without_fresh_message_context():
+    runner, _adapter = make_restart_runner()
+    source = SessionSource(
+        platform=Platform.DINGTALK,
+        chat_id="ding-chat",
+        chat_type="group",
+        user_id="u1",
+    )
+    pending_entry = SessionEntry(
+        session_key="agent:main:dingtalk:group:ding-chat:u1",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.DINGTALK,
+        chat_type="group",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    dingtalk_adapter = MagicMock()
+    dingtalk_adapter.handle_message = AsyncMock()
+    runner.adapters = {Platform.DINGTALK: dingtalk_adapter}
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    dingtalk_adapter.handle_message.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Shutdown banner wording
 # ---------------------------------------------------------------------------

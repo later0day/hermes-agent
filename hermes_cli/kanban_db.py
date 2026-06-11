@@ -1894,16 +1894,28 @@ def write_txn(conn: sqlite3.Connection):
     try:
         yield conn
     except Exception:
-        try:
-            conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
-            # under EIO, lock contention, or corruption). Nothing to undo;
-            # do not let this secondary failure shadow the real one.
-            pass
+        if conn.in_transaction:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception as rollback_exc:
+                _log.debug(
+                    "kanban write transaction rollback failed: %s",
+                    rollback_exc,
+                )
         raise
     else:
-        conn.execute("COMMIT")
+        try:
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception as rollback_exc:
+                    _log.debug(
+                        "kanban write transaction rollback after commit failure failed: %s",
+                        rollback_exc,
+                    )
+            raise
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
@@ -7033,6 +7045,17 @@ def claim_unseen_events_for_sub(
     ``new_cursor`` on success or call :func:`rewind_notify_cursor` if delivery
     failed before any terminal unsubscribe removed the row.
     """
+    pre_cursor, pre_events = unseen_events_for_sub(
+        conn,
+        task_id=task_id,
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        kinds=kinds,
+    )
+    if not pre_events:
+        return pre_cursor, pre_cursor, []
+
     with write_txn(conn):
         row = conn.execute(
             "SELECT last_event_id FROM kanban_notify_subs "

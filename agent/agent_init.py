@@ -1535,8 +1535,14 @@ def init_agent(
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
+    try:
+        from gateway.session_context import get_workspace_cwd
+
+        _working_dir = get_workspace_cwd("")
+    except Exception:
+        _working_dir = ""
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=os.getenv("TERMINAL_CWD") or None,
+        working_dir=_working_dir or os.getenv("TERMINAL_CWD") or None,
     )
     agent._user_turn_count = 0
 

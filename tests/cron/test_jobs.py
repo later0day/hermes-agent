@@ -268,6 +268,42 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_stores_owner_and_run_profile(self, tmp_cron_dir, monkeypatch):
+        root = tmp_cron_dir / "hermes-root"
+        profile_home = root / "profiles" / "worker"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        job = create_job(
+            prompt="Profile job",
+            schedule="every 1h",
+            owner_profile="worker",
+            run_profile="worker",
+        )
+        stored = get_job(job["id"])
+
+        assert stored["owner_profile"] == "worker"
+        assert stored["run_profile"] == "worker"
+        assert stored["profile"] == "worker"
+
+    def test_legacy_profile_fills_owner_and_run_profile(self, tmp_cron_dir):
+        save_jobs([
+            {
+                "id": "legacyprofile",
+                "name": "legacy",
+                "prompt": "x",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "enabled": True,
+                "profile": "support",
+            }
+        ])
+
+        stored = get_job("legacyprofile")
+
+        assert stored["owner_profile"] == "support"
+        assert stored["run_profile"] == "support"
+        assert stored["profile"] == "support"
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -313,6 +349,23 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+    def test_update_run_profile_mirrors_legacy_profile(self, tmp_cron_dir, monkeypatch):
+        root = tmp_cron_dir / "hermes-root"
+        (root / "profiles" / "worker").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        job = create_job(prompt="x", schedule="every 1h")
+        updated = update_job(job["id"], {"run_profile": "worker"})
+
+        assert updated["run_profile"] == "worker"
+        assert updated["profile"] == "worker"
+        assert updated["owner_profile"] == "default"
+
+        cleared = update_job(job["id"], {"profile": ""})
+        assert cleared["run_profile"] is None
+        assert cleared["profile"] is None
+        assert cleared["owner_profile"] == "default"
 
     def test_update_rejects_id_change(self, tmp_cron_dir):
         """Job IDs are filesystem path components — must be immutable."""

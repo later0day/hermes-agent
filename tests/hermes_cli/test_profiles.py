@@ -155,7 +155,7 @@ class TestCreateProfile:
         profile_dir = create_profile("coder", no_alias=True)
         assert profile_dir.is_dir()
         for subdir in ["memories", "sessions", "skills", "skins", "logs",
-                        "plans", "workspace", "cron"]:
+                        "plans", "scripts", "workspace", "cron"]:
             assert (profile_dir / subdir).is_dir(), f"Missing subdir: {subdir}"
 
     def test_duplicate_raises_file_exists(self, profile_env):

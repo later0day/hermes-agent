@@ -14,9 +14,11 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -138,6 +140,7 @@ _HOME_TARGET_ENV_VARS = {
     "qqbot": "QQBOT_HOME_CHANNEL",
     "whatsapp": "WHATSAPP_HOME_CHANNEL",
 }
+_DINGTALK_CONVERSATION_ID_RE = re.compile(r"^cid[-A-Za-z0-9+/=]+$")
 
 # Legacy env var names kept for back-compat.  Each entry is the current
 # primary env var → the previous name.  _get_home_target_chat_id falls
@@ -233,6 +236,16 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         for k, v in env_snapshot.items():
             if os.environ.get(k) != v:
                 os.environ[k] = v
+
+
+def _job_run_profile(job: dict) -> Optional[str]:
+    """Return the profile used to execute this job."""
+    for key in ("run_profile", "profile", "owner_profile"):
+        raw = job.get(key)
+        text = str(raw or "").strip()
+        if text:
+            return text
+    return None
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -336,6 +349,14 @@ def _get_home_target_chat_id(platform_name: str) -> str:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
             value = os.getenv(legacy, "")
+    if platform_name.lower() == "dingtalk" and value:
+        value = value.strip()
+        if not _DINGTALK_CONVERSATION_ID_RE.fullmatch(value):
+            logger.warning(
+                "Ignoring invalid DingTalk home target %r; expected openConversationId starting with 'cid'.",
+                value,
+            )
+            return ""
     return value
 
 
@@ -393,11 +414,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if deliver_value == "origin":
         if origin:
-            return {
+            target = {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
+            if origin.get("chat_type"):
+                target["chat_type"] = origin.get("chat_type")
+            return target
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
         for platform_name in _iter_home_target_platforms():
@@ -450,11 +474,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
-        return {
+        target = {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
             "thread_id": origin.get("thread_id"),
         }
+        if origin.get("chat_type"):
+            target["chat_type"] = origin.get("chat_type")
+        return target
 
     if not _is_known_delivery_platform(platform_name):
         return None
@@ -551,6 +578,143 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     targets = _resolve_delivery_targets(job)
     return targets[0] if targets else None
+
+
+def _binding_session_webhook_status(extra: dict | None) -> tuple[str | None, str | None]:
+    """Return a valid DingTalk session webhook, or why it cannot be used."""
+    if not isinstance(extra, dict):
+        return None, "DingTalk fallback webhook is missing. Send `/agent webhook` from this chat."
+    webhook = str(extra.get("session_webhook") or "").strip()
+    if not webhook.startswith(("http://", "https://")):
+        return None, "DingTalk fallback webhook is missing. Send `/agent webhook` from this chat."
+    try:
+        expires_ms = int(extra.get("session_webhook_expired_time") or 0)
+    except (TypeError, ValueError):
+        expires_ms = 0
+    if expires_ms and expires_ms <= int(time.time() * 1000):
+        return None, "DingTalk session_webhook is expired. Send `/agent webhook` from this chat again."
+    return webhook, None
+
+
+def _binding_session_webhook(extra: dict | None) -> str | None:
+    """Return a non-expired DingTalk session webhook from binding metadata."""
+    webhook, _issue = _binding_session_webhook_status(extra)
+    return webhook
+
+
+def _job_profile_candidates(job: dict) -> list[str]:
+    """Return possible profile names for matching source-agent bindings."""
+    origin = _resolve_origin(job) or {}
+    candidates: list[str] = []
+    for key in ("profile_name",):
+        value = str(origin.get(key) or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    for key in ("run_profile", "profile", "owner_profile"):
+        value = str(job.get(key) or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
+def _resolve_dingtalk_origin_session_webhook_status(
+    job: dict,
+    chat_id: str,
+) -> tuple[str | None, str | None]:
+    """Resolve a DingTalk session webhook captured by ``/agent webhook``."""
+    origin = _resolve_origin(job) or {}
+    if str(origin.get("platform") or "").lower() != "dingtalk":
+        return None, None
+    target_chat_id = str(chat_id or origin.get("chat_id") or "").strip()
+    if not target_chat_id:
+        return None, None
+
+    try:
+        from gateway.source_agent_binding import SourceAgentBindingStore
+    except Exception as exc:
+        logger.debug("DingTalk origin webhook lookup unavailable: %s", exc)
+        return None, None
+
+    store = None
+    try:
+        store = SourceAgentBindingStore()
+        profile_candidates = _job_profile_candidates(job)
+        bindings = []
+        if profile_candidates:
+            seen_keys = set()
+            for profile_name in profile_candidates:
+                for binding in store.list_bindings(profile_name=profile_name):
+                    key = getattr(binding, "source_binding_key", None)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    bindings.append(binding)
+        else:
+            bindings = store.list_bindings()
+
+        matched_issue = None
+        for binding in bindings:
+            target = getattr(binding, "fallback_target", None) or {}
+            if not isinstance(target, dict):
+                continue
+            if str(target.get("platform") or "").lower() != "dingtalk":
+                continue
+            if str(target.get("chat_id") or "").strip() != target_chat_id:
+                continue
+            webhook, issue = _binding_session_webhook_status(
+                getattr(binding, "fallback_extra", None)
+            )
+            if webhook:
+                return webhook, None
+            matched_issue = issue or matched_issue
+        if matched_issue:
+            return None, matched_issue
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': failed to resolve DingTalk origin session_webhook: %s",
+            job.get("id", "?"),
+            exc,
+        )
+        return None, "failed to resolve DingTalk origin session_webhook"
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                pass
+    return None, None
+
+
+def _resolve_dingtalk_origin_session_webhook(job: dict, chat_id: str) -> str | None:
+    """Resolve a usable DingTalk session webhook for cron origin delivery."""
+    webhook, _issue = _resolve_dingtalk_origin_session_webhook_status(job, chat_id)
+    return webhook
+
+
+async def _send_dingtalk_session_webhook(session_webhook: str, content: str) -> dict:
+    """Send cron output through a captured DingTalk session webhook."""
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "httpx not installed"}
+
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {"title": "Hermes", "text": str(content or "")},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+            resp = await client.post(session_webhook, json=payload)
+        if resp.status_code >= 300:
+            return {
+                "error": (
+                    f"DingTalk session_webhook send failed HTTP "
+                    f"{resp.status_code}: {resp.text[:200]}"
+                )
+            }
+        return {"success": True, "platform": "dingtalk"}
+    except Exception as exc:
+        return {"error": f"DingTalk session_webhook send failed: {exc}"}
 
 
 # Media extension sets — audio routing is centralized in gateway.platforms.base
@@ -678,6 +842,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        chat_type = str(target.get("chat_type") or "").strip().lower()
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -711,12 +876,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        send_metadata = {}
+        if thread_id:
+            send_metadata["thread_id"] = thread_id
+        dingtalk_session_webhook = None
+        dingtalk_webhook_issue = None
+        if platform_name.lower() == "dingtalk":
+            if chat_type:
+                send_metadata["conversation_type"] = (
+                    "2" if chat_type in {"group", "channel", "thread", "forum"} else "1"
+                )
+            (
+                dingtalk_session_webhook,
+                dingtalk_webhook_issue,
+            ) = _resolve_dingtalk_origin_session_webhook_status(job, chat_id)
+            if dingtalk_session_webhook:
+                send_metadata["session_webhook"] = dingtalk_session_webhook
+        send_metadata_arg = send_metadata or None
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+        dingtalk_session_webhook_sent_text = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -724,7 +907,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
                     future = safe_schedule_threadsafe(
-                        runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
+                        runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata_arg),
                         loop,
                     )
                     if future is None:
@@ -762,7 +945,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         runtime_adapter,
                         chat_id,
                         media_files,
-                        send_metadata,
+                        send_metadata_arg,
                         loop,
                         job,
                         platform=platform,
@@ -778,8 +961,55 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
+            if dingtalk_session_webhook and (cleaned_delivery_content.strip() or not media_files):
+                try:
+                    result = asyncio.run(
+                        _send_dingtalk_session_webhook(
+                            dingtalk_session_webhook,
+                            cleaned_delivery_content,
+                        )
+                    )
+                except RuntimeError:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            _send_dingtalk_session_webhook(
+                                dingtalk_session_webhook,
+                                cleaned_delivery_content,
+                            ),
+                        )
+                        result = future.result(timeout=30)
+                except Exception as e:
+                    result = {"error": f"DingTalk session_webhook send failed: {e}"}
+
+                if result and not result.get("error"):
+                    dingtalk_session_webhook_sent_text = bool(cleaned_delivery_content.strip())
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via DingTalk session_webhook",
+                        job["id"], platform_name, chat_id,
+                    )
+                    if not media_files:
+                        delivered = True
+                else:
+                    logger.warning(
+                        "Job '%s': DingTalk session_webhook delivery to %s:%s failed (%s), falling back to standalone",
+                        job["id"], platform_name, chat_id,
+                        (result or {}).get("error", "unknown"),
+                    )
+
+        if not delivered:
+            if dingtalk_webhook_issue and not dingtalk_session_webhook:
+                msg = f"delivery error: {dingtalk_webhook_issue}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            standalone_content = "" if dingtalk_session_webhook_sent_text and media_files else cleaned_delivery_content
+            standalone_kwargs = {"thread_id": thread_id, "media_files": media_files}
+            if send_metadata_arg:
+                standalone_kwargs["metadata"] = send_metadata_arg
+            coro = _send_to_platform(platform, pconfig, chat_id, standalone_content, **standalone_kwargs)
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -789,7 +1019,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(platform, pconfig, chat_id, standalone_content, **standalone_kwargs),
+                    )
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
@@ -1204,7 +1437,7 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
-    with _job_profile_context(job_id, job.get("profile")):
+    with _job_profile_context(job_id, _job_run_profile(job)):
         return _run_job_impl(job)
 
 
@@ -1981,11 +2214,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         # stay parallel-safe.
         sequential_jobs = [
             j for j in due_jobs
-            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+            if (j.get("workdir") or "").strip() or _job_run_profile(j)
         ]
         parallel_jobs = [
             j for j in due_jobs
-            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+            if not ((j.get("workdir") or "").strip() or _job_run_profile(j))
         ]
 
         _results: list = []

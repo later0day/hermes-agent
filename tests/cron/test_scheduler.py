@@ -87,6 +87,23 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    def test_origin_delivery_preserves_chat_type_when_present(self):
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "dingtalk",
+                "chat_id": "cid-private",
+                "chat_type": "dm",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "dingtalk",
+            "chat_id": "cid-private",
+            "thread_id": None,
+            "chat_type": "dm",
+        }
+
     @pytest.mark.parametrize(
         ("platform", "env_var", "chat_id"),
         [
@@ -130,6 +147,28 @@ class TestResolveDeliveryTarget:
             "chat_id": chat_id,
             "thread_id": None,
         }
+
+    def test_dingtalk_home_target_ignores_non_conversation_id(self, monkeypatch):
+        for fallback_env in (
+            "MATRIX_HOME_ROOM",
+            "MATRIX_HOME_CHANNEL",
+            "TELEGRAM_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL",
+            "SLACK_HOME_CHANNEL",
+            "SIGNAL_HOME_CHANNEL",
+            "MATTERMOST_HOME_CHANNEL",
+            "SMS_HOME_CHANNEL",
+            "EMAIL_HOME_ADDRESS",
+            "BLUEBUBBLES_HOME_CHANNEL",
+            "FEISHU_HOME_CHANNEL",
+            "WECOM_HOME_CHANNEL",
+            "WEIXIN_HOME_CHANNEL",
+            "QQ_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(fallback_env, raising=False)
+        monkeypatch.setenv("DINGTALK_HOME_CHANNEL", "🦞🦞🦞")
+
+        assert _resolve_delivery_target({"deliver": "dingtalk"}) is None
 
     def test_bare_matrix_delivery_uses_matrix_home_room(self, monkeypatch):
         monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
@@ -835,6 +874,249 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
+
+    def test_dingtalk_origin_live_adapter_uses_bound_session_webhook(self):
+        """Cron origin delivery should reuse /agent webhook binding metadata."""
+        from concurrent.futures import Future
+
+        from gateway.config import Platform
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True))
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DINGTALK: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "dingtalk-live",
+            "deliver": "origin",
+            "origin": {
+                "platform": "dingtalk",
+                "chat_id": "cid-group",
+                "profile_name": "xcx",
+            },
+            "run_profile": "xcx",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._resolve_dingtalk_origin_session_webhook_status", return_value=("https://oapi.dingtalk.com/robot/sendBySession?session=abc", None)), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Report",
+                adapters={Platform.DINGTALK: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args.kwargs["metadata"] == {
+            "session_webhook": "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
+        }
+
+    def test_dingtalk_origin_webhook_resolves_from_source_binding_store(self):
+        """DingTalk cron origin should match the same source binding written by /agent webhook."""
+        from types import SimpleNamespace
+
+        from cron.scheduler import _resolve_dingtalk_origin_session_webhook
+
+        webhook = "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
+        binding = SimpleNamespace(
+            source_binding_key="source:dingtalk:group:cid-group:433670",
+            fallback_target={
+                "platform": "dingtalk",
+                "chat_id": "cid-group",
+                "chat_name": "北京哥们小程序告警",
+            },
+            fallback_extra={
+                "session_webhook": webhook,
+                "session_webhook_expired_time": 9999999999999,
+            },
+        )
+        store = MagicMock()
+        store.list_bindings.return_value = [binding]
+        store_cls = MagicMock(return_value=store)
+        job = {
+            "id": "dingtalk-lookup",
+            "deliver": "origin",
+            "origin": {
+                "platform": "dingtalk",
+                "chat_id": "cid-group",
+                "profile_name": "xcx",
+            },
+            "run_profile": "xcx",
+        }
+
+        with patch("gateway.source_agent_binding.SourceAgentBindingStore", store_cls):
+            assert _resolve_dingtalk_origin_session_webhook(job, "cid-group") == webhook
+
+        store.list_bindings.assert_called_once_with(profile_name="xcx")
+        store.close.assert_called_once()
+
+    def test_dingtalk_origin_standalone_uses_bound_session_webhook(self):
+        """Cron should not require global DINGTALK_WEBHOOK_URL when /agent webhook exists."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DINGTALK: pconfig}
+
+        job = {
+            "id": "dingtalk-standalone",
+            "deliver": "origin",
+            "origin": {
+                "platform": "dingtalk",
+                "chat_id": "cid-group",
+                "profile_name": "xcx",
+            },
+            "run_profile": "xcx",
+        }
+        direct_send = AsyncMock(return_value={"success": True})
+        standalone_send = AsyncMock(return_value={"error": "should not be called"})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._resolve_dingtalk_origin_session_webhook_status", return_value=("https://oapi.dingtalk.com/robot/sendBySession?session=abc", None)), \
+             patch("cron.scheduler._send_dingtalk_session_webhook", new=direct_send), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(job, "Report")
+
+        assert result is None
+        direct_send.assert_awaited_once_with(
+            "https://oapi.dingtalk.com/robot/sendBySession?session=abc",
+            "Report",
+        )
+        standalone_send.assert_not_awaited()
+
+    def test_dingtalk_origin_session_webhook_also_sends_media_files(self, tmp_path, monkeypatch):
+        """DingTalk session webhook text delivery must not swallow MEDIA files."""
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "report.pdf")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DINGTALK: pconfig}
+
+        job = {
+            "id": "dingtalk-media",
+            "deliver": "origin",
+            "origin": {
+                "platform": "dingtalk",
+                "chat_id": "cid-group",
+                "profile_name": "xcx",
+            },
+            "run_profile": "xcx",
+        }
+        webhook = "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
+        direct_send = AsyncMock(return_value={"success": True})
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._resolve_dingtalk_origin_session_webhook_status", return_value=(webhook, None)), \
+             patch("cron.scheduler._send_dingtalk_session_webhook", new=direct_send), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(job, f"Report\nMEDIA:{media_path}")
+
+        assert result is None
+        direct_send.assert_awaited_once_with(webhook, "Report")
+        standalone_send.assert_awaited_once()
+        args, kwargs = standalone_send.call_args
+        assert args[:4] == (Platform.DINGTALK, pconfig, "cid-group", "")
+        assert kwargs["media_files"] == [(str(media_path), False)]
+        assert kwargs["metadata"] == {"session_webhook": webhook}
+
+    def test_dingtalk_origin_media_only_skips_empty_session_webhook(self, tmp_path, monkeypatch):
+        """A media-only DingTalk cron result should go straight to native media delivery."""
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "chart.png")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DINGTALK: pconfig}
+
+        job = {
+            "id": "dingtalk-media-only",
+            "deliver": "origin",
+            "origin": {
+                "platform": "dingtalk",
+                "chat_id": "cid-private",
+                "chat_type": "dm",
+                "profile_name": "xcx",
+            },
+            "run_profile": "xcx",
+        }
+        webhook = "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
+        direct_send = AsyncMock(return_value={"success": True})
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._resolve_dingtalk_origin_session_webhook_status", return_value=(webhook, None)), \
+             patch("cron.scheduler._send_dingtalk_session_webhook", new=direct_send), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(job, f"MEDIA:{media_path}")
+
+        assert result is None
+        direct_send.assert_not_awaited()
+        standalone_send.assert_awaited_once()
+        args, kwargs = standalone_send.call_args
+        assert args[:4] == (Platform.DINGTALK, pconfig, "cid-private", "")
+        assert kwargs["media_files"] == [(str(media_path), False)]
+        assert kwargs["metadata"] == {
+            "conversation_type": "1",
+            "session_webhook": webhook,
+        }
+
+    def test_dingtalk_origin_expired_webhook_returns_actionable_error(self):
+        """Expired /agent webhook binding should not be reported as missing global webhook."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DINGTALK: pconfig}
+
+        job = {
+            "id": "dingtalk-expired",
+            "deliver": "origin",
+            "origin": {
+                "platform": "dingtalk",
+                "chat_id": "cid-group",
+                "profile_name": "xcx",
+            },
+            "run_profile": "xcx",
+        }
+        standalone_send = AsyncMock(return_value={"error": "should not be called"})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._resolve_dingtalk_origin_session_webhook_status", return_value=(None, "DingTalk session_webhook is expired. Send `/agent webhook` from this chat again.")), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(job, "Report")
+
+        assert result == (
+            "delivery error: DingTalk session_webhook is expired. "
+            "Send `/agent webhook` from this chat again."
+        )
+        standalone_send.assert_not_awaited()
 
 
 class TestDeliverResultErrorReturns:
@@ -2371,6 +2653,37 @@ class TestParallelTick:
 
         assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
         assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
+
+    def test_run_profile_jobs_are_not_parallelized(self):
+        """Jobs with profile aliases mutate runtime env and must stay serial."""
+        import threading
+
+        main_thread = threading.get_ident()
+        ran_on_main_thread = {}
+
+        def mock_run_job(job):
+            ran_on_main_thread[job["id"]] = threading.get_ident() == main_thread
+            return (True, "output", "response", None)
+
+        jobs = [
+            {"id": "run-profile-job", "name": "rp", "deliver": "local", "run_profile": "worker"},
+            {"id": "owner-profile-job", "name": "op", "deliver": "local", "owner_profile": "lead"},
+            {"id": "plain-job", "name": "plain", "deliver": "local"},
+        ]
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 3
+        assert ran_on_main_thread["run-profile-job"] is True
+        assert ran_on_main_thread["owner-profile-job"] is True
+        assert ran_on_main_thread["plain-job"] is False
 
     def test_max_parallel_env_var(self, monkeypatch):
         """HERMES_CRON_MAX_PARALLEL=1 should restore serial behaviour."""

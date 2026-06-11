@@ -17,6 +17,24 @@ class TestResolvePath:
         result = _resolve_path("foo/bar.py")
         assert result == (tmp_path / "foo" / "bar.py")
 
+    def test_relative_path_prefers_workspace_context(self, monkeypatch, tmp_path):
+        """Gateway profile workspace context wins over global TERMINAL_CWD."""
+        global_cwd = tmp_path / "global"
+        profile_cwd = tmp_path / "profiles" / "worker" / "workspace"
+        global_cwd.mkdir()
+        profile_cwd.mkdir(parents=True)
+        monkeypatch.setenv("TERMINAL_CWD", str(global_cwd))
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.file_tools import _resolve_path
+
+        tokens = set_session_vars(workspace_cwd=str(profile_cwd))
+        try:
+            result = _resolve_path("foo/bar.py")
+        finally:
+            clear_session_vars(tokens)
+
+        assert result == profile_cwd / "foo" / "bar.py"
+
     def test_absolute_path_ignores_terminal_cwd(self, monkeypatch, tmp_path):
         """Absolute paths are unaffected by TERMINAL_CWD."""
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))

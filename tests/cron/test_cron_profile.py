@@ -68,6 +68,8 @@ class TestCreateAndUpdateJobProfile:
 
         assert stored is not None
         assert stored["profile"] == "support"
+        assert stored["run_profile"] == "support"
+        assert stored["owner_profile"] == "support"
 
     def test_create_without_profile_preserves_old_behaviour(self, isolated_cron_profile_home):
         from cron.jobs import create_job, get_job
@@ -77,6 +79,8 @@ class TestCreateAndUpdateJobProfile:
 
         assert stored is not None
         assert stored.get("profile") is None
+        assert stored.get("run_profile") is None
+        assert stored["owner_profile"] == "default"
 
     def test_create_accepts_explicit_default(self, isolated_cron_profile_home):
         from cron.jobs import create_job, get_job
@@ -86,6 +90,8 @@ class TestCreateAndUpdateJobProfile:
 
         assert stored is not None
         assert stored["profile"] == "default"
+        assert stored["run_profile"] == "default"
+        assert stored["owner_profile"] == "default"
 
     def test_update_sets_and_clears_profile(self, isolated_cron_profile_home):
         from cron.jobs import create_job, get_job, update_job
@@ -95,11 +101,13 @@ class TestCreateAndUpdateJobProfile:
         stored = get_job(job["id"])
         assert stored is not None
         assert stored["profile"] == "support"
+        assert stored["run_profile"] == "support"
 
         update_job(job["id"], {"profile": ""})
         stored = get_job(job["id"])
         assert stored is not None
         assert stored["profile"] is None
+        assert stored["run_profile"] is None
 
     def test_update_rejects_missing_profile(self, isolated_cron_profile_home):
         from cron.jobs import create_job, update_job
@@ -123,6 +131,8 @@ class TestCronjobToolProfile:
         )
         assert created["success"] is True
         assert created["job"]["profile"] == "support"
+        assert created["job"]["run_profile"] == "support"
+        assert created["job"]["owner_profile"] == "support"
 
         listing = json.loads(cronjob(action="list"))
         assert listing["jobs"][0]["profile"] == "support"
@@ -144,6 +154,7 @@ class TestCronjobToolProfile:
 
         assert updated["success"] is True
         assert "profile" not in updated["job"]
+        assert "run_profile" not in updated["job"]
 
     def test_schema_advertises_profile(self):
         from tools.cronjob_tools import CRONJOB_SCHEMA
@@ -259,6 +270,30 @@ class TestRunJobProfileContext:
         assert observed["skip_context_files"] is True
         assert os.environ["HERMES_HOME"] == str(root)
         assert sched._get_hermes_home() == root
+
+    def test_run_job_uses_run_profile_when_legacy_profile_missing(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        import cron.scheduler as sched
+
+        root, profile_home = isolated_cron_profile_home
+        observed: dict = {}
+        self._install_agent_stubs(monkeypatch, observed)
+
+        job = {
+            "id": "run-profile",
+            "name": "run-profile-job",
+            "run_profile": "support",
+            "profile": None,
+            "schedule_display": "manual",
+        }
+
+        success, _output, _response, error = sched.run_job(job)
+
+        assert success is True, error
+        assert observed["dotenv_paths"] == [str(profile_home / ".env")]
+        assert observed["hermes_home_during_init"] == str(profile_home.resolve())
+        assert os.environ["HERMES_HOME"] == str(root)
 
     def test_profile_dotenv_environment_is_restored(
         self, isolated_cron_profile_home, monkeypatch

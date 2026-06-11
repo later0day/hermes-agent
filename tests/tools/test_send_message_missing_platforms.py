@@ -300,7 +300,10 @@ class TestSendDingtalk:
         client.post.assert_awaited_once()
         call_kwargs = client.post.await_args
         assert call_kwargs[0][0] == "https://oapi.dingtalk.com/robot/send?access_token=abc"
-        assert call_kwargs[1]["json"] == {"msgtype": "text", "text": {"content": "hello dingtalk"}}
+        assert call_kwargs[1]["json"] == {
+            "msgtype": "markdown",
+            "markdown": {"title": "Hermes", "text": "hello dingtalk"},
+        }
 
     def test_api_error_in_response_body(self):
         """DingTalk always returns HTTP 200 but signals errors via errcode."""
@@ -372,3 +375,43 @@ class TestSendDingtalk:
         assert result["success"] is True
         call_kwargs = client.post.await_args
         assert "access_token=env" in call_kwargs[0][0]
+
+    def test_source_binding_webhook_fallback(self):
+        resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
+        client_ctx, client = self._make_httpx_client(resp)
+
+        with patch("httpx.AsyncClient", return_value=client_ctx), \
+             patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": ""}, clear=False), \
+             patch(
+                 "tools.send_message_tool._resolve_dingtalk_bound_session_webhook",
+                 return_value="https://oapi.dingtalk.com/robot/send?access_token=bound",
+             ):
+            result = asyncio.run(_send_dingtalk({}, "cid-group", "hi from binding"))
+
+        assert result["success"] is True
+        call_kwargs = client.post.await_args
+        assert "access_token=bound" in call_kwargs[0][0]
+        assert call_kwargs[1]["json"] == {
+            "msgtype": "markdown",
+            "markdown": {"title": "Hermes", "text": "hi from binding"},
+        }
+
+    def test_source_binding_webhook_wins_over_global_webhook(self):
+        resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
+        client_ctx, client = self._make_httpx_client(resp)
+
+        with patch("httpx.AsyncClient", return_value=client_ctx), \
+             patch.dict(
+                 os.environ,
+                 {"DINGTALK_WEBHOOK_URL": "https://oapi.dingtalk.com/robot/send?access_token=global"},
+                 clear=False,
+             ), \
+             patch(
+                 "tools.send_message_tool._resolve_dingtalk_bound_session_webhook",
+                 return_value="https://oapi.dingtalk.com/robot/send?access_token=bound",
+             ):
+            result = asyncio.run(_send_dingtalk({}, "cid-group", "hi from binding"))
+
+        assert result["success"] is True
+        call_kwargs = client.post.await_args
+        assert "access_token=bound" in call_kwargs[0][0]

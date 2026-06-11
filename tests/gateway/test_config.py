@@ -736,6 +736,211 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_bridges_dingtalk_allow_all_users_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "dingtalk:\n"
+            "  allow_all_users: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOW_ALL_USERS", raising=False)
+
+        load_gateway_config()
+
+        import os
+        assert os.environ.get("DINGTALK_ALLOW_ALL_USERS") == "true"
+
+    def test_bridges_dingtalk_card_template_id_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "dingtalk:\n"
+            "  card_template_id: tmpl-123\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        cfg = load_gateway_config()
+
+        assert cfg.platforms[Platform.DINGTALK].extra["card_template_id"] == "tmpl-123"
+
+    def test_bridges_dingtalk_reply_at_sender_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "dingtalk:\n"
+            "  reply_at_sender: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        cfg = load_gateway_config()
+
+        assert cfg.platforms[Platform.DINGTALK].extra["reply_at_sender"] is True
+
+    def test_bridges_dingtalk_reserved_app_fields_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "dingtalk:\n"
+            "  app_code: app-123\n"
+            "  corp_id: corp-123\n"
+            "  agent_id: agent-123\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        cfg = load_gateway_config()
+
+        assert cfg.platforms[Platform.DINGTALK].extra["app_code"] == "app-123"
+        assert cfg.platforms[Platform.DINGTALK].extra["corp_id"] == "corp-123"
+        assert cfg.platforms[Platform.DINGTALK].extra["agent_id"] == "agent-123"
+
+    def test_dingtalk_robot_code_env_seeds_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "sec")
+        monkeypatch.setenv("DINGTALK_ROBOT_CODE", "robot-123")
+
+        cfg = load_gateway_config()
+
+        assert cfg.platforms[Platform.DINGTALK].extra["robot_code"] == "robot-123"
+
+    def test_dingtalk_blank_robot_code_env_is_ignored(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", " cid ")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", " sec ")
+        monkeypatch.setenv("DINGTALK_ROBOT_CODE", "   ")
+
+        cfg = load_gateway_config()
+
+        extra = cfg.platforms[Platform.DINGTALK].extra
+        assert extra["client_id"] == "cid"
+        assert extra["client_secret"] == "sec"
+        assert "robot_code" not in extra
+
+    def test_dingtalk_home_channel_from_config_yaml_wins_over_stale_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "dingtalk:\n"
+            "  home_channel: cidUKHyy+TSBvzQY6P34TpjPA==\n"
+            "  home_channel_name: 赣神魔\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "sec")
+        monkeypatch.setenv("DINGTALK_HOME_CHANNEL", "🦞🦞🦞")
+
+        cfg = load_gateway_config()
+
+        home = cfg.platforms[Platform.DINGTALK].home_channel
+        assert home is not None
+        assert home.chat_id == "cidUKHyy+TSBvzQY6P34TpjPA=="
+        assert home.name == "赣神魔"
+
+    def test_dingtalk_valid_home_channel_env_overrides_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "dingtalk:\n"
+            "  home_channel: cidOLD+TSBvzQY6P34TpjPA==\n"
+            "  home_channel_name: Old\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "sec")
+        monkeypatch.setenv("DINGTALK_HOME_CHANNEL", "cidNEW+TSBvzQY6P34TpjPA==")
+        monkeypatch.setenv("DINGTALK_HOME_CHANNEL_NAME", "Env Home")
+
+        cfg = load_gateway_config()
+
+        home = cfg.platforms[Platform.DINGTALK].home_channel
+        assert home is not None
+        assert home.chat_id == "cidNEW+TSBvzQY6P34TpjPA=="
+        assert home.name == "Env Home"
+
+    def test_dingtalk_invalid_home_channel_env_is_ignored(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "sec")
+        monkeypatch.setenv("DINGTALK_HOME_CHANNEL", "🦞🦞🦞")
+
+        cfg = load_gateway_config()
+
+        assert cfg.platforms[Platform.DINGTALK].home_channel is None
+
+    def test_dingtalk_invalid_platforms_home_channel_is_ignored(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  dingtalk:\n"
+            "    enabled: true\n"
+            "    home_channel:\n"
+            "      chat_id: 🦞🦞🦞\n"
+            "      name: stale\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "sec")
+
+        cfg = load_gateway_config()
+
+        assert cfg.platforms[Platform.DINGTALK].home_channel is None
+
+    def test_dingtalk_valid_platforms_home_channel_is_preserved(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  dingtalk:\n"
+            "    enabled: true\n"
+            "    home_channel:\n"
+            "      chat_id: cidUKHyy+TSBvzQY6P34TpjPA==\n"
+            "      name: 赣神魔\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "sec")
+
+        cfg = load_gateway_config()
+
+        home = cfg.platforms[Platform.DINGTALK].home_channel
+        assert home is not None
+        assert home.chat_id == "cidUKHyy+TSBvzQY6P34TpjPA=="
+        assert home.name == "赣神魔"
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

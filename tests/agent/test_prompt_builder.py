@@ -828,6 +828,18 @@ class TestPromptBuilderConstants:
         assert "MEDIA:" in hint
         assert "Markdown" in hint
 
+    def test_platform_hints_dingtalk_media(self):
+        hint = PLATFORM_HINTS["dingtalk"]
+        assert "DingTalk" in hint
+        assert "MEDIA:/absolute/path/to/file" in hint
+        assert "native robot messages" in hint
+        assert "image messages" in hint
+        assert "native audio/video messages" in hint
+        assert ".mp4" in hint
+        assert "file messages" in hint
+        assert "target='origin'" in hint
+        assert "target='dingtalk'" in hint
+
     def test_platform_hints_webui(self):
         hint = PLATFORM_HINTS["webui"]
         assert "WebUI" in hint
@@ -1245,6 +1257,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
-

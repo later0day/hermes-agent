@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from utils import atomic_replace
 
 
@@ -143,6 +143,21 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+def _sanitize_credential_mapping(values: dict[str, str]) -> dict[str, str]:
+    cleaned_values: dict[str, str] = {}
+    for key, value in values.items():
+        if value is None:
+            continue
+        text = str(value)
+        if any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
+            try:
+                text.encode("ascii")
+            except UnicodeEncodeError:
+                text = text.encode("ascii", errors="ignore").decode("ascii")
+        cleaned_values[key] = text
+    return cleaned_values
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
@@ -154,6 +169,13 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     # typically come from copy-pasting keys from PDFs or rich-text editors
     # that substitute Unicode lookalike glyphs (e.g. ʋ U+028B for v).
     _sanitize_loaded_credentials()
+
+
+def _dotenv_values_with_fallback(path: Path) -> dict:
+    try:
+        return dict(dotenv_values(path, encoding="utf-8"))
+    except UnicodeDecodeError:
+        return dict(dotenv_values(path, encoding="latin-1"))
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
@@ -245,6 +267,52 @@ def load_hermes_dotenv(
     _apply_external_secret_sources(home_path)
 
     return loaded
+
+
+def collect_hermes_dotenv_values(
+    *,
+    hermes_home: str | os.PathLike | None = None,
+    project_env: str | os.PathLike | None = None,
+) -> dict[str, str]:
+    """Collect Hermes .env values without mutating ``os.environ``.
+
+    Precedence mirrors ``load_hermes_dotenv``: user ``.env`` owns configured
+    values, while project ``.env`` is only a fallback when a user file exists.
+    External secret sources intentionally remain runtime injections and are
+    not surfaced here.
+    """
+    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    user_env = home_path / ".env"
+    project_env_path = Path(project_env) if project_env else None
+
+    if user_env.exists():
+        _sanitize_env_file_if_needed(user_env)
+    if project_env_path and project_env_path.exists():
+        _sanitize_env_file_if_needed(project_env_path)
+
+    values: dict[str, str] = {}
+    user_values: dict[str, str] = {}
+    if user_env.exists():
+        user_values = {
+            str(k): str(v)
+            for k, v in _dotenv_values_with_fallback(user_env).items()
+            if k and v is not None
+        }
+        values.update(user_values)
+
+    if project_env_path and project_env_path.exists():
+        project_values = {
+            str(k): str(v)
+            for k, v in _dotenv_values_with_fallback(project_env_path).items()
+            if k and v is not None
+        }
+        if user_values:
+            for key, value in project_values.items():
+                values.setdefault(key, value)
+        else:
+            values.update(project_values)
+
+    return _sanitize_credential_mapping(values)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

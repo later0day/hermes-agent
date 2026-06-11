@@ -1,4 +1,4 @@
-"""Regression tests for dashboard cron job profile routing."""
+"""Regression tests for dashboard cron job profile ownership routing."""
 
 import pytest
 from fastapi import HTTPException
@@ -22,7 +22,7 @@ def isolated_profiles(tmp_path, monkeypatch):
     return {"default": default_home, "worker_alpha": worker_home}
 
 
-def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_profiles):
+def test_call_cron_for_profile_uses_single_store_and_owner_filter(isolated_profiles):
     from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
@@ -39,11 +39,13 @@ def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_prof
     )
 
     assert job["profile"] == "worker_alpha"
+    assert job["run_profile"] == "worker_alpha"
+    assert job["owner_profile"] == "worker_alpha"
     assert job["profile_name"] == "worker_alpha"
     assert job["hermes_home"] == str(isolated_profiles["worker_alpha"])
     assert job["is_default_profile"] is False
-    assert (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
-    assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    assert not (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
 
     assert cron_jobs.CRON_DIR == old_cron_dir
     assert cron_jobs.JOBS_FILE == old_jobs_file
@@ -74,9 +76,11 @@ async def test_list_cron_jobs_all_includes_default_and_named_profiles(isolated_p
 
     assert set(by_id) >= {default_job["id"], worker_job["id"]}
     assert by_id[default_job["id"]]["profile"] == "default"
+    assert by_id[default_job["id"]]["owner_profile"] == "default"
     assert by_id[default_job["id"]]["is_default_profile"] is True
     assert by_id[default_job["id"]]["hermes_home"] == str(isolated_profiles["default"])
     assert by_id[worker_job["id"]]["profile"] == "worker_alpha"
+    assert by_id[worker_job["id"]]["owner_profile"] == "worker_alpha"
     assert by_id[worker_job["id"]]["is_default_profile"] is False
     assert by_id[worker_job["id"]]["hermes_home"] == str(isolated_profiles["worker_alpha"])
 
@@ -104,6 +108,7 @@ async def test_list_cron_jobs_specific_profile_filters_results(isolated_profiles
 
     assert [job["id"] for job in jobs] == [worker_job["id"]]
     assert jobs[0]["profile"] == "worker_alpha"
+    assert jobs[0]["owner_profile"] == "worker_alpha"
 
 
 @pytest.mark.asyncio
@@ -184,6 +189,56 @@ async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_pro
     remaining_worker = await web_server.list_cron_jobs(profile="worker_alpha")
     assert [job["id"] for job in remaining_default] == [default_job["id"]]
     assert remaining_worker == []
+
+
+@pytest.mark.asyncio
+async def test_cron_create_can_separate_owner_and_run_profile(isolated_profiles):
+    from hermes_cli import web_server
+
+    body = web_server.CronJobCreate(
+        prompt="owned by default, run as worker",
+        schedule="every 1h",
+        name="split-owner-runner",
+        run_profile="worker_alpha",
+    )
+
+    job = await web_server.create_cron_job(body, profile="default")
+    default_jobs = await web_server.list_cron_jobs(profile="default")
+    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+
+    assert job["owner_profile"] == "default"
+    assert job["run_profile"] == "worker_alpha"
+    assert job["profile"] == "worker_alpha"
+    assert [j["id"] for j in default_jobs] == [job["id"]]
+    assert worker_jobs == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_profile_field_counts_as_owner_when_missing_owner(isolated_profiles):
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    web_server._call_cron_store(
+        "save_jobs",
+        [
+            {
+                "id": "legacyjob123",
+                "name": "legacy profile job",
+                "prompt": "x",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "schedule_display": "every 60m",
+                "enabled": True,
+                "profile": "worker_alpha",
+            }
+        ],
+    )
+
+    jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+
+    assert [job["id"] for job in jobs] == ["legacyjob123"]
+    assert jobs[0]["owner_profile"] == "worker_alpha"
+    assert jobs[0]["run_profile"] == "worker_alpha"
+    assert cron_jobs.JOBS_FILE != isolated_profiles["worker_alpha"] / "cron" / "jobs.json"
 
 
 @pytest.mark.asyncio

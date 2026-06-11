@@ -433,6 +433,57 @@ class TestLargeImageHandling:
         # Base64 expansion means output is ~4/3 of input, plus header.
         assert len(url) > 200_000
 
+    def test_large_image_proactively_resizes_when_threshold_exceeded(self, tmp_path: Path):
+        img = tmp_path / "large.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 1_000)
+
+        with patch(
+            "tools.vision_tools._resize_image_for_vision",
+            return_value="data:image/png;base64,small",
+        ) as resize:
+            parts, skipped = build_native_content_parts(
+                "hi",
+                [str(img)],
+                max_base64_bytes=100,
+            )
+
+        assert skipped == []
+        resize.assert_called_once()
+        assert parts[1]["image_url"]["url"] == "data:image/png;base64,small"
+
+    def test_native_resize_threshold_zero_disables_proactive_resize(self, tmp_path: Path):
+        img = tmp_path / "large.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 1_000)
+
+        with patch("tools.vision_tools._resize_image_for_vision") as resize:
+            parts, skipped = build_native_content_parts(
+                "hi",
+                [str(img)],
+                max_base64_bytes=0,
+            )
+
+        assert skipped == []
+        resize.assert_not_called()
+        assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_native_resize_keeps_original_when_resize_does_not_help(self, tmp_path: Path):
+        img = tmp_path / "large.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 1_000)
+
+        with patch(
+            "tools.vision_tools._resize_image_for_vision",
+            return_value="data:image/png;base64," + ("A" * 5_000),
+        ):
+            parts, skipped = build_native_content_parts(
+                "hi",
+                [str(img)],
+                max_base64_bytes=100,
+            )
+
+        assert skipped == []
+        assert len(parts[1]["image_url"]["url"]) < 5_000
+        assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
     def test_missing_file_returns_none(self, tmp_path: Path):
         from agent import image_routing as _ir
         missing = tmp_path / "does_not_exist.png"

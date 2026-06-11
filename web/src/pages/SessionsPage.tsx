@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
+  ProfileInfo,
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
@@ -40,6 +41,7 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -262,6 +264,10 @@ function SessionRow({
   isExpanded,
   onToggle,
   onDelete,
+  profiles,
+  onBind,
+  onClearBinding,
+  onCreateTask,
   resumeInChatEnabled,
 }: {
   session: SessionInfo;
@@ -270,6 +276,10 @@ function SessionRow({
   isExpanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  profiles: ProfileInfo[];
+  onBind: (session: SessionInfo, profile: string) => void;
+  onClearBinding: (session: SessionInfo) => void;
+  onCreateTask: (session: SessionInfo, profile: string) => void;
   resumeInChatEnabled: boolean;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
@@ -277,6 +287,13 @@ function SessionRow({
   const [error, setError] = useState<string | null>(null);
   const { t } = useI18n();
   const navigate = useNavigate();
+  const [selectedProfile, setSelectedProfile] = useState(
+    session.bound_profile || "default",
+  );
+
+  useEffect(() => {
+    setSelectedProfile(session.bound_profile || "default");
+  }, [session.bound_profile, session.id]);
 
   useEffect(() => {
     if (isExpanded && messages === null && !loading) {
@@ -397,6 +414,48 @@ function SessionRow({
           <div className="flex flex-wrap items-center gap-2 sm:hidden">
             {actionButtons}
           </div>
+
+          {session.can_bind_profile && session.source_binding_key && (
+            <div
+              className="flex flex-wrap items-center gap-1.5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Badge tone="outline" className="text-xs">
+                agent: {session.bound_profile || "default"}
+              </Badge>
+              <Select
+                value={selectedProfile}
+                onValueChange={setSelectedProfile}
+              >
+                {profiles.map((profile) => (
+                  <SelectOption key={profile.name} value={profile.name}>
+                    {profile.name}
+                  </SelectOption>
+                ))}
+              </Select>
+              <Button
+                size="xs"
+                outlined
+                onClick={() => onBind(session, selectedProfile)}
+              >
+                Bind
+              </Button>
+              <Button
+                size="xs"
+                ghost
+                onClick={() => onClearBinding(session)}
+              >
+                Clear
+              </Button>
+              <Button
+                size="xs"
+                outlined
+                onClick={() => onCreateTask(session, selectedProfile)}
+              >
+                Task
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -478,6 +537,7 @@ function SessionsPagination({
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -528,6 +588,13 @@ export default function SessionsPage() {
   useEffect(() => {
     loadSessions(page);
   }, [loadSessions, page]);
+
+  useEffect(() => {
+    api
+      .getProfiles()
+      .then((res) => setProfiles(res.profiles))
+      .catch(() => setProfiles([]));
+  }, []);
 
   useEffect(() => {
     const loadOverview = () => {
@@ -596,6 +663,79 @@ export default function SessionsPage() {
       ],
     ),
   });
+
+  const handleBindSession = useCallback(
+    async (session: SessionInfo, profile: string) => {
+      if (!session.source_binding_key) return;
+      try {
+        await api.bindSourceAgent({
+          source_binding_key: session.source_binding_key,
+          profile_name: profile,
+        });
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === session.id ? { ...s, bound_profile: profile } : s,
+          ),
+        );
+        showToast(`Bound to ${profile}`, "success");
+      } catch (e) {
+        showToast(`${t.status.error}: ${e}`, "error");
+      }
+    },
+    [showToast, t.status.error],
+  );
+
+  const handleClearSessionBinding = useCallback(
+    async (session: SessionInfo) => {
+      if (!session.source_binding_key) return;
+      try {
+        await api.clearSourceAgentBinding(session.source_binding_key);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === session.id ? { ...s, bound_profile: "default" } : s,
+          ),
+        );
+        showToast("Binding cleared", "success");
+      } catch (e) {
+        showToast(`${t.status.error}: ${e}`, "error");
+      }
+    },
+    [showToast, t.status.error],
+  );
+
+  const handleCreateSessionTask = useCallback(
+    async (session: SessionInfo, profile: string) => {
+      if (!session.source_binding_key) return;
+      const fallbackText =
+        session.title && session.title !== "Untitled"
+          ? session.title
+          : session.preview || "";
+      const task = window.prompt(
+        `Create Kanban task for ${profile}`,
+        fallbackText.trim(),
+      );
+      if (task === null) return;
+      const trimmed = task.trim();
+      if (!trimmed) {
+        showToast("Task text is required", "error");
+        return;
+      }
+      try {
+        const result = await api.createSourceBindingTask({
+          source_binding_key: session.source_binding_key,
+          profile_name: profile,
+          task: trimmed,
+        });
+        showToast(
+          `Created Kanban task ${result.task_id} for ${result.profile_name}`,
+          "success",
+        );
+      } catch (e) {
+        showToast(`${t.status.error}: ${e}`, "error");
+      }
+    },
+    [showToast, t.status.error],
+  );
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -850,6 +990,10 @@ export default function SessionsPage() {
                     setExpandedId((prev) => (prev === s.id ? null : s.id))
                   }
                   onDelete={() => sessionDelete.requestDelete(s.id)}
+                  profiles={profiles}
+                  onBind={handleBindSession}
+                  onClearBinding={handleClearSessionBinding}
+                  onCreateTask={handleCreateSessionTask}
                   resumeInChatEnabled={resumeInChatEnabled}
                 />
               ))}

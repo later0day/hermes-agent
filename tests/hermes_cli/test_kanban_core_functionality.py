@@ -11,6 +11,7 @@ parity across every registered verb.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -630,6 +631,39 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
     finally:
         conn1.close()
         conn2.close()
+
+
+def test_notify_claim_skips_write_transaction_when_no_events(kanban_home, monkeypatch):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="w")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="123")
+
+        real_write_txn = kb.write_txn
+        write_calls = 0
+
+        @contextlib.contextmanager
+        def counting_write_txn(txn_conn):
+            nonlocal write_calls
+            write_calls += 1
+            with real_write_txn(txn_conn) as active_conn:
+                yield active_conn
+
+        monkeypatch.setattr(kb, "write_txn", counting_write_txn)
+
+        old_cursor, claimed_cursor, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed", "blocked"],
+        )
+
+        assert old_cursor == claimed_cursor == 0
+        assert events == []
+        assert write_calls == 0
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

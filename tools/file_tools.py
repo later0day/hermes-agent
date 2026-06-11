@@ -138,7 +138,13 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     if live:
         base = Path(live).expanduser()
     else:
-        raw = os.environ.get("TERMINAL_CWD")
+        try:
+            from gateway.session_context import get_workspace_cwd
+
+            context_cwd = get_workspace_cwd("")
+        except Exception:
+            context_cwd = ""
+        raw = context_cwd or os.environ.get("TERMINAL_CWD")
         base = Path(raw).expanduser() if raw else Path(os.getcwd())
     if not base.is_absolute():
         # A relative base (".", "./sub", "..") is anchored to the process cwd

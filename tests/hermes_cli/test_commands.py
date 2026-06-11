@@ -116,6 +116,20 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_agent_delegate_and_swarm_gateway_commands_resolve(self):
+        agent = resolve_command("agent")
+        delegate = resolve_command("delegate")
+        swarm = resolve_command("swarm")
+        assert agent is not None
+        assert agent.name == "agent"
+        assert agent.gateway_only is True
+        assert delegate is not None
+        assert delegate.name == "delegate"
+        assert delegate.gateway_only is True
+        assert swarm is not None
+        assert swarm.name == "swarm"
+        assert swarm.gateway_config_gate == "gateway.swarm_command"
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
@@ -189,6 +203,11 @@ class TestGatewayKnownCommands:
         assert "bg" in GATEWAY_KNOWN_COMMANDS
         assert "background" in GATEWAY_KNOWN_COMMANDS
 
+    def test_agent_delegate_and_swarm_are_gateway_known(self):
+        assert "agent" in GATEWAY_KNOWN_COMMANDS
+        assert "delegate" in GATEWAY_KNOWN_COMMANDS
+        assert "swarm" in GATEWAY_KNOWN_COMMANDS
+
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
 
@@ -214,6 +233,11 @@ class TestGatewayHelpLines:
         bg_line = [l for l in lines if "/background" in l]
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
+
+    def test_includes_agent_and_delegate_commands(self):
+        joined = "\n".join(gateway_help_lines())
+        assert "`/agent [status|list|use|clear|webhook|create|delete]`" in joined
+        assert "`/delegate [--board b] [--skill s] [--workspace mode] [--priority n] [--max-runtime d] <profile|auto> <task>`" in joined
 
 
 class TestTelegramBotCommands:

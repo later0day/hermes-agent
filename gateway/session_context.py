@@ -51,11 +51,24 @@ _UNSET: Any = object()
 _SESSION_PLATFORM: ContextVar = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
 _SESSION_CHAT_ID: ContextVar = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
 _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
+_SESSION_CHAT_TYPE: ContextVar = ContextVar("HERMES_SESSION_CHAT_TYPE", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+_SESSION_WORKSPACE_CWD: ContextVar = ContextVar(
+    "HERMES_SESSION_WORKSPACE_CWD",
+    default=_UNSET,
+)
+_SESSION_DINGTALK_WEBHOOK: ContextVar = ContextVar(
+    "HERMES_SESSION_DINGTALK_WEBHOOK",
+    default=_UNSET,
+)
+_SESSION_DINGTALK_WEBHOOK_EXPIRES: ContextVar = ContextVar(
+    "HERMES_SESSION_DINGTALK_WEBHOOK_EXPIRES",
+    default=_UNSET,
+)
 # ID of the message that triggered the current turn. Used as a reply anchor
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
@@ -71,11 +84,15 @@ _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
+    "HERMES_SESSION_CHAT_TYPE": _SESSION_CHAT_TYPE,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
+    "HERMES_SESSION_WORKSPACE_CWD": _SESSION_WORKSPACE_CWD,
+    "HERMES_SESSION_DINGTALK_WEBHOOK": _SESSION_DINGTALK_WEBHOOK,
+    "HERMES_SESSION_DINGTALK_WEBHOOK_EXPIRES": _SESSION_DINGTALK_WEBHOOK_EXPIRES,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -102,11 +119,15 @@ def set_session_vars(
     platform: str = "",
     chat_id: str = "",
     chat_name: str = "",
+    chat_type: str = "",
     thread_id: str = "",
     user_id: str = "",
     user_name: str = "",
     session_key: str = "",
+    workspace_cwd: str = "",
     message_id: str = "",
+    dingtalk_session_webhook: str = "",
+    dingtalk_session_webhook_expires: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -120,10 +141,14 @@ def set_session_vars(
         _SESSION_PLATFORM.set(platform),
         _SESSION_CHAT_ID.set(chat_id),
         _SESSION_CHAT_NAME.set(chat_name),
+        _SESSION_CHAT_TYPE.set(chat_type),
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
+        _SESSION_WORKSPACE_CWD.set(workspace_cwd),
+        _SESSION_DINGTALK_WEBHOOK.set(dingtalk_session_webhook),
+        _SESSION_DINGTALK_WEBHOOK_EXPIRES.set(dingtalk_session_webhook_expires),
         _SESSION_MESSAGE_ID.set(message_id),
     ]
     return tokens
@@ -144,10 +169,14 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PLATFORM,
         _SESSION_CHAT_ID,
         _SESSION_CHAT_NAME,
+        _SESSION_CHAT_TYPE,
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
+        _SESSION_WORKSPACE_CWD,
+        _SESSION_DINGTALK_WEBHOOK,
+        _SESSION_DINGTALK_WEBHOOK_EXPIRES,
         _SESSION_MESSAGE_ID,
     ):
         var.set("")
@@ -177,3 +206,8 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_workspace_cwd(default: str = "") -> str:
+    """Return the profile-scoped gateway workspace cwd for tool execution."""
+    return get_session_env("HERMES_SESSION_WORKSPACE_CWD", default)

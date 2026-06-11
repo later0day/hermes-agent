@@ -96,6 +96,29 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   return <Navigate to="/sessions" replace />;
 }
 
+function CockpitSidebarFallback() {
+  return (
+    <div className="flex h-full min-h-[16rem] flex-col justify-between gap-4 p-4 text-midground/50">
+      <div className="space-y-2">
+        <Typography
+          className="font-mondwest text-display text-xs tracking-[0.12em] text-midground/70"
+        >
+          Cockpit Rail
+        </Typography>
+        <Typography className="text-xs normal-case tracking-normal text-muted-foreground">
+          Install a dashboard plugin that registers the sidebar slot to fill
+          this cockpit panel.
+        </Typography>
+      </div>
+
+      <div
+        aria-hidden
+        className="aspect-[3/4] w-full border border-dashed border-current/25 opacity-50"
+      />
+    </div>
+  );
+}
+
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
   labelKey: "chat",
@@ -679,6 +702,24 @@ export default function App() {
               <SidebarFooter status={sidebarStatus} />
             </div>
           </aside>
+
+          {layoutVariant === "cockpit" && (
+            <aside
+              aria-label="Cockpit status"
+              className={cn(
+                "hidden h-dvh max-h-dvh w-[260px] shrink-0 flex-col overflow-y-auto lg:flex",
+                "border-r border-current/15",
+                "bg-background-base/70 backdrop-blur-sm",
+              )}
+              style={{
+                background: "var(--component-sidebar-background)",
+                clipPath: "var(--component-sidebar-clip-path)",
+                borderImage: "var(--component-sidebar-border-image)",
+              }}
+            >
+              <PluginSlot name="sidebar" fallback={<CockpitSidebarFallback />} />
+            </aside>
+          )}
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div

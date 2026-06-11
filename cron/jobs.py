@@ -150,8 +150,17 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
-    profile = _coerce_job_text(normalized.get("profile")).strip()
-    normalized["profile"] = profile or None
+    run_profile = _coerce_job_text(normalized.get("run_profile")).strip()
+    if not run_profile:
+        run_profile = _coerce_job_text(normalized.get("profile")).strip()
+    normalized["run_profile"] = run_profile or None
+    # Backward compatibility: existing scheduler/runtime code reads `profile`.
+    normalized["profile"] = normalized["run_profile"]
+
+    owner_profile = _coerce_job_text(normalized.get("owner_profile")).strip()
+    if not owner_profile:
+        owner_profile = normalized["run_profile"] or "default"
+    normalized["owner_profile"] = owner_profile
 
     return normalized
 
@@ -528,6 +537,19 @@ def _normalize_profile(profile: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _normalize_owner_profile(owner_profile: Optional[str], *, fallback: Optional[str] = None) -> str:
+    """Normalize the dashboard/API owner for a cron job.
+
+    `owner_profile` controls management visibility only. Runtime execution is
+    controlled by `run_profile` / the legacy `profile` field.
+    """
+    raw = str(owner_profile if owner_profile is not None else (fallback or "default")).strip()
+    if not raw:
+        raw = fallback or "default"
+    normalized = _normalize_profile(raw)
+    return normalized or "default"
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -545,6 +567,8 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
+    owner_profile: Optional[str] = None,
+    run_profile: Optional[str] = None,
     no_agent: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -586,7 +610,11 @@ def create_job(
                 With ``no_agent=True``, ``workdir`` is still applied as the
                 script's cwd so relative paths inside the script behave
                 predictably.
-        profile: Optional Hermes profile name. When set, the job runs with
+        profile: Optional Hermes profile name. Legacy alias for run_profile.
+        owner_profile: Optional Hermes profile that owns/manages the job in
+                dashboard/API views. Defaults to run_profile when set, otherwise
+                ``default``. This does not affect runtime execution.
+        run_profile: Optional Hermes profile name. When set, the job runs with
                 that profile's HERMES_HOME so profile-specific config,
                 credentials, scripts, skills, and memory paths resolve
                 consistently. ``default`` selects the root profile; empty /
@@ -628,7 +656,12 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
-    normalized_profile = _normalize_profile(profile)
+    requested_run_profile = run_profile if run_profile is not None else profile
+    normalized_profile = _normalize_profile(requested_run_profile)
+    normalized_owner_profile = _normalize_owner_profile(
+        owner_profile,
+        fallback=normalized_profile or "default",
+    )
     normalized_no_agent = bool(no_agent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -683,6 +716,10 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "owner_profile": normalized_owner_profile,
+        "run_profile": normalized_profile,
+        # Legacy runtime field. Keep mirrored to run_profile until all callers
+        # have moved to the explicit name.
         "profile": normalized_profile,
     }
 
@@ -773,14 +810,29 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
 
-        # Validate / normalize profile if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "profile" in updates:
-            _profile = updates["profile"]
+        # Validate / normalize runtime profile if present in updates. Empty
+        # string or None means "clear the field" (restore old behaviour).
+        profile_update_supplied = "profile" in updates or "run_profile" in updates
+        if profile_update_supplied:
+            _profile = updates.get("run_profile") if "run_profile" in updates else updates.get("profile")
             if _profile is None or _profile == "" or _profile is False:
-                updates["profile"] = None
+                normalized_profile = None
             else:
-                updates["profile"] = _normalize_profile(_profile)
+                normalized_profile = _normalize_profile(_profile)
+            updates["profile"] = normalized_profile
+            updates["run_profile"] = normalized_profile
+
+        if "owner_profile" in updates:
+            existing_owner = (
+                job.get("owner_profile")
+                or job.get("run_profile")
+                or job.get("profile")
+                or "default"
+            )
+            updates["owner_profile"] = _normalize_owner_profile(
+                updates.get("owner_profile"),
+                fallback=existing_owner,
+            )
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
@@ -1006,7 +1058,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+    jobs = [_normalize_job_record(j) for j in copy.deepcopy(raw_jobs)]
     due = []
     needs_save = False
 

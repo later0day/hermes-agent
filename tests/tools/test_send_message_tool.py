@@ -27,8 +27,12 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    SEND_MESSAGE_SCHEMA,
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _resolve_dingtalk_bound_session_webhook,
+    _send_dingtalk,
+    _send_dingtalk_with_media,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -226,6 +230,136 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+        )
+
+    def test_bare_dingtalk_without_home_channel_uses_actionable_error(self):
+        dingtalk_cfg = SimpleNamespace(
+            enabled=True,
+            token=None,
+            extra={"client_id": "cid", "client_secret": "sec"},
+        )
+        config = SimpleNamespace(
+            platforms={Platform.DINGTALK: dingtalk_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "dingtalk",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "dingtalk:赣神魔" in result["error"]
+        assert "dingtalk.home_channel" in result["error"]
+
+    def test_schema_tells_live_gateway_calls_to_use_origin(self):
+        assert "target='origin'" in SEND_MESSAGE_SCHEMA["description"]
+        assert "bare platform" in SEND_MESSAGE_SCHEMA["description"]
+        assert "'origin'" in SEND_MESSAGE_SCHEMA["parameters"]["properties"]["target"]["description"]
+
+    def test_origin_target_requires_gateway_session_context(self):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": "origin",
+                    "message": "hello",
+                }
+            )
+        )
+
+        assert "live gateway/IM conversation" in result["error"]
+
+    def test_origin_target_uses_current_dingtalk_session(self, monkeypatch, tmp_path):
+        media_path = tmp_path / "report.html"
+        media_path.write_text("<html><body>ok</body></html>")
+        dingtalk_cfg = SimpleNamespace(
+            enabled=True,
+            token=None,
+            extra={"client_id": "cid", "client_secret": "sec", "robot_code": "robot"},
+        )
+        config = SimpleNamespace(
+            platforms={Platform.DINGTALK: dingtalk_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "dingtalk")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "cidUKHyy+TSBvzQY6P34TpjPA==")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_NAME", "赣神魔")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "origin",
+                        "message": f"MEDIA:{media_path}",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["resolved_target"] == "dingtalk:cidUKHyy+TSBvzQY6P34TpjPA=="
+        assert result["mirrored"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.DINGTALK,
+            dingtalk_cfg,
+            "cidUKHyy+TSBvzQY6P34TpjPA==",
+            "",
+            thread_id=None,
+            media_files=[(str(media_path), False)],
+            force_document=False,
+        )
+        mirror_mock.assert_called_once()
+
+    def test_origin_target_passes_dingtalk_group_conversation_type(self, monkeypatch):
+        dingtalk_cfg = SimpleNamespace(
+            enabled=True,
+            token=None,
+            extra={"client_id": "cid", "client_secret": "sec", "robot_code": "robot"},
+        )
+        config = SimpleNamespace(
+            platforms={Platform.DINGTALK: dingtalk_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "dingtalk")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "cidUKHyy+TSBvzQY6P34TpjPA==")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "origin",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.DINGTALK,
+            dingtalk_cfg,
+            "cidUKHyy+TSBvzQY6P34TpjPA==",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+            metadata={"conversation_type": "2"},
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -820,6 +954,267 @@ class TestSendToPlatformWhatsapp:
 
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+
+class TestSendToPlatformDingTalk:
+    def test_parse_dingtalk_cid_target_as_explicit(self):
+        chat_id, thread_id, explicit = _parse_target_ref(
+            "dingtalk",
+            "cidUKHyy+TSBvzQY6P34TpjPA==",
+        )
+
+        assert chat_id == "cidUKHyy+TSBvzQY6P34TpjPA=="
+        assert thread_id is None
+        assert explicit is True
+
+    def test_dingtalk_media_routes_to_native_helper(self, tmp_path):
+        media_path = tmp_path / "report.pdf"
+        media_path.write_bytes(b"%PDF-1.4 test")
+        helper = AsyncMock(return_value={
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cid-1",
+            "message_id": "media-1",
+        })
+
+        with patch("tools.send_message_tool._send_dingtalk_with_media", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    SimpleNamespace(enabled=True, token=None, extra={"robot_code": "robot-1"}),
+                    "cid-1",
+                    "",
+                    media_files=[(str(media_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once()
+        assert helper.await_args.args[0].extra["robot_code"] == "robot-1"
+        assert helper.await_args.args[1] == "cid-1"
+        assert helper.await_args.kwargs["media_files"] == [(str(media_path), False)]
+
+    def test_dingtalk_media_prefers_live_adapter_context(self, tmp_path):
+        image_path = tmp_path / "chart.png"
+        image_path.write_bytes(b"png")
+
+        adapter = SimpleNamespace(
+            send_image_file=AsyncMock(return_value=SimpleNamespace(success=True, message_id="img-1")),
+            send_video=AsyncMock(),
+            send_voice=AsyncMock(),
+            send_document=AsyncMock(),
+        )
+        runner = SimpleNamespace(adapters={Platform.DINGTALK: adapter}, _gateway_loop=None)
+        helper = AsyncMock(return_value={"error": "standalone should not be called"})
+
+        with patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("tools.send_message_tool._send_dingtalk_with_media", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    SimpleNamespace(enabled=True, token=None, extra={"robot_code": "stale-config-robot"}),
+                    "cid-1",
+                    "",
+                    media_files=[(str(image_path), False)],
+                    metadata={"conversation_type": "2"},
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cid-1",
+            "message_id": "img-1",
+            "via": "live_adapter",
+        }
+        adapter.send_image_file.assert_awaited_once_with(
+            chat_id="cid-1",
+            image_path=str(image_path),
+            metadata={"conversation_type": "2"},
+        )
+        helper.assert_not_awaited()
+
+    def test_dingtalk_text_uses_current_session_webhook(self, monkeypatch):
+        import httpx
+
+        calls = []
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"errcode": 0}
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, url, json):
+                calls.append((url, json))
+                return FakeResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "dingtalk")
+        monkeypatch.setenv(
+            "HERMES_SESSION_DINGTALK_WEBHOOK",
+            "https://api.dingtalk.com/robot/sendBySession?session=turn",
+        )
+        monkeypatch.setenv("HERMES_SESSION_DINGTALK_WEBHOOK_EXPIRES", "9999999999999")
+
+        with patch(
+            "tools.send_message_tool._resolve_dingtalk_bound_session_webhook",
+            return_value="https://api.dingtalk.com/robot/sendBySession?session=bound",
+        ):
+            result = asyncio.run(
+                _send_dingtalk(
+                    {"webhook_url": "https://api.dingtalk.com/robot/send?access_token=static"},
+                    "cid-1",
+                    "hello",
+                )
+            )
+
+        assert result == {"success": True, "platform": "dingtalk", "chat_id": "cid-1"}
+        assert calls == [
+            (
+                "https://api.dingtalk.com/robot/sendBySession?session=turn",
+                {
+                    "msgtype": "markdown",
+                    "markdown": {"title": "Hermes", "text": "hello"},
+                },
+            )
+        ]
+
+    def test_dingtalk_bound_session_webhook_uses_binding_store(self, monkeypatch, tmp_path):
+        import gateway.source_agent_binding as binding_mod
+        from gateway.source_agent_binding import SourceAgentBindingStore
+
+        db_path = tmp_path / "bindings.sqlite"
+        monkeypatch.setattr(binding_mod, "DEFAULT_SOURCE_AGENT_BINDINGS_DB", db_path)
+        store = SourceAgentBindingStore()
+        try:
+            store.set_binding(
+                "source:dingtalk:group:cid-1:user-1",
+                "default",
+                fallback_target={"platform": "dingtalk", "chat_id": "cid-1"},
+                fallback_extra={
+                    "session_webhook": "https://api.dingtalk.com/robot/sendBySession?session=bound",
+                    "session_webhook_expired_time": 9999999999999,
+                },
+            )
+        finally:
+            store.close()
+
+        assert (
+            _resolve_dingtalk_bound_session_webhook("cid-1")
+            == "https://api.dingtalk.com/robot/sendBySession?session=bound"
+        )
+
+    def test_send_dingtalk_with_media_routes_native_media(self, monkeypatch, tmp_path):
+        import gateway.platforms.dingtalk as dt
+
+        image_path = tmp_path / "chart.png"
+        video_path = tmp_path / "clip.mp4"
+        voice_path = tmp_path / "voice.ogg"
+        file_path = tmp_path / "report.pdf"
+        image_path.write_bytes(b"png")
+        video_path.write_bytes(b"mp4")
+        voice_path.write_bytes(b"ogg")
+        file_path.write_bytes(b"%PDF-1.4")
+        calls = []
+
+        class FakeHttpClient:
+            def __init__(self, **_kwargs):
+                calls.append(("http_client",))
+
+            async def aclose(self):
+                calls.append(("close",))
+
+        class FakeCredential:
+            def __init__(self, client_id, client_secret):
+                calls.append(("credential", client_id, client_secret))
+
+        class FakeStreamClient:
+            def __init__(self, _credential):
+                calls.append(("stream_client",))
+
+        class FakeAdapter:
+            def __init__(self, config):
+                self.config = config
+                self._http_client = None
+                self._robot_sdk = None
+                self._stream_client = None
+                self._client_id = config.extra.get("client_id", "")
+                self._client_secret = config.extra.get("client_secret", "")
+                calls.append(("init", config.extra))
+
+            async def send_image_file(self, chat_id, image_path, metadata=None):
+                calls.append(("image", chat_id, image_path, metadata, bool(self._robot_sdk), bool(self._stream_client)))
+                return SimpleNamespace(success=True, message_id="image-1")
+
+            async def send_video(self, chat_id, video_path, metadata=None):
+                calls.append(("video", chat_id, video_path, metadata, bool(self._robot_sdk), bool(self._stream_client)))
+                return SimpleNamespace(success=True, message_id="video-1")
+
+            async def send_voice(self, chat_id, audio_path, metadata=None):
+                calls.append(("voice", chat_id, audio_path, metadata, bool(self._robot_sdk), bool(self._stream_client)))
+                return SimpleNamespace(success=True, message_id="voice-1")
+
+            async def send_document(self, chat_id, file_path, metadata=None):
+                calls.append(("file", chat_id, file_path, metadata, bool(self._robot_sdk), bool(self._stream_client)))
+                return SimpleNamespace(success=True, message_id="file-1")
+
+        monkeypatch.setattr(dt, "HTTPX_AVAILABLE", True)
+        monkeypatch.setattr(dt, "httpx", SimpleNamespace(AsyncClient=FakeHttpClient))
+        monkeypatch.setattr(dt, "DINGTALK_STREAM_AVAILABLE", True)
+        monkeypatch.setattr(
+            dt,
+            "dingtalk_stream",
+            SimpleNamespace(Credential=FakeCredential, DingTalkStreamClient=FakeStreamClient),
+        )
+        monkeypatch.setattr(dt, "CARD_SDK_AVAILABLE", True)
+        monkeypatch.setattr(dt, "open_api_models", SimpleNamespace(Config=lambda: SimpleNamespace()))
+        monkeypatch.setattr(dt, "dingtalk_robot_client", SimpleNamespace(Client=lambda _cfg: object()))
+        monkeypatch.setattr(dt, "DingTalkAdapter", FakeAdapter)
+
+        result = asyncio.run(
+            _send_dingtalk_with_media(
+                SimpleNamespace(enabled=True, token=None, extra={"client_id": "app-key", "client_secret": "secret"}),
+                "cid-1",
+                "",
+                media_files=[
+                    (str(image_path), False),
+                    (str(video_path), False),
+                    (str(voice_path), True),
+                    (str(file_path), False),
+                ],
+                metadata={"conversation_type": "1"},
+            )
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cid-1",
+            "message_id": "file-1",
+        }
+        assert calls == [
+            ("init", {"client_id": "app-key", "client_secret": "secret"}),
+            ("http_client",),
+            ("credential", "app-key", "secret"),
+            ("stream_client",),
+            ("image", "cid-1", str(image_path), {"conversation_type": "1"}, True, True),
+            ("video", "cid-1", str(video_path), {"conversation_type": "1"}, True, True),
+            ("voice", "cid-1", str(voice_path), {"conversation_type": "1"}, True, True),
+            ("file", "cid-1", str(file_path), {"conversation_type": "1"}, True, True),
+            ("close",),
+        ]
 
 
 class TestSendTelegramHtmlDetection:

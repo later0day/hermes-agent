@@ -775,6 +775,12 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        # Native-image proactive resize threshold in base64/data-URL bytes.
+        # When image_input_mode resolves to "native", cached local images larger
+        # than this are resized before they are attached to the main model.
+        # 0 disables proactive resizing; provider rejection still triggers the
+        # existing shrink-and-retry recovery path.
+        "native_image_max_base64_bytes": 8 * 1024 * 1024,
         "disabled_toolsets": [],
     },
     
@@ -1293,7 +1299,7 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
-        "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        "theme": "default",  # Dashboard visual theme: "default", "default-large", "midnight", "ember", "mono", "cyberpunk", "rose", "pure-ink-light", "pure-ink-dark"
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent
@@ -1648,6 +1654,21 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+    },
+
+    # DingTalk platform settings (gateway mode)
+    "dingtalk": {
+        "app_code": "",             # Optional DingTalk appCode; reserved for future DingTalk APIs
+        "corp_id": "",              # Optional DingTalk CorpId; reserved for future DingTalk APIs
+        "agent_id": "",             # Optional DingTalk AgentId; reserved for future DingTalk APIs
+        "require_mention": False,      # Require @mention in group chats
+        "free_response_chats": "",     # Comma-separated chat IDs where bot responds without mention
+        "allowed_chats": "",           # If set, bot ONLY responds in these group chats (whitelist)
+        "allowed_users": "",           # staff_id or sender_id allowlist; "*" = any
+        "allow_all_users": False,       # Per-platform allow-all gate for startup/auth checks
+        "card_template_id": "",        # Blank uses DingTalk's default AI markdown card
+        "card_content_key": "",        # Blank uses DingTalk's default msgContent variable
+        "reply_at_sender": False,       # @ the sender on final group replies
     },
 
     # Telegram platform settings (gateway mode)
@@ -2875,6 +2896,36 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": False,
         "category": "messaging",
+    },
+    "DINGTALK_CLIENT_ID": {
+        "description": "DingTalk app client ID / app key for stream gateway mode",
+        "prompt": "DingTalk client ID",
+        "url": "https://open.dingtalk.com/",
+        "password": False,
+        "category": "messaging",
+    },
+    "DINGTALK_CLIENT_SECRET": {
+        "description": "DingTalk app client secret for stream gateway mode",
+        "prompt": "DingTalk client secret",
+        "url": "https://open.dingtalk.com/",
+        "password": True,
+        "category": "messaging",
+    },
+    "DINGTALK_ROBOT_CODE": {
+        "description": "DingTalk robotCode / chatBotId for AI Cards, emoji reactions, and media download",
+        "prompt": "DingTalk robotCode (optional)",
+        "url": "https://open.dingtalk.com/",
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "DINGTALK_ALLOW_ALL_USERS": {
+        "description": "Allow all DingTalk users without an allowlist",
+        "prompt": "Allow all DingTalk users",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "

@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -148,6 +149,17 @@ class FailingAdapter:
         raise RuntimeError("simulated send failure")
 
 
+class FailedResultAdapter:
+    """Adapter whose send() returns a failed SendResult without raising."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    async def send(self, chat_id, text, metadata=None):
+        self.attempts += 1
+        return SendResult(success=False, error="simulated returned failure")
+
+
 def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     """A raising adapter rewinds the claim so the next tick can retry.
 
@@ -169,6 +181,22 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     # Send was attempted (so we exercised the failure path, not just the
     # disconnect path) and the claim was rewound — the unseen-events query
     # still returns the event for retry on the next tick.
+    assert adapter.attempts >= 1, "send should have been attempted at least once"
+    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_kanban_notifier_rewinds_claim_on_failed_send_result(tmp_path, monkeypatch):
+    """Adapters may report delivery failure by returning SendResult(false)."""
+    db_path = tmp_path / "send-result-failure.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    adapter = FailedResultAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
     assert adapter.attempts >= 1, "send should have been attempted at least once"
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
 

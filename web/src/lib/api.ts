@@ -303,7 +303,7 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
+  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; run_profile?: string | null }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -318,15 +318,182 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
-  // Profiles (minimal)
+  // Profiles / agents
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
-  createProfile: (body: { name: string; clone_from_default: boolean }) =>
+  getProfileDetails: (name: string) =>
+    fetchJSON<ProfileDetails>(
+      `/api/profiles/${encodeURIComponent(name)}/details`,
+    ),
+  getProfileSkills: (name: string) =>
+    fetchJSON<{ skills: ProfileSkillsSummary }>(
+      `/api/profiles/${encodeURIComponent(name)}/skills`,
+    ),
+  getProfileModelOptions: (name: string) =>
+    fetchJSON<ModelOptionsResponse>(
+      `/api/profiles/${encodeURIComponent(name)}/model/options`,
+    ),
+  setProfileModel: (name: string, body: { provider: string; model: string }) =>
+    fetchJSON<{ ok: boolean; provider: string; model: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  bindSourceAgent: (body: { source_binding_key: string; profile_name: string }) =>
+    fetchJSON<{ ok: boolean; binding: SourceBindingInfo }>("/api/source-bindings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  clearSourceAgentBinding: (sourceBindingKey: string) =>
+    fetchJSON<{ ok: boolean; deleted: boolean }>(
+      `/api/source-bindings/${encodeURIComponent(sourceBindingKey)}`,
+      { method: "DELETE" },
+    ),
+  createSourceBindingTask: (body: {
+    source_binding_key: string;
+    profile_name: string;
+    task: string;
+    board?: string | null;
+  }) =>
+    fetchJSON<{
+      ok: boolean;
+      task_id: string;
+      board: string;
+      profile_name: string;
+      title: string;
+      subscribed: boolean;
+    }>("/api/source-bindings/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  createProfile: (body: {
+    name: string;
+    clone_from_default: boolean;
+    clone_from?: string | null;
+    no_skills?: boolean;
+  }) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  setProfileTemplate: (name: string, template: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; template: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/template`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template }),
+      },
+    ),
+  updateProfileMetadata: (
+    name: string,
+    body: { description?: string; description_auto?: boolean; template?: boolean },
+  ) =>
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      metadata: {
+        description: string;
+        description_auto: boolean;
+        template: boolean;
+      };
+    }>(`/api/profiles/${encodeURIComponent(name)}/metadata`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  describeProfile: (name: string, overwrite = false) =>
+    fetchJSON<{ ok: boolean; name: string; reason: string; description?: string | null }>(
+      `/api/profiles/${encodeURIComponent(name)}/describe`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite }),
+      },
+    ),
+  copyProfileSkills: (name: string, sourceProfile = "default", skills?: string[]) =>
+    fetchJSON<{
+      ok: boolean;
+      source_profile: string;
+      target_profile: string;
+      copied_skills: string[];
+      skills: ProfileSkillsSummary;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/skills/copy`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_profile: sourceProfile, skills }),
+      },
+    ),
+  deleteProfileSkill: (name: string, skill: string) =>
+    fetchJSON<{
+      ok: boolean;
+      profile: string;
+      deleted_skill: string;
+      skills: ProfileSkillsSummary;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/skills/${encodeURIComponent(skill)}`,
+      { method: "DELETE" },
+    ),
+  getProfileMemoryFile: (name: string, file: "MEMORY.md" | "USER.md") =>
+    fetchJSON<{
+      name: string;
+      path: string;
+      exists: boolean;
+      content: string;
+      bytes: number;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(file)}`,
+    ),
+  updateProfileMemoryFile: (name: string, file: "MEMORY.md" | "USER.md", content: string) =>
+    fetchJSON<{ ok: boolean; name: string; path: string; bytes: number; memory: ProfileMemorySummary }>(
+      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(file)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
+  getProfileSkillManifest: (name: string, skill: string) =>
+    fetchJSON<{
+      skill: string;
+      path: string;
+      content: string;
+      bytes: number;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/skills/${encodeURIComponent(skill)}/manifest`,
+    ),
+  updateProfileSkillManifest: (name: string, skill: string, content: string) =>
+    fetchJSON<{
+      ok: boolean;
+      skill: string;
+      path: string;
+      bytes: number;
+      skills: ProfileSkillsSummary;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/skills/${encodeURIComponent(skill)}/manifest`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
+  getAgentAudit: (profile?: string, limit = 50, offset = 0) => {
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    qs.set("limit", String(limit));
+    qs.set("offset", String(offset));
+    return fetchJSON<{ events: AgentAuditEvent[]; limit: number; offset: number }>(
+      `/api/agent/audit?${qs.toString()}`,
+    );
+  },
   renameProfile: (name: string, newName: string) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>(
       `/api/profiles/${encodeURIComponent(name)}`,
@@ -594,6 +761,10 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  source_binding_key?: string | null;
+  session_profile?: string | null;
+  bound_profile?: string | null;
+  can_bind_profile?: boolean;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -701,12 +872,155 @@ export interface AnalyticsResponse {
 
 export interface ProfileInfo {
   name: string;
+  agent_id: string;
   path: string;
   is_default: boolean;
   model: string | null;
   provider: string | null;
   has_env: boolean;
+  binding_count: number;
+  binding_summary?: ProfileBindingSummary;
   skill_count: number;
+  description?: string;
+  description_auto?: boolean;
+  template?: boolean;
+}
+
+export interface ProfileBindingSummary {
+  total: number;
+  webhook_configured: number;
+  webhook_expired: number;
+  webhook_permanent: number;
+  webhook_temporary: number;
+}
+
+export interface SourceBindingTargetSummary {
+  platform: string;
+  chat_type: string;
+  chat_id?: string | null;
+  chat_name?: string | null;
+  thread_id?: string | number | null;
+  user_name?: string | null;
+  user_id?: string | null;
+  label: string;
+  scope: string;
+}
+
+export interface SourceBindingWebhookStatus {
+  configured: boolean;
+  state: "missing" | "configured" | "expired" | string;
+  kind: "none" | "temporary" | "permanent" | string;
+  expires_at?: number | null;
+  expired: boolean;
+  label: string;
+}
+
+export interface SourceBindingInfo {
+  source_binding_key: string;
+  profile_name: string;
+  agent_id: string;
+  fallback_target?: Record<string, unknown> | null;
+  fallback_extra?: Record<string, unknown> | null;
+  target_summary?: SourceBindingTargetSummary;
+  webhook_status?: SourceBindingWebhookStatus;
+  created_at?: number | null;
+  updated_at?: number | null;
+  created_by?: string | null;
+  updated_by?: string | null;
+}
+
+export interface WorkspaceDescriptor {
+  provider: "local" | "sandbox" | string;
+  kind: "profile" | "scratch" | "dir" | "worktree" | "sandbox" | string;
+  ref: string | null;
+  display_path: string;
+  sandbox_id?: string | null;
+  capabilities?: {
+    local_path?: boolean;
+    open_path?: boolean;
+    sandbox?: boolean;
+    [key: string]: boolean | undefined;
+  };
+}
+
+export interface ProfileSkillsSummary {
+  count: number;
+  names: string[];
+  truncated: boolean;
+}
+
+export interface ProfileMemorySummary {
+  provider: string;
+  memory_dir: string;
+  memory_dir_exists: boolean;
+  memory_file_count: number;
+  memory_bytes: number;
+  state_db: string;
+  state_db_exists: boolean;
+  state_db_bytes: number;
+  previews?: Array<{
+    name: string;
+    path: string;
+    exists: boolean;
+    bytes: number;
+    content: string;
+    truncated: boolean;
+  }>;
+}
+
+export interface AgentAuditEvent {
+  ts?: string;
+  action?: string;
+  profile_name?: string;
+  actor_user_id?: string;
+  actor_user_name?: string;
+  source?: Record<string, unknown>;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  extra?: Record<string, unknown> | null;
+}
+
+export interface ProfileDetails {
+  profile: {
+    name: string;
+    path: string;
+    is_default: boolean;
+    model: string | null;
+    provider: string | null;
+    has_env: boolean;
+    description?: string;
+    description_auto?: boolean;
+    template?: boolean;
+  };
+  model: { provider: string; model: string };
+  bindings: SourceBindingInfo[];
+  health: {
+    status: "ok" | "warning" | string;
+    checks: Record<string, boolean>;
+    recent_error?: string | null;
+    config_error?: string | null;
+  };
+  kanban: {
+    total: number;
+    active: number;
+    by_status: Record<string, number>;
+    error?: string;
+  };
+  cron: {
+    owner_job_count: number;
+    owner_jobs: CronJob[];
+  };
+  paths: {
+    workspace: string;
+    scripts: string;
+    sessions: string;
+  };
+  workspace: WorkspaceDescriptor;
+  skills: ProfileSkillsSummary;
+  memory: ProfileMemorySummary;
+  audit: {
+    events: AgentAuditEvent[];
+  };
 }
 
 export interface ModelsAnalyticsModelEntry {
@@ -752,6 +1066,8 @@ export interface ModelsAnalyticsResponse {
 export interface CronJob {
   id: string;
   profile?: string | null;
+  owner_profile?: string | null;
+  run_profile?: string | null;
   profile_name?: string | null;
   hermes_home?: string | null;
   is_default_profile?: boolean;
@@ -763,9 +1079,17 @@ export interface CronJob {
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  origin?: {
+    platform?: string | null;
+    chat_id?: string | null;
+    chat_name?: string | null;
+    thread_id?: string | null;
+    profile_name?: string | null;
+  } | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
   last_error?: string | null;
+  last_delivery_error?: string | null;
 }
 
 export interface SkillInfo {

@@ -1581,3 +1581,232 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* Recent completed/archived tasks, surfaced so history is discoverable
+   without opening every Done card. */
+.hermes-kanban-history {
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.hermes-kanban-history-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.hermes-kanban-history-icon {
+  color: var(--color-muted-foreground, #888);
+}
+.hermes-kanban-history-text {
+  flex: 1;
+  font-weight: 600;
+}
+.hermes-kanban-history-toggle {
+  background: transparent;
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  color: inherit;
+  cursor: pointer;
+}
+.hermes-kanban-history-toggle:hover {
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+}
+.hermes-kanban-history-list {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-kanban-history-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.32rem 0.75rem;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.hermes-kanban-history-row:hover {
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+}
+.hermes-kanban-history-row-id {
+  min-width: 7rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+.hermes-kanban-history-row-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.8125rem;
+}
+.hermes-kanban-history-row-meta {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+
+/* Swarm graph overview. This is presentation-only: it renders the existing
+   Kanban Swarm topology stored on the root task blackboard. */
+.hermes-kanban-swarms {
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  background:
+    radial-gradient(circle at top left,
+      color-mix(in srgb, var(--color-ring) 10%, transparent),
+      transparent 32rem),
+    color-mix(in srgb, var(--color-card) 86%, transparent);
+  border-radius: 0.65rem;
+  overflow: hidden;
+}
+.hermes-kanban-swarms-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-kanban-swarms-icon {
+  color: var(--color-ring);
+  font-size: 0.9rem;
+}
+.hermes-kanban-swarms-title {
+  flex: 1;
+  font-weight: 700;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.hermes-kanban-swarms-toggle {
+  background: transparent;
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  color: inherit;
+  cursor: pointer;
+}
+.hermes-kanban-swarms-toggle:hover {
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+}
+.hermes-kanban-swarms-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.65rem;
+}
+.hermes-kanban-swarm-card {
+  border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--color-background) 68%, transparent);
+  padding: 0.65rem;
+}
+.hermes-kanban-swarm-card--blocked {
+  border-color: color-mix(in srgb, var(--color-destructive, #d14a4a) 55%, var(--color-border));
+}
+.hermes-kanban-swarm-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+.hermes-kanban-swarm-card-title {
+  min-width: 0;
+  font-weight: 650;
+  font-size: 0.9rem;
+  color: var(--color-foreground);
+}
+.hermes-kanban-swarm-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+.hermes-kanban-swarm-pill {
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+.hermes-kanban-swarm-lanes {
+  display: flex;
+  align-items: stretch;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding-bottom: 0.1rem;
+}
+.hermes-kanban-swarm-lane {
+  min-width: 10rem;
+  flex: 1 1 0;
+}
+.hermes-kanban-swarm-lane-label {
+  margin-bottom: 0.3rem;
+  font-size: 0.67rem;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.hermes-kanban-swarm-arrow {
+  display: flex;
+  align-items: center;
+  color: var(--color-muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.hermes-kanban-swarm-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.hermes-kanban-swarm-node {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  border-left-width: 4px;
+  border-radius: 0.45rem;
+  padding: 0.42rem 0.55rem;
+  background: color-mix(in srgb, var(--color-card) 88%, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.hermes-kanban-swarm-node:hover {
+  background: color-mix(in srgb, var(--color-foreground) 6%, var(--color-card));
+}
+.hermes-kanban-swarm-node--ready { border-left-color: #d4b348; }
+.hermes-kanban-swarm-node--running { border-left-color: #3fb97d; }
+.hermes-kanban-swarm-node--blocked { border-left-color: var(--color-destructive, #d14a4a); }
+.hermes-kanban-swarm-node--done { border-left-color: #4a8cd1; }
+.hermes-kanban-swarm-node--todo,
+.hermes-kanban-swarm-node--scheduled { border-left-color: var(--color-muted-foreground); }
+.hermes-kanban-swarm-node-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.hermes-kanban-swarm-node-meta {
+  color: var(--color-muted-foreground);
+  font-size: 0.68rem;
+}
+@media (max-width: 760px) {
+  .hermes-kanban-swarm-lanes {
+    flex-direction: column;
+  }
+  .hermes-kanban-swarm-arrow {
+    justify-content: center;
+    transform: rotate(90deg);
+  }
+}

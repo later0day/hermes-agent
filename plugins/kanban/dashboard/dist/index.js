@@ -995,6 +995,14 @@
           boardData,
           onOpen: setSelectedTaskId,
         }),
+        h(RecentHistoryStrip, {
+          boardData,
+          onOpen: setSelectedTaskId,
+        }),
+        h(SwarmGraphStrip, {
+          boardData,
+          onOpen: setSelectedTaskId,
+        }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -1046,6 +1054,167 @@
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
+      ),
+    );
+  }
+
+  function collectHistoryTasks(boardData) {
+    if (!boardData) return [];
+    if (Array.isArray(boardData.history) && boardData.history.length > 0) {
+      return boardData.history;
+    }
+    if (!boardData.columns) return [];
+    const out = [];
+    for (const col of boardData.columns) {
+      for (const task of col.tasks || []) {
+        if (task.status === "done" || task.status === "archived") out.push(task);
+      }
+    }
+    out.sort(function (a, b) {
+      const at = a.completed_at || a.started_at || a.created_at || 0;
+      const bt = b.completed_at || b.started_at || b.created_at || 0;
+      return bt - at;
+    });
+    return out.slice(0, 12);
+  }
+
+  function RecentHistoryStrip(props) {
+    const { t } = useI18n();
+    const [expanded, setExpanded] = useState(false);
+    const historyTasks = useMemo(
+      function () { return collectHistoryTasks(props.boardData); },
+      [props.boardData],
+    );
+    if (historyTasks.length === 0) return null;
+    const visible = expanded ? historyTasks : historyTasks.slice(0, 5);
+    return h("div", { className: "hermes-kanban-history" },
+      h("div", { className: "hermes-kanban-history-bar" },
+        h("span", { className: "hermes-kanban-history-icon" }, "↺"),
+        h("span", { className: "hermes-kanban-history-text" },
+          `${tx(t, "recentHistory", "Recent history")} (${historyTasks.length})`),
+        historyTasks.length > 5
+          ? h("button", {
+              className: "hermes-kanban-history-toggle",
+              type: "button",
+              onClick: function () { setExpanded(function (x) { return !x; }); },
+            }, expanded ? tx(t, "showLess", "Show less") : tx(t, "showAll", "Show all"))
+          : null,
+      ),
+      h("div", { className: "hermes-kanban-history-list" },
+        visible.map(function (task) {
+          const when = task.completed_at || task.started_at || task.created_at;
+          return h("button", {
+            key: task.id,
+            type: "button",
+            className: "hermes-kanban-history-row",
+            onClick: function () { props.onOpen(task.id); },
+            title: "Open task run history",
+          },
+            h("span", { className: "hermes-kanban-history-row-id" }, task.id),
+            h("span", { className: "hermes-kanban-history-row-title" }, task.title || task.id),
+            h("span", { className: "hermes-kanban-history-row-meta" },
+              `${task.status}${task.assignee ? ` · @${task.assignee}` : ""}${when && timeAgo ? ` · ${timeAgo(when)}` : ""}`),
+          );
+        }),
+      ),
+    );
+  }
+
+  function collectSwarmGraphs(boardData) {
+    if (!boardData || !Array.isArray(boardData.swarm_graphs)) return [];
+    return boardData.swarm_graphs;
+  }
+
+  function SwarmGraphStrip(props) {
+    const { t } = useI18n();
+    const [expanded, setExpanded] = useState(false);
+    const graphs = useMemo(
+      function () { return collectSwarmGraphs(props.boardData); },
+      [props.boardData],
+    );
+    if (graphs.length === 0) return null;
+    const visible = expanded ? graphs : graphs.slice(0, 2);
+    return h("div", { className: "hermes-kanban-swarms" },
+      h("div", { className: "hermes-kanban-swarms-head" },
+        h("span", { className: "hermes-kanban-swarms-icon" }, "◎"),
+        h("span", { className: "hermes-kanban-swarms-title" },
+          `${tx(t, "swarmGraphs", "Swarm graphs")} (${graphs.length})`),
+        graphs.length > 2
+          ? h("button", {
+              type: "button",
+              className: "hermes-kanban-swarms-toggle",
+              onClick: function () { setExpanded(function (x) { return !x; }); },
+            }, expanded ? tx(t, "showLess", "Show less") : tx(t, "showAll", "Show all"))
+          : null,
+      ),
+      h("div", { className: "hermes-kanban-swarms-list" },
+        visible.map(function (graph) {
+          return h(SwarmGraphCard, {
+            key: graph.root_id,
+            graph,
+            onOpen: props.onOpen,
+          });
+        }),
+      ),
+    );
+  }
+
+  function SwarmGraphCard(props) {
+    const { t } = useI18n();
+    const graph = props.graph || {};
+    const nodes = graph.nodes || [];
+    const byRole = {
+      root: nodes.filter(function (n) { return n.role === "root"; }),
+      worker: nodes.filter(function (n) { return n.role === "worker"; }),
+      verifier: nodes.filter(function (n) { return n.role === "verifier"; }),
+      synthesizer: nodes.filter(function (n) { return n.role === "synthesizer"; }),
+    };
+    const counts = graph.counts || {};
+    const done = counts.done || 0;
+    const total = counts.total || nodes.length || 0;
+    const status = graph.status || "active";
+    const lanes = [
+      { key: "root", label: tx(t, "swarmRoot", "Root"), nodes: byRole.root },
+      { key: "worker", label: tx(t, "swarmWorkers", "Workers"), nodes: byRole.worker },
+      { key: "verifier", label: tx(t, "swarmVerifier", "Verifier"), nodes: byRole.verifier },
+      { key: "synthesizer", label: tx(t, "swarmSynthesizer", "Synthesizer"), nodes: byRole.synthesizer },
+    ].filter(function (lane) { return lane.nodes.length > 0; });
+
+    return h("div", { className: cn("hermes-kanban-swarm-card", "hermes-kanban-swarm-card--" + status) },
+      h("div", { className: "hermes-kanban-swarm-card-head" },
+        h("div", { className: "hermes-kanban-swarm-card-title" },
+          graph.goal || graph.root_id || tx(t, "swarmUntitled", "Untitled swarm")),
+        h("div", { className: "hermes-kanban-swarm-card-meta" },
+          h("span", { className: "hermes-kanban-swarm-pill" }, `${done}/${total} done`),
+          h("span", { className: "hermes-kanban-swarm-pill" }, status),
+        ),
+      ),
+      h("div", { className: "hermes-kanban-swarm-lanes" },
+        lanes.map(function (lane, index) {
+          return h(React.Fragment, { key: lane.key },
+            index > 0 ? h("div", { className: "hermes-kanban-swarm-arrow" }, "→") : null,
+            h("div", { className: "hermes-kanban-swarm-lane hermes-kanban-swarm-lane--" + lane.key },
+              h("div", { className: "hermes-kanban-swarm-lane-label" }, lane.label),
+              h("div", { className: "hermes-kanban-swarm-nodes" },
+                lane.nodes.map(function (node) {
+                  const task = node.task || {};
+                  return h("button", {
+                    key: node.id,
+                    type: "button",
+                    className: cn("hermes-kanban-swarm-node", "hermes-kanban-swarm-node--" + (task.status || "unknown")),
+                    onClick: function () { props.onOpen(node.id); },
+                    title: `${node.id} · ${task.status || "unknown"}`,
+                  },
+                    h("span", { className: "hermes-kanban-swarm-node-title" },
+                      task.title || node.id),
+                    h("span", { className: "hermes-kanban-swarm-node-meta" },
+                      `${task.assignee ? "@" + task.assignee + " · " : ""}${task.status || "unknown"}`),
+                  );
+                }),
+              ),
+            ),
+          );
+        }),
       ),
     );
   }

@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
@@ -20,6 +21,42 @@ from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+_DINGTALK_CONVERSATION_ID_RE = re.compile(r"^cid[-A-Za-z0-9+/=]+$")
+
+
+def _dingtalk_home_channel_dict(
+    value: Any,
+    *,
+    name: Any = None,
+    thread_id: Any = None,
+) -> dict[str, Any] | None:
+    """Normalize DingTalk home channel config to a real openConversationId."""
+    if isinstance(value, dict):
+        chat_id = str(value.get("chat_id") or value.get("id") or "").strip()
+        name = value.get("name") or name
+        thread_id = value.get("thread_id") if value.get("thread_id") is not None else thread_id
+    else:
+        chat_id = str(value or "").strip()
+
+    if not chat_id:
+        return None
+    if not _DINGTALK_CONVERSATION_ID_RE.fullmatch(chat_id):
+        logger.warning(
+            "Ignoring invalid DingTalk home channel %r; expected openConversationId starting with 'cid'.",
+            chat_id,
+        )
+        return None
+
+    result: dict[str, Any] = {
+        "platform": "dingtalk",
+        "chat_id": chat_id,
+        "name": str(name or "Home"),
+    }
+    if thread_id:
+        result["thread_id"] = str(thread_id)
+    return result
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -806,6 +843,16 @@ def load_gateway_config() -> GatewayConfig:
                     merged = {**existing, **plat_block}
                     if merged_extra:
                         merged["extra"] = merged_extra
+                    if plat_name == Platform.DINGTALK.value and "home_channel" in merged:
+                        home_channel = _dingtalk_home_channel_dict(
+                            merged.get("home_channel"),
+                            name=merged.get("home_channel_name"),
+                            thread_id=merged.get("home_channel_thread_id"),
+                        )
+                        if home_channel:
+                            merged["home_channel"] = home_channel
+                        else:
+                            merged.pop("home_channel", None)
                     platforms_data[plat_name] = merged
 
             _merge_platform_map(gateway_platforms)
@@ -1126,6 +1173,32 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(allowed, list):
                         allowed = ",".join(str(v) for v in allowed)
                     os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
+                if "allow_all_users" in dingtalk_cfg and not os.getenv("DINGTALK_ALLOW_ALL_USERS"):
+                    os.environ["DINGTALK_ALLOW_ALL_USERS"] = str(dingtalk_cfg["allow_all_users"]).lower()
+                if "reply_at_sender" in dingtalk_cfg:
+                    _, extra = _ensure_platform_extra_dict(platforms_data, Platform.DINGTALK.value)
+                    extra["reply_at_sender"] = dingtalk_cfg["reply_at_sender"]
+                if "home_channel" in dingtalk_cfg:
+                    home_channel = _dingtalk_home_channel_dict(
+                        dingtalk_cfg.get("home_channel"),
+                        name=dingtalk_cfg.get("home_channel_name"),
+                        thread_id=dingtalk_cfg.get("home_channel_thread_id"),
+                    )
+                    if home_channel:
+                        plat_data, _ = _ensure_platform_extra_dict(
+                            platforms_data,
+                            Platform.DINGTALK.value,
+                        )
+                        plat_data["home_channel"] = home_channel
+                for extra_key in ("app_code", "corp_id", "agent_id", "card_content_key"):
+                    extra_value = str(dingtalk_cfg.get(extra_key) or "").strip()
+                    if extra_value:
+                        _, extra = _ensure_platform_extra_dict(platforms_data, Platform.DINGTALK.value)
+                        extra[extra_key] = extra_value
+                card_template_id = str(dingtalk_cfg.get("card_template_id") or "").strip()
+                if card_template_id:
+                    _, extra = _ensure_platform_extra_dict(platforms_data, Platform.DINGTALK.value)
+                    extra["card_template_id"] = card_template_id
 
             # Mattermost config bridge moved into plugins/platforms/mattermost/
             # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
@@ -1577,8 +1650,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 ] = cidrs
 
     # DingTalk
-    dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")
-    dingtalk_client_secret = os.getenv("DINGTALK_CLIENT_SECRET")
+    dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID", "").strip()
+    dingtalk_client_secret = os.getenv("DINGTALK_CLIENT_SECRET", "").strip()
     if dingtalk_client_id and dingtalk_client_secret:
         if Platform.DINGTALK not in config.platforms:
             config.platforms[Platform.DINGTALK] = PlatformConfig()
@@ -1587,14 +1660,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "client_id": dingtalk_client_id,
             "client_secret": dingtalk_client_secret,
         })
+        dingtalk_robot_code = os.getenv("DINGTALK_ROBOT_CODE", "").strip()
+        if dingtalk_robot_code:
+            config.platforms[Platform.DINGTALK].extra["robot_code"] = dingtalk_robot_code
         dingtalk_home = os.getenv("DINGTALK_HOME_CHANNEL")
         if dingtalk_home:
-            config.platforms[Platform.DINGTALK].home_channel = HomeChannel(
-                platform=Platform.DINGTALK,
-                chat_id=dingtalk_home,
+            home_channel = _dingtalk_home_channel_dict(
+                dingtalk_home,
                 name=os.getenv("DINGTALK_HOME_CHANNEL_NAME", "Home"),
                 thread_id=os.getenv("DINGTALK_HOME_CHANNEL_THREAD_ID") or None,
             )
+            if home_channel:
+                config.platforms[Platform.DINGTALK].home_channel = HomeChannel.from_dict(
+                    home_channel
+                )
 
     # Feishu / Lark
     feishu_app_id = os.getenv("FEISHU_APP_ID")

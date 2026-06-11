@@ -479,6 +479,19 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
+    "dingtalk": (
+        "You are in a DingTalk chat communicating with your user. "
+        "DingTalk renders Markdown in AI Cards and markdown webhooks. "
+        "You can send local media as native robot messages: include "
+        "MEDIA:/absolute/path/to/file in your response. Images (.png, .jpg, "
+        ".webp) are sent as image messages; audio (.ogg, .amr) and video "
+        "(.mp4) use DingTalk native audio/video messages when possible; other "
+        "local files are sent as file messages when DingTalk accepts the file "
+        "type. You can also include public image URLs in markdown format "
+        "![alt](url). To send a file back "
+        "to the current DingTalk chat with the send_message tool, use "
+        "target='origin' rather than target='dingtalk'."
+    ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
         "Please do not use markdown as it does not render. "
@@ -690,7 +703,13 @@ def _probe_remote_backend(env_type: str) -> str | None:
     per process. Used only for non-local backends where the agent's tools
     operate on a different machine than the host Hermes runs on.
     """
-    cwd_hint = os.getenv("TERMINAL_CWD", "")
+    try:
+        from gateway.session_context import get_workspace_cwd
+
+        cwd_hint = get_workspace_cwd("")
+    except Exception:
+        cwd_hint = ""
+    cwd_hint = cwd_hint or os.getenv("TERMINAL_CWD", "")
     cache_key = (env_type, cwd_hint)
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
