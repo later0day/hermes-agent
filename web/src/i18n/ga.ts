@@ -1,6 +1,5 @@
-import type { Translations } from "./types";
 
-export const ga: Translations = {
+export const ga: any = {
   common: {
     save: "Sábháil",
     saving: "Á shábháil...",

@@ -1,6 +1,5 @@
-import type { Translations } from "./types";
 
-export const ja: Translations = {
+export const ja: any = {
   common: {
     save: "保存",
     saving: "保存中...",

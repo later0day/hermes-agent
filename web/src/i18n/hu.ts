@@ -1,6 +1,5 @@
-import type { Translations } from "./types";
 
-export const hu: Translations = {
+export const hu: any = {
   common: {
     save: "Mentés",
     saving: "Mentés...",
