@@ -765,7 +765,7 @@ function HubBrowser({
   showToast: (msg: string, kind: "success" | "error") => void;
   /** Optional profile scoping installs + installed-state badges. */
   profile?: string;
-}) {
+}) {  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -951,9 +951,9 @@ function HubBrowser({
               <Download className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="font-mono text-xs">{action}</span>
               {actionRunning ? (
-                <Badge tone="warning">running</Badge>
+                <Badge tone="warning">{t.dashboard?.uirunning || "running"}</Badge>
               ) : (
-                <Badge tone="success">done</Badge>
+                <Badge tone="success">{t.dashboard?.uidone90 || "done"}</Badge>
               )}
               {!actionRunning && (
                 <Button
@@ -1070,7 +1070,7 @@ function ConnectedHubs({
 }: {
   sources: SkillHubSource[];
   loading: boolean;
-}) {
+}) {  const { t } = useI18n();
   if (loading) {
     return (
       <p className="text-xs text-muted-foreground">Connecting to skill hubs…</p>
@@ -1080,7 +1080,7 @@ function ConnectedHubs({
     return (
       <p className="text-xs text-muted-foreground">
         Results come from the same sources as{" "}
-        <span className="font-mono">hermes skills search</span>.
+        <span className="font-mono">{t.dashboard?.uihermesSkillsSearch || "hermes skills search"}</span>.
       </p>
     );
   }

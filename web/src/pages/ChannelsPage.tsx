@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/context";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -70,6 +71,7 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 }
 
 export default function ChannelsPage() {
+  const { t } = useI18n();
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
@@ -253,7 +255,7 @@ export default function ChannelsPage() {
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
               The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">hermes gateway start</code>{" "}
+              gateway with <code className="font-courier">{t.dashboard?.uihermesGatewayStart || "hermes gateway start"}</code>{" "}
               (or the Restart button above).
             </span>
           </CardContent>
@@ -472,7 +474,7 @@ function TelegramOnboardingPanel({
   platform: MessagingPlatform;
   setRestartNeeded: (needed: boolean) => void;
   showToast: (message: string, type: "success" | "error") => void;
-}) {
+}) {  const { t } = useI18n();
   const [setup, setSetup] = useState<TelegramOnboardingStartResponse | null>(
     null,
   );
@@ -703,7 +705,7 @@ function TelegramOnboardingPanel({
             {(phase === "ready" || phase === "applying") && (
               <div className="grid gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="success">Ready</Badge>
+                  <Badge tone="success">{t.dashboard?.uiready || "Ready"}</Badge>
                   {botUsername && (
                     <span className="font-courier text-sm text-muted-foreground">
                       @{botUsername}
@@ -717,7 +719,7 @@ function TelegramOnboardingPanel({
                       Allowed users
                     </span>
                     {detectedOwnerId && allowedIds.includes(detectedOwnerId) && (
-                      <Badge tone="success">owner detected</Badge>
+                      <Badge tone="success">{t.dashboard?.uiownerDetected || "owner detected"}</Badge>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -784,7 +786,7 @@ function TelegramOnboardingPanel({
               <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
                 {expiresIn}
               </Badge>
-              {phase === "waiting" && <Badge tone="warning">waiting</Badge>}
+              {phase === "waiting" && <Badge tone="warning">{t.dashboard?.uiwaiting || "waiting"}</Badge>}
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <a

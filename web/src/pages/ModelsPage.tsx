@@ -205,7 +205,7 @@ function UseAsMenu({
   /** If this model is assigned to a specific aux task, that task's key. */
   mainAuxTask: string | null;
   onAssigned(): void;
-}) {
+}) {  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -305,7 +305,7 @@ function UseAsMenu({
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
           >
-            <span>All auxiliary tasks</span>
+            <span>{t.dashboard?.uiallAuxiliaryTasks || "All auxiliary tasks"}</span>
           </button>
 
           {AUX_TASKS.map((t) => (
@@ -694,7 +694,7 @@ function ModelSettingsPanel({
   aux: AuxiliaryModelsResponse | null;
   refreshKey: number;
   onSaved(): void;
-}) {
+}) {  const { t } = useI18n();
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
 
@@ -735,7 +735,7 @@ function ModelSettingsPanel({
       <CardHeader className="min-w-0 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <CardTitle className="text-sm">Model Settings</CardTitle>
+          <CardTitle className="text-sm">{t.dashboard?.uimodelSettings || "Model Settings"}</CardTitle>
           <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">
             applies to new sessions
           </span>
@@ -1011,7 +1011,7 @@ export default function ModelsPage() {
                   …) and provider retries, so they diverge from your provider
                   bill. Enable{" "}
                   <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
+                  in <a href="/config" className="underline">{t.dashboard?.uiconfig || "Config"}</a> to
                   show the local debug estimate anyway.
                 </p>
               )}

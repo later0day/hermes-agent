@@ -77,7 +77,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   };
 
 /** Render an FTS5 snippet with highlighted matches.
- *  The backend wraps matches in >>> and <<< delimiters. */
+ *  The backend wraps matches in >>> {t.dashboard?.uiand || "and"} <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
   const parts: React.ReactNode[] = [];
   const regex = />>>(.*?)<<</g;
@@ -1269,7 +1269,7 @@ export default function SessionsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Prune old sessions</DialogTitle>
+            <DialogTitle>{t.dashboard?.uipruneOldSessions || "Prune old sessions"}</DialogTitle>
             <DialogDescription>
               Permanently remove archived sessions whose last activity is older
               than the given number of days. Active sessions are never pruned.
@@ -1321,25 +1321,25 @@ export default function SessionsPage() {
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="text-xs text-muted-foreground">{t.dashboard?.uitotal || "Total"}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-xs text-muted-foreground">{t.dashboard?.uiactiveInStore || "Active in store"}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="text-xs text-muted-foreground">{t.dashboard?.uiarchived || "Archived"}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="text-xs text-muted-foreground">{t.dashboard?.uimessages || "Messages"}</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
