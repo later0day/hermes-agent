@@ -281,9 +281,78 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
+            "chat_type": get_session_env("HERMES_SESSION_CHAT_TYPE") or None,
             "thread_id": thread_id,
         }
     return None
+
+
+def _current_origin_scope() -> Optional[Dict[str, str]]:
+    """Return the current live-chat scope for gateway-originated tool calls."""
+    origin = _origin_from_env()
+    if not origin:
+        return None
+    platform = str(origin.get("platform") or "").strip().lower()
+    chat_id = str(origin.get("chat_id") or "").strip()
+    if not platform or not chat_id or platform in {"cli", "local"}:
+        return None
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": str(origin.get("thread_id") or "").strip(),
+    }
+
+
+def _job_matches_origin_scope(job: Dict[str, Any], scope: Optional[Dict[str, str]]) -> bool:
+    """Whether a cron job belongs to the current gateway chat/topic scope."""
+    if not scope:
+        return True
+    origin = job.get("origin")
+    if not isinstance(origin, dict):
+        return False
+    if str(origin.get("platform") or "").strip().lower() != scope["platform"]:
+        return False
+    if str(origin.get("chat_id") or "").strip() != scope["chat_id"]:
+        return False
+    return str(origin.get("thread_id") or "").strip() == scope.get("thread_id", "")
+
+
+def _list_jobs_for_scope(
+    include_disabled: bool,
+    scope: Optional[Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    jobs = list_jobs(include_disabled=include_disabled)
+    if scope:
+        jobs = [job for job in jobs if _job_matches_origin_scope(job, scope)]
+    return jobs
+
+
+def _resolve_job_ref_for_scope(
+    ref: str,
+    scope: Optional[Dict[str, str]],
+) -> Optional[Dict[str, Any]]:
+    """Resolve a job ref without leaking jobs outside the current chat."""
+    if not scope:
+        return resolve_job_ref(ref)
+    jobs = _list_jobs_for_scope(include_disabled=True, scope=scope)
+    for job in jobs:
+        if job["id"] == ref:
+            return job
+    ref_lower = str(ref or "").lower()
+    name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
+    if not name_matches:
+        return None
+    if len(name_matches) > 1:
+        raise AmbiguousJobReference(ref, name_matches)
+    return name_matches[0]
+
+
+def _context_ref_visible(ref: str, scope: Optional[Dict[str, str]]) -> bool:
+    if scope:
+        return _resolve_job_ref_for_scope(ref, scope) is not None
+    from cron.jobs import get_job as _get_job
+
+    return _get_job(ref) is not None
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
@@ -459,6 +528,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("owner_profile"):
+        result["owner_profile"] = job["owner_profile"]
+    if job.get("run_profile"):
+        result["run_profile"] = job["run_profile"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
     return result
 
 
@@ -482,6 +557,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    profile: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -489,6 +565,7 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+        origin_scope = _current_origin_scope()
 
         if normalized == "create":
             if not schedule:
@@ -522,10 +599,13 @@ def cronjob(
 
             # Validate context_from references existing jobs
             if context_from:
-                from cron.jobs import get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    try:
+                        visible = _context_ref_visible(ref_id, origin_scope)
+                    except AmbiguousJobReference as exc:
+                        return tool_error(str(exc), success=False)
+                    if not visible:
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
                             "Use cronjob(action='list') to see available jobs.",
@@ -548,6 +628,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                profile=profile,
             )
             return json.dumps(
                 {
@@ -567,14 +648,20 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [
+                _format_job(job)
+                for job in _list_jobs_for_scope(
+                    include_disabled=include_disabled,
+                    scope=origin_scope,
+                )
+            ]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         try:
-            job = resolve_job_ref(job_id)
+            job = _resolve_job_ref_for_scope(job_id, origin_scope)
         except AmbiguousJobReference as exc:
             return json.dumps(
                 {
@@ -666,9 +753,12 @@ def cronjob(
                 else:
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
                 if refs:
-                    from cron.jobs import get_job as _get_job
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        try:
+                            visible = _context_ref_visible(ref_id, origin_scope)
+                        except AmbiguousJobReference as exc:
+                            return tool_error(str(exc), success=False)
+                        if not visible:
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
                                 "Use cronjob(action='list') to see available jobs.",
@@ -695,6 +785,9 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if profile is not None:
+                updates["profile"] = profile if profile else None
+                updates["run_profile"] = profile if profile else None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -834,6 +927,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "profile": {
+                "type": "string",
+                "description": "Optional Hermes profile name for context-local execution via subprocess-level isolation. When set, the job runs with that profile's HERMES_HOME so profile-specific config, credentials, scripts, skills, and memory paths resolve consistently. 'default' selects the root profile; empty string or omission preserves the scheduler's existing behaviour. On update, pass an empty string to clear."
+            },
         },
         "required": ["action"]
     }
@@ -889,6 +986,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        profile=args.get("profile"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
