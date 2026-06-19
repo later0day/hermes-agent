@@ -98,6 +98,7 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
+      files?: string;
       keys: string;
       logs: string;
       models: string;
@@ -912,6 +913,12 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
+    oauth?: string;
+    providers?: string;
+    tools?: string;
+    settings?: string;
+    jumpToSection?: string;
+    varDescriptions?: Record<string, string>;
   };
 
   // ── OAuth ──
@@ -928,6 +935,18 @@ export interface Translations {
     disconnect: string;
     managedExternally: string;
     copied: string;
+    failedToLoadProviders?: string;
+    disconnectFailed?: string;
+    openDocs?: string;
+    disconnectConfirmDescription?: string;
+    failedToStartLogin?: string;
+    connectedMessage?: string;
+    disconnectedMessage?: string;
+    loginStatus?: string;
+    pollingFailed?: string;
+    tokenExchangeFailed?: string;
+    submitFailed?: string;
+    retryFailed?: string;
     cli: string;
     copyCliCommand: string;
     connect: string;

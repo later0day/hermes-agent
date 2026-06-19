@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import {
   useCallback,
   useEffect,
@@ -76,6 +77,8 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 }
 
 export default function FilesPage() {
+  const { t } = useI18n();
+
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -288,9 +291,7 @@ export default function FilesPage() {
               placeholder="Path"
               className="h-9 min-w-0 flex-1 font-mono"
             />
-            <Button type="submit" size="sm" outlined className="uppercase">
-              Go
-            </Button>
+            <Button type="submit" size="sm" outlined className="uppercase">{t.dashboard?.filesGo || "Go"}</Button>
           </form>
         ) : (
           <div className="min-w-0 truncate font-mono text-sm text-text-secondary" title={activePath}>
@@ -306,9 +307,7 @@ export default function FilesPage() {
             outlined
             className="uppercase"
             prefix={uploading ? <Spinner /> : <Upload />}
-          >
-            Upload
-          </Button>
+          >{t.dashboard?.uiupload || "Upload"}</Button>
           <Button
             type="button"
             onClick={() => setCreateDialogOpen(true)}
@@ -317,9 +316,7 @@ export default function FilesPage() {
             outlined
             className="uppercase"
             prefix={<FolderPlus />}
-          >
-            Create
-          </Button>
+          >{t.dashboard?.uicreate || "Create"}</Button>
         </div>
       </div>
 
@@ -351,9 +348,7 @@ export default function FilesPage() {
             </span>
           </span>
         </span>
-        <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
-          Choose files
-        </span>
+        <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">{t.dashboard?.filesChoose || "Choose files"}</span>
       </button>
 
       <Card className="min-w-0 max-w-full overflow-hidden">
@@ -365,10 +360,10 @@ export default function FilesPage() {
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-            <span>Name</span>
-            <span>Size</span>
-            <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span>{t.dashboard?.webhookName || "Name"}</span>
+            <span>{t.dashboard?.filesSize || "Size"}</span>
+            <span>{t.dashboard?.filesModified || "Modified"}</span>
+            <span className="text-right">{t.dashboard?.filesActions || "Actions"}</span>
           </div>
 
           {listing?.parent && (
@@ -389,11 +384,9 @@ export default function FilesPage() {
 
           {loading && !listing ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-              <Spinner />
-              Loading files...
-            </div>
+              <Spinner />{t.dashboard?.uiloadingFiles || "Loading files..."}</div>
           ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">{t.dashboard?.uinoFiles || "No files"}</div>
           ) : (
             listing?.entries.map((entry) => (
               <div
@@ -467,7 +460,7 @@ export default function FilesPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Create folder</DialogTitle>
+            <DialogTitle>{t.dashboard?.filesCreateFolder || "Create folder"}</DialogTitle>
             <DialogDescription>
               Target: {activePath || "Loading"}
             </DialogDescription>
@@ -493,17 +486,13 @@ export default function FilesPage() {
                 setFolderName("");
               }}
               disabled={creating}
-            >
-              Cancel
-            </Button>
+            >{t.dashboard?.miscCancel || "Cancel"}</Button>
             <Button
               type="button"
               onClick={() => void createDirectory()}
               disabled={creating}
               prefix={creating ? <Spinner /> : <FolderPlus />}
-            >
-              Create
-            </Button>
+            >{t.dashboard?.uicreate || "Create"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

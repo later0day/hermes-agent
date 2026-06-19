@@ -754,9 +754,7 @@ export default function ProfilesPage() {
           size="sm"
           outlined
           onClick={() => navigate("/profiles/new")}
-        >
-          Build
-        </Button>
+        >{t.dashboard?.uibuild || "Build"}</Button>
         <Button
           className="uppercase"
           size="sm"

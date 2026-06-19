@@ -265,9 +265,7 @@ export default function WebhooksPage() {
           setCreated(null);
           setCreateModalOpen(true);
         }}
-      >
-        New subscription
-      </Button>,
+      >{t.dashboard?.webhookNewSubscription || "New subscription"}</Button>,
     );
     return () => {
       setEnd(null);
@@ -326,9 +324,7 @@ export default function WebhooksPage() {
               <h2
                 id="create-webhook-title"
                 className="font-mondwest text-display text-base tracking-wider"
-              >
-                New subscription
-              </h2>
+              >{t.dashboard?.webhookNewSubscription || "New subscription"}</h2>
             </header>
 
             {created ? (
@@ -363,9 +359,7 @@ export default function WebhooksPage() {
                     className="uppercase"
                     size="sm"
                     onClick={closeCreateModal}
-                  >
-                    Done
-                  </Button>
+                  >{t.dashboard?.webhookDone || "Done"}</Button>
                 </div>
               </div>
             ) : (
@@ -414,9 +408,7 @@ export default function WebhooksPage() {
                       <SelectOption value="discord">{t.dashboard?.uidiscord || "Discord"}</SelectOption>
                       <SelectOption value="slack">{t.dashboard?.uislack || "Slack"}</SelectOption>
                       <SelectOption value="email">{t.dashboard?.uiemail || "Email"}</SelectOption>
-                      <SelectOption value="github_comment">
-                        GitHub comment
-                      </SelectOption>
+                      <SelectOption value="github_comment">{t.dashboard?.webhookGithubComment || "GitHub comment"}</SelectOption>
                     </Select>
                   </div>
 
@@ -428,9 +420,7 @@ export default function WebhooksPage() {
                         type="checkbox"
                         checked={deliverOnly}
                         onChange={(e) => setDeliverOnly(e.target.checked)}
-                      />
-                      Skip the agent, deliver payload directly
-                    </label>
+                      />{t.dashboard?.uiskipTheAgentDeliverPayloadDi || "Skip the agent, deliver payload directly"}</label>
                   </div>
                 </div>
 
@@ -470,10 +460,7 @@ export default function WebhooksPage() {
               <div className="flex flex-col gap-1">
                 <span className="font-medium">{t.dashboard?.uiwebhookReceiverDisabled || "Webhook receiver disabled"}</span>
                 <span className="text-muted-foreground">
-                  Webhooks are their own gateway platform. Enable them here to
-                  accept incoming HTTP events; chat channels are only needed
-                  when a subscription delivers to Telegram, Discord, Slack, or
-                  another channel.
+                  {t.dashboard?.uiwebhookDisabledDesc || "Webhooks are their own gateway platform. Enable them here to accept incoming HTTP events; chat channels are only needed when a subscription delivers to Telegram, Discord, Slack, or another channel."}
                 </span>
               </div>
             </div>
@@ -484,7 +471,7 @@ export default function WebhooksPage() {
               disabled={enabling}
               prefix={enabling ? <Spinner /> : <Webhook className="h-4 w-4" />}
             >
-              {enabling ? "Enabling…" : "Enable webhooks"}
+              {enabling ? (t.dashboard?.uienabling || "Enabling\u2026") : (t.dashboard?.uienableWebhooks || "Enable webhooks")}
             </Button>
           </CardContent>
         </Card>
@@ -506,7 +493,7 @@ export default function WebhooksPage() {
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <span>
                 {restartError ??
-                  "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online."}
+                  (t.dashboard?.uiwebhookNeedRestart || "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online.")}
               </span>
             </div>
             <Button
@@ -516,7 +503,7 @@ export default function WebhooksPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart gateway"}
+              {restarting ? (t.dashboard?.uirestarting || "Restarting\u2026") : (t.dashboard?.uirestartGateway || "Restart gateway")}
             </Button>
           </CardContent>
         </Card>
@@ -528,19 +515,16 @@ export default function WebhooksPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Webhook className="h-4 w-4" />
-          Subscriptions ({subscriptions.length})
+          {(t.dashboard?.uisubscriptionsCount || "Subscriptions ({count})").replace("{count}", String(subscriptions.length))}
         </H2>
 
         <p className="text-xs text-muted-foreground -mt-1">
-          Subscription changes hot-reload once the webhook receiver is running.
-          Disabled subscriptions reject incoming events.
+          {t.dashboard?.uisubscriptionChangesHotReload || "Subscription changes hot-reload once the webhook receiver is running. Disabled subscriptions reject incoming events."}
         </p>
 
         {subscriptions.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No webhook subscriptions yet.
-            </CardContent>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">{t.dashboard?.uinoWebhookSubscriptionsYet || "No webhook subscriptions yet."}</CardContent>
           </Card>
         )}
 

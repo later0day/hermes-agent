@@ -497,9 +497,7 @@ export default function SkillsPage() {
                       outlined
                       onClick={openCreateEditor}
                       prefix={<Plus />}
-                    >
-                      New skill
-                    </Button>
+                    >{t.dashboard?.uinewSkill || "New skill"}</Button>
                   </div>
                 </div>
               </CardHeader>
@@ -598,8 +596,8 @@ export default function SkillsPage() {
                                   onClick={() => setConfigToolset(ts)}
                                   prefix={<Wrench />}
                                 >
-                                  Configure
-                                </Button>
+                                  {t.dashboard?.uiconfigure || "Configure"}</Button>
+
                               </div>
                             </div>
                           </div>
@@ -642,6 +640,7 @@ function SkillRow({
   onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
+
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
@@ -680,6 +679,7 @@ function SkillRow({
 }
 
 function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
+
   return (
     <ListItem
       active={active}
@@ -924,17 +924,13 @@ function HubBrowser({
               onClick={() => void runSearch()}
               disabled={searching || !query.trim()}
               prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
-            >
-              Search
-            </Button>
+            >{t.dashboard?.uisearch || "Search"}</Button>
             <Button
               size="sm"
               outlined
               onClick={() => void updateAll()}
               prefix={<RefreshCw className="h-3.5 w-3.5" />}
-            >
-              Update all
-            </Button>
+            >{t.dashboard?.uiupdateAll || "Update all"}</Button>
           </div>
 
           {/* Connected hubs strip — proves the tab is wired up. */}
@@ -984,9 +980,7 @@ function HubBrowser({
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 px-1">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
-                <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
-                  Featured skills
-                </span>
+                <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">{t.dashboard?.skillsFeatured || "Featured skills"}</span>
                 <span className="text-xs text-text-tertiary">
                   from the Hermes index — search above for thousands more
                 </span>
@@ -1030,9 +1024,7 @@ function HubBrowser({
           />
           {results.length === 0 ? (
             <Card className="rounded-none">
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                No matching skills found in the hub.
-              </CardContent>
+              <CardContent className="py-8 text-center text-sm text-muted-foreground">{t.dashboard?.uinoMatchingSkillsFoundInTheHu || "No matching skills found in the hub."}</CardContent>
             </Card>
           ) : (
             results.map((r) => (
@@ -1127,6 +1119,7 @@ function SearchMeta({
   timedOut: string[];
   ms: number | null;
 }) {
+
   const entries = Object.entries(sourceCounts).filter(([, n]) => n > 0);
   return (
     <div className="flex flex-wrap items-center gap-2 px-1 text-xs text-text-tertiary">
@@ -1165,6 +1158,8 @@ function HubResultCard({
   onOpen: () => void;
   onInstall: () => void;
 }) {
+  const { t } = useI18n();
+
   const trust = trustVisual(result.trust_level);
   return (
     <Card className="rounded-none transition-colors hover:bg-muted/30">
@@ -1186,9 +1181,7 @@ function HubResultCard({
               {result.source}
             </Badge>
             {installed && (
-              <Badge tone="success" className="text-xs">
-                installed
-              </Badge>
+              <Badge tone="success" className="text-xs">{t.dashboard?.uiinstalled83 || "installed"}</Badge>
             )}
           </div>
           <p className="text-xs text-text-secondary line-clamp-2">
@@ -1214,21 +1207,15 @@ function HubResultCard({
             outlined
             onClick={onOpen}
             prefix={<FileText className="h-3.5 w-3.5" />}
-          >
-            Details
-          </Button>
+          >{t.dashboard?.uidetails || "Details"}</Button>
           {installed ? (
-            <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-              Installed
-            </Button>
+            <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>{t.dashboard?.mcpInstalled || "Installed"}</Button>
           ) : (
             <Button
               size="sm"
               onClick={onInstall}
               prefix={<Download className="h-3.5 w-3.5" />}
-            >
-              Install
-            </Button>
+            >{t.dashboard?.uiinstall || "Install"}</Button>
           )}
         </div>
       </CardContent>
@@ -1250,6 +1237,8 @@ function SkillDetailDialog({
   onInstall: () => void;
   showToast: (msg: string, kind: "success" | "error") => void;
 }) {
+  const { t } = useI18n();
+
   const [tab, setTab] = useState<"readme" | "scan">("readme");
   const [preview, setPreview] = useState<SkillHubPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(true);
@@ -1299,9 +1288,7 @@ function SkillDetailDialog({
               {result.source}
             </Badge>
             {installed && (
-              <Badge tone="success" className="text-xs">
-                installed
-              </Badge>
+              <Badge tone="success" className="text-xs">{t.dashboard?.uiinstalled83 || "installed"}</Badge>
             )}
           </DialogTitle>
           <DialogDescription className="sr-only">
@@ -1324,9 +1311,7 @@ function SkillDetailDialog({
             outlined={tab !== "readme"}
             onClick={() => setTab("readme")}
             prefix={<FileText className="h-3.5 w-3.5" />}
-          >
-            Read SKILL.md
-          </Button>
+          >{t.dashboard?.uireadSkillMd || "Read SKILL.md"}</Button>
           <Button
             size="sm"
             outlined={tab !== "scan"}
@@ -1355,17 +1340,13 @@ function SkillDetailDialog({
               </a>
             )}
             {installed ? (
-              <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-                Installed
-              </Button>
+              <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>{t.dashboard?.mcpInstalled || "Installed"}</Button>
             ) : (
               <Button
                 size="sm"
                 onClick={onInstall}
                 prefix={<Download className="h-3.5 w-3.5" />}
-              >
-                Install
-              </Button>
+              >{t.dashboard?.uiinstall || "Install"}</Button>
             )}
           </div>
         </div>
@@ -1404,9 +1385,7 @@ function SkillDetailDialog({
                 </pre>
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground text-center py-10">
-                Couldn't load the skill source.
-              </p>
+              <p className="text-sm text-muted-foreground text-center py-10">{t.dashboard?.uicouldnTLoadTheSkillSource || "Couldn't load the skill source."}</p>
             )
           ) : (
             <ScanPanel scan={scan} scanning={scanning} />
@@ -1425,6 +1404,8 @@ function ScanPanel({
   scan: SkillHubScan | null;
   scanning: boolean;
 }) {
+  const { t } = useI18n();
+
   if (scanning && !scan) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-12">
@@ -1502,9 +1483,7 @@ function ScanPanel({
         })}
         {scan.findings.length === 0 && (
           <span className="flex items-center gap-1 text-xs text-emerald-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            No risky patterns detected
-          </span>
+            <CheckCircle2 className="h-3.5 w-3.5" />{t.dashboard?.uinoRiskyPatternsDetected || "No risky patterns detected"}</span>
         )}
       </div>
 

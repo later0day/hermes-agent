@@ -349,7 +349,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
 }
 
 function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { sorted, sortKey, sortDir, toggle } = useTableSort(skills, "total_count", "desc");
 
   if (skills.length === 0) return null;
@@ -391,7 +391,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
                   </td>
                   <td className="text-right py-2 px-4">{skill.total_count}</td>
                   <td className="text-right py-2 pl-4 text-muted-foreground">
-                    {skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}
+                    {skill.last_used_at ? timeAgo(skill.last_used_at, locale) : "—"}
                   </td>
                 </tr>
               ))}
@@ -489,13 +489,11 @@ export default function AnalyticsPage() {
         <Card>
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
-              <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
-                Token analytics hidden
-              </h2>
+              <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">{t.dashboard?.uitokenAnalyticsHidden || "Token analytics hidden"}</h2>
               <p>
                 The token, cost, and per-day analytics on this page are a
                 local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
+                responses with a usable <span className="font-mono">{t.dashboard?.uiusage || "usage"}</span>{" "}
                 block, and silently exclude auxiliary calls (context
                 compression, title generation, vision, session search, web
                 extract, smart approvals, MCP routing, plugin LLM access)
@@ -515,7 +513,7 @@ export default function AnalyticsPage() {
                 <span className="font-mono">
                   dashboard.show_token_analytics: true
                 </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
+                in <a href="/config" className="underline">{t.dashboard?.uiconfig || "Config"}</a>.
               </p>
             </div>
           </CardContent>

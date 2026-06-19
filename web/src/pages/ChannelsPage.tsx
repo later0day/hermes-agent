@@ -38,21 +38,19 @@ import { cn, themedBody } from "@/lib/utils";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
-const STATE_BADGE: Record<
-  string,
-  { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
-> = {
-  connected: { tone: "success", label: "Connected" },
-  pending_restart: { tone: "warning", label: "Restart to apply" },
-  gateway_stopped: { tone: "warning", label: "Gateway stopped" },
-  startup_failed: { tone: "destructive", label: "Start failed" },
-  disconnected: { tone: "warning", label: "Disconnected" },
-  not_configured: { tone: "outline", label: "Not configured" },
-  disabled: { tone: "secondary", label: "Disabled" },
-  fatal: { tone: "destructive", label: "Error" },
-};
-
-function stateBadge(state: string) {
+function stateBadge(state: string, t: any) {
+  const STATE_BADGE: Record<
+    string,
+    { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
+  > = {
+    connected: { tone: "success", label: t.channels.stateConnected },
+    pending_restart: { tone: "warning", label: t.channels.statePendingRestart },
+    gateway_stopped: { tone: "warning", label: t.channels.stateGatewayStopped },
+    disconnected: { tone: "warning", label: t.channels.stateDisconnected },
+    not_configured: { tone: "outline", label: t.channels.stateNotConfigured },
+    disabled: { tone: "secondary", label: t.channels.stateDisabled },
+    fatal: { tone: "destructive", label: t.channels.stateError },
+  };
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
 }
 
@@ -167,14 +165,14 @@ export default function ChannelsPage() {
       if (v.trim()) env[k] = v.trim();
     });
     if (Object.keys(env).length === 0) {
-      showToast("Nothing to save — fill in at least one field.", "error");
+      showToast(t.channels.saveEmpty, "error");
       return;
     }
     const missing = editing.env_vars.filter(
       (v) => v.required && !v.is_set && !env[v.key],
     );
     if (missing.length > 0) {
-      showToast(`${missing[0].prompt || missing[0].key} is required`, "error");
+      showToast(`${missing[0].prompt || missing[0].key} ${t.channels.fieldRequired}`, "error");
       return;
     }
     const nextFieldErrors: Record<string, string> = {};
@@ -191,12 +189,12 @@ export default function ChannelsPage() {
     try {
       const body: MessagingPlatformUpdate = { env, enabled: true };
       await api.updateMessagingPlatform(editing.id, body);
-      showToast(`${editing.name} saved`, "success");
+      showToast(`${editing.name} ${t.channels.savedSuccess}`, "success");
       setEditing(null);
       setRestartNeeded(true);
       await load();
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(`${t.channels.saveFailed} ${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -238,12 +236,12 @@ export default function ChannelsPage() {
     setRestarting(true);
     try {
       await api.restartGateway();
-      showToast("Gateway restarting…", "success");
+      showToast(t.channels.gatewayRestarting, "success");
       setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to restart: ${e}`, "error");
+      showToast(`${t.channels.gatewayRestartFailed} ${e}`, "error");
     } finally {
       setRestarting(false);
     }
@@ -258,12 +256,12 @@ export default function ChannelsPage() {
         disabled={restarting}
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
-        {restarting ? "Restarting…" : "Restart gateway"}
+        {restarting ? (t.dashboard?.uirestarting || "Restarting…") : (t.dashboard?.uirestartGateway || "Restart gateway")}
       </Button>,
     );
     return () => setEnd(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setEnd, restarting]);
+  }, [setEnd, restarting, t]);
 
   const configured = useMemo(
     () => platforms.filter((p) => p.configured).length,
@@ -289,7 +287,7 @@ export default function ChannelsPage() {
             <div className="flex items-center gap-2 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
               <span>
-                Changes are saved. Restart the gateway for them to take effect.
+                {t.dashboard?.uichangesAreSavedRestartTheGat || "Changes are saved. Restart the gateway for them to take effect."}
               </span>
             </div>
             <Button
@@ -299,7 +297,7 @@ export default function ChannelsPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart now"}
+              {restarting ? (t.dashboard?.uirestarting || "Restarting…") : (t.dashboard?.uirestartNow || "Restart now")}
             </Button>
           </CardContent>
         </Card>
@@ -310,19 +308,20 @@ export default function ChannelsPage() {
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
-              The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
-
-              (or the Restart button above).
+              {t.dashboard?.uitheGatewayIsNotRunningConfig || "The gateway is not running. Configure channels here, then start the gateway with"} <code className="font-courier">{t.dashboard?.uihermesGatewayStart || "hermes gateway start"}</code>{" "}
+              {t.dashboard?.uiOrRestartButtonAbove || "(or the Restart button above)."}
             </span>
           </CardContent>
         </Card>
       )}
 
       <p className="text-xs text-muted-foreground">
-        {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; the
-        gateway connects each enabled channel on its next restart.
+        {(t.dashboard?.uiChannelsConfiguredCount || "{configured} of {total} channels configured.")
+          .replace("{configured}", String(configured))
+          .replace("{total}", String(platforms.length))}{" "}
+        {t.dashboard?.uiCredentialsWrittenTo || "Credentials are written to"}{" "}
+        <code className="font-courier">{envPath}</code>;{" "}
+        {t.dashboard?.uiGatewayConnectsOnRestart || "the gateway connects each enabled channel on its next restart."}
       </p>
 
       {/* Config modal */}
@@ -356,7 +355,7 @@ export default function ChannelsPage() {
                 id="channel-config-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                Configure {editing.name}
+                {t.channels.configTitle.replace("{name}", editing.name)}
               </h2>
               {editing.docs_url && (
                 <a
@@ -365,7 +364,7 @@ export default function ChannelsPage() {
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
-                  Setup guide <ExternalLink className="h-3 w-3" />
+                  {t.channels.setupGuide} <ExternalLink className="h-3 w-3" />
                 </a>
               )}
             </header>
@@ -402,7 +401,7 @@ export default function ChannelsPage() {
                     type={field.is_password ? "password" : "text"}
                     placeholder={
                       field.is_set
-                        ? field.redacted_value || "•••••• (set — leave blank to keep)"
+                        ? field.redacted_value || t.channels.passwordPlaceholder
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}
@@ -428,7 +427,7 @@ export default function ChannelsPage() {
 
               <div className="flex justify-end gap-2 pt-1">
                 <Button ghost size="sm" onClick={() => setEditing(null)}>
-                  Cancel
+                  {t.channels.cancel}
                 </Button>
                 <Button
                   className="uppercase"
@@ -437,7 +436,7 @@ export default function ChannelsPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? "Saving…" : "Save & enable"}
+                  {saving ? t.channels.saving : t.channels.saveEnable}
                 </Button>
               </div>
             </div>
@@ -448,7 +447,7 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const badge = stateBadge(platform.state, t);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -498,7 +497,7 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`Enable ${platform.name}`}
+                          aria-label={`${t.channels.enableAria} ${platform.name}`}
                         />
                       )}
                     </div>
@@ -515,7 +514,7 @@ export default function ChannelsPage() {
                         )
                       }
                     >
-                      Test
+                      {t.channels.test}
                     </Button>
                     <Button
                       size="sm"
@@ -523,7 +522,7 @@ export default function ChannelsPage() {
                       onClick={() => openConfig(platform)}
                       prefix={<Settings2 className="h-4 w-4" />}
                     >
-                      Configure
+                      {t.channels.configure}
                     </Button>
                   </div>
                 </div>
@@ -767,11 +766,11 @@ function TelegramOnboardingPanel({
           disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
           prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
         >
-          {phase === "starting" ? "Starting…" : "Set up with QR"}
+          {phase === "starting" ? t.channels.telegramStarting : t.channels.telegramSetupQR}
         </Button>
         {platform.configured && (
           <span className="text-xs text-muted-foreground">
-            Existing Telegram credentials are configured.
+            {t.channels.telegramExisting}
           </span>
         )}
       </div>
@@ -788,7 +787,7 @@ function TelegramOnboardingPanel({
             {(phase === "ready" || phase === "applying") && (
               <div className="grid gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="success">{t.dashboard?.uiready || "Ready"}</Badge>
+                  <Badge tone="success">{t.channels.telegramReady}</Badge>
                   {botUsername && (
                     <span className="font-courier text-sm text-muted-foreground">
                       @{botUsername}
@@ -799,10 +798,10 @@ function TelegramOnboardingPanel({
                 <div className="grid gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-                      Allowed users
+                      {t.channels.telegramAllowedUsers}
                     </span>
                     {detectedOwnerId && allowedIds.includes(detectedOwnerId) && (
-                      <Badge tone="success">{t.dashboard?.uiownerDetected || "owner detected"}</Badge>
+                      <Badge tone="success">{t.channels.telegramOwnerDetected}</Badge>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -823,7 +822,7 @@ function TelegramOnboardingPanel({
                     ))}
                     {allowedIds.length === 0 && (
                       <span className="text-sm text-muted-foreground">
-                        Add at least one Telegram user ID.
+                        {t.channels.telegramAddOneHint}
                       </span>
                     )}
                   </div>
@@ -833,11 +832,11 @@ function TelegramOnboardingPanel({
                   <Input
                     value={newAllowedId}
                     onChange={(event) => setNewAllowedId(event.target.value)}
-                    placeholder="Telegram user ID"
+                    placeholder={t.channels.telegramUserIdPlaceholder}
                     className="font-courier"
                   />
                   <Button size="sm" outlined onClick={addAllowedId} prefix={<Check />}>
-                    Add
+                    {t.channels.telegramAdd}
                   </Button>
                 </div>
 
@@ -849,10 +848,10 @@ function TelegramOnboardingPanel({
                     disabled={phase === "applying"}
                     prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
                   >
-                    {phase === "applying" ? "Saving…" : "Save and restart"}
+                    {phase === "applying" ? t.channels.saving : t.channels.telegramSaveRestart}
                   </Button>
                   <Button size="sm" ghost onClick={() => void cancel()}>
-                    Cancel
+                    {t.channels.cancel}
                   </Button>
                 </div>
               </div>
@@ -862,14 +861,14 @@ function TelegramOnboardingPanel({
           <div className="flex flex-col items-center justify-center gap-3">
             <img
               src={qrDataUrl}
-              alt="Telegram setup QR code"
+              alt={t.channels.telegramSetupQR}
               className="h-56 w-56 bg-white p-2"
             />
             <div className="flex flex-wrap items-center justify-center gap-2 text-sm">
               <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
-                {expiresIn}
+                {expiresIn === "expired" ? t.channels.telegramExpired : expiresIn}
               </Badge>
-              {phase === "waiting" && <Badge tone="warning">{t.dashboard?.uiwaiting || "waiting"}</Badge>}
+              {phase === "waiting" && <Badge tone="warning">{t.channels.telegramWaiting}</Badge>}
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <a
@@ -879,10 +878,10 @@ function TelegramOnboardingPanel({
                 className="inline-flex h-8 items-center gap-1 border border-border px-3 text-xs uppercase text-foreground hover:border-foreground/40"
               >
                 <ExternalLink className="h-4 w-4" />
-                Open Telegram
+                {t.channels.telegramOpen}
               </a>
               <Button size="sm" ghost onClick={() => void cancel()}>
-                Cancel
+                {t.channels.cancel}
               </Button>
             </div>
           </div>

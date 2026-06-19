@@ -66,9 +66,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
+      .catch((e) => onErrorRef.current?.(`${t.oauth.failedToLoadProviders}: ${e}`))
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     refresh();
@@ -79,10 +79,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     setDisconnectTarget(null);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
+      onSuccess?.((t.oauth.disconnectedMessage ?? "{name} disconnected").replace("{name}", provider.name));
       refresh();
     } catch (e) {
-      onError?.(`${t.oauth.disconnect} failed: ${e}`);
+      onError?.(`${t.oauth.disconnectFailed}: ${e}`);
     } finally {
       setBusyId(null);
     }
@@ -220,7 +220,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex"
-                      title={`Open ${p.name} docs`}
+                      title={(t.oauth.openDocs ?? "Open {name} docs").replace("{name}", p.name)}
                     >
                       <Button ghost size="icon">
                         <ExternalLink />
@@ -278,7 +278,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
           if (disconnectTarget) void handleDisconnect(disconnectTarget);
         }}
         title={`${t.oauth.disconnect} ${disconnectTarget?.name ?? ""}?`}
-        description={`This will remove the stored OAuth tokens for ${disconnectTarget?.name ?? "this provider"}. You will need to re-authenticate to use it again.`}
+        description={(t.oauth.disconnectConfirmDescription ?? "This will remove the stored OAuth tokens for {name}. You will need to re-authenticate to use it again.").replace("{name}", disconnectTarget?.name ?? t.common.other)}
         destructive
         confirmLabel={t.oauth.disconnect}
       />

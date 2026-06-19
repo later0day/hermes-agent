@@ -574,7 +574,7 @@ export default function CronPage() {
 
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">Profile</Label>
+                <Label htmlFor="cron-profile">{t.dashboard?.cronProfile || "Profile"}</Label>
                 <Select
                   id="cron-profile"
                   value={createProfile}
@@ -688,9 +688,7 @@ export default function CronPage() {
               <h2
                 id="edit-cron-title"
                 className="font-mondwest text-display text-base tracking-wider"
-              >
-                Edit job
-              </h2>
+              >{t.dashboard?.cronEditJob || "Edit job"}</h2>
             </header>
 
             <div className="p-5 grid gap-4">
@@ -740,7 +738,7 @@ export default function CronPage() {
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="edit-cron-skills">Skills</Label>
+                <Label htmlFor="edit-cron-skills">{t.dashboard?.cronSkills || "Skills"}</Label>
                 <SkillsPicker
                   id="edit-cron-skills"
                   available={availableSkills}
@@ -778,13 +776,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
+            <Label htmlFor="cron-profile-filter">{t.dashboard?.cronProfile || "Profile"}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">All profiles</SelectOption>
+              <SelectOption value="all">{t.dashboard?.cronAllProfiles || "All profiles"}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}
@@ -886,8 +884,8 @@ export default function CronPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Edit job"
-                    aria-label="Edit job"
+                    title={t.dashboard?.cronEditJob || "Edit job"}
+                    aria-label={t.dashboard?.cronEditJob || "Edit job"}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />

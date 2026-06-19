@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
@@ -47,6 +48,8 @@ interface ModelChoice {
  * bundle" toggle keeps everything (sends no keep list).
  */
 export default function ProfileBuilderPage() {
+  const { t } = useI18n();
+
   const navigate = useNavigate();
   const { toast, showToast } = useToast();
 
@@ -249,10 +252,8 @@ export default function ProfileBuilderPage() {
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-4">
       <div className="flex items-center justify-between">
-        <H2>New profile</H2>
-        <Button ghost onClick={() => navigate("/profiles")}>
-          Cancel
-        </Button>
+        <H2>{t.dashboard?.uinewProfile || "New profile"}</H2>
+        <Button ghost onClick={() => navigate("/profiles")}>{t.dashboard?.miscCancel || "Cancel"}</Button>
       </div>
 
       {/* Stepper */}
@@ -283,7 +284,7 @@ export default function ProfileBuilderPage() {
           {step === "identity" && (
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="pb-name">Profile name</Label>
+                <Label htmlFor="pb-name">{t.dashboard?.uiprofileName || "Profile name"}</Label>
                 <Input
                   id="pb-name"
                   placeholder="coder"
@@ -411,7 +412,7 @@ export default function ProfileBuilderPage() {
 
               {/* Skills hub */}
               <div className="space-y-2 border-t pt-4">
-                <Label>Add from the skills hub</Label>
+                <Label>{t.dashboard?.uiaddFromTheSkillsHub || "Add from the skills hub"}</Label>
                 <div className="flex gap-2">
                   <Input
                     placeholder="Search the hub (e.g. linear, hyperliquid)…"
@@ -445,9 +446,7 @@ export default function ProfileBuilderPage() {
                             </span>
                           )}
                         </span>
-                        <Button size="sm" ghost onClick={() => addHubSkill(r)}>
-                          Add
-                        </Button>
+                        <Button size="sm" ghost onClick={() => addHubSkill(r)}>{t.dashboard?.uiadd || "Add"}</Button>
                       </div>
                     ))}
                   </div>
@@ -507,9 +506,7 @@ export default function ProfileBuilderPage() {
                   }
                 />
               </div>
-              <Button outlined onClick={addMcpDraft}>
-                Add server
-              </Button>
+              <Button outlined onClick={addMcpDraft}>{t.dashboard?.uiaddServer || "Add server"}</Button>
               {mcpServers.length > 0 && (
                 <div className="space-y-1">
                   {mcpServers.map((s) => (
@@ -526,9 +523,7 @@ export default function ProfileBuilderPage() {
                       <button
                         className="text-xs text-destructive"
                         onClick={() => removeMcp(s.name)}
-                      >
-                        Remove
-                      </button>
+                      >{t.dashboard?.uiremove || "Remove"}</button>
                     </div>
                   ))}
                 </div>
@@ -538,14 +533,14 @@ export default function ProfileBuilderPage() {
 
           {step === "review" && (
             <div className="space-y-3 text-sm">
-              <ReviewRow label="Name" value={name.trim() || "—"} />
-              <ReviewRow label="Description" value={description.trim() || "—"} />
+              <ReviewRow label={t.dashboard?.webhookName || "Name"} value={name.trim() || "—"} />
+              <ReviewRow label={t.dashboard?.webhookDescription || "Description"} value={description.trim() || "—"} />
               <ReviewRow
                 label="Model"
                 value={pickedModel ? pickedModel.label : "Default (set later)"}
               />
               <ReviewRow
-                label="Skills"
+                label={t.dashboard?.cronSkills || "Skills"}
                 value={
                   keepAll
                     ? "Full default bundle"
@@ -579,9 +574,7 @@ export default function ProfileBuilderPage() {
           ghost
           disabled={stepIndex === 0}
           onClick={() => setStep(STEPS[Math.max(0, stepIndex - 1)].id)}
-        >
-          Back
-        </Button>
+        >{t.dashboard?.uiback || "Back"}</Button>
         {step === "review" ? (
           <Button onClick={handleCreate} disabled={creating || !nameValid}>
             {creating ? "Creating…" : "Create profile"}
@@ -590,9 +583,7 @@ export default function ProfileBuilderPage() {
           <Button
             disabled={!canAdvance}
             onClick={() => setStep(STEPS[Math.min(STEPS.length - 1, stepIndex + 1)].id)}
-          >
-            Next
-          </Button>
+          >{t.dashboard?.uinext || "Next"}</Button>
         )}
       </div>
 
