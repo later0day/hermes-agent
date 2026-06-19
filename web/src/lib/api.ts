@@ -622,6 +622,85 @@ export const api = {
         body: JSON.stringify({ provider, model }),
       },
     ),
+  getProfileDetails: (name: string) =>
+    fetchJSON<ProfileDetails>(
+      `/api/profiles/${encodeURIComponent(name)}/details`,
+    ),
+  getProfileModelOptions: (name: string) =>
+    fetchJSON<ModelOptionsResponse>(
+      `/api/profiles/${encodeURIComponent(name)}/model/options`,
+    ),
+  bindSourceAgent: (body: { source_binding_key: string; profile_name: string }) =>
+    fetchJSON<{ ok: boolean; binding: SourceBindingInfo }>("/api/source-bindings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  clearSourceAgentBinding: (sourceBindingKey: string) =>
+    fetchJSON<{ ok: boolean; deleted: boolean }>(
+      `/api/source-bindings/${encodeURIComponent(sourceBindingKey)}`,
+      { method: "DELETE" },
+    ),
+  createSourceBindingTask: (body: {
+    source_binding_key: string;
+    profile_name: string;
+    task: string;
+    board?: string | null;
+  }) =>
+    fetchJSON<{
+      ok: boolean;
+      task_id: string;
+      board: string;
+      profile_name: string;
+      title: string;
+      subscribed: boolean;
+    }>("/api/source-bindings/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  getProfileMemoryFile: (name: string, file: "MEMORY.md" | "USER.md") =>
+    fetchJSON<{
+      name: string;
+      path: string;
+      exists: boolean;
+      content: string;
+      bytes: number;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(file)}`,
+    ),
+  updateProfileMemoryFile: (name: string, file: "MEMORY.md" | "USER.md", content: string) =>
+    fetchJSON<{ ok: boolean; name: string; path: string; bytes: number; memory: ProfileMemorySummary }>(
+      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(file)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
+  getProfileSkillManifest: (name: string, skill: string) =>
+    fetchJSON<{
+      skill: string;
+      path: string;
+      content: string;
+      bytes: number;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/skills/${encodeURIComponent(skill)}/manifest`,
+    ),
+  updateProfileSkillManifest: (name: string, skill: string, content: string) =>
+    fetchJSON<{
+      ok: boolean;
+      skill: string;
+      path: string;
+      bytes: number;
+    }>(
+      `/api/profiles/${encodeURIComponent(name)}/skills/${encodeURIComponent(skill)}/manifest`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
   renameProfile: (name: string, newName: string) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>(
       `/api/profiles/${encodeURIComponent(name)}`,
@@ -1841,6 +1920,11 @@ export interface ProfileInfo {
   distribution_version: string | null;
   distribution_source: string | null;
   has_alias: boolean;
+  binding_summary?: {
+    total: number;
+    webhook_configured: number;
+    webhook_expired: number;
+  };
 }
 
 export interface ModelsAnalyticsModelEntry {
@@ -2247,4 +2331,130 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Profile binding management types (ported from local-custom fork)
+// ---------------------------------------------------------------------------
+
+export interface ProfileBindingSummary {
+  total: number;
+  webhook_configured: number;
+  webhook_expired: number;
+  webhook_permanent: number;
+  webhook_temporary: number;
+}
+
+export interface SourceBindingTargetSummary {
+  platform: string;
+  chat_type: string;
+  chat_id?: string | null;
+  chat_name?: string | null;
+  thread_id?: string | number | null;
+  user_name?: string | null;
+  user_id?: string | null;
+  label: string;
+  scope: string;
+}
+
+export interface SourceBindingWebhookStatus {
+  configured: boolean;
+  state: "missing" | "configured" | "expired" | string;
+  kind: "none" | "temporary" | "permanent" | string;
+  expires_at?: number | null;
+  expired: boolean;
+  label: string;
+}
+
+export interface SourceBindingInfo {
+  source_binding_key: string;
+  profile_name: string;
+  agent_id: string;
+  fallback_target?: Record<string, unknown> | null;
+  fallback_extra?: Record<string, unknown> | null;
+  target_summary?: SourceBindingTargetSummary;
+  webhook_status?: SourceBindingWebhookStatus;
+  created_at?: number | null;
+  updated_at?: number | null;
+  created_by?: string | null;
+  updated_by?: string | null;
+}
+
+export interface ProfileSkillsSummary {
+  count: number;
+  names: string[];
+  truncated: boolean;
+}
+
+export interface ProfileMemorySummary {
+  provider: string;
+  memory_dir: string;
+  memory_dir_exists: boolean;
+  memory_file_count: number;
+  memory_bytes: number;
+  state_db: string;
+  state_db_exists: boolean;
+  state_db_bytes: number;
+  previews?: Array<{
+    name: string;
+    path: string;
+    exists: boolean;
+    bytes: number;
+    content: string;
+    truncated: boolean;
+  }>;
+}
+
+export interface AgentAuditEvent {
+  ts?: string;
+  action?: string;
+  profile_name?: string;
+  actor_user_id?: string;
+  actor_user_name?: string;
+  source?: Record<string, unknown>;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  extra?: Record<string, unknown> | null;
+}
+
+export interface ProfileDetails {
+  profile: {
+    name: string;
+    path: string;
+    is_default: boolean;
+    model: string | null;
+    provider: string | null;
+    has_env: boolean;
+    description?: string;
+    description_auto?: boolean;
+    template?: boolean;
+  };
+  model: { provider: string; model: string };
+  bindings: SourceBindingInfo[];
+  health: {
+    status: "ok" | "warning" | string;
+    checks: Record<string, boolean>;
+    recent_error?: string | null;
+    config_error?: string | null;
+  };
+  kanban: {
+    total: number;
+    active: number;
+    by_status: Record<string, number>;
+    error?: string;
+  };
+  cron: {
+    owner_job_count: number;
+    owner_jobs: CronJob[];
+  };
+  paths: {
+    workspace: string;
+    scripts: string;
+    sessions: string;
+  };
+  skills: ProfileSkillsSummary;
+  memory: ProfileMemorySummary;
+  audit: {
+    events: AgentAuditEvent[];
+  };
 }
