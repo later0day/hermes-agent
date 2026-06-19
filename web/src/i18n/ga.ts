@@ -169,6 +169,7 @@ export const ga: Translations = {
     "selectedSessionsDeleted": "{count} sessions deleted",
     "failedToDeleteSelected": "Failed to delete selected sessions",
     "resumeInChat": "Resume in Chat",
+    "newChat": "Comhrá nua",
     "previousPage": "Previous page",
     "nextPage": "Next page",
     "roles": {

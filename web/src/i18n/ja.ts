@@ -169,6 +169,7 @@ export const ja: Translations = {
     "selectedSessionsDeleted": "{count} sessions deleted",
     "failedToDeleteSelected": "Failed to delete selected sessions",
     "resumeInChat": "Resume in Chat",
+    "newChat": "新しいチャット",
     "previousPage": "Previous page",
     "nextPage": "Next page",
     "roles": {

@@ -169,6 +169,7 @@ export const ko: Translations = {
     "selectedSessionsDeleted": "{count} sessions deleted",
     "failedToDeleteSelected": "Failed to delete selected sessions",
     "resumeInChat": "Resume in Chat",
+    "newChat": "새 채팅",
     "previousPage": "Previous page",
     "nextPage": "Next page",
     "roles": {

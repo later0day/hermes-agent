@@ -169,6 +169,7 @@ export const de: Translations = {
     "selectedSessionsDeleted": "{count} sessions deleted",
     "failedToDeleteSelected": "Failed to delete selected sessions",
     "resumeInChat": "Resume in Chat",
+    "newChat": "Neuer Chat",
     "previousPage": "Previous page",
     "nextPage": "Next page",
     "roles": {

@@ -169,6 +169,7 @@ export const ru: Translations = {
     "selectedSessionsDeleted": "{count} sessions deleted",
     "failedToDeleteSelected": "Failed to delete selected sessions",
     "resumeInChat": "Resume in Chat",
+    "newChat": "Новый чат",
     "previousPage": "Previous page",
     "nextPage": "Next page",
     "roles": {
