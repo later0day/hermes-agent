@@ -9543,6 +9543,20 @@ class ProfileSkillManifestUpdate(BaseModel):
     content: str
 
 
+class ProfileTemplateUpdate(BaseModel):
+    template: bool
+
+
+class ProfileMetadataUpdate(BaseModel):
+    description: Optional[str] = None
+    description_auto: Optional[bool] = None
+    template: Optional[bool] = None
+
+
+class ProfileDescribeRequest(BaseModel):
+    overwrite: bool = False
+
+
 class SourceBindingUpdate(BaseModel):
     source_binding_key: str
     profile_name: str
@@ -9553,6 +9567,116 @@ class SourceBindingTaskCreate(BaseModel):
     profile_name: str = "default"
     task: str
     board: Optional[str] = None
+
+
+class ProfileSkillsCopy(BaseModel):
+    source_profile: Optional[str] = None
+    skills: Optional[List[str]] = None
+
+
+def _load_profile_config_raw_with_error(name: str) -> tuple[Dict[str, Any], Optional[str]]:
+    config_path = _resolve_profile_dir(name) / "config.yaml"
+    if not config_path.exists():
+        return {}, None
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        detail = f"Could not read profile config: {exc}"
+        _log.debug("Profile %s config read failed: %s", name, exc)
+        return {}, detail
+    except yaml.YAMLError as exc:
+        detail = f"Invalid profile config: {exc}"
+        _log.debug("Profile %s config parse failed: %s", name, exc)
+        return {}, detail
+    if not isinstance(loaded, dict):
+        return {}, "Profile config must be a YAML mapping."
+    return loaded, None
+
+
+def _load_profile_config_raw(name: str) -> Dict[str, Any]:
+    cfg, _error = _load_profile_config_raw_with_error(name)
+    return cfg
+
+
+def _save_profile_config_raw(name: str, config: Dict[str, Any]) -> None:
+    from utils import atomic_yaml_write
+
+    config_path = _resolve_profile_dir(name) / "config.yaml"
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_yaml_write(config_path, config)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write profile config: {exc}")
+
+
+def _profile_model_summary_from_config(cfg: Dict[str, Any]) -> Dict[str, str]:
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        return {
+            "provider": str(model_cfg.get("provider", "") or ""),
+            "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+        }
+    return {"provider": "", "model": str(model_cfg or "")}
+
+
+def _profile_model_summary(name: str) -> Dict[str, str]:
+    cfg = _load_profile_config_raw(name)
+    return _profile_model_summary_from_config(cfg)
+
+
+def _safe_binding_fallback_extra(extra: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(extra, dict):
+        return None
+    safe: Dict[str, Any] = {}
+    for key, value in extra.items():
+        key_str = str(key)
+        key_lower = key_str.lower()
+        if key_lower == "session_webhook":
+            safe["session_webhook_configured"] = bool(value)
+            continue
+        if key_lower == "session_webhook_expired_time":
+            safe[key_str] = value
+            continue
+        if any(part in key_lower for part in ("webhook", "token", "secret", "password", "key")):
+            safe[key_str] = "[REDACTED]" if value else value
+            continue
+        safe[key_str] = value
+    return safe
+
+
+def _cron_job_owner(job: Dict[str, Any]) -> str:
+    owner = str(job.get("owner_profile") or "").strip()
+    if owner:
+        return owner
+    run_profile = str(job.get("run_profile") or job.get("profile") or "").strip()
+    return run_profile or "default"
+
+
+def _call_cron_store(func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers against the single dashboard cron store.
+
+    Cron V1 keeps physical cron storage centralized under the default Hermes
+    home. Profile isolation is logical: owner_profile filters management views,
+    while run_profile/profile controls the runtime profile for execution.
+    """
+    _profile_name, home = _cron_profile_home("default")
+    with _CRON_PROFILE_LOCK:
+        from cron import jobs as cron_jobs
+
+        old_cron_dir = cron_jobs.CRON_DIR
+        old_jobs_file = cron_jobs.JOBS_FILE
+        old_output_dir = cron_jobs.OUTPUT_DIR
+        cron_jobs.CRON_DIR = home / "cron"
+        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
+        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
+        try:
+            result = getattr(cron_jobs, func_name)(*args, **kwargs)
+        finally:
+            cron_jobs.CRON_DIR = old_cron_dir
+            cron_jobs.JOBS_FILE = old_jobs_file
+            cron_jobs.OUTPUT_DIR = old_output_dir
+
+    return result
 
 
 def _profile_attr(info, name: str, default: Any = None) -> Any:
