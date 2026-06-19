@@ -2,48 +2,44 @@ name: mattermost-platform
 label: Mattermost
 kind: platform
 version: 1.0.0
-description: >
-  Mattermost gateway adapter for Hermes Agent.
-  Connects to a self-hosted or cloud Mattermost instance via the v4 REST
-  API + WebSocket event stream and relays messages between Mattermost
-  channels/DMs and the Hermes agent. Supports thread-mode replies, native
-  file uploads, channel-scoped allowlists, and home-channel cron delivery.
+description: Hermes Agent 的 Mattermost 网关适配器。通过 v4 REST API + WebSocket 事件流连接到自托管或云端
+  Mattermost 实例，并在 Mattermost 频道/私信与 Hermes 代理之间中继消息。支持主题模式回复、原生文件上传、频道范围白名单和主频道的定时任务投递。
 author: NousResearch
 requires_env:
-  - name: MATTERMOST_URL
-    description: "Mattermost server URL (e.g. https://mm.example.com)"
-    prompt: "Mattermost server URL"
-    password: false
-  - name: MATTERMOST_TOKEN
-    description: "Bot account token or personal-access token"
-    prompt: "Mattermost bot token"
-    password: true
+- name: MATTERMOST_URL
+  description: Mattermost 服务器 URL (例如 https://mm.example.com)
+  prompt: Mattermost server URL
+  password: false
+- name: MATTERMOST_TOKEN
+  description: 机器人帐户令牌或个人访问令牌
+  prompt: Mattermost bot token
+  password: true
 optional_env:
-  - name: MATTERMOST_ALLOWED_USERS
-    description: "Comma-separated Mattermost user IDs allowed to talk to the bot"
-    prompt: "Allowed users (comma-separated)"
-    password: false
-  - name: MATTERMOST_ALLOW_ALL_USERS
-    description: "Allow any Mattermost user to trigger the bot (dev only)"
-    prompt: "Allow all users? (true/false)"
-    password: false
-  - name: MATTERMOST_HOME_CHANNEL
-    description: "Default channel ID for cron / notification delivery"
-    prompt: "Home channel ID"
-    password: false
-  - name: MATTERMOST_REPLY_MODE
-    description: "How replies are sent: 'thread' (nested) or 'off' (flat). Default: off."
-    prompt: "Reply mode (thread|off)"
-    password: false
-  - name: MATTERMOST_REQUIRE_MENTION
-    description: "Require @bot mention in channels (default true). Set false for free-response everywhere."
-    prompt: "Require @mention? (true/false)"
-    password: false
-  - name: MATTERMOST_FREE_RESPONSE_CHANNELS
-    description: "Comma-separated channel IDs where @mention is not required."
-    prompt: "Free-response channel IDs (comma-separated)"
-    password: false
-  - name: MATTERMOST_ALLOWED_CHANNELS
-    description: "If set, the bot only responds in these channels (whitelist)."
-    prompt: "Allowed channel IDs (comma-separated)"
-    password: false
+- name: MATTERMOST_ALLOWED_USERS
+  description: 允许与机器人对话的逗号分隔的 Mattermost 用户 ID
+  prompt: Allowed users (comma-separated)
+  password: false
+- name: MATTERMOST_ALLOW_ALL_USERS
+  description: 允许任何 Mattermost 用户触发机器人 (仅开发模式)
+  prompt: Allow all users? (true/false)
+  password: false
+- name: MATTERMOST_HOME_CHANNEL
+  description: 定时任务/通知投递的默认频道 ID
+  prompt: Home channel ID
+  password: false
+- name: MATTERMOST_REPLY_MODE
+  description: '发送回复的方式：''thread'' (嵌套) 或 ''off'' (平铺)。默认: off。'
+  prompt: Reply mode (thread|off)
+  password: false
+- name: MATTERMOST_REQUIRE_MENTION
+  description: 要求在频道中 @ 提及机器人 (默认 true)。设置为 false 以允许在任何地方自由回复。
+  prompt: Require @mention? (true/false)
+  password: false
+- name: MATTERMOST_FREE_RESPONSE_CHANNELS
+  description: 不需要 @ 提及的逗号分隔的频道 ID。
+  prompt: Free-response channel IDs (comma-separated)
+  password: false
+- name: MATTERMOST_ALLOWED_CHANNELS
+  description: 如果设置，机器人仅在这些频道中回复 (白名单)。
+  prompt: Allowed channel IDs (comma-separated)
+  password: false

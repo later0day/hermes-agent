@@ -2,47 +2,42 @@ name: teams-platform
 label: Microsoft Teams
 kind: platform
 version: 1.0.0
-description: >
-  Microsoft Teams gateway adapter for Hermes Agent.
-  Connects to Microsoft Teams via the Bot Framework and relays messages
-  between Teams chats (personal DMs, group chats, channel posts) and
-  the Hermes agent. Supports Adaptive Card approval prompts.
+description: Hermes Agent 的 Microsoft Teams 网关适配器。通过 Bot Framework 连接到 Microsoft Teams，并在
+  Teams 聊天（个人私信、群聊、频道帖子）与 Hermes 代理之间中继消息。支持自适应卡片批准提示。
 author: Aamir Jawaid
-# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
-# platform-plugin env var injector in ``hermes_cli/config.py``.
 requires_env:
-  - name: TEAMS_CLIENT_ID
-    description: "Azure AD application (Bot Framework) client ID"
-    prompt: "Teams / Azure AD client ID"
-    url: "https://portal.azure.com/"
-    password: false
-  - name: TEAMS_CLIENT_SECRET
-    description: "Azure AD application client secret"
-    prompt: "Teams / Azure AD client secret"
-    url: "https://portal.azure.com/"
-    password: true
-  - name: TEAMS_TENANT_ID
-    description: "Azure AD tenant ID hosting the bot application"
-    prompt: "Teams / Azure AD tenant ID"
-    password: false
+- name: TEAMS_CLIENT_ID
+  description: Azure AD 应用程序 (Bot Framework) 客户端 ID
+  prompt: Teams / Azure AD client ID
+  url: https://portal.azure.com/
+  password: false
+- name: TEAMS_CLIENT_SECRET
+  description: Azure AD 应用程序客户端机密
+  prompt: Teams / Azure AD client secret
+  url: https://portal.azure.com/
+  password: true
+- name: TEAMS_TENANT_ID
+  description: 托管机器人应用程序的 Azure AD 租户 ID
+  prompt: Teams / Azure AD tenant ID
+  password: false
 optional_env:
-  - name: TEAMS_PORT
-    description: "Webhook listen port (Bot Framework default: 3978)"
-    prompt: "Webhook port"
-    password: false
-  - name: TEAMS_ALLOWED_USERS
-    description: "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
-    prompt: "Allowed users (comma-separated)"
-    password: false
-  - name: TEAMS_ALLOW_ALL_USERS
-    description: "Allow any Teams user to trigger the bot (dev only)"
-    prompt: "Allow all users? (true/false)"
-    password: false
-  - name: TEAMS_HOME_CHANNEL
-    description: "Default chat/channel ID for cron / notification delivery"
-    prompt: "Home channel (or empty)"
-    password: false
-  - name: TEAMS_HOME_CHANNEL_NAME
-    description: "Display name for the Teams home channel"
-    prompt: "Home channel display name"
-    password: false
+- name: TEAMS_PORT
+  description: 'Webhook 监听端口 (Bot Framework 默认: 3978)'
+  prompt: Webhook port
+  password: false
+- name: TEAMS_ALLOWED_USERS
+  description: 允许与机器人对话的逗号分隔的 Teams 用户 ID / UPN
+  prompt: Allowed users (comma-separated)
+  password: false
+- name: TEAMS_ALLOW_ALL_USERS
+  description: 允许任何 Teams 用户触发机器人 (仅开发模式)
+  prompt: Allow all users? (true/false)
+  password: false
+- name: TEAMS_HOME_CHANNEL
+  description: 定时任务/通知投递的默认聊天/频道 ID
+  prompt: Home channel (or empty)
+  password: false
+- name: TEAMS_HOME_CHANNEL_NAME
+  description: Teams 主频道的显示名称
+  prompt: Home channel display name
+  password: false
