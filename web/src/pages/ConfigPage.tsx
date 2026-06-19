@@ -49,6 +49,12 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
+import {
+  formatConfigCategoryName,
+  formatConfigDescription,
+  formatConfigFieldLabel,
+  formatConfigSectionName,
+} from "@/lib/configLabels";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -122,7 +128,7 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { setEnd } = usePageHeader();
 
   useLayoutEffect(() => {
@@ -156,9 +162,7 @@ export default function ConfigPage() {
   }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
-    const key = cat as keyof typeof t.config.categories;
-    if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    return formatConfigCategoryName(cat, t, locale);
   }
 
   useEffect(() => {
@@ -245,9 +249,19 @@ export default function ConfigPage() {
     return Object.entries(schema).filter(([key, s]) => {
       const label = key.split(".").pop() ?? key;
       const humanLabel = label.replace(/_/g, " ");
+      const translatedLabel = formatConfigFieldLabel(key, locale);
+      const translatedDescription = formatConfigDescription(key, s, locale);
+      const translatedCategory = formatConfigCategoryName(
+        String(s.category ?? "general"),
+        t,
+        locale,
+      );
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
+        translatedLabel.toLowerCase().includes(lowerSearch) ||
+        translatedDescription.toLowerCase().includes(lowerSearch) ||
+        translatedCategory.toLowerCase().includes(lowerSearch) ||
         String(s.category ?? "")
           .toLowerCase()
           .includes(lowerSearch) ||
@@ -256,7 +270,7 @@ export default function ConfigPage() {
           .includes(lowerSearch)
       );
     });
-  }, [isSearching, lowerSearch, schema]);
+  }, [isSearching, locale, lowerSearch, schema, t]);
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
@@ -403,7 +417,7 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {formatConfigSectionName(section, locale)}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>
