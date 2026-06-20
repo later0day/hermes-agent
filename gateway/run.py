@@ -14595,7 +14595,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _stage_adapter, "notify_tool_started",
                     ):
                         _stage_adapter.notify_tool_started(
-                            source.chat_id, tool_name,
+                            source.chat_id, tool_name, preview=preview,
                         )
                 except Exception:
                     logger.debug(

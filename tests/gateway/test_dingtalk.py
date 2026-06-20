@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import concurrent.futures
 import json
 import socket
 from datetime import datetime, timezone
@@ -1680,8 +1681,9 @@ class TestCardLifecycle:
         self, adapter_with_card,
     ):
         """First terminal call in a turn swaps the Thinking reaction
-        for the ``💻 命令执行中`` stage label."""
+        for the terminal stage label."""
         a = adapter_with_card
+        terminal_label = a._TOOL_STAGE_LABELS["terminal"]
         calls = self._capture_stage_emotions(a)
         try:
             a.notify_tool_started("chat-1", "terminal")
@@ -1690,11 +1692,45 @@ class TestCardLifecycle:
 
         assert calls == [
             (a.REACTION_THINKING, True),
-            ("💻 命令执行中", False),
+            (terminal_label, False),
         ]
         # State now reflects the new label so future swaps know what
         # to recall.
-        assert a._current_stage_label["chat-1"] == "💻 命令执行中"
+        assert a._current_stage_label["chat-1"] == terminal_label
+
+    def test_notify_tool_started_schedules_on_adapter_loop_from_worker_thread(
+        self, adapter_with_card, monkeypatch,
+    ):
+        """Agent tool callbacks run off the gateway loop; stage swaps must hop
+        back to the adapter loop instead of calling create_task in that worker
+        thread."""
+        a = adapter_with_card
+
+        class FakeLoop:
+            def is_running(self):
+                return True
+
+        fake_loop = FakeLoop()
+        a._loop = fake_loop
+        scheduled = []
+
+        def fake_run_coroutine_threadsafe(coro, loop):
+            scheduled.append((coro, loop))
+            coro.close()
+            fut = concurrent.futures.Future()
+            fut.set_result(None)
+            return fut
+
+        monkeypatch.setattr(
+            asyncio,
+            "run_coroutine_threadsafe",
+            fake_run_coroutine_threadsafe,
+        )
+
+        a.notify_tool_started("chat-1", "terminal")
+
+        assert len(scheduled) == 1
+        assert scheduled[0][1] is fake_loop
 
     def test_notify_tool_started_is_noop_when_category_unchanged(
         self, adapter_with_card,
@@ -1702,6 +1738,7 @@ class TestCardLifecycle:
         """Back-to-back terminal calls do not flicker — only the first
         call swaps the label, subsequent ones short-circuit."""
         a = adapter_with_card
+        terminal_label = a._TOOL_STAGE_LABELS["terminal"]
         calls = self._capture_stage_emotions(a)
         try:
             a.notify_tool_started("chat-1", "terminal")
@@ -1713,8 +1750,25 @@ class TestCardLifecycle:
         # One swap pair, not three.
         assert calls == [
             (a.REACTION_THINKING, True),
-            ("💻 命令执行中", False),
+            (terminal_label, False),
         ]
+
+    def test_notify_tool_started_uses_terminal_preview_specific_label(
+        self, adapter_with_card,
+    ):
+        """Terminal commands can refine the coarse terminal stage label."""
+        a = adapter_with_card
+        calls = self._capture_stage_emotions(a)
+        try:
+            a.notify_tool_started("chat-1", "terminal", preview="pytest tests/gateway")
+        finally:
+            a._test_stage_loop.close()
+
+        assert calls == [
+            (a.REACTION_THINKING, True),
+            ("🧪 跑测试中", False),
+        ]
+        assert a._current_stage_label["chat-1"] == "🧪 跑测试中"
 
     def test_notify_tool_started_swaps_again_on_category_change(
         self, adapter_with_card,
@@ -1723,6 +1777,9 @@ class TestCardLifecycle:
         fires one recall+reply pair; the next pair recalls the *current*
         label (not Thinking) so the swap matches what's rendered."""
         a = adapter_with_card
+        terminal_label = a._TOOL_STAGE_LABELS["terminal"]
+        read_file_label = a._TOOL_STAGE_LABELS["read_file"]
+        web_search_label = a._TOOL_STAGE_LABELS["web_search"]
         calls = self._capture_stage_emotions(a)
         try:
             a.notify_tool_started("chat-1", "terminal")
@@ -1732,11 +1789,11 @@ class TestCardLifecycle:
             a._test_stage_loop.close()
 
         assert calls == [
-            (a.REACTION_THINKING, True), ("💻 命令执行中", False),
-            ("💻 命令执行中", True),     ("📖 阅读代码中", False),
-            ("📖 阅读代码中", True),     ("🌐 搜索网络中", False),
+            (a.REACTION_THINKING, True), (terminal_label, False),
+            (terminal_label, True),      (read_file_label, False),
+            (read_file_label, True),     (web_search_label, False),
         ]
-        assert a._current_stage_label["chat-1"] == "🌐 搜索网络中"
+        assert a._current_stage_label["chat-1"] == web_search_label
 
     def test_notify_tool_started_noop_for_uncategorized_tool(
         self, adapter_with_card,
@@ -1775,6 +1832,7 @@ class TestCardLifecycle:
         Thinking. Otherwise the stage label would orphan on the
         message side. Also clears the per-chat state."""
         a = adapter_with_card
+        terminal_label = a._TOOL_STAGE_LABELS["terminal"]
         calls = self._capture_stage_emotions(a)
         try:
             a.notify_tool_started("chat-1", "terminal")
@@ -1784,7 +1842,7 @@ class TestCardLifecycle:
             a._test_stage_loop.close()
 
         assert calls == [
-            ("💻 命令执行中", True),
+            (terminal_label, True),
             (a.REACTION_DONE, False),
         ]
         assert "chat-1" not in a._current_stage_label

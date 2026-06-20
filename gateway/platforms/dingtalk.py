@@ -29,6 +29,7 @@ Configuration in config.yaml:
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import mimetypes
@@ -324,6 +325,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Track fire-and-forget emoji/reaction coroutines so Python's GC
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
         self._bg_tasks: Set[asyncio.Task] = set()
+        self._bg_futures: Set[concurrent.futures.Future] = set()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -379,6 +382,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
             # Capture the current event loop for cross-thread dispatch
             loop = asyncio.get_running_loop()
+            self._loop = loop
             handler = _IncomingHandler(self, loop)
             self._stream_client.register_callback_handler(
                 dingtalk_stream.ChatbotMessage.TOPIC, handler
@@ -451,6 +455,10 @@ class DingTalkAdapter(BasePlatformAdapter):
                 task.cancel()
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
             self._bg_tasks.clear()
+        if self._bg_futures:
+            for fut in list(self._bg_futures):
+                fut.cancel()
+            self._bg_futures.clear()
 
         # Finalize any open streaming cards before the HTTP client closes so
         # they don't stay stuck in streaming state on DingTalk's UI after
@@ -632,9 +640,26 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     def _spawn_bg(self, coro) -> None:
         """Start a fire-and-forget coroutine and track it for cleanup."""
-        task = asyncio.create_task(coro)
-        self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
+        target_loop = self._loop if self._loop and self._loop.is_running() else None
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if target_loop is not None and running_loop is not target_loop:
+            fut = asyncio.run_coroutine_threadsafe(coro, target_loop)
+            self._bg_futures.add(fut)
+            fut.add_done_callback(self._bg_futures.discard)
+            return
+
+        if running_loop is not None:
+            task = running_loop.create_task(coro)
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+            return
+
+        coro.close()
+        logger.debug("[%s] Dropped background coroutine: no running event loop", self.name)
 
     # -- AI Card lifecycle helpers ------------------------------------------
 
@@ -736,17 +761,17 @@ class DingTalkAdapter(BasePlatformAdapter):
     #      arrives so the user sees feedback within ~100ms.
     #   2. While the agent runs, the label SHIFTS to a stage-aware
     #      label (``_TOOL_STAGE_LABELS``) whenever the dominant tool
-    #      category changes — e.g. ``💻 命令执行中`` when terminal
-    #      starts, ``📖 阅读代码中`` when read_file starts. Each
+    #      category changes — e.g. ``⌨️ 敲命令中`` when terminal
+    #      starts, ``👀 看文件中`` when read_file starts. Each
     #      category only fires one swap regardless of how many
     #      back-to-back calls it makes.
     #   3. On completion the label is replaced one last time with
     #      ``REACTION_DONE`` / ``REACTION_ERROR`` / ``REACTION_INTERRUPTED``
     #      based on the turn outcome.
-    REACTION_THINKING = "💭 思考中"
-    REACTION_DONE = "✅ 已完成"
-    REACTION_ERROR = "⚠️ 遇到问题"
-    REACTION_INTERRUPTED = "⏸ 已中断"
+    REACTION_THINKING = "🤔 想一想"
+    REACTION_DONE = "✅ 搞定了"
+    REACTION_ERROR = "😓 遇到麻烦了"
+    REACTION_INTERRUPTED = "⏸️ 先停一下"
 
     # Tool → broad category label. Categories are coarse on purpose:
     # back-to-back terminal calls or back-to-back file reads should
@@ -754,40 +779,65 @@ class DingTalkAdapter(BasePlatformAdapter):
     # category triggers a label change. Tools missing from this map
     # do not swap the label (the previous stage label stays).
     _TOOL_STAGE_LABELS: Dict[str, str] = {
-        "terminal":           "💻 命令执行中",
-        "code_execution":     "💻 命令执行中",
-        "execute_code":       "💻 命令执行中",
-        "read_file":          "📖 阅读代码中",
-        "write_file":         "✍️ 写入代码中",
-        "patch":              "✍️ 编辑代码中",
-        "search_files":       "🔍 搜索文件中",
-        "web_search":         "🌐 搜索网络中",
-        "web_extract":        "🌐 抓取网页中",
-        "browser_navigate":   "🧭 浏览网页中",
-        "browser_click":      "🧭 浏览网页中",
-        "browser_type":       "🧭 浏览网页中",
-        "browser_screenshot": "🧭 浏览网页中",
-        "browser_back":       "🧭 浏览网页中",
-        "browser_scroll":     "🧭 浏览网页中",
-        "browser_press":      "🧭 浏览网页中",
-        "browser_vision":     "🧭 浏览网页中",
-        "browser_console":    "🧭 浏览网页中",
-        "browser_get_images": "🧭 浏览网页中",
-        "memory":             "🧠 调取记忆中",
-        "delegate_task":      "🤝 调度子智能体",
-        "todo":               "📋 整理任务中",
-        "clarify":            "❓ 等待澄清",
-        "skill_manage":       "📚 加载技能中",
-        "vision":             "👁️ 看图分析中",
-        "image_generation":   "🎨 生成图片中",
-        "video_generation":   "🎬 生成视频中",
+        "terminal":           "⌨️ 敲命令中",
+        "code_execution":     "⌨️ 敲命令中",
+        "execute_code":       "🔬 跑代码中",
+        "read_file":          "👀 看文件中",
+        "write_file":         "✍️ 写代码中",
+        "patch":              "✍️ 改代码中",
+        "search_files":       "🔎 搜文件中",
+        "web_search":         "🔍 搜一搜",
+        "web_extract":        "🌍 抓网页中",
+        "browser_navigate":   "🧭 逛网页中",
+        "browser_click":      "🧭 逛网页中",
+        "browser_type":       "🧭 逛网页中",
+        "browser_screenshot": "🧭 逛网页中",
+        "browser_back":       "🧭 逛网页中",
+        "browser_scroll":     "🧭 逛网页中",
+        "browser_press":      "🧭 逛网页中",
+        "browser_vision":     "🧭 逛网页中",
+        "browser_console":    "🧭 逛网页中",
+        "browser_get_images": "🧭 逛网页中",
+        "memory":             "💡 想起来了",
+        "delegate_task":      "🤖 叫小弟去办",
+        "todo":               "📋 整理一下",
+        "clarify":            "🙋 稍等确认",
+        "skill_manage":       "🎯 加载技能",
+        "vision":             "👁️ 看图中",
+        "image_generation":   "🎨 画画中",
+        "video_generation":   "🎬 剪片中",
     }
 
+    # Terminal command → more specific reaction label.
+    # Matched in order; first hit wins.
+    _TERMINAL_STAGE_LABELS: list[tuple[re.Pattern, str]] = [
+        (re.compile(r"^\s*git\b"),                          "🌳 提交代码中"),
+        (re.compile(r"^\s*(pytest|unittest|jest|vitest|mocha|cargo\s+test|go\s+test|npm\s+test|pnpm\s+test)\b"), "🧪 跑测试中"),
+        (re.compile(r"^\s*(pip|pip3|uv|npm|pnpm|yarn|cargo|brew|apt|apt-get)\s+(install|add|i|sync)\b"), "📦 装依赖中"),
+        (re.compile(r"^\s*(docker|docker-compose|kubectl|helm)\b"),  "🐳 跑容器中"),
+        (re.compile(r"^\s*(curl|wget|http)\b"),             "📡 请求接口中"),
+        (re.compile(r"^\s*(grep|rg|ripgrep|ag)\b"),         "🔍 搜一搜"),
+        (re.compile(r"^\s*(python|python3|node|deno|ruby|bash|sh|tsx|ts-node)\b"), "▶️ 跑脚本中"),
+        (re.compile(r"^\s*(make|cmake|cargo\s+build|go\s+build|mvn)\b"), "🔨 编译中"),
+        (re.compile(r"^\s*(cat|head|tail|bat)\b"),           "👀 看文件中"),
+        (re.compile(r"^\s*(ls|find|tree|fd)\b"),             "🗂️ 翻目录中"),
+    ]
+
     @classmethod
-    def _stage_label_for_tool(cls, tool_name: Optional[str]) -> Optional[str]:
-        """Return the stage label for *tool_name*, or None to keep the current label."""
+    def _stage_label_for_tool(
+        cls, tool_name: Optional[str], preview: str = "",
+    ) -> Optional[str]:
+        """Return the stage label for *tool_name*, or None to keep current label.
+
+        For ``terminal`` calls, *preview* (the command string) is used to
+        pick a more specific label from ``_TERMINAL_STAGE_LABELS``.
+        """
         if not tool_name:
             return None
+        if tool_name == "terminal" and preview:
+            for pattern, label in cls._TERMINAL_STAGE_LABELS:
+                if pattern.match(preview):
+                    return label
         return cls._TOOL_STAGE_LABELS.get(tool_name)
 
     def set_pending_reply_state(self, chat_id: str, state: str) -> None:
@@ -807,7 +857,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             state = "success"
         self._pending_reply_state[chat_id] = state
 
-    def notify_tool_started(self, chat_id: str, tool_name: Optional[str]) -> None:
+    def notify_tool_started(
+        self, chat_id: str, tool_name: Optional[str], preview: str = "",
+    ) -> None:
         """Optionally swap the in-flight reaction to a stage-aware label.
 
         Called by the gateway runner on every ``tool.started`` event.
@@ -824,7 +876,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         """
         if not chat_id:
             return
-        new_label = self._stage_label_for_tool(tool_name)
+        new_label = self._stage_label_for_tool(tool_name, preview=preview)
         if new_label is None:
             return
         # Cheap pre-lock check — skip spawning a task when nothing
@@ -874,7 +926,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         :meth:`notify_tool_started` (default ``REACTION_THINKING``) so
         the recall matches what DingTalk is actually rendering. Doing
         a blind ``REACTION_THINKING`` recall would leave a stage label
-        like ``💻 命令执行中`` orphaned on the message.
+        like ``⌨️ 敲命令中`` orphaned on the message.
         """
         if chat_id in self._done_emoji_fired:
             return

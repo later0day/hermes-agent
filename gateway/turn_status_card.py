@@ -55,56 +55,178 @@ _TERMINAL_COMMAND_EMOJI: list[tuple[re.Pattern[str], str]] = [
 ]
 
 _READ_FILE_EXT_EMOJI: dict[str, str] = {
+    # Python
     ".py": "🐍",
     ".pyi": "🐍",
-    ".ts": "📘",
-    ".tsx": "📘",
-    ".js": "📙",
-    ".jsx": "📙",
-    ".mjs": "📙",
-    ".cjs": "📙",
+    # TypeScript — brand blue
+    ".ts": "🔷",
+    ".tsx": "🔷",
+    # JavaScript — brand yellow
+    ".js": "🟡",
+    ".jsx": "🟡",
+    ".mjs": "🟡",
+    ".cjs": "🟡",
+    # Docs / prose
     ".md": "📝",
     ".rst": "📝",
     ".txt": "📝",
+    # Config / data
     ".yaml": "⚙️",
     ".yml": "⚙️",
     ".toml": "⚙️",
-    ".json": "📄",
     ".ini": "⚙️",
     ".cfg": "⚙️",
     ".conf": "⚙️",
-    ".html": "🧱",
-    ".htm": "🧱",
+    ".json": "🗂️",
+    ".xml": "🏷️",
+    ".csv": "📊",
+    # Web
+    ".html": "🌐",
+    ".htm": "🌐",
     ".css": "🎨",
     ".scss": "🎨",
-    ".vue": "🟩",
-    ".svelte": "🟧",
+    ".sass": "🎨",
+    ".less": "🎨",
+    # Frameworks
+    ".vue": "💚",
+    ".svelte": "🔥",
+    # Systems / compiled
     ".go": "🐹",
     ".rs": "🦀",
-    ".rb": "💎",
+    ".c": "⚙️",
+    ".h": "⚙️",
+    ".cpp": "⚙️",
+    ".cc": "⚙️",
+    ".cxx": "⚙️",
+    ".hpp": "⚙️",
+    ".zig": "⚡",
+    ".wasm": "🧩",
+    # JVM
     ".java": "☕",
-    ".kt": "🟪",
+    ".kt": "🟣",
+    ".kts": "🟣",
+    ".scala": "🔴",
+    ".sc": "🔴",
+    ".clj": "🔵",
+    ".cljs": "🔵",
+    # .NET
+    ".cs": "🎵",
+    ".fs": "🎵",
+    ".fsi": "🎵",
+    ".vb": "🎵",
+    # Ruby
+    ".rb": "💎",
+    ".erb": "💎",
+    # Shell — shell = 贝壳
+    ".sh": "🐚",
+    ".bash": "🐚",
+    ".zsh": "🐚",
+    ".fish": "🐚",
+    # Apple
     ".swift": "🐦",
-    ".sh": "📜",
-    ".bash": "📜",
-    ".zsh": "📜",
-    ".sql": "🗄️",
+    ".m": "🍎",
+    ".mm": "🍎",
+    # Web / mobile scripting
+    ".php": "🐘",
+    ".dart": "🎯",
+    ".lua": "🌙",
+    # Functional
+    ".ex": "⚗️",
+    ".exs": "⚗️",
+    ".erl": "📡",
+    ".hrl": "📡",
+    ".hs": "λ",
+    ".lhs": "λ",
+    ".ml": "🐫",
+    ".mli": "🐫",
+    ".pl": "🐪",
+    ".pm": "🐪",
+    ".jl": "💜",
+    # Data / analytics
+    ".r": "📈",
+    ".R": "📈",
+    ".ipynb": "🪐",
+    ".sql": "🗃️",
+    # Infra / cloud
+    ".tf": "🌍",
+    ".tfvars": "🌍",
+    ".nix": "❄️",
+    ".proto": "📡",
+    ".graphql": "🔮",
+    ".gql": "🔮",
+    # Web3
+    ".sol": "💎",
+    # Meta
     ".log": "📋",
     ".lock": "🔒",
     ".env": "🔑",
+    ".pem": "🔑",
+    ".key": "🔑",
+    ".cert": "🔐",
+    ".crt": "🔐",
 }
 
 _READ_FILE_BASENAME_EMOJI: dict[str, str] = {
+    # Containers
     "dockerfile": "🐳",
+    "docker-compose.yml": "🐳",
+    "docker-compose.yaml": "🐳",
+    ".dockerignore": "🐳",
+    # Build
     "makefile": "🔨",
+    "cmakelists.txt": "🔨",
+    "build.gradle": "🐘",
+    "build.gradle.kts": "🟣",
+    "pom.xml": "☕",
+    # Ruby
     "rakefile": "💎",
     "gemfile": "💎",
+    "gemfile.lock": "🔒",
+    # Python ecosystem
     "pipfile": "🐍",
+    "pipfile.lock": "🔒",
+    "pyproject.toml": "🐍",
+    "setup.py": "🐍",
+    "setup.cfg": "🐍",
+    "requirements.txt": "🐍",
+    # Node ecosystem
+    "package.json": "📦",
+    "package-lock.json": "🔒",
+    "yarn.lock": "🔒",
+    "pnpm-lock.yaml": "🔒",
+    "tsconfig.json": "🔷",
+    "vite.config.ts": "⚡",
+    "vite.config.js": "⚡",
+    "webpack.config.js": "📦",
+    "jest.config.js": "🧪",
+    "jest.config.ts": "🧪",
+    ".eslintrc": "🔍",
+    ".eslintrc.json": "🔍",
+    ".prettierrc": "🎨",
+    # Go ecosystem
+    "go.mod": "🐹",
+    "go.sum": "🐹",
+    # Rust ecosystem
+    "cargo.toml": "🦀",
+    "cargo.lock": "🔒",
+    # Git
+    ".gitignore": "🌳",
+    ".gitattributes": "🌳",
+    ".gitmodules": "🌳",
+    # Env / secrets
+    ".env": "🔑",
+    ".env.local": "🔑",
+    ".env.example": "🔑",
+    # Docs
+    "readme": "📖",
+    "readme.md": "📖",
+    "license": "⚖️",
+    "license.md": "⚖️",
+    "changelog": "📝",
+    "changelog.md": "📝",
+    # System
     "procfile": "📜",
     "vagrantfile": "📜",
-    ".gitignore": "🌳",
-    ".dockerignore": "🐳",
-    ".env": "🔑",
 }
 
 
@@ -178,6 +300,10 @@ class TurnStatusCardCoordinator:
 
     _MEDIA_RE = re.compile(r"(?:\[\[audio_as_voice\]\]\s*)?MEDIA:\S+")
 
+    # Single growing-dot spinner — 4 frames, one dot that gets progressively bigger.
+    # · → • → ● → ⬤ conveys "building up" without the clutter of accumulating chars.
+    _SPINNER: list[str] = ["·", "•", "●", "⬤"]
+
     def __init__(
         self,
         *,
@@ -203,6 +329,8 @@ class TurnStatusCardCoordinator:
         self._last_flush = 0.0
         self._fallback_counter = 0
         self._edit_accepts_metadata: Optional[bool] = None
+        # Animation frame counter — incremented on every _render(), wraps at 12
+        self._frame: int = 0
         # True when the only activation signal so far has been streaming
         # deltas. Used to avoid echoing the answer text into the status
         # card while the final-answer card has not yet been delivered.
@@ -474,20 +602,30 @@ class TurnStatusCardCoordinator:
             text = "..." + text[-max(0, cap - 3):]
         return text
 
+
     def _render(self) -> str:
+        # Advance animation frame on every render call
+        self._frame = (self._frame + 1) % len(self._SPINNER)
+        now = time.monotonic()
+
         lines: list[str] = []
         lines.append("**进度**")
         lines.append(self._status_line())
 
         if self._tool_order:
             lines.append("")
-            lines.append("**🛠 工具**")
+            # Show a spinner next to the header while any tool is still running
+            running_any = any(
+                self._tools[k].status == "running" for k in self._tool_order
+            )
+            header_spinner = f" {self._SPINNER[self._frame]}" if running_any else ""
+            lines.append(f"**🛠 工具**{header_spinner}")
             order = self._tool_order[-max(1, int(self.config.max_tools or 12)):]
             hidden = max(0, len(self._tool_order) - len(order))
             if hidden:
                 lines.append(f"- … 省略较早的 {hidden} 个工具")
             for key in order:
-                lines.append(self._render_tool_line(self._tools[key]))
+                lines.append(self._render_tool_line(self._tools[key], self._frame, now))
         return "\n".join(lines).strip()
 
     @staticmethod
@@ -529,23 +667,28 @@ class TurnStatusCardCoordinator:
         return "⚡"
 
     @classmethod
-    def _render_tool_line(cls, entry: ToolStatusEntry) -> str:
-        # Option A + per-tool emoji (skin / subclass / registry). Status
-        # glyph stays in the leading column so the status column is
-        # always aligned; the tool emoji sits between the glyph and the
-        # name so the tool's identity is scannable without reading
-        # every row's preview.
+    def _render_tool_line(
+        cls,
+        entry: ToolStatusEntry,
+        frame: int = 0,
+        now: Optional[float] = None,
+    ) -> str:
+        # Single dot grows · → • → ● → ⬤ to show activity without clutter.
         if entry.status == "running":
-            icon = "▶"
+            icon = cls._SPINNER[frame % len(cls._SPINNER)]
         elif entry.status == "failed":
-            icon = "✗"
+            icon = "❌"
         else:
-            icon = "✓"
+            icon = "✅"
         tool_emoji = cls._resolve_tool_emoji(entry)
         parts: list[str] = [f"{icon} {tool_emoji} `{entry.name}`"]
         if entry.preview:
             parts.append(entry.preview)
-        if entry.status != "running" and entry.duration is not None:
+        if entry.status == "running":
+            if now is not None and entry.started_at:
+                elapsed = now - entry.started_at
+                parts.append(f"{elapsed:.1f}s…")
+        elif entry.duration is not None:
             parts.append(f"{entry.duration:.1f}s")
         line = f"- {' · '.join(parts)}"
         if entry.status == "failed" and entry.error_summary:
