@@ -87,6 +87,7 @@ const ZH_FIELD_LABELS: Record<string, string> = {
   "dingtalk.free_response_chats": "免 @ 回复群",
   "dingtalk.reply_at_sender": "回复时 @ 发送者",
   "dingtalk.require_mention": "需要 @ 才回复",
+  "dingtalk.robot_code": "钉钉 robotCode",
   "logging.level": "日志级别",
   "memory.provider": "记忆提供方",
   "terminal.backend": "终端后端",
@@ -470,6 +471,7 @@ const ZH_DESCRIPTIONS: Record<string, string> = {
   "dingtalk.free_response_chats": "这些钉钉群里无需 @ 机器人也会响应，多个 ID 用逗号分隔。",
   "dingtalk.reply_at_sender": "开启后，群聊最终回复会 @ 触发这轮对话的发送者。",
   "dingtalk.require_mention": "开启后，钉钉群聊里只有 @ 机器人时才响应。",
+  "dingtalk.robot_code": "钉钉机器人 robotCode/chatBotId；留空时使用 Channels 页里的 DINGTALK_CLIENT_ID。",
   "terminal.backend": "工具执行使用的终端后端，例如 local、docker、ssh。",
   "terminal.cwd": "网关和工具执行的默认工作目录。",
 };
@@ -540,6 +542,7 @@ const ZH_HANT_FIELD_LABELS: Record<string, string> = {
   "dingtalk.free_response_chats": "免 @ 回復羣",
   "dingtalk.reply_at_sender": "回復時 @ 發送者",
   "dingtalk.require_mention": "需要 @ 才回復",
+  "dingtalk.robot_code": "釘釘 robotCode",
   "logging.level": "日誌級別",
   "memory.provider": "記憶提供方",
   "terminal.backend": "終端後端",
@@ -923,6 +926,7 @@ const ZH_HANT_DESCRIPTIONS: Record<string, string> = {
   "dingtalk.free_response_chats": "這些釘釘羣裏無需 @ 機器人也會響應，多個 ID 用逗號分隔。",
   "dingtalk.reply_at_sender": "開啓後，羣聊最終回復會 @ 觸發這輪對話的發送者。",
   "dingtalk.require_mention": "開啓後，釘釘羣聊裏只有 @ 機器人時才響應。",
+  "dingtalk.robot_code": "釘釘機器人 robotCode/chatBotId；留空時使用 Channels 頁裏的 DINGTALK_CLIENT_ID。",
   "terminal.backend": "工具執行使用的終端後端，例如 local、docker、ssh。",
   "terminal.cwd": "網關和工具執行的默認工作目錄。",
 };

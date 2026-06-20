@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { Check, ShieldCheck, Trash2, Users, X } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
@@ -35,6 +36,7 @@ export default function PairingPage() {
   const [approved, setApproved] = useState<PairingUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState<string | null>(null);
+  const [manualCodes, setManualCodes] = useState<Record<string, string>>({});
   const [clearing, setClearing] = useState(false);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
@@ -55,15 +57,21 @@ export default function PairingPage() {
   }, [loadPairing]);
 
   const handleApprove = async (user: PairingUser) => {
-    if (!user.code) {
+    const key = getUserKey(user);
+    const code = (manualCodes[key] || "").trim().toUpperCase();
+    if (!code) {
       showToast(t.pairing.missingCode, "error");
       return;
     }
-    const key = getUserKey(user);
     setApproving(key);
     try {
-      await api.approvePairing(user.platform, user.code);
+      await api.approvePairing(user.platform, code);
       showToast(t.pairing.approved.replace("{name}", getUserLabel(user)), "success");
+      setManualCodes((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       loadPairing();
     } catch (e) {
       showToast(`${t.pairing.error}: ${e}`, "error");
@@ -178,8 +186,13 @@ export default function PairingPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <Badge tone="outline">{user.platform}</Badge>
-                    {user.code && (
-                      <span className="font-mono text-sm">{user.code}</span>
+                    {user.code_hint && (
+                      <span
+                        className="font-mono text-sm text-muted-foreground"
+                        title="Stored hash prefix, not the pairing code"
+                      >
+                        hash:{user.code_hint}
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -193,12 +206,30 @@ export default function PairingPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:min-w-72 sm:flex-row sm:items-center">
+                  <Input
+                    className="h-8 font-mono text-xs uppercase"
+                    placeholder={t.pairing.missingCode}
+                    value={manualCodes[key] || ""}
+                    onChange={(e) =>
+                      setManualCodes((prev) => ({
+                        ...prev,
+                        [key]: e.target.value.toUpperCase(),
+                      }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        void handleApprove(user);
+                      }
+                    }}
+                    autoCapitalize="characters"
+                    autoComplete="one-time-code"
+                  />
                   <Button
                     size="sm"
                     className="uppercase"
                     onClick={() => handleApprove(user)}
-                    disabled={approving === key || !user.code}
+                    disabled={approving === key || !(manualCodes[key] || "").trim()}
                     prefix={
                       approving === key ? (
                         <Spinner />

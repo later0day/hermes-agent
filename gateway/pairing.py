@@ -328,11 +328,13 @@ class PairingStore:
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform.
 
-        Codes are stored hashed — the ``code`` field is replaced with the
-        first 8 hex characters of the hash so admins can distinguish entries
-        without revealing the original code. Legacy plaintext-key entries
-        (pre-hash format) are shown with a "legacy" placeholder so admins
-        can see them age out without crashing on a missing ``hash`` field.
+        Codes are stored hashed; the original approval code is not recoverable
+        from disk and is intentionally not returned here. ``code_hint`` exposes
+        only the first 8 hex characters of the stored hash so admins can
+        distinguish entries without mistaking it for an approvable code. Legacy
+        plaintext-key entries (pre-hash format) are shown with a ``legacy``
+        hint so admins can see them age out without crashing on missing hash
+        metadata.
         """
         results = []
         with self._lock:
@@ -348,10 +350,10 @@ class PairingStore:
                         continue
                     age_min = int((time.time() - created_at) / 60)
                     hash_val = info.get("hash")
-                    code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
+                    code_hint = hash_val[:8] if isinstance(hash_val, str) else "legacy"
                     results.append({
                         "platform": p,
-                        "code": code_display,
+                        "code_hint": code_hint,
                         "user_id": info.get("user_id", ""),
                         "user_name": info.get("user_name", ""),
                         "age_minutes": age_min,

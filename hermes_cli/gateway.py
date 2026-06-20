@@ -54,6 +54,40 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
+def _prefer_project_package(package_name: str) -> None:
+    """Prefer a source-tree package over profile runtime state directories."""
+    project_entry = str(PROJECT_ROOT)
+    sys.path[:] = [entry for entry in sys.path if entry != project_entry]
+    sys.path.insert(0, project_entry)
+
+    module = sys.modules.get(package_name)
+    if module is None:
+        return
+
+    expected_dir = (PROJECT_ROOT / package_name).resolve()
+    locations: list[Path] = []
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        try:
+            locations.append(Path(module_file).resolve())
+        except OSError:
+            pass
+    module_path = getattr(module, "__path__", None)
+    if module_path:
+        for path_entry in module_path:
+            try:
+                locations.append(Path(path_entry).resolve())
+            except OSError:
+                pass
+
+    if any(loc == expected_dir or expected_dir in loc.parents for loc in locations):
+        return
+
+    for loaded_name in list(sys.modules):
+        if loaded_name == package_name or loaded_name.startswith(f"{package_name}."):
+            sys.modules.pop(loaded_name, None)
+
+
 @dataclass(frozen=True)
 class GatewayRuntimeSnapshot:
     manager: str
@@ -2376,6 +2410,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    pythonpath = str(PROJECT_ROOT)
 
     path_entries = _build_service_path_dirs()
     resolved_node = shutil.which("node")
@@ -2414,6 +2449,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # _stable_service_working_dir() for the full rationale.
         working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
+        pythonpath = _remap_path_for_user(pythonpath, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -2436,6 +2472,7 @@ Environment="USER={username}"
 Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
+Environment="PYTHONPATH={pythonpath}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
@@ -2469,6 +2506,7 @@ ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
+Environment="PYTHONPATH={pythonpath}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
@@ -3345,6 +3383,7 @@ def generate_launchd_plist() -> str:
     # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    pythonpath = str(PROJECT_ROOT)
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = _build_service_path_dirs()
@@ -3398,6 +3437,8 @@ def generate_launchd_plist() -> str:
         <string>{sane_path}</string>
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
+        <key>PYTHONPATH</key>
+        <string>{pythonpath}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
@@ -4046,7 +4087,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_named_profile_under_multiplexer(force=force)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
-    sys.path.insert(0, str(PROJECT_ROOT))
+    _prefer_project_package("cron")
 
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still

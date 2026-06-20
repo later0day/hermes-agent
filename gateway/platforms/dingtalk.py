@@ -140,6 +140,31 @@ DINGTALK_TYPE_MAPPING = {
 }
 
 
+def _dingtalk_ipv4_preference_enabled() -> bool:
+    """Return True when Hermes' global IPv4 preference patch is active."""
+    try:
+        import socket
+
+        return bool(getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False))
+    except Exception:
+        return False
+
+
+def _dingtalk_http_client_kwargs(timeout: float) -> Dict[str, Any]:
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+
+    limits = platform_httpx_limits()
+    kwargs: Dict[str, Any] = {"timeout": timeout}
+    if _dingtalk_ipv4_preference_enabled() and httpx is not None:
+        kwargs["transport"] = httpx.AsyncHTTPTransport(
+            limits=limits,
+            local_address="0.0.0.0",
+        )
+    else:
+        kwargs["limits"] = limits
+    return kwargs
+
+
 def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available and configured.
 
@@ -208,6 +233,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         """
         return bool(self._card_template_id and self._card_sdk)
 
+    @property
+    def SUPPORTS_TURN_STATUS_CARD(self) -> bool:  # noqa: N802
+        """DingTalk AI Cards can keep one editable progress/status card per turn."""
+        return bool(self._card_template_id and self._card_sdk)
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DINGTALK)
 
@@ -231,7 +261,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._card_sdk: Optional[Any] = None
         self._robot_sdk: Optional[Any] = None
-        self._robot_code: str = extra.get("robot_code") or self._client_id
+        self._robot_code: str = (
+            extra.get("robot_code")
+            or os.getenv("DINGTALK_ROBOT_CODE", "")
+            or self._client_id
+        )
         self._app_code: str = extra.get("app_code", "")
         self._corp_id: str = extra.get("corp_id", "")
         self._agent_id: str = extra.get("agent_id", "")
@@ -257,11 +291,28 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._card_content_key_override = str(extra.get("card_content_key") or "").strip()
         self._card_content_key = self._current_card_content_key()
 
-        # Chats for which we've already fired the Done reaction — prevents
+        # Chats for which we've already fired the final reaction — prevents
         # double-firing across segment boundaries or parallel flows
         # (tool-progress + stream-consumer both finalizing their cards).
         # Reset each inbound message.
         self._done_emoji_fired: Set[str] = set()
+        # Per-chat reply state set by the gateway runner before the
+        # final adapter.send() so we can pick the matching completion
+        # reaction (success / error / interrupted). Popped on use; the
+        # default is "success" when unset, matching the historical
+        # behaviour where every final send fired the Done reaction.
+        self._pending_reply_state: Dict[str, str] = {}
+        # Stage-aware reaction state: the label currently rendered on
+        # the user message for each chat. Defaults to
+        # ``REACTION_THINKING`` after the inbound emotion is fired.
+        # ``notify_tool_started`` swaps it for a category label as the
+        # agent makes progress; ``_fire_done_reaction`` recalls the
+        # final value so the Done reaction lands on the right anchor.
+        self._current_stage_label: Dict[str, str] = {}
+        # Per-chat asyncio lock that serializes stage-label swaps so
+        # parallel ``tool.started`` events do not race each other when
+        # recalling and re-firing the emotion.
+        self._stage_locks: Dict[str, "asyncio.Lock"] = {}
         # Cards in streaming state per chat: chat_id -> { out_track_id -> last_content }.
         # Every `send()` creates+finalizes a card (closed state).  A subsequent
         # `edit_message(finalize=False)` re-opens the card (DingTalk's API
@@ -296,10 +347,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-            from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
-                timeout=30.0, limits=platform_httpx_limits(),
+                **_dingtalk_http_client_kwargs(timeout=30.0)
             )
 
             credential = dingtalk_stream.Credential(
@@ -425,6 +474,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._message_contexts.clear()
         self._streaming_cards.clear()
         self._done_emoji_fired.clear()
+        self._pending_reply_state.clear()
+        self._current_stage_label.clear()
+        self._stage_locks.clear()
         self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
 
@@ -586,6 +638,64 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     # -- AI Card lifecycle helpers ------------------------------------------
 
+    # Plain text shown when ``send(expect_edits=True)`` fails so the
+    # editable status card cannot be created. Kept short so it does not
+    # compete with the final-answer card.
+    _DEGRADED_PROGRESS_NOTICE = "⚠️ 实时进度暂不可用，答案稍后返回"
+
+    async def _send_degraded_progress_notice(
+        self,
+        chat_id: str,
+        session_webhook: Optional[str],
+    ) -> None:
+        """Send a one-shot text notice when the editable AI Card path fails.
+
+        Used only when ``send(metadata={"expect_edits": True})`` could
+        not create an editable card. The notice intentionally does NOT
+        return a ``message_id`` to the caller — the outer ``send()``
+        still returns ``success=False`` so the turn-status coordinator
+        disables itself (preventing the "outTrackId: card is not exist"
+        edit-storm against a webhook id). All errors are best-effort;
+        failure to deliver the notice falls back to silence rather than
+        masking the original cause.
+        """
+        if not session_webhook:
+            webhook_info = self._get_valid_webhook(chat_id)
+            if webhook_info:
+                session_webhook, _ = webhook_info
+        if not session_webhook or not self._http_client:
+            logger.debug(
+                "[%s] Degraded progress notice skipped (no webhook): chat=%s",
+                self.name, chat_id,
+            )
+            return
+        payload = {
+            "msgtype": "markdown",
+            "markdown": {
+                "title": "Hermes",
+                "text": self._DEGRADED_PROGRESS_NOTICE,
+            },
+        }
+        try:
+            resp = await self._http_client.post(
+                session_webhook, json=payload, timeout=10.0,
+            )
+            if resp.status_code >= 300:
+                logger.debug(
+                    "[%s] Degraded progress notice HTTP %d: %s",
+                    self.name, resp.status_code, str(resp.text)[:200],
+                )
+                return
+            logger.info(
+                "[%s] Degraded progress notice delivered to chat=%s",
+                self.name, chat_id,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[%s] Degraded progress notice send failed: %s",
+                self.name, exc,
+            )
+
     async def _close_streaming_siblings(self, chat_id: str) -> None:
         """Finalize any previously-open streaming cards for this chat.
 
@@ -606,7 +716,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 await self._stream_card_content(
                     out_track_id, token, last_content, finalize=True,
                 )
-                logger.debug(
+                logger.info(
                     "[%s] AI Card sibling closed: %s",
                     self.name, out_track_id,
                 )
@@ -616,11 +726,155 @@ class DingTalkAdapter(BasePlatformAdapter):
                     self.name, out_track_id, e,
                 )
 
-    def _fire_done_reaction(self, chat_id: str) -> None:
-        """Swap 🤔Thinking → 🥳Done on the original user message.
+    # Reaction labels for the user-message lifecycle.
+    #
+    # These are the visible text-emotion labels DingTalk renders next to
+    # the inbound user message. They are NOT the message-card content.
+    #
+    # Lifecycle:
+    #   1. ``REACTION_THINKING`` fires the moment an inbound message
+    #      arrives so the user sees feedback within ~100ms.
+    #   2. While the agent runs, the label SHIFTS to a stage-aware
+    #      label (``_TOOL_STAGE_LABELS``) whenever the dominant tool
+    #      category changes — e.g. ``💻 命令执行中`` when terminal
+    #      starts, ``📖 阅读代码中`` when read_file starts. Each
+    #      category only fires one swap regardless of how many
+    #      back-to-back calls it makes.
+    #   3. On completion the label is replaced one last time with
+    #      ``REACTION_DONE`` / ``REACTION_ERROR`` / ``REACTION_INTERRUPTED``
+    #      based on the turn outcome.
+    REACTION_THINKING = "💭 思考中"
+    REACTION_DONE = "✅ 已完成"
+    REACTION_ERROR = "⚠️ 遇到问题"
+    REACTION_INTERRUPTED = "⏸ 已中断"
 
-        Idempotent per chat_id — safe to call from segment-break flushes
-        and final-done flushes without double-firing.
+    # Tool → broad category label. Categories are coarse on purpose:
+    # back-to-back terminal calls or back-to-back file reads should
+    # not produce a flicker of swaps, only the FIRST call in a new
+    # category triggers a label change. Tools missing from this map
+    # do not swap the label (the previous stage label stays).
+    _TOOL_STAGE_LABELS: Dict[str, str] = {
+        "terminal":           "💻 命令执行中",
+        "code_execution":     "💻 命令执行中",
+        "execute_code":       "💻 命令执行中",
+        "read_file":          "📖 阅读代码中",
+        "write_file":         "✍️ 写入代码中",
+        "patch":              "✍️ 编辑代码中",
+        "search_files":       "🔍 搜索文件中",
+        "web_search":         "🌐 搜索网络中",
+        "web_extract":        "🌐 抓取网页中",
+        "browser_navigate":   "🧭 浏览网页中",
+        "browser_click":      "🧭 浏览网页中",
+        "browser_type":       "🧭 浏览网页中",
+        "browser_screenshot": "🧭 浏览网页中",
+        "browser_back":       "🧭 浏览网页中",
+        "browser_scroll":     "🧭 浏览网页中",
+        "browser_press":      "🧭 浏览网页中",
+        "browser_vision":     "🧭 浏览网页中",
+        "browser_console":    "🧭 浏览网页中",
+        "browser_get_images": "🧭 浏览网页中",
+        "memory":             "🧠 调取记忆中",
+        "delegate_task":      "🤝 调度子智能体",
+        "todo":               "📋 整理任务中",
+        "clarify":            "❓ 等待澄清",
+        "skill_manage":       "📚 加载技能中",
+        "vision":             "👁️ 看图分析中",
+        "image_generation":   "🎨 生成图片中",
+        "video_generation":   "🎬 生成视频中",
+    }
+
+    @classmethod
+    def _stage_label_for_tool(cls, tool_name: Optional[str]) -> Optional[str]:
+        """Return the stage label for *tool_name*, or None to keep the current label."""
+        if not tool_name:
+            return None
+        return cls._TOOL_STAGE_LABELS.get(tool_name)
+
+    def set_pending_reply_state(self, chat_id: str, state: str) -> None:
+        """Record the outcome of the agent run for the next final send.
+
+        Called by the gateway runner once it knows whether the turn
+        succeeded, failed, or was interrupted. The next ``send()`` that
+        triggers a final reaction reads this and picks the matching
+        completion label. Unknown / unset states fall back to
+        ``"success"`` so we never silently lose the Done reaction.
+
+        Valid states: ``"success"``, ``"error"``, ``"interrupted"``.
+        """
+        if not chat_id:
+            return
+        if state not in ("success", "error", "interrupted"):
+            state = "success"
+        self._pending_reply_state[chat_id] = state
+
+    def notify_tool_started(self, chat_id: str, tool_name: Optional[str]) -> None:
+        """Optionally swap the in-flight reaction to a stage-aware label.
+
+        Called by the gateway runner on every ``tool.started`` event.
+        Looks up a broad category label for the tool and, if the
+        category has changed since the last swap on this chat, fires
+        a recall+reply pair to update the visible label. Tools not in
+        ``_TOOL_STAGE_LABELS`` (or repeat calls of the same category)
+        are no-ops, so a run of 5 back-to-back terminal calls costs
+        exactly one swap.
+
+        Safe to call from any thread / loop context; the actual
+        recall+reply happens in a background task serialized by a
+        per-chat lock so parallel tool starts cannot race.
+        """
+        if not chat_id:
+            return
+        new_label = self._stage_label_for_tool(tool_name)
+        if new_label is None:
+            return
+        # Cheap pre-lock check — skip spawning a task when nothing
+        # would change. The lock holds the source of truth.
+        current = self._current_stage_label.get(chat_id, self.REACTION_THINKING)
+        if current == new_label:
+            return
+        msg = self._message_contexts.get(chat_id)
+        if not msg:
+            return
+        msg_id = getattr(msg, "message_id", "") or ""
+        conversation_id = getattr(msg, "conversation_id", "") or ""
+        if not (msg_id and conversation_id):
+            return
+
+        async def _swap() -> None:
+            lock = self._stage_locks.setdefault(chat_id, asyncio.Lock())
+            async with lock:
+                # Re-read inside the lock — another swap may have
+                # landed between the cheap check and the spawn.
+                actual_current = self._current_stage_label.get(
+                    chat_id, self.REACTION_THINKING,
+                )
+                if actual_current == new_label:
+                    return
+                await self._send_emotion(
+                    msg_id, conversation_id, actual_current, recall=True,
+                )
+                await self._send_emotion(
+                    msg_id, conversation_id, new_label, recall=False,
+                )
+                self._current_stage_label[chat_id] = new_label
+
+        self._spawn_bg(_swap())
+
+    def _fire_done_reaction(self, chat_id: str) -> None:
+        """Swap the in-flight reaction for the turn outcome.
+
+        Reads the pending reply state set by the gateway runner via
+        :meth:`set_pending_reply_state`. Defaults to "success" so this
+        is safe to call even when nothing set the state (preserves the
+        previous behaviour for adapters that haven't wired the hook).
+        Idempotent per chat_id — safe to call from segment-break
+        flushes and final-done flushes without double-firing.
+
+        Recalls whatever stage label was last fired by
+        :meth:`notify_tool_started` (default ``REACTION_THINKING``) so
+        the recall matches what DingTalk is actually rendering. Doing
+        a blind ``REACTION_THINKING`` recall would leave a stage label
+        like ``💻 命令执行中`` orphaned on the message.
         """
         if chat_id in self._done_emoji_fired:
             return
@@ -632,14 +886,26 @@ class DingTalkAdapter(BasePlatformAdapter):
         conversation_id = getattr(msg, "conversation_id", "") or ""
         if not (msg_id and conversation_id):
             return
+        state = self._pending_reply_state.pop(chat_id, "success")
+        if state == "error":
+            final_label = self.REACTION_ERROR
+        elif state == "interrupted":
+            final_label = self.REACTION_INTERRUPTED
+        else:
+            final_label = self.REACTION_DONE
 
         async def _swap() -> None:
-            await self._send_emotion(
-                msg_id, conversation_id, "🤔Thinking", recall=True,
-            )
-            await self._send_emotion(
-                msg_id, conversation_id, "🥳Done", recall=False,
-            )
+            lock = self._stage_locks.setdefault(chat_id, asyncio.Lock())
+            async with lock:
+                current = self._current_stage_label.pop(
+                    chat_id, self.REACTION_THINKING,
+                )
+                await self._send_emotion(
+                    msg_id, conversation_id, current, recall=True,
+                )
+                await self._send_emotion(
+                    msg_id, conversation_id, final_label, recall=False,
+                )
 
         self._spawn_bg(_swap())
 
@@ -1411,38 +1677,31 @@ class DingTalkAdapter(BasePlatformAdapter):
             bool(self._card_template_id and self._card_sdk),
         )
 
-        # Check metadata first (for direct webhook sends)
+        # Check metadata first (for direct webhook sends). Do not fail here:
+        # AI Card delivery does not use session_webhook, and should still be
+        # attempted when the Stream callback did not provide/cache a webhook.
         session_webhook = metadata.get("session_webhook")
         if not session_webhook:
             webhook_info = self._get_valid_webhook(chat_id)
-            if not webhook_info:
-                logger.warning(
-                    "[%s] No valid session_webhook for chat_id=%s",
-                    self.name, chat_id,
-                )
-                return SendResult(
-                    success=False,
-                    error="No valid session_webhook available. Reply must follow an incoming message.",
-                )
-            session_webhook, _ = webhook_info
-
-        if not self._http_client:
-            return SendResult(success=False, error="HTTP client not initialized")
+            if webhook_info:
+                session_webhook, _ = webhook_info
 
         # Look up the inbound message for this chat (for AI Card routing)
         current_message = self._message_contexts.get(chat_id)
 
-        # ``reply_to`` is the signal that this send is the FINAL response
-        # to an inbound user message — only `base.py:_send_with_retry` sets
-        # it.  Tool-progress, commentary, and stream-consumer first-sends
-        # all leave it None.  We use it for two orthogonal decisions:
-        #   1. finalize on create?  Yes if final reply, No if intermediate
-        #      (intermediate cards stay in streaming state so edit_message
-        #      updates don't flicker closed→streaming→closed repeatedly).
-        #   2. fire Done reaction?  Only when this is the final reply.
+        # ``metadata.expect_edits`` is the explicit lifecycle contract for
+        # editable previews/status cards.  Only those cards remain in
+        # streaming state after create; ordinary sends without a reply anchor
+        # (background notices, queued follow-up delivery, slash command output)
+        # are one-shot finalized cards.  ``reply_to`` still means "this is the
+        # final response to an inbound user message" for @-sender and Done
+        # reactions, but it no longer decides whether the card is left open.
+        expect_edits = bool(metadata.get("expect_edits"))
         is_final_reply = reply_to is not None
+        finalize_on_create = not expect_edits
+        fire_final_reaction = is_final_reply and finalize_on_create
         at_users = self._collect_at_users(
-            chat_id, metadata, include_sender=is_final_reply and self._reply_at_sender,
+            chat_id, metadata, include_sender=fire_final_reaction and self._reply_at_sender,
         )
         at_payload = self._build_webhook_at_payload(metadata, at_users)
         if at_users:
@@ -1453,7 +1712,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 is_final_reply,
                 bool(self._card_template_id and current_message and self._card_sdk),
             )
-        if is_final_reply and self._reply_at_sender and not at_users:
+        if fire_final_reaction and self._reply_at_sender and not at_users:
             conversation_type = (
                 getattr(current_message, "conversation_type", "") if current_message else ""
             )
@@ -1487,15 +1746,15 @@ class DingTalkAdapter(BasePlatformAdapter):
 
             result = await self._create_and_stream_card(
                 chat_id, current_message, content,
-                finalize=is_final_reply,
+                finalize=finalize_on_create,
                 at_users=at_users,
             )
             if result and result.success:
                 self._fire_custom_reactions(chat_id, emotion_names)
-                if is_final_reply:
+                if fire_final_reaction:
                     # Final reply: card closed, swap Thinking → Done.
                     self._fire_done_reaction(chat_id)
-                else:
+                if expect_edits:
                     # Intermediate (tool progress / commentary / streaming
                     # first chunk): keep the card open and track it so the
                     # next send() auto-closes it as a sibling, or
@@ -1506,6 +1765,44 @@ class DingTalkAdapter(BasePlatformAdapter):
                 return result
 
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
+            if expect_edits:
+                # The editable AI Card path failed (e.g. IP whitelist
+                # outage, transient SDK error). Returning success=False
+                # here makes the turn-status coordinator disable itself,
+                # which prevents an edit-storm against a webhook
+                # message_id that DingTalk's streaming_update API does
+                # not accept (#2026-06-20 15:15 IP whitelist incident).
+                #
+                # But silent failure is its own bad UX — the user is
+                # left staring at no progress for the rest of the turn.
+                # As a one-shot notice, send a plain webhook line so
+                # the user knows real-time progress is unavailable.
+                # The notice is best-effort and intentionally does NOT
+                # return its message_id (the caller still gets
+                # success=False so no edits are attempted).
+                await self._send_degraded_progress_notice(
+                    chat_id, session_webhook,
+                )
+                return SendResult(
+                    success=False,
+                    error=(
+                        "Editable DingTalk AI Card send failed; "
+                        "webhook fallback cannot be edited"
+                    ),
+                )
+
+        if not session_webhook:
+            logger.warning(
+                "[%s] No valid session_webhook for chat_id=%s",
+                self.name, chat_id,
+            )
+            return SendResult(
+                success=False,
+                error="No valid session_webhook available. Reply must follow an incoming message.",
+            )
+
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
 
         logger.debug("[%s] Sending via webhook", self.name)
         # Normalize markdown for DingTalk
@@ -1527,7 +1824,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 self._fire_custom_reactions(chat_id, emotion_names)
                 # Webhook path: fire Done only for final replies, same as
                 # the card path.
-                if is_final_reply:
+                if fire_final_reaction:
                     self._fire_done_reaction(chat_id)
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
             body = resp.text
@@ -1648,11 +1945,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             robot_code = metadata.get("robot_code")
             robot_code_source = "metadata.robot_code"
         if not robot_code:
-            robot_code = getattr(current_message, "robot_code", None)
-            robot_code_source = "current_message.robot_code"
-        if not robot_code:
             robot_code = self._robot_code
             robot_code_source = "config.robot_code"
+        if not robot_code:
+            robot_code = getattr(current_message, "robot_code", None)
+            robot_code_source = "current_message.robot_code"
         if not robot_code:
             return SendResult(success=False, error="DingTalk robotCode is unavailable")
 
@@ -1673,9 +1970,29 @@ class DingTalkAdapter(BasePlatformAdapter):
         msg_param_json = json.dumps(msg_param, ensure_ascii=False)
         runtime = tea_util_models.RuntimeOptions()
         send_route = "org_group_send"
+        requested_route = (
+            metadata.get("dingtalk_send_route")
+            or metadata.get("send_route")
+            or ""
+        )
+        requested_route_lc = str(requested_route).lower()
+        cool_app_code = (
+            metadata.get("dingtalk_app_code")
+            or metadata.get("app_code")
+            or self._app_code
+            or None
+        )
         try:
             if (
-                str(conversation_type) == "1"
+                (
+                    requested_route_lc in {"", "batch_send_oto", "batch_oto", "oto"}
+                    and requested_route_lc not in {
+                        "private_chat_send",
+                        "private_chat",
+                        "private",
+                    }
+                )
+                and str(conversation_type) == "1"
                 and sender_staff_id
                 and hasattr(dingtalk_robot_models, "BatchSendOTORequest")
                 and hasattr(self._robot_sdk, "batch_send_otowith_options_async")
@@ -1696,6 +2013,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             elif str(conversation_type) == "1":
                 send_route = "private_chat_send"
                 request = dingtalk_robot_models.PrivateChatSendRequest(
+                    cool_app_code=str(cool_app_code) if cool_app_code else None,
                     msg_key=msg_key,
                     msg_param=msg_param_json,
                     open_conversation_id=str(open_conversation_id),
@@ -1765,6 +2083,166 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=f"DingTalk native send failed: {exc}")
 
+    @staticmethod
+    def _image_card_param_map(media_id: str, caption: Optional[str]) -> Dict[str, str]:
+        content = caption or ""
+        order = [
+            "msgTitle",
+            "msgContent",
+            "staticMsgContent",
+            "msgImages",
+            "msgButtons",
+        ]
+        return {
+            "msgTitle": "Hermes",
+            "msgContent": content,
+            "staticMsgContent": content,
+            "flowStatus": "2",
+            "sys_full_json_obj": json.dumps(
+                {
+                    "order": order,
+                    "msgImages": [media_id],
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+    async def _send_robot_card_1_0_image(
+        self,
+        chat_id: str,
+        media_id: str,
+        *,
+        caption: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an uploaded image through DingTalk's card_1_0 delivery path.
+
+        The robot native ``BatchSendOTO`` and ``PrivateChatSend`` endpoints are
+        not interchangeable with Stream bot DMs.  The same card_1_0
+        create+deliver path used for text AI Cards works for DM images when
+        ``msgImages`` is supplied on the default AI card template.
+        """
+        metadata = metadata or {}
+        if not self._card_sdk or not dingtalk_card_models or not tea_util_models:
+            return SendResult(success=False, error="DingTalk card SDK is unavailable")
+
+        current_message = self._message_contexts.get(chat_id)
+        open_conversation_id = (
+            metadata.get("dingtalk_open_conversation_id")
+            or metadata.get("open_conversation_id")
+            or chat_id
+        )
+        conversation_type = (
+            metadata.get("dingtalk_conversation_type")
+            or metadata.get("conversation_type")
+            or getattr(current_message, "conversation_type", None)
+        )
+        sender_staff_id = (
+            metadata.get("dingtalk_sender_staff_id")
+            or metadata.get("sender_staff_id")
+            or getattr(current_message, "sender_staff_id", None)
+        )
+
+        robot_code = (
+            metadata.get("dingtalk_robot_code")
+            or metadata.get("robot_code")
+            or self._robot_code
+            or getattr(current_message, "robot_code", None)
+        )
+        if not robot_code:
+            return SendResult(success=False, error="DingTalk robotCode is unavailable")
+
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="DingTalk access token unavailable")
+
+        out_track_id = f"hermes_img_{uuid.uuid4().hex[:12]}"
+        runtime = tea_util_models.RuntimeOptions()
+        route = "card_1_0_image"
+        try:
+            create_request = dingtalk_card_models.CreateCardRequest(
+                card_template_id=DEFAULT_AI_CARD_TEMPLATE_ID,
+                out_track_id=out_track_id,
+                card_data=dingtalk_card_models.CreateCardRequestCardData(
+                    card_param_map=self._image_card_param_map(media_id, caption),
+                ),
+                callback_type="STREAM",
+                im_group_open_space_model=(
+                    dingtalk_card_models.CreateCardRequestImGroupOpenSpaceModel(
+                        support_forward=True,
+                    )
+                ),
+                im_robot_open_space_model=(
+                    dingtalk_card_models.CreateCardRequestImRobotOpenSpaceModel(
+                        support_forward=True,
+                    )
+                ),
+            )
+            create_headers = dingtalk_card_models.CreateCardHeaders(
+                x_acs_dingtalk_access_token=token,
+            )
+            await self._card_sdk.create_card_with_options_async(
+                create_request, create_headers, runtime
+            )
+
+            route = "card_1_0_image_group"
+            if str(conversation_type) == "1":
+                if not sender_staff_id:
+                    return SendResult(success=False, error="DingTalk sender_staff_id is unavailable")
+                route = "card_1_0_image_single"
+                deliver_request = dingtalk_card_models.DeliverCardRequest(
+                    out_track_id=out_track_id,
+                    user_id_type=1,
+                    open_space_id=f"dtv1.card//IM_ROBOT.{sender_staff_id}",
+                    im_robot_open_deliver_model=(
+                        dingtalk_card_models.DeliverCardRequestImRobotOpenDeliverModel(
+                            space_type="IM_ROBOT",
+                        )
+                    ),
+                )
+            else:
+                if not open_conversation_id:
+                    return SendResult(success=False, error="DingTalk openConversationId is unavailable")
+                deliver_request = dingtalk_card_models.DeliverCardRequest(
+                    out_track_id=out_track_id,
+                    user_id_type=1,
+                    open_space_id=f"dtv1.card//IM_GROUP.{open_conversation_id}",
+                    im_group_open_deliver_model=(
+                        dingtalk_card_models.DeliverCardRequestImGroupOpenDeliverModel(
+                            robot_code=str(robot_code),
+                        )
+                    ),
+                )
+            deliver_headers = dingtalk_card_models.DeliverCardHeaders(
+                x_acs_dingtalk_access_token=token,
+            )
+            await self._card_sdk.deliver_card_with_options_async(
+                deliver_request, deliver_headers, runtime
+            )
+
+            logger.info(
+                "[%s] DingTalk card_1_0 image sent: chat=%s route=%s",
+                self.name,
+                str(open_conversation_id)[:20],
+                route,
+            )
+            return SendResult(
+                success=True,
+                message_id=out_track_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] DingTalk card_1_0 image failed: %s "
+                "(chat=%s conversation_type=%s route=%s sender_staff_id=%s)",
+                self.name,
+                exc,
+                str(open_conversation_id)[:20],
+                conversation_type,
+                route,
+                bool(sender_staff_id),
+            )
+            return SendResult(success=False, error=f"DingTalk card_1_0 image failed: {exc}")
+
     async def send_image(
         self,
         chat_id: str,
@@ -1811,6 +2289,28 @@ class DingTalkAdapter(BasePlatformAdapter):
         media_id = await self._upload_robot_media(image_path, media_type="image")
         if not media_id.success:
             return media_id
+
+        current_message = self._message_contexts.get(chat_id)
+        conversation_type = (
+            (metadata or {}).get("dingtalk_conversation_type")
+            or (metadata or {}).get("conversation_type")
+            or getattr(current_message, "conversation_type", None)
+        )
+        if str(conversation_type) == "1":
+            card_result = await self._send_robot_card_1_0_image(
+                chat_id=chat_id,
+                media_id=media_id.message_id,
+                caption=caption,
+                metadata=metadata,
+            )
+            if card_result.success:
+                return card_result
+            logger.warning(
+                "[%s] DingTalk card_1_0 image send failed; "
+                "falling back to native image message: %s",
+                self.name,
+                card_result.error,
+            )
 
         if caption:
             await self.send(
@@ -2093,11 +2593,16 @@ class DingTalkAdapter(BasePlatformAdapter):
     ) -> Optional[SendResult]:
         """Create an AI Card, deliver it to the conversation, and stream initial content.
 
-        Always called with ``finalize=True`` from ``send()`` (closed state).
-        If the caller later issues ``edit_message(finalize=False)``, the
-        DingTalk streaming_update API reopens the card into streaming
-        state, and we track that in ``_streaming_cards`` for sibling
-        cleanup on the next send.
+        ``send()`` decides ``finalize`` based on ``metadata.expect_edits``:
+
+        - ``expect_edits=True`` (turn-status card / streaming preview)
+          uses ``finalize=False`` so later ``edit_message`` calls update
+          the same card without reopening it via ``streaming_update``.
+          The card is tracked in ``_streaming_cards`` so the next send
+          can close it as a sibling and ``edit_message(finalize=True)``
+          can close it explicitly.
+        - Plain sends (no ``expect_edits``) use ``finalize=True`` for a
+          one-shot closed card and skip sibling tracking.
         """
         try:
             token = await self._get_access_token()
@@ -2245,7 +2750,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 self._streaming_cards.get(chat_id, {}).pop(message_id, None)
                 if not self._streaming_cards.get(chat_id):
                     self._streaming_cards.pop(chat_id, None)
-                logger.debug(
+                logger.info(
                     "[%s] AI Card finalized (edit): %s",
                     self.name, message_id,
                 )
@@ -2687,11 +3192,17 @@ class _IncomingHandler(
             msg_id = getattr(chatbot_msg, "message_id", None) or ""
             conversation_id = getattr(chatbot_msg, "conversation_id", None) or ""
 
-            # Thinking reaction — fire-and-forget, tracked
+            # Thinking reaction — fire-and-forget, tracked.
+            # Uses the adapter's reaction-label constants so the
+            # inbound-side label and the later swap-out recall stay in
+            # sync (otherwise the recall finds no matching reaction).
             if msg_id and conversation_id:
                 self._adapter._spawn_bg(
                     self._adapter._send_emotion(
-                        msg_id, conversation_id, "🤔Thinking", recall=False,
+                        msg_id,
+                        conversation_id,
+                        self._adapter.REACTION_THINKING,
+                        recall=False,
                     )
                 )
 
@@ -2729,7 +3240,8 @@ class _IncomingHandler(
             "sender_staff_id": ("senderStaffId", "sender_staff_id"),
             "sender_nick": ("senderNick", "sender_nick"),
             "create_at": ("createAt", "create_at"),
-            "robot_code": ("robotCode", "robot_code", "chatbotUserId", "chatbot_user_id"),
+            "robot_code": ("robotCode", "robot_code"),
+            "chatbot_user_id": ("chatbotUserId", "chatbot_user_id"),
         }
         for attr, keys in field_map.items():
             if getattr(chatbot_msg, attr, None):

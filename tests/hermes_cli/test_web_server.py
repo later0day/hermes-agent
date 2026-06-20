@@ -1164,6 +1164,92 @@ class TestWebServerEndpoints:
             "pid": 99,
         }
 
+    def test_spawn_hermes_action_replaces_previous_log(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        class _Proc:
+            pid = 777
+
+            def poll(self):
+                return None
+
+        log_path = tmp_path / "gateway-restart.log"
+        log_path.write_text("old traceback\n")
+
+        def fake_popen(_cmd, **kwargs):
+            kwargs["stdout"].write(b"new action output\n")
+            return _Proc()
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+        web_server._ACTION_PROCS.pop("gateway-restart", None)
+        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
+        web_server._ACTION_RESULTS.pop("gateway-restart", None)
+
+        proc = web_server._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+        assert proc.pid == 777
+        text = log_path.read_text()
+        assert text.startswith("=== gateway-restart started ")
+        assert "new action output" in text
+        assert "old traceback" not in text
+
+    def test_record_completed_action_replaces_previous_log(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        log_path = tmp_path / "gateway-start.log"
+        log_path.write_text("old failure\n")
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        web_server._ACTION_PROCS["gateway-start"] = object()
+        web_server._ACTION_COMMANDS["gateway-start"] = ("gateway", "start")
+        web_server._ACTION_RESULTS.pop("gateway-start", None)
+
+        web_server._record_completed_action("gateway-start", "fresh result", exit_code=2)
+
+        text = log_path.read_text()
+        assert text.startswith("=== gateway-start completed ")
+        assert "fresh result" in text
+        assert "old failure" not in text
+        assert "gateway-start" not in web_server._ACTION_PROCS
+        assert "gateway-start" not in web_server._ACTION_COMMANDS
+        assert web_server._ACTION_RESULTS["gateway-start"] == {"exit_code": 2, "pid": None}
+
+    def test_profile_messaging_payload_reflects_connected_runtime(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        entry = {
+            "id": "dingtalk",
+            "name": "DingTalk",
+            "description": "",
+            "docs_url": "",
+            "env_vars": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
+            "required_env": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
+        }
+        runtime = {
+            "platforms": {
+                "dingtalk": {
+                    "state": "connected",
+                    "updated_at": "2026-06-20T00:00:00Z",
+                }
+            }
+        }
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {"platforms": {"dingtalk": {}}})
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 123)
+        monkeypatch.setattr(web_server, "get_runtime_status_running_pid", lambda _runtime: None)
+
+        payload = web_server._messaging_platform_payload(
+            entry,
+            env_on_disk={},
+            runtime=runtime,
+            scoped=True,
+        )
+
+        assert payload["enabled"] is True
+        assert payload["configured"] is True
+        assert payload["state"] == "connected"
+
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -1268,6 +1354,10 @@ class TestWebServerEndpoints:
         schema = data["fields"]
         assert len(schema) > 100  # Should have 150+ fields
         assert "model" in schema
+        assert schema["approvals.mode"]["options"] == ["manual", "smart", "off"]
+        assert schema["dingtalk.allow_all_users"]["type"] == "boolean"
+        assert schema["dingtalk.card_template_id"]["category"] == "dingtalk"
+        assert "dingtalk" in data["category_order"]
         # Verify category_order is a non-empty list
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0
@@ -2851,6 +2941,30 @@ class TestNewEndpoints:
         assert "file" in data
         assert "lines" in data
         assert isinstance(data["lines"], list)
+
+    def test_get_logs_uses_requested_profile(self):
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        default_logs = home / "logs"
+        profile_logs = home / "profiles" / "xcx" / "logs"
+        default_logs.mkdir(parents=True, exist_ok=True)
+        profile_logs.mkdir(parents=True, exist_ok=True)
+        (default_logs / "gateway.log").write_text(
+            "2026-06-20 01:00:00,000 INFO default gateway\n",
+            encoding="utf-8",
+        )
+        (profile_logs / "gateway.log").write_text(
+            "2026-06-20 01:00:00,000 WARNING xcx dingtalk card failed\n",
+            encoding="utf-8",
+        )
+
+        resp = self.client.get("/api/logs?file=gateway&profile=xcx")
+
+        assert resp.status_code == 200
+        joined = "\n".join(resp.json()["lines"])
+        assert "xcx dingtalk card failed" in joined
+        assert "default gateway" not in joined
 
     def test_get_logs_invalid_file(self):
         resp = self.client.get("/api/logs?file=nonexistent")

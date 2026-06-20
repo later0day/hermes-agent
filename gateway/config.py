@@ -982,6 +982,25 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
+                if plat == Platform.DINGTALK and "allowed_chats" in platform_cfg:
+                    bridged["allowed_chats"] = platform_cfg["allowed_chats"]
+                if plat == Platform.DINGTALK and "allowed_users" in platform_cfg:
+                    bridged["allowed_users"] = platform_cfg["allowed_users"]
+                if plat == Platform.DINGTALK and "free_response_chats" in platform_cfg:
+                    bridged["free_response_chats"] = platform_cfg["free_response_chats"]
+                if plat == Platform.DINGTALK and "allow_all_users" in platform_cfg:
+                    bridged["allow_all_users"] = platform_cfg["allow_all_users"]
+                if plat == Platform.DINGTALK:
+                    for _dt_key in (
+                        "app_code",
+                        "corp_id",
+                        "agent_id",
+                        "robot_code",
+                        "card_template_id",
+                        "reply_at_sender",
+                    ):
+                        if _dt_key in platform_cfg:
+                            bridged[_dt_key] = platform_cfg[_dt_key]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
                     bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
@@ -1250,6 +1269,9 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(allowed, list):
                         allowed = ",".join(str(v) for v in allowed)
                     os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
+                allow_all = dingtalk_cfg.get("allow_all_users")
+                if allow_all is not None and not os.getenv("DINGTALK_ALLOW_ALL_USERS"):
+                    os.environ["DINGTALK_ALLOW_ALL_USERS"] = str(allow_all).lower()
 
             # Mattermost config bridge moved into plugins/platforms/mattermost/
             # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
@@ -1782,10 +1804,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.DINGTALK not in config.platforms:
             config.platforms[Platform.DINGTALK] = PlatformConfig()
         config.platforms[Platform.DINGTALK].enabled = True
-        config.platforms[Platform.DINGTALK].extra.update({
+        dingtalk_extra = {
             "client_id": dingtalk_client_id,
             "client_secret": dingtalk_client_secret,
-        })
+        }
+        dingtalk_robot_code = os.getenv("DINGTALK_ROBOT_CODE")
+        if dingtalk_robot_code:
+            dingtalk_extra["robot_code"] = dingtalk_robot_code
+        config.platforms[Platform.DINGTALK].extra.update(dingtalk_extra)
         dingtalk_home = os.getenv("DINGTALK_HOME_CHANNEL")
         if dingtalk_home:
             config.platforms[Platform.DINGTALK].home_channel = HomeChannel(

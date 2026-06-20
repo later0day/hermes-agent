@@ -525,8 +525,8 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "approvals.mode": {
         "type": "select",
-        "description": "Dangerous command approval mode",
-        "options": ["ask", "yolo", "deny"],
+        "description": "Dangerous command approval mode: manual (ask), smart, off (yolo). Use approvals.cron_mode for cron deny/approve.",
+        "options": ["manual", "smart", "off"],
     },
     "context.engine": {
         "type": "select",
@@ -594,7 +594,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
-    "tts", "stt", "logging", "discord", "auxiliary",
+    "tts", "stt", "logging", "discord", "dingtalk", "auxiliary",
 ]
 
 
@@ -2246,9 +2246,9 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
     log_file_name = _ACTION_LOG_FILES[name]
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _ACTION_LOG_DIR / log_file_name
-    with open(log_path, "ab", buffering=0) as log_file:
+    with open(log_path, "wb", buffering=0) as log_file:
         log_file.write(
-            f"\n=== {name} completed {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+            f"=== {name} completed {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
         )
         log_file.write(message.encode("utf-8", errors="replace"))
         if not message.endswith("\n"):
@@ -2267,9 +2267,9 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     log_file_name = _ACTION_LOG_FILES[name]
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _ACTION_LOG_DIR / log_file_name
-    log_file = open(log_path, "ab", buffering=0)
+    log_file = open(log_path, "wb", buffering=0)
     log_file.write(
-        f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+        f"=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
     )
 
     cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
@@ -4816,6 +4816,9 @@ def _messaging_platform_payload(
         get_running_pid() is not None
         or get_runtime_status_running_pid(runtime) is not None
     )
+    runtime_state = (
+        runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
+    )
     env_vars = []
 
     for key in entry["env_vars"]:
@@ -4852,6 +4855,9 @@ def _messaging_platform_payload(
             enabled = False
             home_channel = None
         configured = all(env_on_disk.get(key) for key in entry["required_env"])
+        if gateway_running and runtime_state == "connected":
+            enabled = True
+            configured = True
     else:
         try:
             gateway_config, platform, platform_config = _gateway_platform_config(
@@ -4875,9 +4881,7 @@ def _messaging_platform_payload(
             )
             home_channel = None
 
-    state = (
-        runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
-    )
+    state = runtime_state
     runtime_gateway_state = runtime.get("gateway_state") if isinstance(runtime, dict) else None
     runtime_gateway_error = runtime.get("exit_reason") if isinstance(runtime, dict) else None
     if not enabled:
@@ -7470,50 +7474,52 @@ async def get_logs(
     level: Optional[str] = None,
     component: Optional[str] = None,
     search: Optional[str] = None,
+    profile: Optional[str] = None,
 ):
     from hermes_cli.logs import _read_tail, LOG_FILES
 
     log_name = LOG_FILES.get(file)
     if not log_name:
         raise HTTPException(status_code=400, detail=f"Unknown log file: {file}")
-    log_path = get_hermes_home() / "logs" / log_name
-    if not log_path.exists():
-        return {"file": file, "lines": []}
+    with _profile_scope(profile):
+        log_path = get_hermes_home() / "logs" / log_name
+        if not log_path.exists():
+            return {"file": file, "lines": []}
 
-    try:
-        from hermes_logging import COMPONENT_PREFIXES
-    except ImportError:
-        COMPONENT_PREFIXES = {}
+        try:
+            from hermes_logging import COMPONENT_PREFIXES
+        except ImportError:
+            COMPONENT_PREFIXES = {}
 
-    # Normalize "ALL" / "all" / empty → no filter. _matches_filters treats an
-    # empty tuple as "must match a prefix" (startswith(()) is always False),
-    # so passing () instead of None silently drops every line.
-    min_level = level if level and level.upper() != "ALL" else None
-    if component and component.lower() != "all":
-        comp_prefixes = COMPONENT_PREFIXES.get(component)
-        if comp_prefixes is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown component: {component}. "
-                       f"Available: {', '.join(sorted(COMPONENT_PREFIXES))}",
-            )
-    else:
-        comp_prefixes = None
+        # Normalize "ALL" / "all" / empty → no filter. _matches_filters treats an
+        # empty tuple as "must match a prefix" (startswith(()) is always False),
+        # so passing () instead of None silently drops every line.
+        min_level = level if level and level.upper() != "ALL" else None
+        if component and component.lower() != "all":
+            comp_prefixes = COMPONENT_PREFIXES.get(component)
+            if comp_prefixes is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown component: {component}. "
+                           f"Available: {', '.join(sorted(COMPONENT_PREFIXES))}",
+                )
+        else:
+            comp_prefixes = None
 
-    has_filters = bool(min_level or comp_prefixes or search)
-    result = _read_tail(
-        log_path, min(lines, 500) if not search else 2000,
-        has_filters=has_filters,
-        min_level=min_level,
-        component_prefixes=comp_prefixes,
-    )
-    # Post-filter by search term (case-insensitive substring match).
-    # _read_tail doesn't support free-text search, so we filter here and
-    # trim to the requested line count afterward.
-    if search:
-        needle = search.lower()
-        result = [l for l in result if needle in l.lower()][-min(lines, 500):]
-    return {"file": file, "lines": result}
+        has_filters = bool(min_level or comp_prefixes or search)
+        result = _read_tail(
+            log_path, min(lines, 500) if not search else 2000,
+            has_filters=has_filters,
+            min_level=min_level,
+            component_prefixes=comp_prefixes,
+        )
+        # Post-filter by search term (case-insensitive substring match).
+        # _read_tail doesn't support free-text search, so we filter here and
+        # trim to the requested line count afterward.
+        if search:
+            needle = search.lower()
+            result = [l for l in result if needle in l.lower()][-min(lines, 500):]
+        return {"file": file, "lines": result}
 
 
 # ---------------------------------------------------------------------------

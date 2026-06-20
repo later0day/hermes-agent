@@ -200,7 +200,11 @@ class TestMemoryEndpoints:
 
 class TestPairingEndpoints:
     @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
+    def _setup(self, _isolate_hermes_home, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import gateway.pairing as pairing
+
+        monkeypatch.setattr(pairing, "PAIRING_DIR", get_hermes_home() / "pairing")
         self.client, _ = _client()
 
     def test_list_and_bad_approve(self):

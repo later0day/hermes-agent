@@ -31,6 +31,32 @@ from gateway.whatsapp_identity import (
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
+    @staticmethod
+    def _truthy_auth_config(value) -> bool:
+        """Return whether a config value explicitly enables an auth gate."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    def _platform_config_allow_all_users(self, platform: Optional[Platform]) -> bool:
+        """Whether loaded ``config.yaml`` explicitly allows all users."""
+        if not platform:
+            return False
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if not isinstance(extra, dict):
+            return False
+        return self._truthy_auth_config(extra.get("allow_all_users"))
+
     def _adapter_enforces_own_access_policy(self, platform: Optional[Platform]) -> bool:
         """Whether the adapter for *platform* gates access at intake itself.
 
@@ -292,8 +318,13 @@ class GatewayAuthorizationMixin:
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
-            return True
+        if platform_allow_all_var:
+            platform_allow_all_raw = os.environ.get(platform_allow_all_var)
+            if platform_allow_all_raw and platform_allow_all_raw.strip():
+                if platform_allow_all_raw.strip().lower() in {"true", "1", "yes", "on"}:
+                    return True
+            elif self._platform_config_allow_all_users(source.platform):
+                return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
         # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.

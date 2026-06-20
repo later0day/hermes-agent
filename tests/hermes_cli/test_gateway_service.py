@@ -235,6 +235,25 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
 
+    def test_run_gateway_prefers_project_cron_before_importing_gateway_run(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_guard_official_docker_root_gateway", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_guard_named_profile_under_multiplexer", lambda force=False: None)
+        monkeypatch.setattr(gateway_cli, "_guard_supervised_gateway_conflict", lambda force=False: None)
+        monkeypatch.setattr(gateway_cli, "_guard_existing_gateway_process_conflict", lambda replace=False: None)
+
+        def fake_prefer(package_name):
+            calls.append(package_name)
+            raise RuntimeError("stop before gateway.run import")
+
+        monkeypatch.setattr(gateway_cli, "_prefer_project_package", fake_prefer)
+
+        with pytest.raises(RuntimeError, match="stop before gateway.run import"):
+            gateway_cli.run_gateway()
+
+        assert calls == ["cron"]
+
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch
     ):
@@ -3118,6 +3137,9 @@ class TestServiceWorkingDirIsStable:
         assert Path(value).resolve() == home.resolve()
         # The bug class: never pin cwd inside a transient worktree checkout.
         assert "/.worktrees/" not in value
+        # Source-checkout services still need module discovery when cwd is the
+        # stable HERMES_HOME anchor instead of the repository root.
+        assert f'Environment="PYTHONPATH={gateway_cli.PROJECT_ROOT}"' in unit
 
     def test_launchd_workingdirectory_is_hermes_home(self, tmp_path, monkeypatch):
         import re
@@ -3130,6 +3152,8 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+        assert "<key>PYTHONPATH</key>" in plist
+        assert f"<string>{gateway_cli.PROJECT_ROOT}</string>" in plist
 
     def test_launchd_plist_keepalive_unconditional(self, tmp_path, monkeypatch):
         """KeepAlive must be unconditional <true/> so the gateway restarts on clean exits.

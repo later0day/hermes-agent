@@ -1,5 +1,7 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import json
+import socket
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -68,6 +70,14 @@ def _fake_dingtalk_optional_sdks(monkeypatch):
             "RobotRecallEmotionHeaders",
             "RobotMessageFileDownloadRequest",
             "RobotMessageFileDownloadHeaders",
+            "BatchSendOTORequest",
+            "BatchSendOTOHeaders",
+            "BatchSendOTOResponse",
+            "BatchSendOTOResponseBody",
+            "PrivateChatSendRequest",
+            "PrivateChatSendHeaders",
+            "OrgGroupSendRequest",
+            "OrgGroupSendHeaders",
         )
     })
 
@@ -120,6 +130,49 @@ class TestDingTalkRequirements:
         assert check_dingtalk_requirements() is True
 
 
+class TestDingTalkHttpClient:
+    def test_http_client_kwargs_default_uses_limits(self, monkeypatch):
+        from gateway.platforms import dingtalk as dt
+
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: [])
+        monkeypatch.setattr(
+            "gateway.platforms._http_client_limits.platform_httpx_limits",
+            lambda: "limits",
+        )
+
+        kwargs = dt._dingtalk_http_client_kwargs(timeout=30.0)
+
+        assert kwargs == {"timeout": 30.0, "limits": "limits"}
+
+    def test_http_client_kwargs_force_ipv4_uses_ipv4_transport(self, monkeypatch):
+        from gateway.platforms import dingtalk as dt
+
+        def fake_getaddrinfo(*args, **kwargs):
+            return []
+
+        fake_getaddrinfo._hermes_ipv4_patched = True
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        monkeypatch.setattr(
+            "gateway.platforms._http_client_limits.platform_httpx_limits",
+            lambda: "limits",
+        )
+
+        transport_calls = []
+
+        class FakeTransport:
+            def __init__(self, **kwargs):
+                transport_calls.append(kwargs)
+
+        monkeypatch.setattr(dt.httpx, "AsyncHTTPTransport", FakeTransport)
+
+        kwargs = dt._dingtalk_http_client_kwargs(timeout=30.0)
+
+        assert kwargs["timeout"] == 30.0
+        assert "limits" not in kwargs
+        assert isinstance(kwargs["transport"], FakeTransport)
+        assert transport_calls == [{"limits": "limits", "local_address": "0.0.0.0"}]
+
+
 # ---------------------------------------------------------------------------
 # Adapter construction
 # ---------------------------------------------------------------------------
@@ -146,6 +199,15 @@ class TestDingTalkAdapterInit:
         adapter = DingTalkAdapter(config)
         assert adapter._client_id == "env-id"
         assert adapter._client_secret == "env-secret"
+
+    def test_reads_robot_code_from_env(self, monkeypatch):
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "env-id")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "env-secret")
+        monkeypatch.setenv("DINGTALK_ROBOT_CODE", "env-robot")
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        config = PlatformConfig(enabled=True)
+        adapter = DingTalkAdapter(config)
+        assert adapter._robot_code == "env-robot"
 
 
 # ---------------------------------------------------------------------------
@@ -323,24 +385,340 @@ class TestSend:
         assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
 
     @pytest.mark.asyncio
-    async def test_send_image_file_returns_explicit_unsupported_error(self):
+    async def test_send_image_file_missing_local_file_returns_not_found(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         result = await adapter.send_image_file("chat-123", "/tmp/demo.png")
 
         assert result.success is False
-        assert result.error and "do not support local image uploads" in result.error
+        assert result.error and "Local file not found" in result.error
 
     @pytest.mark.asyncio
-    async def test_send_document_returns_explicit_unsupported_error(self):
+    async def test_send_document_missing_local_file_returns_not_found(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
 
         assert result.success is False
-        assert result.error and "do not support local file attachments" in result.error
+        assert result.error and "Local file not found" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_uses_ai_card_without_session_webhook(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="chat-123",
+            conversation_type="1",
+            sender_staff_id="staff-123",
+        )
+        adapter._card_sdk = SimpleNamespace(
+            create_card_with_options_async=AsyncMock(),
+            deliver_card_with_options_async=AsyncMock(),
+            streaming_update_with_options_async=AsyncMock(),
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "### Markdown probe\n\n- **ok**",
+            reply_to="msg-123",
+        )
+
+        assert result.success is True
+        adapter._card_sdk.create_card_with_options_async.assert_awaited_once()
+        adapter._card_sdk.deliver_card_with_options_async.assert_awaited_once()
+        adapter._card_sdk.streaming_update_with_options_async.assert_awaited_once()
+        stream_request = adapter._card_sdk.streaming_update_with_options_async.await_args.args[0]
+        assert stream_request.is_finalize is True
+        deliver_request = adapter._card_sdk.deliver_card_with_options_async.await_args.args[0]
+        assert deliver_request.open_space_id == "dtv1.card//IM_ROBOT.staff-123"
+
+    @pytest.mark.asyncio
+    async def test_ai_card_send_without_reply_to_finalizes_unless_expect_edits(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._fire_done_reaction = MagicMock()
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="chat-123",
+            conversation_type="1",
+            sender_staff_id="staff-123",
+        )
+        adapter._card_sdk = SimpleNamespace(
+            create_card_with_options_async=AsyncMock(),
+            deliver_card_with_options_async=AsyncMock(),
+            streaming_update_with_options_async=AsyncMock(),
+        )
+
+        result = await adapter.send("chat-123", "Background notice")
+
+        assert result.success is True
+        stream_request = adapter._card_sdk.streaming_update_with_options_async.await_args.args[0]
+        assert stream_request.is_finalize is True
+        assert "chat-123" not in adapter._streaming_cards
+        adapter._fire_done_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ai_card_expect_edits_keeps_card_streaming_even_with_reply_to(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._fire_done_reaction = MagicMock()
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="chat-123",
+            conversation_type="1",
+            sender_staff_id="staff-123",
+        )
+        adapter._card_sdk = SimpleNamespace(
+            create_card_with_options_async=AsyncMock(),
+            deliver_card_with_options_async=AsyncMock(),
+            streaming_update_with_options_async=AsyncMock(),
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "Working...",
+            reply_to="msg-123",
+            metadata={"expect_edits": True},
+        )
+
+        assert result.success is True
+        stream_request = adapter._card_sdk.streaming_update_with_options_async.await_args.args[0]
+        assert stream_request.is_finalize is False
+        assert adapter._streaming_cards["chat-123"][result.message_id] == "Working..."
+        adapter._fire_done_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ai_card_expect_edits_failure_sends_degraded_notice(self):
+        """Editable AI Card path failure must still notify the user.
+
+        Previous behavior was complete silence (success=False, no
+        webhook call) to avoid an edit-storm against a webhook
+        message_id. The current contract is: still return success=False
+        so the turn-status coordinator disables itself, BUT send a
+        one-shot plain-text notice via webhook so the user sees that
+        live progress is unavailable rather than staring at silence.
+        """
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_id="chat-123",
+            conversation_type="1",
+            sender_staff_id="staff-123",
+        )
+        adapter._session_webhooks["chat-123"] = ("https://dingtalk.example/webhook", 9999999999999)
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=SimpleNamespace(status_code=200, text="{}"),
+        )
+        adapter._card_sdk = SimpleNamespace(
+            create_card_with_options_async=AsyncMock(side_effect=RuntimeError("blocked")),
+            deliver_card_with_options_async=AsyncMock(),
+            streaming_update_with_options_async=AsyncMock(),
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "Working...",
+            metadata={"expect_edits": True},
+        )
+
+        # Outer send still reports failure so the coordinator disables
+        # itself and no edits target a webhook id.
+        assert result.success is False
+        assert "webhook fallback cannot be edited" in result.error
+        assert "chat-123" not in adapter._streaming_cards
+
+        # But the user got a one-shot degraded notice via webhook.
+        adapter._http_client.post.assert_awaited_once()
+        sent_payload = adapter._http_client.post.await_args.kwargs["json"]
+        assert sent_payload["msgtype"] == "markdown"
+        assert adapter._DEGRADED_PROGRESS_NOTICE in sent_payload["markdown"]["text"]
+        # Original "Working..." content (which the agent would have
+        # edited) MUST NOT be sent as the notice body — that's what
+        # caused the edit-storm in the first place.
+        assert "Working..." not in sent_payload["markdown"]["text"]
+
+    @pytest.mark.asyncio
+    async def test_ai_card_expect_edits_failure_without_webhook_stays_silent(self):
+        """Degraded notice is best-effort; missing webhook means silence.
+
+        We never want a webhook-lookup failure to mask the original AI
+        Card failure or to raise back to the caller.
+        """
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["chat-456"] = SimpleNamespace(
+            conversation_id="chat-456",
+            conversation_type="1",
+            sender_staff_id="staff-456",
+        )
+        # No cached session_webhook for this chat — the degraded notice
+        # path must skip cleanly without HTTP calls.
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock()
+        adapter._card_sdk = SimpleNamespace(
+            create_card_with_options_async=AsyncMock(side_effect=RuntimeError("blocked")),
+            deliver_card_with_options_async=AsyncMock(),
+            streaming_update_with_options_async=AsyncMock(),
+        )
+
+        result = await adapter.send(
+            "chat-456",
+            "Working...",
+            metadata={"expect_edits": True},
+        )
+
+        assert result.success is False
+        assert "webhook fallback cannot be edited" in result.error
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dm_image_file_sends_card_1_0_with_uploaded_media(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import SendResult
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._upload_robot_media = AsyncMock(
+            return_value=SendResult(success=True, message_id="@media-123")
+        )
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_type="1",
+            sender_staff_id="staff-123",
+            robot_code="callback-robot",
+        )
+        adapter._robot_sdk = SimpleNamespace(
+            private_chat_send_with_options_async=AsyncMock(),
+            batch_send_otowith_options_async=AsyncMock(),
+        )
+        adapter._card_sdk = SimpleNamespace(
+            create_card_with_options_async=AsyncMock(),
+            deliver_card_with_options_async=AsyncMock(),
+        )
+
+        result = await adapter.send_image_file(
+            "chat-123",
+            "/tmp/demo.png",
+            caption="Screenshot",
+        )
+
+        assert result.success is True
+        adapter._robot_sdk.private_chat_send_with_options_async.assert_not_called()
+        adapter._robot_sdk.batch_send_otowith_options_async.assert_not_called()
+        create_request = adapter._card_sdk.create_card_with_options_async.await_args.args[0]
+        assert create_request.card_template_id
+        param_map = create_request.card_data.card_param_map
+        assert param_map["msgContent"] == "Screenshot"
+        assert json.loads(param_map["sys_full_json_obj"])["msgImages"] == ["@media-123"]
+        deliver_request = adapter._card_sdk.deliver_card_with_options_async.await_args.args[0]
+        assert deliver_request.open_space_id == "dtv1.card//IM_ROBOT.staff-123"
+
+    @pytest.mark.asyncio
+    async def test_native_dm_send_defaults_to_batch_oto_with_config_robot_code(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"robot_code": "cfg-robot", "app_code": "cool-app"},
+            )
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_type="1",
+            sender_staff_id="staff-123",
+            chatbot_user_id="chatbot-user-123",
+            robot_code="callback-robot",
+        )
+        adapter._robot_sdk = SimpleNamespace(
+            private_chat_send_with_options_async=AsyncMock(
+                return_value=SimpleNamespace(
+                    body=SimpleNamespace(process_query_key="process-123")
+                )
+            ),
+            batch_send_otowith_options_async=AsyncMock(
+                return_value=SimpleNamespace(
+                    body=SimpleNamespace(process_query_key="batch-process")
+                )
+            )
+        )
+
+        result = await adapter._send_robot_native_message(
+            chat_id="chat-123",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "media-123"},
+        )
+
+        assert result.success is True
+        adapter._robot_sdk.private_chat_send_with_options_async.assert_not_called()
+        request = adapter._robot_sdk.batch_send_otowith_options_async.await_args.args[0]
+        assert request.robot_code == "cfg-robot"
+        assert request.user_ids == ["staff-123"]
+
+    @pytest.mark.asyncio
+    async def test_native_dm_send_uses_private_chat_route_when_requested(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"robot_code": "cfg-robot", "app_code": "cool-app"},
+            )
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["chat-123"] = SimpleNamespace(
+            conversation_type="1",
+            sender_staff_id="staff-123",
+            robot_code="callback-robot",
+        )
+        adapter._robot_sdk = SimpleNamespace(
+            private_chat_send_with_options_async=AsyncMock(
+                return_value=SimpleNamespace(
+                    body=SimpleNamespace(process_query_key="private-process")
+                )
+            ),
+            batch_send_otowith_options_async=AsyncMock(
+                return_value=SimpleNamespace(
+                    body=SimpleNamespace(process_query_key="batch-process")
+                )
+            ),
+        )
+
+        result = await adapter._send_robot_native_message(
+            chat_id="chat-123",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "media-123"},
+            metadata={"dingtalk_send_route": "private_chat_send"},
+        )
+
+        assert result.success is True
+        adapter._robot_sdk.batch_send_otowith_options_async.assert_not_called()
+        request = adapter._robot_sdk.private_chat_send_with_options_async.await_args.args[0]
+        assert request.cool_app_code == "cool-app"
+        assert request.robot_code == "cfg-robot"
+        assert request.open_conversation_id == "chat-123"
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +975,7 @@ class TestExtractMedia:
         )
         assert msg_type == MessageType.VOICE
         assert urls == ["dl_voice_abc"]
-        assert mtypes == ["audio"]
+        assert mtypes == ["audio/ogg"]
 
     def test_audio_rich_text_item_stays_audio(self):
         """Generic audio uploads (e.g. an mp3 the user attached) must NOT
@@ -618,9 +996,44 @@ class TestExtractMedia:
             )
             assert msg_type == MessageType.AUDIO
             assert urls == ["dl_audio_xyz"]
-            assert mtypes == ["audio"]
+            assert mtypes == ["audio/ogg"]
         finally:
             del DINGTALK_TYPE_MAPPING["audio"]
+
+    @pytest.mark.asyncio
+    async def test_on_message_preserves_media_errors(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_gating_adapter(monkeypatch, extra={"require_mention": False})
+        adapter.handle_message = AsyncMock()
+
+        async def _fail_media_resolution(message):
+            adapter._set_media_error(
+                message.image_content,
+                "DingTalk media download failed: robot SDK is unavailable.",
+            )
+
+        adapter._resolve_media_codes = AsyncMock(side_effect=_fail_media_resolution)
+
+        msg = _FakeChatbotMessage.from_dict({
+            "msgId": "msg-media-error",
+            "conversationId": "conv-1",
+            "conversationType": "1",
+            "senderId": "sender-1",
+            "senderNick": "Alice",
+            "text": "",
+        })
+        msg.image_content = {"downloadCode": "dl_image_abc"}
+        msg.message_type = "picture"
+
+        await adapter._on_message(msg)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == []
+        assert event.media_errors == [
+            "DingTalk media download failed: robot SDK is unavailable."
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +1261,61 @@ class TestIncomingHandlerProcess:
         assert chatbot_msg.session_webhook == "https://oapi.dingtalk.com/robot/sendBySession?session=def"
 
     @pytest.mark.asyncio
+    async def test_process_preserves_robot_code_and_chatbot_user_id_separately(self):
+        """robotCode is the OpenAPI robot identifier; chatbotUserId is the
+        robot user's DingTalk account. They must not be collapsed."""
+        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+        handler = _IncomingHandler(adapter, asyncio.get_running_loop())
+
+        callback = MagicMock()
+        callback.data = {
+            "msgtype": "text",
+            "text": {"content": "hi"},
+            "senderId": "user2",
+            "conversationId": "conv2",
+            "robotCode": "robot-code-1",
+            "chatbotUserId": "chatbot-user-1",
+            "msgId": "msg-robot",
+        }
+
+        await handler.process(callback)
+        await asyncio.sleep(0.05)
+
+        chatbot_msg = adapter._on_message.call_args[0][0]
+        assert chatbot_msg.robot_code == "robot-code-1"
+        assert chatbot_msg.chatbot_user_id == "chatbot-user-1"
+
+    @pytest.mark.asyncio
+    async def test_process_does_not_use_chatbot_user_id_as_robot_code(self):
+        """Older/newer SDK mappings may miss robotCode, but chatbotUserId is
+        still not a valid robotCode fallback."""
+        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = AsyncMock()
+        handler = _IncomingHandler(adapter, asyncio.get_running_loop())
+
+        callback = MagicMock()
+        callback.data = {
+            "msgtype": "text",
+            "text": {"content": "hi"},
+            "senderId": "user2",
+            "conversationId": "conv2",
+            "chatbotUserId": "chatbot-user-1",
+            "msgId": "msg-chatbot-user",
+        }
+
+        await handler.process(callback)
+        await asyncio.sleep(0.05)
+
+        chatbot_msg = adapter._on_message.call_args[0][0]
+        assert getattr(chatbot_msg, "robot_code", None) in (None, "")
+        assert chatbot_msg.chatbot_user_id == "chatbot-user-1"
+
+    @pytest.mark.asyncio
     async def test_process_returns_ack_immediately(self):
         """process() must not block on _on_message — it should return
         the ACK tuple before the message is fully processed."""
@@ -945,7 +1413,7 @@ class TestMessageContextIsolation:
 
 
 # ---------------------------------------------------------------------------
-# Card lifecycle: finalize via metadata["streaming"]
+# Card lifecycle: editable cards use metadata["expect_edits"]
 # ---------------------------------------------------------------------------
 
 
@@ -989,12 +1457,16 @@ class TestCardLifecycle:
         assert "chat-1" not in a._streaming_cards
 
     @pytest.mark.asyncio
-    async def test_intermediate_send_stays_streaming(self, adapter_with_card):
-        """send() without reply_to creates an OPEN card (tool progress /
-        commentary / streaming first chunk).  No flicker closed→streaming
-        when edit_message follows."""
+    async def test_expect_edits_send_stays_streaming(self, adapter_with_card):
+        """metadata.expect_edits creates an OPEN card for editable status /
+        commentary / streaming first chunk.  No flicker closed→streaming when
+        edit_message follows."""
         a = adapter_with_card
-        result = await a.send("chat-1", "💻 terminal: ls")
+        result = await a.send(
+            "chat-1",
+            "💻 terminal: ls",
+            metadata={"expect_edits": True},
+        )
         assert result.success
         call = a._card_sdk.streaming_update_with_options_async.call_args
         assert call[0][0].is_finalize is False
@@ -1009,7 +1481,7 @@ class TestCardLifecycle:
         fired: list[str] = []
         a._fire_done_reaction = lambda cid: fired.append(cid)
 
-        # Tool-progress / commentary path: no reply_to — no Done.
+        # Non-final notice path: no reply_to — no Done.
         await a.send("chat-1", "tool line")
         assert fired == []
 
@@ -1051,11 +1523,11 @@ class TestCardLifecycle:
     async def test_next_send_auto_closes_sibling_streaming_cards(
         self, adapter_with_card,
     ):
-        """Tool-progress card left open (send without reply_to + edits) must
+        """Tool-progress card left open (expect_edits + edits) must
         be auto-closed when the final-reply send arrives."""
         a = adapter_with_card
-        # First tool: intermediate send — card stays open.
-        r1 = await a.send("chat-1", "💻 tool1")
+        # First tool: editable status send — card stays open.
+        r1 = await a.send("chat-1", "💻 tool1", metadata={"expect_edits": True})
         # Second tool: edit_message(finalize=False) — keeps streaming.
         await a.edit_message(
             chat_id="chat-1", message_id=r1.message_id,
@@ -1097,6 +1569,244 @@ class TestCardLifecycle:
         a._fire_done_reaction("chat-1")
         assert len(captured) == 1
         captured[0].close()
+
+    def test_fire_done_reaction_uses_done_label_by_default(self, adapter_with_card):
+        """No reply state set → use the success completion label.
+
+        Backwards-compatible with adapters / paths that don't wire the
+        new hook: previous behaviour was to always fire Done.
+        """
+        a = adapter_with_card
+        emotion_calls: list[tuple[str, bool]] = []
+
+        async def _capture_emotion(msg_id, conv_id, label, *, recall=False):
+            emotion_calls.append((label, recall))
+
+        a._send_emotion = _capture_emotion
+        loop = asyncio.new_event_loop()
+        try:
+            a._spawn_bg = lambda coro: loop.run_until_complete(coro)
+            a._fire_done_reaction("chat-1")
+        finally:
+            loop.close()
+
+        assert emotion_calls == [
+            (a.REACTION_THINKING, True),
+            (a.REACTION_DONE, False),
+        ]
+
+    def test_fire_done_reaction_picks_error_label_when_state_is_error(
+        self, adapter_with_card,
+    ):
+        a = adapter_with_card
+        emotion_calls: list[tuple[str, bool]] = []
+
+        async def _capture_emotion(msg_id, conv_id, label, *, recall=False):
+            emotion_calls.append((label, recall))
+
+        a._send_emotion = _capture_emotion
+        a.set_pending_reply_state("chat-1", "error")
+
+        loop = asyncio.new_event_loop()
+        try:
+            a._spawn_bg = lambda coro: loop.run_until_complete(coro)
+            a._fire_done_reaction("chat-1")
+        finally:
+            loop.close()
+
+        assert emotion_calls == [
+            (a.REACTION_THINKING, True),
+            (a.REACTION_ERROR, False),
+        ]
+        # State is consumed on use, not sticky across turns.
+        assert "chat-1" not in a._pending_reply_state
+
+    def test_fire_done_reaction_picks_interrupted_label_when_state_is_interrupted(
+        self, adapter_with_card,
+    ):
+        a = adapter_with_card
+        emotion_calls: list[tuple[str, bool]] = []
+
+        async def _capture_emotion(msg_id, conv_id, label, *, recall=False):
+            emotion_calls.append((label, recall))
+
+        a._send_emotion = _capture_emotion
+        a.set_pending_reply_state("chat-1", "interrupted")
+
+        loop = asyncio.new_event_loop()
+        try:
+            a._spawn_bg = lambda coro: loop.run_until_complete(coro)
+            a._fire_done_reaction("chat-1")
+        finally:
+            loop.close()
+
+        assert emotion_calls == [
+            (a.REACTION_THINKING, True),
+            (a.REACTION_INTERRUPTED, False),
+        ]
+
+    def test_set_pending_reply_state_rejects_unknown_states(self, adapter_with_card):
+        """Unknown states fall back to success — never accidentally
+        suppress the completion reaction with an unrecognized label.
+        """
+        a = adapter_with_card
+        a.set_pending_reply_state("chat-1", "garbage")
+        assert a._pending_reply_state["chat-1"] == "success"
+        # Empty chat_id is a no-op.
+        a.set_pending_reply_state("", "error")
+        assert "" not in a._pending_reply_state
+
+    # ------------------------------------------------------------------
+    # Stage-aware reaction lifecycle (notify_tool_started)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _capture_stage_emotions(a):
+        """Wire up the adapter so all _send_emotion calls are captured
+        and _spawn_bg runs the coroutine synchronously on a private
+        loop. Returns the list that emotion calls append to."""
+        emotion_calls: list[tuple[str, bool]] = []
+
+        async def _capture_emotion(msg_id, conv_id, label, *, recall=False):
+            emotion_calls.append((label, recall))
+
+        a._send_emotion = _capture_emotion
+        loop = asyncio.new_event_loop()
+        a._spawn_bg = lambda coro: loop.run_until_complete(coro)
+        a._test_stage_loop = loop  # so the caller can close it
+        return emotion_calls
+
+    def test_notify_tool_started_swaps_thinking_for_stage_label(
+        self, adapter_with_card,
+    ):
+        """First terminal call in a turn swaps the Thinking reaction
+        for the ``💻 命令执行中`` stage label."""
+        a = adapter_with_card
+        calls = self._capture_stage_emotions(a)
+        try:
+            a.notify_tool_started("chat-1", "terminal")
+        finally:
+            a._test_stage_loop.close()
+
+        assert calls == [
+            (a.REACTION_THINKING, True),
+            ("💻 命令执行中", False),
+        ]
+        # State now reflects the new label so future swaps know what
+        # to recall.
+        assert a._current_stage_label["chat-1"] == "💻 命令执行中"
+
+    def test_notify_tool_started_is_noop_when_category_unchanged(
+        self, adapter_with_card,
+    ):
+        """Back-to-back terminal calls do not flicker — only the first
+        call swaps the label, subsequent ones short-circuit."""
+        a = adapter_with_card
+        calls = self._capture_stage_emotions(a)
+        try:
+            a.notify_tool_started("chat-1", "terminal")
+            a.notify_tool_started("chat-1", "terminal")
+            a.notify_tool_started("chat-1", "terminal")
+        finally:
+            a._test_stage_loop.close()
+
+        # One swap pair, not three.
+        assert calls == [
+            (a.REACTION_THINKING, True),
+            ("💻 命令执行中", False),
+        ]
+
+    def test_notify_tool_started_swaps_again_on_category_change(
+        self, adapter_with_card,
+    ):
+        """terminal → read_file → web_search: each category transition
+        fires one recall+reply pair; the next pair recalls the *current*
+        label (not Thinking) so the swap matches what's rendered."""
+        a = adapter_with_card
+        calls = self._capture_stage_emotions(a)
+        try:
+            a.notify_tool_started("chat-1", "terminal")
+            a.notify_tool_started("chat-1", "read_file")
+            a.notify_tool_started("chat-1", "web_search")
+        finally:
+            a._test_stage_loop.close()
+
+        assert calls == [
+            (a.REACTION_THINKING, True), ("💻 命令执行中", False),
+            ("💻 命令执行中", True),     ("📖 阅读代码中", False),
+            ("📖 阅读代码中", True),     ("🌐 搜索网络中", False),
+        ]
+        assert a._current_stage_label["chat-1"] == "🌐 搜索网络中"
+
+    def test_notify_tool_started_noop_for_uncategorized_tool(
+        self, adapter_with_card,
+    ):
+        """Tools without a stage label leave the current label intact
+        — we don't have a sensible fallback so we just skip the swap."""
+        a = adapter_with_card
+        calls = self._capture_stage_emotions(a)
+        try:
+            a.notify_tool_started("chat-1", "totally_unknown_plugin_tool")
+        finally:
+            a._test_stage_loop.close()
+
+        assert calls == []
+        assert "chat-1" not in a._current_stage_label
+
+    def test_notify_tool_started_noop_for_missing_message_context(
+        self, adapter_with_card,
+    ):
+        """Without the inbound message context we cannot fire the
+        emotion API — swap is silently skipped."""
+        a = adapter_with_card
+        a._message_contexts.clear()
+        calls = self._capture_stage_emotions(a)
+        try:
+            a.notify_tool_started("chat-1", "terminal")
+        finally:
+            a._test_stage_loop.close()
+
+        assert calls == []
+
+    def test_fire_done_reaction_recalls_current_stage_label(
+        self, adapter_with_card,
+    ):
+        """After a stage swap, Done recalls the stage label — not
+        Thinking. Otherwise the stage label would orphan on the
+        message side. Also clears the per-chat state."""
+        a = adapter_with_card
+        calls = self._capture_stage_emotions(a)
+        try:
+            a.notify_tool_started("chat-1", "terminal")
+            calls.clear()  # focus on what Done does
+            a._fire_done_reaction("chat-1")
+        finally:
+            a._test_stage_loop.close()
+
+        assert calls == [
+            ("💻 命令执行中", True),
+            (a.REACTION_DONE, False),
+        ]
+        assert "chat-1" not in a._current_stage_label
+
+    def test_stage_label_for_tool_covers_high_volume_tools(
+        self, adapter_with_card,
+    ):
+        """Sanity check that the stage table covers the tools the
+        agent calls most often. If a tool drops from the catalog
+        we want this to break loudly, not silently fall through to
+        the "no swap" path.
+        """
+        a = adapter_with_card
+        for name in (
+            "terminal", "read_file", "write_file", "patch",
+            "search_files", "web_search", "browser_navigate",
+            "delegate_task", "memory",
+        ):
+            assert a._stage_label_for_tool(name), name
+        assert a._stage_label_for_tool("totally_unknown_tool") is None
+        assert a._stage_label_for_tool(None) is None
+        assert a._stage_label_for_tool("") is None
 
 
 

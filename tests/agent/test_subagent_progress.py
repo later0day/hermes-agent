@@ -158,6 +158,51 @@ class TestBuildChildProgressCallback:
         assert parent_cb.call_args.args[0] == "subagent.thinking"
         assert parent_cb.call_args.args[2] == "some reasoning text"
 
+    def test_gateway_tool_completion_relay_preserves_identity_metadata(self):
+        """Child tool completion relays to the parent with stable identity."""
+        parent = MagicMock()
+        parent._delegate_spinner = None
+        parent_cb = MagicMock()
+        parent.tool_progress_callback = parent_cb
+
+        cb = _build_child_progress_callback(
+            0,
+            "test goal",
+            parent,
+            subagent_id="sa-123",
+        )
+
+        assert getattr(cb, "__hermes_accepts_tool_progress_metadata__") is True
+        cb(
+            "tool.started",
+            "terminal",
+            "curl ifconfig.me",
+            {"cmd": "curl ifconfig.me"},
+            tool_call_id="call-1",
+            index=0,
+        )
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=0.4,
+            is_error=False,
+            tool_call_id="call-1",
+            index=0,
+        )
+
+        events = [c.args[0] for c in parent_cb.call_args_list]
+        assert events == ["subagent.tool", "subagent.tool.completed"]
+        started = parent_cb.call_args_list[0]
+        completed = parent_cb.call_args_list[1]
+        assert started.kwargs["subagent_id"] == "sa-123"
+        assert started.kwargs["tool_call_id"] == "call-1"
+        assert started.kwargs["index"] == 0
+        assert completed.kwargs["subagent_id"] == "sa-123"
+        assert completed.kwargs["tool_call_id"] == "call-1"
+        assert completed.kwargs["duration"] == 0.4
+
     def test_parallel_callbacks_independent(self):
         """Each child's callback batches tool names independently."""
         parent = MagicMock()
@@ -384,4 +429,3 @@ class TestBatchFlush:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

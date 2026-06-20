@@ -80,6 +80,7 @@ const CATEGORY_ICONS: Record<
   stt: Ear,
   logging: ClipboardList,
   discord: MessageCircle,
+  dingtalk: MessageCircle,
   auxiliary: Wrench,
   bedrock: Cloud,
   curator: Sparkles,

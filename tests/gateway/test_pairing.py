@@ -80,12 +80,14 @@ class TestCodeGeneration:
             code = store.generate_code("telegram", "user1", "Alice")
             pending = store.list_pending("telegram")
         assert len(pending) == 1
-        # list_pending no longer returns the original code — it returns a
-        # truncated hash prefix.  Verify the metadata is correct instead.
+        # list_pending no longer returns the original code. It exposes a hash
+        # hint so admins can distinguish requests without mistaking the hint
+        # for the approvable code.
         assert pending[0]["user_id"] == "user1"
         assert pending[0]["user_name"] == "Alice"
-        # The code field is now a hash prefix, not the original plaintext code
-        assert pending[0]["code"] != code
+        assert "code" not in pending[0]
+        assert pending[0]["code_hint"] != code
+        assert len(pending[0]["code_hint"]) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +223,7 @@ class TestLegacyPendingFileCompat:
             pending = store.list_pending("telegram")
         assert len(pending) == 1
         assert pending[0]["user_id"] == "legacy-user"
-        assert pending[0]["code"] == "legacy"  # placeholder
+        assert pending[0]["code_hint"] == "legacy"  # placeholder
 
     def test_cleanup_expired_removes_legacy_at_ttl(self, tmp_path):
         """Legacy entries past CODE_TTL must still get pruned."""

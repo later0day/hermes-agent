@@ -1265,30 +1265,35 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
-    # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
+    # Check sensitive paths for both replace (explicit path) and V4A patch
+    # (extract every operation path, including both sides of Move File).
     _paths_to_check = []
     if path:
         _paths_to_check.append(path)
     if mode == "patch" and patch:
-        import re as _re
         from tools.path_security import has_traversal_component
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            v4a_path = _m.group(1).strip()
-            # V4A path headers come from patch CONTENT, not the explicit
-            # ``path=`` arg — so they're more attacker-influenceable (skill
-            # content, web extract, prompt injection). Reject ``..`` traversal
-            # in V4A headers: a legitimate multi-file patch from a single cwd
-            # can always emit absolute paths or paths relative to the agent's
-            # cwd without ``..``. The explicit ``path=`` arg is unchanged
-            # because the agent uses relative ``..`` paths legitimately
-            # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
-            if has_traversal_component(v4a_path):
-                return tool_error(
-                    f"V4A patch header contains '..' traversal: {v4a_path!r}. "
-                    "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
-                )
-            _paths_to_check.append(v4a_path)
+        from tools.patch_parser import OperationType, parse_v4a_patch
+
+        operations, parse_error = parse_v4a_patch(patch)
+        if parse_error:
+            return tool_error(f"Invalid V4A patch: {parse_error}")
+
+        for operation in operations:
+            operation_paths = [operation.file_path]
+            if operation.operation == OperationType.MOVE and operation.new_path:
+                operation_paths.append(operation.new_path)
+            for v4a_path in operation_paths:
+                if not v4a_path:
+                    continue
+                # V4A path headers come from patch CONTENT, not the explicit
+                # ``path=`` arg, so prompt-injected paths must fail closed.
+                if has_traversal_component(v4a_path):
+                    return tool_error(
+                        f"V4A patch header contains '..' traversal: {v4a_path!r}. "
+                        "Use the agent's cwd-relative path (no '..') or an absolute "
+                        "path in V4A file headers."
+                    )
+                _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:

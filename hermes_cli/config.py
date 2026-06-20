@@ -2145,6 +2145,25 @@ DEFAULT_CONFIG = {
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
     },
 
+    # DingTalk platform settings (gateway mode)
+    "dingtalk": {
+        # DingTalk Stream Mode credentials live on the Channels page
+        # (DINGTALK_CLIENT_ID / DINGTALK_CLIENT_SECRET). These are behavior
+        # and AI Card knobs that belong in config.yaml.
+        "app_code": "",                # Optional DingTalk appCode for enterprise API calls
+        "corp_id": "",                 # Optional DingTalk CorpId for enterprise API calls
+        "agent_id": "",                # Optional DingTalk AgentId for enterprise API calls
+        "robot_code": "",              # Optional robotCode/chatBotId override; empty uses client_id
+        "require_mention": True,        # Require @mention to respond in group chats
+        "free_response_chats": "",      # Comma-separated conversation IDs that skip require_mention
+        "allowed_chats": "",           # If set, bot ONLY responds in these group chat IDs
+        "allowed_users": "",           # DingTalk staff_id/sender_id allowlist; "*" = any user
+        "allow_all_users": False,       # Gateway auth allow-all for DingTalk senders
+        "card_template_id": "",         # AI Card template ID; empty uses SDK default
+        "card_content_key": "",         # AI Card variable key for streamed content
+        "reply_at_sender": False,       # @ the triggering sender on final group replies
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk

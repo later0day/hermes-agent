@@ -77,6 +77,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/set",
   "/api/model/auxiliary",
   "/api/model/options",
+  "/api/logs",
 ];
 
 function withManagementProfile(url: string): string {
@@ -1481,7 +1482,7 @@ export interface PairingUser {
   platform: string;
   user_id: string;
   user_name?: string;
-  code?: string;
+  code_hint?: string;
   age_minutes?: number;
 }
 
