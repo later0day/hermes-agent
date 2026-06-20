@@ -17,6 +17,7 @@ import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
+import importlib
 import importlib.util
 import json
 import logging
@@ -43,11 +44,42 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+def _import_project_module(module_name: str):
+    """Import a Hermes source-tree module even if a plugin shadows its package.
+
+    Some plugin directories contain packages named like source-tree packages
+    (for example ``plugins/cron``). Test harnesses and plugin discovery can
+    put those directories on ``sys.path`` or preload the shadow package, after
+    which ``from cron import jobs`` resolves to the plugin and dashboard cron
+    endpoints fail. Force the repository root to the front and discard a
+    shadowed top-level package before importing the requested module.
+    """
+    package_name = module_name.split(".", 1)[0]
+    project_entry = str(PROJECT_ROOT)
+    sys.path[:] = [p for p in sys.path if p != project_entry]
+    sys.path.insert(0, project_entry)
+
+    package = sys.modules.get(package_name)
+    package_file = Path(str(getattr(package, "__file__", "") or "")).resolve()
+    source_package_dir = PROJECT_ROOT / package_name
+    try:
+        is_source_package = package_file.is_relative_to(source_package_dir)
+    except ValueError:
+        is_source_package = False
+    if package is not None and not is_source_package:
+        for loaded in list(sys.modules):
+            if loaded == package_name or loaded.startswith(f"{package_name}."):
+                sys.modules.pop(loaded, None)
+
+    return importlib.import_module(module_name)
+
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
+    clear_model_endpoint_credentials,
     get_config_path,
     get_env_path,
     get_hermes_home,
@@ -133,7 +165,9 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     real gateway on the same HERMES_HOME — whichever process grabs the lock
     first wins the tick.
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    resolve_cron_scheduler = _import_project_module(
+        "cron.scheduler_provider"
+    ).resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
@@ -901,8 +935,11 @@ def _apply_main_model_assignment(
     # same-provider re-pick so re-selecting a model doesn't wipe the key.
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
+        model_cfg.pop("api", None)
     elif model_cfg.get("api_key") and new_provider != prev_provider:
-        model_cfg["api_key"] = ""
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
+    if new_provider != prev_provider:
+        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
     model_cfg.pop("context_length", None)
     return model_cfg
 
@@ -2913,6 +2950,11 @@ async def get_sessions(
                 if profile_name:
                     s["profile"] = profile_name
                     s["is_default_profile"] = profile_name == "default"
+                s.update(
+                    _session_source_binding_annotation(
+                        str(s.get("id") or s.get("session_id") or "")
+                    )
+                )
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
@@ -3871,6 +3913,8 @@ def _apply_model_assignment_sync(
                 slot_cfg = {}
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
+            slot_cfg.pop("base_url", None)
+            clear_model_endpoint_credentials(slot_cfg)
             aux[slot] = slot_cfg
         cfg["auxiliary"] = aux
         save_config(cfg)
@@ -3886,8 +3930,13 @@ def _apply_model_assignment_sync(
         slot_cfg = aux.get(slot)
         if not isinstance(slot_cfg, dict):
             slot_cfg = {}
+        prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
+        new_provider = provider.strip().lower()
         slot_cfg["provider"] = provider
         slot_cfg["model"] = model
+        if new_provider != prev_provider and new_provider != "custom":
+            slot_cfg.pop("base_url", None)
+            clear_model_endpoint_credentials(slot_cfg)
         aux[slot] = slot_cfg
 
     cfg["auxiliary"] = aux
@@ -7576,17 +7625,22 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
     return annotated
 
 
-def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
-    """Run cron.jobs helpers against the selected profile's cron directory.
+def _cron_job_matches_profile(job: Dict[str, Any], profile: str) -> bool:
+    return _cron_job_owner(job) == (profile or "default")
 
-    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
-    from the process HERMES_HOME at import time. The dashboard is a single
-    process that can inspect many profiles, so temporarily retarget those
-    globals while holding a lock and restore them immediately after the call.
+
+def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers through the centralized default cron store.
+
+    Cron V1 stores jobs under the default profile and treats ``owner_profile``
+    as the logical profile view. The dashboard can inspect many profiles from
+    one process, so it retargets cron.jobs to the central store while annotating
+    list/get/create results for the selected profile.
     """
-    profile_name, home = _cron_profile_home(profile)
+    profile_name, profile_home = _cron_profile_home(profile)
+    _, home = _cron_profile_home("default")
     with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
+        cron_jobs = _import_project_module("cron.jobs")
 
         old_cron_dir = cron_jobs.CRON_DIR
         old_jobs_file = cron_jobs.JOBS_FILE
@@ -7595,6 +7649,8 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
         cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
         cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
         try:
+            if func_name == "create_job":
+                kwargs.setdefault("profile", profile_name)
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
         finally:
             cron_jobs.CRON_DIR = old_cron_dir
@@ -7602,9 +7658,13 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
             cron_jobs.OUTPUT_DIR = old_output_dir
 
     if isinstance(result, list):
-        return [_annotate_cron_job(j, profile_name, home) for j in result]
+        if func_name == "list_jobs":
+            result = [j for j in result if _cron_job_matches_profile(j, profile_name)]
+        return [_annotate_cron_job(j, profile_name, profile_home) for j in result]
     if isinstance(result, dict):
-        return _annotate_cron_job(result, profile_name, home)
+        if func_name == "get_job" and not _cron_job_matches_profile(result, profile_name):
+            return None
+        return _annotate_cron_job(result, profile_name, profile_home)
     return result
 
 
@@ -7731,9 +7791,8 @@ async def get_cron_delivery_targets():
         }
     ]
     try:
-        from cron.scheduler import cron_delivery_targets
-
-        targets.extend(cron_delivery_targets())
+        scheduler = _import_project_module("cron.scheduler")
+        targets.extend(scheduler.cron_delivery_targets())
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
     return {"targets": targets}
@@ -7813,8 +7872,10 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     """
     _profile_name, home = _cron_profile_home(profile)
     with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
-        from cron.scheduler_provider import resolve_cron_scheduler
+        cron_jobs = _import_project_module("cron.jobs")
+        resolve_cron_scheduler = _import_project_module(
+            "cron.scheduler_provider"
+        ).resolve_cron_scheduler
 
         old_cron_dir = cron_jobs.CRON_DIR
         old_jobs_file = cron_jobs.JOBS_FILE
@@ -7906,13 +7967,16 @@ async def list_cron_blueprints():
     form never offers a platform that isn't connected.
     """
     try:
-        from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
+        blueprint_catalog = _import_project_module("cron.blueprint_catalog")
+        CATALOG = blueprint_catalog.CATALOG
+        blueprint_catalog_entry = blueprint_catalog.blueprint_catalog_entry
 
         deliver_options = None
         try:
-            from cron.scheduler import cron_delivery_targets
-
-            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            scheduler = _import_project_module("cron.scheduler")
+            platforms = [
+                t["id"] for t in scheduler.cron_delivery_targets() if t.get("id")
+            ]
             deliver_options = ["origin", "local", *platforms]
         except Exception:
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
@@ -7935,7 +7999,10 @@ async def list_cron_blueprints():
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
-        from cron.blueprint_catalog import fill_blueprint, get_blueprint, BlueprintFillError
+        blueprint_catalog = _import_project_module("cron.blueprint_catalog")
+        fill_blueprint = blueprint_catalog.fill_blueprint
+        get_blueprint = blueprint_catalog.get_blueprint
+        BlueprintFillError = blueprint_catalog.BlueprintFillError
 
         blueprint = get_blueprint(body.blueprint)
         if blueprint is None:
@@ -9667,7 +9734,7 @@ def _call_cron_store(func_name: str, *args, **kwargs):
     """
     _profile_name, home = _cron_profile_home("default")
     with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
+        cron_jobs = _import_project_module("cron.jobs")
 
         old_cron_dir = cron_jobs.CRON_DIR
         old_jobs_file = cron_jobs.JOBS_FILE
@@ -9693,9 +9760,17 @@ def _profile_attr(info, name: str, default: Any = None) -> Any:
 
 
 def _profile_to_dict(info) -> Dict[str, Any]:
+    name = str(_profile_attr(info, "name", "") or "")
+    profile_path = Path(str(_profile_attr(info, "path", "") or ""))
+    try:
+        from hermes_cli import profiles as profiles_mod
+        meta = profiles_mod.read_profile_meta(profile_path)
+    except Exception:
+        meta = {}
     return {
-        "name": _profile_attr(info, "name", ""),
-        "path": str(_profile_attr(info, "path", "")),
+        "name": name,
+        "agent_id": name,
+        "path": str(profile_path),
         "is_default": bool(_profile_attr(info, "is_default", False)),
         "model": _profile_attr(info, "model"),
         "provider": _profile_attr(info, "provider"),
@@ -9704,6 +9779,9 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
         "description": _profile_attr(info, "description", "") or "",
         "description_auto": bool(_profile_attr(info, "description_auto", False)),
+        "template": bool(meta.get("template", False)),
+        "binding_count": _profile_binding_count(name),
+        "binding_summary": _profile_binding_summary(name),
         "distribution_name": _profile_attr(info, "distribution_name"),
         "distribution_version": _profile_attr(info, "distribution_version"),
         "distribution_source": _profile_attr(info, "distribution_source"),
@@ -9724,6 +9802,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
         model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
         profiles.append({
             "name": "default",
+            "agent_id": "default",
             "path": str(default_home),
             "is_default": True,
             "model": model,
@@ -9733,6 +9812,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
             "description": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description", ""), ""),
             "description_auto": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description_auto", False), False),
+            "template": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("template", False), False),
+            "binding_count": _profile_binding_count("default"),
+            "binding_summary": _profile_binding_summary("default"),
             "distribution_name": None,
             "distribution_version": None,
             "distribution_source": None,
@@ -9747,6 +9829,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
             profiles.append({
                 "name": entry.name,
+                "agent_id": entry.name,
                 "path": str(entry),
                 "is_default": False,
                 "model": model,
@@ -9756,6 +9839,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "gateway_running": _safe(lambda entry=entry: profiles_mod._check_gateway_running(entry), False),
                 "description": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
                 "description_auto": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
+                "template": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("template", False), False),
+                "binding_count": _profile_binding_count(entry.name),
+                "binding_summary": _profile_binding_summary(entry.name),
                 "distribution_name": None,
                 "distribution_version": None,
                 "distribution_source": None,
@@ -9897,7 +9983,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
     return disabled_count
 
 
-@app.get("/api/profiles")
+@app.get("/api/profiles-legacy")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
@@ -9907,7 +9993,7 @@ async def list_profiles_endpoint():
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
-@app.post("/api/profiles")
+@app.post("/api/profiles-legacy")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
     explicit_source = (body.clone_from or "").strip()
@@ -10020,7 +10106,7 @@ async def create_profile_endpoint(body: ProfileCreate):
     }
 
 
-@app.get("/api/profiles/active")
+@app.get("/api/profiles-legacy/active")
 async def get_active_profile_endpoint():
     """Return the sticky active profile and the profile this dashboard
     process is currently running as.
@@ -10041,7 +10127,7 @@ async def get_active_profile_endpoint():
     return {"active": active, "current": current}
 
 
-@app.post("/api/profiles/active")
+@app.post("/api/profiles-legacy/active")
 async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     """Set the sticky active profile (mirrors ``hermes profile use``).
 
@@ -10141,8 +10227,24 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+    from gateway.agent_audit import append_agent_audit_event
+
     try:
-        path = profiles_mod.delete_profile(name, yes=True)
+        profile_name = profiles_mod.normalize_profile_name(name)
+        _resolve_profile_dir(profile_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+
+    raw_bindings = _profile_raw_bindings(profile_name)
+    notification = await _notify_profile_delete_bindings(
+        profile_name,
+        [binding.to_dict() for binding in raw_bindings],
+    )
+    removed_cron_jobs = _delete_cron_jobs_for_profile(profile_name)
+    try:
+        path = profiles_mod.delete_profile(profile_name, yes=True)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -10150,6 +10252,31 @@ async def delete_profile_endpoint(name: str):
     except Exception as e:
         _log.exception("DELETE /api/profiles/%s failed", name)
         raise HTTPException(status_code=500, detail=str(e))
+
+    store = _source_binding_store()
+    try:
+        removed_bindings = store.delete_bindings_for_profile(profile_name)
+    finally:
+        store.close()
+    try:
+        append_agent_audit_event(
+            "agent.delete",
+            actor_user_id="dashboard",
+            actor_user_name="Dashboard",
+            profile_name=profile_name,
+            before={
+                "binding_count": len(raw_bindings),
+                "cron_job_count": removed_cron_jobs,
+            },
+            after=None,
+            extra={
+                "removed_bindings": removed_bindings,
+                "removed_cron_jobs": removed_cron_jobs,
+                "notification": notification,
+            },
+        )
+    except Exception:
+        _log.debug("Failed to append profile delete audit event", exc_info=True)
     return {"ok": True, "path": str(path)}
 
 
@@ -10531,10 +10658,40 @@ def _session_profile_name(session_id: str) -> Optional[str]:
     return None
 
 
+def _session_source_binding_annotation(session_id: str) -> Dict[str, Any]:
+    source_key = _session_source_binding_key(session_id)
+    if not source_key:
+        return {}
+    annotation: Dict[str, Any] = {
+        "source_binding_key": source_key,
+        "session_profile": _session_profile_name(session_id) or "default",
+        "bound_profile": "default",
+    }
+    store = _source_binding_store()
+    try:
+        binding = store.get_binding(source_key)
+    except Exception:
+        binding = None
+    finally:
+        store.close()
+    if binding is not None:
+        annotation["bound_profile"] = binding.profile_name or "default"
+        annotation["source_binding"] = _binding_to_dict(binding)
+    return annotation
+
+
 def _profile_bindings(name: str) -> List[Dict[str, Any]]:
     store = _source_binding_store()
     try:
         return [_binding_to_dict(b) for b in store.list_bindings(profile_name=name)]
+    finally:
+        store.close()
+
+
+def _profile_raw_bindings(name: str) -> List[Any]:
+    store = _source_binding_store()
+    try:
+        return list(store.list_bindings(profile_name=name))
     finally:
         store.close()
 
@@ -11274,12 +11431,14 @@ async def create_profile_endpoint(body: ProfileCreate):
     if explicit_source:
         try:
             from pathlib import Path
-            source_meta = profiles_mod.read_profile_meta(Path(profiles_mod.resolve_profile_env(explicit_source)))
+            source_meta = profiles_mod.read_profile_meta(
+                Path(profiles_mod.resolve_profile_env(explicit_source))
+            )
             is_template_source = bool(source_meta.get("template", False))
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to read template meta for {explicit_source}: {e}")
-            
+
     # Builder flow: if the caller supplies keep_skills, skills must be seeded
     # after creation so the disable pass has something to act on.
     builder_needs_skills = bool(body.keep_skills)
@@ -11305,18 +11464,19 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone_skills = False
         no_skills = False
     else:
-        # Plain dashboard create: config-only from default (when requested),
-        # no skills at all, and opt-out marker for future seeding.
+        # Fresh profiles keep the official CLI/dashboard behavior and seed
+        # bundled skills. Config-only clones from default opt out of skills and
+        # env inheritance so secrets and capabilities do not leak silently.
         clone_source = (body.clone_from or "").strip() or ("default" if body.clone_from_default else None)
         clone_skills = False
-        no_skills = True
+        no_skills = body.no_skills or bool(clone_source)
     try:
         path = profiles_mod.create_profile(
             name=body.name,
             clone_from=clone_source,
             clone_all=body.clone_all,
             clone_config=bool(clone_source) and not body.clone_all,
-            clone_env=False,
+            clone_env=not bool(clone_source),
             clone_skills=clone_skills,
             no_skills=no_skills,
             description=body.description,
@@ -11324,7 +11484,9 @@ async def create_profile_endpoint(body: ProfileCreate):
 
         # Builder flow: seed bundled skills into the new profile so the
         # keep-skills disable pass has a populated skills/ tree to prune.
-        if builder_needs_skills and not explicit_source:
+        if (builder_needs_skills and not explicit_source) or (
+            not clone_source and not body.no_skills
+        ):
             profiles_mod.seed_profile_skills(path, quiet=True)
 
         # Match the CLI's profile-create flow: named profiles should get a

@@ -1059,6 +1059,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         dingtalk_session_webhook_sent_text = False
+        target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
@@ -1072,18 +1073,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
                     if future is None:
                         adapter_ok = False
+                        target_errors.append("live adapter event loop scheduling failed")
                     else:
                         try:
                             send_result = future.result(timeout=60)
-                        except TimeoutError:
+                        except TimeoutError as te:
                             future.cancel()
+                            target_errors.append(f"live adapter send timed out: {te}")
                             raise
-                        if send_result and not getattr(send_result, "success", True):
-                            err = getattr(send_result, "error", "unknown")
+                        except Exception as ex:
+                            target_errors.append(f"live adapter send failed: {ex}")
+                            raise
+
+                        if send_result is None or not getattr(send_result, "success", True):
+                            err = getattr(send_result, "error", "unknown") if send_result else "no response from adapter"
+                            msg = f"live adapter send to {platform_name}:{chat_id} failed: {err}"
                             logger.warning(
-                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                                job["id"], platform_name, chat_id, err,
+                                "Job '%s': %s, falling back to standalone",
+                                job["id"], msg,
                             )
+                            target_errors.append(msg)
                             adapter_ok = False  # fall through to standalone path
                         elif (
                             send_result
@@ -1115,9 +1124,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
+                err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
+                if not any(err_msg in err for err in target_errors):
+                    target_errors.append(err_msg)
                 logger.warning(
-                    "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
-                    job["id"], platform_name, chat_id, e,
+                    "Job '%s': %s, falling back to standalone",
+                    job["id"], err_msg,
                 )
 
         if not delivered:
@@ -1151,17 +1163,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     if not media_files:
                         delivered = True
                 else:
-                    logger.warning(
-                        "Job '%s': DingTalk session_webhook delivery to %s:%s failed (%s), falling back to standalone",
-                        job["id"], platform_name, chat_id,
-                        (result or {}).get("error", "unknown"),
+                    msg = (
+                        f"DingTalk session_webhook delivery to "
+                        f"{platform_name}:{chat_id} failed: "
+                        f"{(result or {}).get('error', 'unknown')}"
                     )
+                    logger.warning(
+                        "Job '%s': %s, falling back to standalone",
+                        job["id"], msg,
+                    )
+                    target_errors.append(msg)
 
         if not delivered:
             if dingtalk_webhook_issue and not dingtalk_session_webhook:
                 msg = f"delivery error: {dingtalk_webhook_issue}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
+                target_errors.append(msg)
+                delivery_errors.extend(target_errors)
                 continue
 
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
@@ -1187,13 +1205,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
+                target_errors.extend([msg])
+                delivery_errors.extend(target_errors)
                 continue
 
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
+                target_errors.extend([msg])
+                delivery_errors.extend(target_errors)
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
@@ -1259,6 +1279,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
+    Subprocess environment is passed through ``_sanitize_subprocess_env`` so
+    provider credentials and other Hermes-managed secrets are not inherited
+    (SECURITY.md §2.3), matching terminal and MCP child processes.
+
     Args:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
@@ -1320,17 +1344,42 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [sys.executable, str(path)]
 
     try:
+        from tools.environments.local import _sanitize_subprocess_env
+
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=str(path.parent),
+            env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            stdout_raw, stderr_raw = proc.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception as kill_exc:
+                # Test live-system guards may block kill() when subprocess
+                # ancestry cannot be proven. The user-facing result is still a
+                # timeout; keep cleanup best-effort instead of returning the
+                # guard's implementation detail.
+                logger.debug(
+                    "cron script timeout cleanup failed for %s: %s",
+                    path, kill_exc,
+                )
+            else:
+                try:
+                    proc.communicate(timeout=1)
+                except Exception:
+                    pass
+            return False, f"Script timed out after {script_timeout}s: {path}"
+
+        returncode = proc.returncode
+        stdout = (stdout_raw or "").strip()
+        stderr = (stderr_raw or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -1340,8 +1389,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         except Exception:
             pass
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if returncode != 0:
+            parts = [f"Script exited with code {returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
