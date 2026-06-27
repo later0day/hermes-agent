@@ -107,6 +107,7 @@ export const en: Translations = {
     "activeSessions": "Active Sessions",
     "connected": "Connected",
     "connectedPlatforms": "Connected Platforms",
+    "disabled": "Disabled",
     "disconnected": "Disconnected",
     "error": "Error",
     "failed": "Failed",
@@ -120,16 +121,16 @@ export const en: Translations = {
     "platformError": "error",
     "recentSessions": "Recent Sessions",
     "restartGateway": "Restart Gateway",
-    "restartingGateway": "Restarting gateway…",
+    "restartingGateway": "Restarting gateway\u2026",
     "running": "Running",
     "runningRemote": "Running (remote)",
     "startFailed": "Start failed",
     "starting": "Starting",
-    "startedInBackground": "Started in background — check logs for progress",
+    "startedInBackground": "Started in background \u2014 check logs for progress",
     "stopped": "Stopped",
     "updateHermes": "Update Hermes",
-    "updatingHermes": "Updating Hermes…",
-    "waitingForOutput": "Waiting for output…"
+    "updatingHermes": "Updating Hermes\u2026",
+    "waitingForOutput": "Waiting for output\u2026"
   },
   "sessions": {
     "clearBinding": "clearBinding",
