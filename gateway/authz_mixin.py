@@ -143,6 +143,32 @@ class GatewayAuthorizationMixin:
                 policy = extra.get("group_policy")
         return str(policy or "").strip().lower()
 
+    def _platform_config_allow_all_users(self, platform: Optional[Platform]) -> bool:
+        """Whether the platform config sets ``allow_all_users: true`` in config.yaml extra.
+
+        Config-side fallback for the ``{PLATFORM}_ALLOW_ALL_USERS`` env var:
+        reads ``gateway.platforms.<platform>.extra.allow_all_users`` from the
+        loaded config so operators can grant open access from config.yaml
+        instead of ``.env``.  Called only when the env var for this platform
+        exists in ``platform_allow_all_map`` but is not set in the environment.
+        """
+        if not platform:
+            return False
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if isinstance(extra, dict):
+            val = extra.get("allow_all_users")
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.strip().lower() in {"true", "1", "yes", "on"}
+        return False
+
     def _adapter_group_has_sender_allowlist(
         self,
         platform: Optional[Platform],

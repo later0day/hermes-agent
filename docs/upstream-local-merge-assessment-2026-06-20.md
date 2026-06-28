@@ -522,3 +522,341 @@ Results:
 - MCP elicitation/refresh/capability coverage: `53 passed, 1 warning`
 - Web reasoning-effort coverage: `1 passed`, `6 tests passed`
 - `git diff --check`: passed
+
+## Live Dashboard/Gateway Validation
+
+After the explicit E2E run, official `main` advanced again by 2 commits through:
+
+- `65561e9de Merge pull request #49563 from NousResearch/salvage/signal-quote-history`
+
+The additional upstream changes preserve quoted reply context for Signal.
+The merge into local `main` completed cleanly.
+
+Current upstream coverage:
+
+```bash
+git rev-list --left-right --count HEAD...origin/main
+git merge-base --is-ancestor origin/main HEAD
+```
+
+Result:
+
+- Local branch is `ahead 17`, `behind 0`.
+- `origin/main` is an ancestor of local `HEAD`.
+
+Run-state validation used the actual dashboard and gateway processes, not only
+unit tests:
+
+```bash
+PYTHONPATH=/Users/later0day/Desktop/hermes-agent \
+  /Users/later0day/Desktop/hermes-agent/.venv/bin/python \
+  -m hermes_cli.main --profile xcx dashboard --port 9119 --skip-build --no-open
+```
+
+Dashboard result:
+
+- Listening on `127.0.0.1:9119`.
+- `/sessions?profile=xcx` returned `200 text/html`.
+- Authenticated dashboard API endpoints for status, profiles, profile details,
+  sessions, profile sessions, messaging platforms, cron jobs, MCP servers,
+  toolsets, and config all returned `200`.
+
+Gateway was restarted through the dashboard API:
+
+```bash
+POST /api/gateway/restart?profile=xcx
+```
+
+Result:
+
+- Restart request returned `{"ok": true, "name": "gateway-restart"}`.
+- Poll sequence observed `draining:disconnected` -> `stopped:none` ->
+  `running:connected`.
+- `/api/status?profile=xcx` reported DingTalk as connected:
+  `gateway_running=true`, `gateway_state=running`,
+  `gateway_platforms.dingtalk.state=connected`.
+- `/api/messaging/platforms/dingtalk/test?profile=xcx` returned
+  `{"ok": true, "state": "connected"}`.
+- After restart settled, waiting another 10 seconds produced `0` new
+  `gateway.error.log` lines.
+
+The restart itself produced expected shutdown noise from the DingTalk Stream SDK
+while closing the old websocket:
+
+- `ERROR dingtalk_stream.client: [start] network exception, error=`
+
+No new instances were observed after the restart settled for the previously
+reported runtime failures:
+
+- `TypeError: MessageEvent.__init__() got an unexpected keyword argument 'media_errors'`
+- `ModuleNotFoundError: No module named 'cron.scheduler_provider'`
+- `Unauthorized user`
+- DingTalk 429 approval lockout
+- DingTalk image/media IP whitelist failures
+- `RuntimeWarning: coroutine ... was never awaited`
+
+Additional validation after the live restart:
+
+```bash
+.venv/bin/python3 -m py_compile gateway/run.py gateway/platforms/base.py gateway/platforms/signal.py gateway/platforms/dingtalk.py gateway/turn_status_card.py hermes_cli/web_server.py cron/scheduler.py cron/jobs.py
+.venv/bin/python3 -m pytest tests/gateway/test_signal.py tests/gateway/test_signal_format.py tests/gateway/test_reply_to_injection.py tests/tools/test_send_message_tool.py -q
+.venv/bin/python3 -m pytest tests/gateway/test_dingtalk.py tests/gateway/test_turn_status_card.py tests/gateway/test_restart_resume_pending.py -q
+.venv/bin/python3 -m pytest tests/hermes_cli/test_web_server.py tests/hermes_cli/test_web_server_profile_dashboard.py tests/hermes_cli/test_dashboard_admin_endpoints.py -q
+scripts/run_tests.sh tests/e2e --include-integration -j 4
+git diff --check
+```
+
+Results:
+
+- Signal/reply/send-message coverage: `328 passed, 2 warnings`
+- DingTalk/status-card/restart coverage: `189 passed`
+- Dashboard web-server coverage: `414 passed, 1 warning`
+- Explicit E2E runner: `57 passed, 0 failed`
+- `git diff --check`: passed
+
+Runtime bug found and fixed during live validation:
+
+- DingTalk stage-reaction updates were invoked from the agent worker thread.
+  The adapter used `asyncio.create_task()` directly, which can fail outside the
+  adapter event loop and leak an unawaited `_swap()` coroutine warning.
+- `DingTalkAdapter` now records its connection loop and schedules background
+  reaction coroutines via `asyncio.run_coroutine_threadsafe()` when called from
+  another thread, while preserving direct task scheduling on the adapter loop.
+  A regression test covers this worker-thread scheduling path.
+
+## Full Regression And E2E Status
+
+The default full regression runner was attempted after the upstream/local merge:
+
+```bash
+scripts/run_tests.sh -j 8
+```
+
+Important runner behavior:
+
+- The default runner discovers `tests/` but excludes `tests/integration`,
+  `tests/e2e`, and `tests/docker`.
+- E2E coverage must therefore be invoked explicitly with either an explicit
+  `tests/e2e` path or `--include-integration`.
+
+Default full-regression result:
+
+- `1578` test files discovered.
+- `33155` tests discovered.
+- Exit code: `1`.
+- `24` files had test failures, for `83` failed tests.
+- `8` files had no runnable result because of collection/import errors or
+  timeout before collection.
+
+Failing files from the default run:
+
+- `tests/agent/test_anthropic_adapter.py`
+- `tests/cron/test_cron_workdir.py`
+- `tests/cron/test_parallel_pool.py`
+- `tests/gateway/test_background_command.py`
+- `tests/gateway/test_delegate_command.py`
+- `tests/gateway/test_matrix.py`
+- `tests/gateway/test_gateway_shutdown.py`
+- `tests/gateway/test_shutdown_forensics.py`
+- `tests/hermes_cli/test_dashboard_profiles_nav_label.py`
+- `tests/hermes_cli/test_gateway_wsl.py`
+- `tests/hermes_cli/test_gateway_service.py`
+- `tests/hermes_cli/test_mcp_security.py`
+- `tests/hermes_cli/test_profile_describer.py`
+- `tests/hermes_cli/test_service_manager.py`
+- `tests/hermes_cli/test_signal_handler_kanban_worker.py`
+- `tests/hermes_cli/test_web_server_cron_profiles.py`
+- `tests/plugins/test_kanban_dashboard_swarm.py`
+- `tests/plugins/web/test_parallel_keyless_mcp.py`
+- `tests/run_agent/test_real_interrupt_subagent.py`
+- `tests/test_live_system_guard_self_test.py`
+- `tests/test_tui_gateway_server.py`
+- `tests/tools/test_managed_browserbase_and_modal.py`
+- `tests/tools/test_send_message_missing_platforms.py`
+- `tests/tools/test_web_keyless_default_fallback.py`
+
+Files with no runnable result in the default run:
+
+- `tests/agent/test_model_metadata_ssl.py`
+- `tests/gateway/test_agent_command.py`
+- `tests/gateway/test_profile_runtime_context.py`
+- `tests/gateway/test_recent_image_resend.py`
+- `tests/gateway/test_source_agent_binding.py`
+- `tests/hermes_cli/test_auth_ssl_macos.py`
+- `tests/run_agent/test_primary_runtime_restore.py`
+- `tests/run_agent/test_run_agent.py`
+
+E2E was then run explicitly:
+
+```bash
+scripts/run_tests.sh tests/e2e --include-integration -j 4
+.venv/bin/python3 -m pytest tests/e2e -q -rs
+```
+
+E2E result:
+
+- Parallel runner: `3` files, `57` tests passed, `0` failed.
+- Direct pytest with skip reporting: `57 passed, 7 skipped`.
+- Skips included the Matrix x-sign bootstrap tests because the homeserver was
+  not reachable at `http://127.0.0.1:26167`.
+- Two platform-command shortcut tests skipped because those shortcut scopes are
+  intentionally limited.
+
+The Matrix Docker-backed real E2E path was not started automatically. It
+requires the fixture service from:
+
+```bash
+docker compose -f tests/e2e/matrix_xsign_bootstrap/docker-compose.yml up -d
+```
+
+Current conclusion:
+
+- Official upstream coverage is complete at the git ancestry level:
+  `origin/main` is an ancestor of local `HEAD`, and local is `ahead 16`,
+  `behind 0`.
+- Targeted merge-risk regressions passed.
+- Explicit lightweight E2E passed.
+- The default full regression suite is not green yet, so this should not be
+  reported as a fully clean regression.
+
+## Follow-Up Upstream Coverage Check
+
+After the first merge commit, `git fetch origin` found that official `main`
+advanced by 10 additional commits, through:
+
+- `ff50a8861 Merge pull request #49558 from NousResearch/salvage/env-var-guards-48735`
+
+Those additional official commits include:
+
+- Signal markdown formatting shared across send paths.
+- Signal ADTS AAC voice-note detection/remuxing.
+- Safer malformed env var parsing helpers.
+- Desktop hidden link-title window audio muting.
+
+The second merge completed cleanly with no textual conflicts. Current coverage
+state after the second merge:
+
+```bash
+git merge-base --is-ancestor origin/main HEAD
+git rev-list --left-right --count HEAD...origin/main
+```
+
+Result:
+
+- `origin/main` is an ancestor of local `HEAD`.
+- Local branch is `ahead 16`, `behind 0`.
+
+Additional validation after the second merge:
+
+```bash
+.venv/bin/python3 -m py_compile hermes_cli/profiles.py hermes_cli/web_server.py cron/jobs.py cron/scheduler.py gateway/run.py gateway/platforms/dingtalk.py gateway/turn_status_card.py gateway/platforms/signal.py gateway/platforms/signal_format.py tools/delegate_tool.py tools/send_message_tool.py utils.py
+.venv/bin/python3 -m pytest tests/gateway/test_signal.py tests/gateway/test_signal_format.py tests/tools/test_send_message_tool.py -q
+.venv/bin/python3 -m pytest tests/hermes_cli/test_web_server.py tests/hermes_cli/test_web_server_profile_dashboard.py tests/hermes_cli/test_dashboard_admin_endpoints.py -q
+.venv/bin/python3 -m pytest tests/cron/test_cron_script.py tests/cron/test_cron_profile.py tests/hermes_cli/test_profiles.py -q
+.venv/bin/python3 -m pytest tests/gateway/test_turn_status_card.py tests/gateway/test_dingtalk.py tests/gateway/test_restart_resume_pending.py -q
+.venv/bin/python3 -m pytest tests/tools/test_mcp_elicitation.py tests/tools/test_refresh_agent_mcp_tools.py tests/tools/test_mcp_capability_gating.py -q
+npm --workspace web run test -- src/lib/reasoning-effort.test.ts
+git diff --check
+```
+
+Results:
+
+- Signal/send-message coverage: `319 passed, 2 warnings`
+- Profile/dashboard/admin endpoints: `414 passed, 1 warning`
+- Cron/profile coverage: `196 passed, 1 warning`
+- Gateway DingTalk/status/restart coverage: `187 passed`
+- MCP elicitation/refresh/capability coverage: `53 passed, 1 warning`
+- Web reasoning-effort coverage: `1 passed`, `6 tests passed`
+- `git diff --check`: passed
+
+## Current Final State
+
+Latest verified state after the final upstream merge and live process checks:
+
+- `origin/main` is an ancestor of local `HEAD`.
+- Local branch is `ahead 17`, `behind 0`.
+- Dashboard is running on `127.0.0.1:9119` from the current workspace code.
+- xcx gateway is running under launchd from the current workspace code.
+- xcx DingTalk state is `connected`.
+- Dashboard API successfully restarted gateway and saw it return to
+  `running:connected`.
+- No new `gateway.error.log` lines appeared during the 10-second settle window
+  after restart.
+- Targeted regressions and explicit E2E passed; the default all-tests runner
+  was attempted but is still not fully green.
+
+## Latest Full Default Regression Run
+
+After the live dashboard/gateway checks, the default full regression runner was
+executed from the current workspace:
+
+```bash
+scripts/run_tests.sh -j 8
+```
+
+Final result:
+
+- `1578` files discovered.
+- `33180` tests executed by the default runner.
+- `32570` tests passed.
+- `83` tests failed.
+- Wall time: `493.7s` with `8` workers.
+
+The default suite is therefore still not green. The runner reported failures in
+these files:
+
+- `tests/agent/test_anthropic_adapter.py` - 3 failures
+- `tests/cron/test_cron_workdir.py` - 1 failure
+- `tests/cron/test_parallel_pool.py` - 1 failure
+- `tests/gateway/test_background_command.py` - 1 failure
+- `tests/gateway/test_delegate_command.py` - 9 failures
+- `tests/gateway/test_matrix.py` - 1 failure
+- `tests/gateway/test_gateway_shutdown.py` - 1 failure
+- `tests/gateway/test_shutdown_forensics.py` - 1 failure
+- `tests/hermes_cli/test_dashboard_profiles_nav_label.py` - 1 failure
+- `tests/hermes_cli/test_gateway_wsl.py` - 2 failures
+- `tests/hermes_cli/test_gateway_service.py` - 6 failures
+- `tests/hermes_cli/test_mcp_security.py` - 1 failure
+- `tests/hermes_cli/test_profile_describer.py` - 2 failures
+- `tests/hermes_cli/test_service_manager.py` - 2 failures
+- `tests/hermes_cli/test_signal_handler_kanban_worker.py` - 1 failure
+- `tests/hermes_cli/test_web_server_cron_profiles.py` - 1 failure
+- `tests/plugins/test_kanban_dashboard_swarm.py` - 3 failures
+- `tests/plugins/web/test_parallel_keyless_mcp.py` - 34 failures
+- `tests/run_agent/test_real_interrupt_subagent.py` - 1 failure
+- `tests/test_live_system_guard_self_test.py` - 4 failures
+- `tests/test_tui_gateway_server.py` - 1 failure
+- `tests/tools/test_managed_browserbase_and_modal.py` - 1 failure
+- `tests/tools/test_send_message_missing_platforms.py` - 1 failure
+- `tests/tools/test_web_keyless_default_fallback.py` - 4 failures
+
+The runner also reported 8 files where tests did not run because of collection
+errors or per-file timeout:
+
+- `tests/agent/test_model_metadata_ssl.py`
+- `tests/gateway/test_agent_command.py`
+- `tests/gateway/test_profile_runtime_context.py`
+- `tests/gateway/test_recent_image_resend.py`
+- `tests/gateway/test_source_agent_binding.py`
+- `tests/hermes_cli/test_auth_ssl_macos.py`
+- `tests/run_agent/test_primary_runtime_restore.py`
+- `tests/run_agent/test_run_agent.py`
+
+Post-run sanity checks:
+
+```bash
+git diff --check
+git rev-list --left-right --count HEAD...origin/main
+git merge-base --is-ancestor origin/main HEAD
+lsof -nP -iTCP:9119 -sTCP:LISTEN
+.venv/bin/python3 -m hermes_cli.main --profile xcx gateway status
+```
+
+Results:
+
+- `git diff --check`: passed.
+- Upstream coverage remains complete: local is `ahead 17`, `behind 0`, and
+  `origin/main` is an ancestor of local `HEAD`.
+- Dashboard is still listening on `127.0.0.1:9119`.
+- xcx gateway service remains loaded under launchd from this checkout, PID
+  `29802`, with DingTalk reported as `connected` by `/api/status?profile=xcx`.

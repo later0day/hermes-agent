@@ -261,7 +261,14 @@ export const en: Translations = {
     "telegramExisting": "Existing Telegram credentials are configured.",
     "telegramSavedRestarting": "Telegram saved; gateway restarting…",
     "restartNow": "Restart now",
-    "telegramSetupQR": "Telegram setup QR code"
+    "telegramSetupQR": "Telegram setup QR code",
+    "weixinSetupQR": "Login with WeChat QR",
+    "weixinStarting": "Connecting\u2026",
+    "weixinExisting": "Already connected. Scan again to re-login.",
+    "weixinWaiting": "Waiting for scan\u2026",
+    "weixinScaned": "Scanned \u2014 confirm in WeChat",
+    "weixinConfirmed": "Connected \u2713",
+    "weixinSuccess": "WeChat connected successfully!"
   },
   "system": {
     "sysNousPortal": "Nous Portal",
@@ -628,6 +635,9 @@ export const en: Translations = {
     "pause": "Pause",
     "resume": "Resume",
     "triggerNow": "Trigger now",
+    "runHistory": "Run History",
+    "runHistoryEmpty": "No runs yet",
+    "runDuration": "Duration",
     "delivery": {
       "local": "Local",
       "telegram": "Telegram",
@@ -1466,5 +1476,18 @@ export const en: Translations = {
     "uireconnect": "reconnect",
     "uimodel": "model",
     "uiskillMd": "SKILL.md"
-  }
+  },
+  memory: {
+    title: "Agent Memory",
+    tabMemory: "Memory",
+    tabUser: "User Notes",
+    tabSoul: "Soul",
+    edit: "Edit",
+    save: "Save",
+    cancel: "Cancel",
+    empty: "No content yet.",
+    saveSuccess: "Saved successfully",
+    saveFailed: "Save failed",
+    loading: "Loading...",
+  },
 };

@@ -73,6 +73,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/mcp",
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
+  "/api/messaging/weixin",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -558,6 +559,10 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
+  listCronJobRuns: (jobId: string, profile?: string, limit = 10) =>
+    fetchJSON<{ runs: CronJobRun[]; limit: number }>(
+      `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`
+    ),
 
   // Automation Blueprints — parameterized automation blueprints
   getAutomationBlueprints: () =>
@@ -926,6 +931,22 @@ export const api = {
   cancelTelegramOnboarding: (pairingId: string) =>
     fetchJSON<{ ok: boolean }>(
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
+
+  // WeChat (Weixin) QR login
+  startWeixinQR: () =>
+    fetchJSON<{ session_id: string; qr_url: string; qr_value: string }>(
+      "/api/messaging/weixin/qr-new",
+      { method: "POST" },
+    ),
+  getWeixinQRStatus: (sessionId: string) =>
+    fetchJSON<{ session_id: string; status: string; qr_url: string | null; credentials: Record<string, string> | null }>(
+      `/api/messaging/weixin/qr/${encodeURIComponent(sessionId)}`,
+    ),
+  cancelWeixinQR: (sessionId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/weixin/qr/${encodeURIComponent(sessionId)}`,
       { method: "DELETE" },
     ),
 
@@ -2030,6 +2051,16 @@ export interface CronJob {
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
+}
+
+export interface CronJobRun {
+  run_id: string;
+  job_id: string;
+  session_id?: string | null;
+  status: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  error?: string | null;
 }
 
 export interface CronDeliveryTarget {

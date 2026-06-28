@@ -260,7 +260,14 @@ export const zh: Translations = {
     "telegramExisting": "现有Telegram",
     "telegramSavedRestarting": "Telegram保存并重启中",
     "restartNow": "立即重启",
-    "telegramSetupQR": "Telegram设置二维码"
+    "telegramSetupQR": "Telegram设置二维码",
+    "weixinSetupQR": "微信扫码登录",
+    "weixinStarting": "正在连接\u2026",
+    "weixinExisting": "已连接，再次扫码可重新登录。",
+    "weixinWaiting": "等待扫码\u2026",
+    "weixinScaned": "已扫码，请在微信里确认",
+    "weixinConfirmed": "连接成功 \u2713",
+    "weixinSuccess": "微信连接成功！"
   },
   "system": {
     "sysNousPortal": "Nous Portal",
@@ -627,6 +634,9 @@ export const zh: Translations = {
     "pause": "暂停",
     "resume": "恢复",
     "triggerNow": "立即触发",
+    "runHistory": "执行历史",
+    "runHistoryEmpty": "暂无执行记录",
+    "runDuration": "耗时",
     "delivery": {
       "local": "本地",
       "telegram": "Telegram",
@@ -1683,5 +1693,18 @@ export const zh: Translations = {
     "uireconnect": "重新连接",
     "uimodel": "模型",
     "uiskillMd": "SKILL.md"
-  }
+  },
+  memory: {
+    title: "Agent 记忆",
+    tabMemory: "记忆",
+    tabUser: "用户备注",
+    tabSoul: "Soul",
+    edit: "编辑",
+    save: "保存",
+    cancel: "取消",
+    empty: "暂无内容",
+    saveSuccess: "保存成功",
+    saveFailed: "保存失败",
+    loading: "加载中...",
+  },
 };

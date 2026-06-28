@@ -532,6 +532,13 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
+                {platform.id === "weixin" && (
+                  <WeixinQRPanel
+                    onChanged={load}
+                    platform={platform}
+                    showToast={showToast}
+                  />
+                )}
               </CardContent>
             </Card>
           );
@@ -882,6 +889,137 @@ function TelegramOnboardingPanel({
               </Button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WeixinQRPanel({
+  onChanged,
+  platform,
+  showToast,
+}: {
+  onChanged: () => Promise<void>;
+  platform: MessagingPlatform;
+  showToast: (msg: string, type: "success" | "error") => void;
+}) {
+  const { t } = useI18n();
+  const [phase, setPhase] = useState<"idle" | "starting" | "waiting" | "scaned" | "confirmed" | "error">("idle");
+  const [sessionId, setSessionId] = useState("");
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [error, setError] = useState("");
+
+  const cancel = useCallback(async () => {
+    if (sessionId) {
+      try { await api.cancelWeixinQR(sessionId); } catch { /* ignore */ }
+    }
+    setPhase("idle");
+    setSessionId("");
+    setQrDataUrl("");
+    setError("");
+  }, [sessionId]);
+
+  const start = useCallback(async () => {
+    setPhase("starting");
+    setError("");
+    setQrDataUrl("");
+    try {
+      const res = await api.startWeixinQR();
+      setSessionId(res.session_id);
+      // Convert the QR URL/value to a QR code image
+      const qrContent = res.qr_url || res.qr_value;
+      const dataUrl = await QRCode.toDataURL(qrContent, { width: 224, margin: 2 });
+      setQrDataUrl(dataUrl);
+      setPhase("waiting");
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }, []);
+
+  // Poll for status
+  useEffect(() => {
+    if (phase !== "waiting" && phase !== "scaned") return;
+    if (!sessionId) return;
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (cancelled) break;
+        try {
+          const res = await api.getWeixinQRStatus(sessionId);
+          if (cancelled) break;
+          if (res.status === "scaned") {
+            setPhase("scaned");
+          } else if (res.status === "confirmed") {
+            setPhase("confirmed");
+            showToast(t.channels.weixinSuccess ?? "WeChat connected!", "success");
+            void onChanged();
+            break;
+          } else if (res.status === "expired" || res.status === "error") {
+            // QR refreshed on backend; update image if qr_url changed
+            if (res.qr_url) {
+              const dataUrl = await QRCode.toDataURL(res.qr_url, { width: 224, margin: 2 });
+              if (!cancelled) setQrDataUrl(dataUrl);
+            }
+            setPhase("waiting");
+          }
+        } catch { break; }
+      }
+    };
+    void poll();
+    return () => { cancelled = true; };
+  }, [phase, sessionId, onChanged, showToast, t.channels.weixinSuccess]);
+
+  // Status badge label
+  const statusLabel = phase === "scaned"
+    ? (t.channels.weixinScaned ?? "Scanned — confirm in WeChat")
+    : phase === "confirmed"
+    ? (t.channels.weixinConfirmed ?? "Connected ✓")
+    : (t.channels.weixinWaiting ?? "Waiting for scan…");
+
+  return (
+    <div className="rounded-sm border border-border bg-background/35 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          className="uppercase"
+          onClick={() => void start()}
+          disabled={phase === "starting" || phase === "waiting" || phase === "scaned"}
+          prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
+        >
+          {phase === "starting" ? (t.channels.weixinStarting ?? "Connecting…") : (t.channels.weixinSetupQR ?? "Login with QR Code")}
+        </Button>
+        {platform.configured && (
+          <span className="text-xs text-muted-foreground">
+            {t.channels.weixinExisting ?? "Already connected. Scan again to re-login."}
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <div className="mt-3 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {qrDataUrl && phase !== "confirmed" && (
+        <div className="mt-4 flex flex-col items-center gap-3">
+          <img src={qrDataUrl} alt="WeChat QR" className="h-56 w-56 bg-white p-2" />
+          <Badge tone={phase === "scaned" ? "success" : "warning"}>{statusLabel}</Badge>
+          <Button size="sm" ghost onClick={() => void cancel()}>
+            {t.channels.cancel}
+          </Button>
+        </div>
+      )}
+
+      {phase === "confirmed" && (
+        <div className="mt-3 flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 text-green-500" />
+          <span className="text-sm text-green-600">
+            {t.channels.weixinSuccess ?? "WeChat connected successfully!"}
+          </span>
         </div>
       )}
     </div>

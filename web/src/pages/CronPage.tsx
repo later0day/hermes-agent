@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -8,6 +8,7 @@ import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type {
   CronJob,
+  CronJobRun,
   CronDeliveryTarget,
   ModelOptionsResponse,
   ProfileInfo,
@@ -507,6 +508,231 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   error: "destructive",
   completed: "destructive",
 };
+
+const RUN_STATUS_STYLE: Record<string, React.CSSProperties> = {
+  active: { color: "var(--color-warning, #f59e0b)" },
+  running: { color: "var(--color-warning, #f59e0b)" },
+  completed: { color: "var(--color-success, #22c55e)" },
+  success: { color: "var(--color-success, #22c55e)" },
+  archived: { color: "var(--color-muted-foreground, #888)" },
+  error: { color: "var(--color-destructive, #ef4444)" },
+  failed: { color: "var(--color-destructive, #ef4444)" },
+};
+
+function toMs(ts: string | number | null | undefined): number | null {
+  if (ts == null || ts === "") return null;
+  const n = Number(ts);
+  if (isNaN(n)) return null;
+  // DB stores seconds (float). Heuristic: if value < 1e10 it's seconds, else already ms.
+  return n < 1e10 ? n * 1000 : n;
+}
+
+function formatDuration(startedAt?: string | null, endedAt?: string | null): string {
+  if (!startedAt || !endedAt) return "\u2014";
+  const ms = (toMs(endedAt) ?? 0) - (toMs(startedAt) ?? 0);
+  if (ms < 0) return "\u2014";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const mins = Math.floor(ms / 60000);
+  const secs = Math.round((ms % 60000) / 1000);
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+}
+
+import React from "react";
+
+function CronRunHistory({ jobId, profile }: { jobId: string; profile?: string }) {
+  const { t } = useI18n();
+  const [runs, setRuns] = useState<CronJobRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [runMessages, setRunMessages] = useState<Record<string, { loading: boolean; messages: Array<{ role: string; content: unknown }> }>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .listCronJobRuns(jobId, profile)
+      .then((res) => {
+        if (!cancelled) setRuns(res.runs ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setRuns([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [jobId, profile]);
+
+  const toggleRun = async (run: CronJobRun) => {
+    const rid = run.run_id;
+    if (expandedRunId === rid) {
+      setExpandedRunId(null);
+      return;
+    }
+    setExpandedRunId(rid);
+    if (run.session_id && !runMessages[rid]) {
+      setRunMessages((prev) => ({ ...prev, [rid]: { loading: true, messages: [] } }));
+      try {
+        const res = await api.getSessionMessages(run.session_id, profile);
+        setRunMessages((prev) => ({ ...prev, [rid]: { loading: false, messages: res.messages } }));
+      } catch {
+        setRunMessages((prev) => ({ ...prev, [rid]: { loading: false, messages: [] } }));
+      }
+    }
+  };
+
+  const runStatusStyle = (status: string): React.CSSProperties =>
+    RUN_STATUS_STYLE[status.toLowerCase()] ?? {};
+
+  return (
+    <div style={{ marginTop: 12, borderTop: "1px solid var(--color-border)" }}>
+      <p
+        className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+        style={{ padding: "8px 0 6px" }}
+      >
+        {t.cron.runHistory}
+      </p>
+
+      {loading && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, paddingBottom: 8 }}>
+          <Spinner className="text-sm" />
+          <span className="text-xs text-muted-foreground">{t.common.loading}</span>
+        </div>
+      )}
+
+      {!loading && runs.length === 0 && (
+        <p className="text-xs text-muted-foreground" style={{ paddingBottom: 8 }}>
+          {t.cron.runHistoryEmpty}
+        </p>
+      )}
+
+      {!loading && runs.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {runs.map((run) => {
+            const isExpanded = expandedRunId === run.run_id;
+            const msgState = runMessages[run.run_id];
+            const status = run.status || "unknown";
+
+            return (
+              <div
+                key={run.run_id}
+                style={{
+                  border: "1px solid var(--color-border)",
+                  background: isExpanded ? "var(--color-muted, rgba(0,0,0,.04))" : "transparent",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleRun(run)}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "6px 8px",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <span style={{ color: "var(--color-muted-foreground)", flexShrink: 0, display: "flex" }}>
+                    {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </span>
+                  <span
+                    className="text-xs font-medium"
+                    style={{ ...runStatusStyle(status), flexShrink: 0, minWidth: 64 }}
+                  >
+                    {status}
+                  </span>
+                  <span className="text-xs text-muted-foreground font-mono-ui" style={{ flexShrink: 0 }}>
+                    {run.started_at ? new Date(toMs(run.started_at) ?? 0).toLocaleString() : "—"}
+                  </span>
+                  <span className="text-xs text-muted-foreground" style={{ flexShrink: 0 }}>
+                    {t.cron.runDuration}: {formatDuration(run.started_at, run.ended_at)}
+                  </span>
+                  {run.error && (
+                    <span className="text-xs truncate" style={{ color: "var(--color-destructive)" }}>
+                      {run.error}
+                    </span>
+                  )}
+                </button>
+
+                {isExpanded && (
+                  <div
+                    style={{
+                      padding: "4px 8px 8px 24px",
+                      borderTop: "1px solid var(--color-border)",
+                    }}
+                  >
+                    {!run.session_id && (
+                      <p className="text-xs text-muted-foreground">No session recorded.</p>
+                    )}
+                    {run.session_id && msgState?.loading && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 0" }}>
+                        <Spinner className="text-sm" />
+                        <span className="text-xs text-muted-foreground">{t.common.loading}</span>
+                      </div>
+                    )}
+                    {run.session_id && !msgState?.loading && msgState && msgState.messages.length === 0 && (
+                      <p className="text-xs text-muted-foreground">{t.sessions.noMessages}</p>
+                    )}
+                    {run.session_id && !msgState?.loading && msgState && msgState.messages.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}>
+                        {msgState.messages.map((msg, idx) => {
+                          const role = typeof msg.role === "string" ? msg.role : "unknown";
+                          const content =
+                            typeof msg.content === "string"
+                              ? msg.content
+                              : Array.isArray(msg.content)
+                              ? msg.content
+                                  .map((c: unknown) =>
+                                    typeof c === "object" && c !== null && "text" in c
+                                      ? String((c as { text: unknown }).text)
+                                      : ""
+                                  )
+                                  .join("")
+                              : JSON.stringify(msg.content);
+                          if (!content) return null;
+                          return (
+                            <div key={idx} style={{ display: "flex", gap: 8 }}>
+                              <span
+                                className="text-xs font-medium font-mono-ui"
+                                style={{
+                                  flexShrink: 0,
+                                  width: 64,
+                                  color:
+                                    role === "assistant"
+                                      ? "var(--color-primary)"
+                                      : role === "user"
+                                      ? "var(--color-foreground)"
+                                      : "var(--color-muted-foreground)",
+                                }}
+                              >
+                                {role}
+                              </span>
+                              <span
+                                className="text-xs text-foreground"
+                                style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+                              >
+                                {content.length > 500 ? content.slice(0, 500) + "…" : content}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
@@ -1059,6 +1285,7 @@ export default function CronPage() {
                       {job.last_error}
                     </p>
                   )}
+                  <CronRunHistory jobId={job.id} profile={profile === "all" ? undefined : profile} />
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">

@@ -294,6 +294,14 @@ export interface Translations {
     telegramSavedRestarting: string;
     restartNow: string;
     telegramSetupQR: string;
+    // WeChat (optional – accessed via ??.)
+    weixinSetupQR?: string;
+    weixinStarting?: string;
+    weixinExisting?: string;
+    weixinWaiting?: string;
+    weixinScaned?: string;
+    weixinConfirmed?: string;
+    weixinSuccess?: string;
   };
 
   system: {
@@ -667,6 +675,9 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    runHistory: string;
+    runHistoryEmpty: string;
+    runDuration: string;
     delivery: {
       local: string;
       telegram: string;
@@ -1246,4 +1257,19 @@ export interface Translations {
 
 
   dashboard?: Record<string, string>;
+
+  // ── Memory page ──
+  memory?: {
+    title: string;
+    tabMemory: string;
+    tabUser: string;
+    tabSoul: string;
+    edit: string;
+    save: string;
+    cancel: string;
+    empty: string;
+    saveSuccess: string;
+    saveFailed: string;
+    loading: string;
+  };
 }

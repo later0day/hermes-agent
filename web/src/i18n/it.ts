@@ -626,6 +626,9 @@ export const it: Translations = {
     "pause": "Pause",
     "resume": "Resume",
     "triggerNow": "Trigger now",
+    "runHistory": "Run History",
+    "runHistoryEmpty": "No runs yet",
+    "runDuration": "Duration",
     "delivery": {
       "local": "Local",
       "telegram": "Telegram",

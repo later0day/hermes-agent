@@ -627,6 +627,9 @@ export const zhHant: Translations = {
     "pause": "暫停",
     "resume": "恢復",
     "triggerNow": "立即觸發",
+    "runHistory": "Run History",
+    "runHistoryEmpty": "No runs yet",
+    "runDuration": "Duration",
     "delivery": {
       "local": "本地",
       "telegram": "Telegram",

@@ -5807,6 +5807,232 @@ async def cancel_telegram_onboarding(pairing_id: str):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# WeChat (Weixin) QR Login
+# ---------------------------------------------------------------------------
+import uuid as _uuid_mod
+
+_weixin_qr_sessions: Dict[str, Dict] = {}
+_weixin_qr_lock = threading.Lock()
+
+
+def _weixin_qr_session_create(session_id: str, qr_url: str, qr_value: str) -> None:
+    with _weixin_qr_lock:
+        _weixin_qr_sessions[session_id] = {
+            "status": "wait",
+            "qr_url": qr_url,
+            "qr_value": qr_value,
+            "credentials": None,
+            "created_at": time.time(),
+        }
+
+
+def _weixin_qr_session_update(session_id: str, **kwargs) -> None:
+    with _weixin_qr_lock:
+        if session_id in _weixin_qr_sessions:
+            _weixin_qr_sessions[session_id].update(kwargs)
+
+
+def _weixin_qr_prune() -> None:
+    """Remove sessions older than 15 minutes."""
+    cutoff = time.time() - 900
+    with _weixin_qr_lock:
+        expired = [k for k, v in _weixin_qr_sessions.items() if v["created_at"] < cutoff]
+        for k in expired:
+            del _weixin_qr_sessions[k]
+
+
+async def _weixin_qr_poll_task(session_id: str, qr_value: str, hermes_home: str) -> None:
+    """Background task: poll QR status until confirmed/expired/timeout."""
+    try:
+        import aiohttp as _aiohttp
+        from gateway.platforms.weixin import (
+            _api_get as _wx_api_get,
+            _make_ssl_connector as _wx_ssl,
+            EP_GET_BOT_QR,
+            EP_GET_QR_STATUS,
+            ILINK_BASE_URL,
+            QR_TIMEOUT_MS,
+            save_weixin_account,
+        )
+    except Exception as exc:
+        _weixin_qr_session_update(session_id, status="error", error=str(exc))
+        return
+
+    deadline = time.monotonic() + 480  # 8-minute timeout
+    current_base_url = ILINK_BASE_URL
+    current_qr_value = qr_value
+    refresh_count = 0
+
+    async with _aiohttp.ClientSession(trust_env=True, connector=_wx_ssl()) as session:
+        while time.monotonic() < deadline:
+            with _weixin_qr_lock:
+                if session_id not in _weixin_qr_sessions:
+                    return  # cancelled
+            try:
+                status_resp = await _wx_api_get(
+                    session,
+                    base_url=current_base_url,
+                    endpoint=f"{EP_GET_QR_STATUS}?qrcode={current_qr_value}",
+                    timeout_ms=QR_TIMEOUT_MS,
+                )
+            except asyncio.TimeoutError:
+                await asyncio.sleep(1)
+                continue
+            except Exception:
+                await asyncio.sleep(1)
+                continue
+
+            status = str(status_resp.get("status") or "wait")
+            if status == "wait":
+                _weixin_qr_session_update(session_id, status="wait")
+            elif status == "scaned":
+                _weixin_qr_session_update(session_id, status="scaned")
+            elif status == "scaned_but_redirect":
+                redirect_host = str(status_resp.get("redirect_host") or "")
+                if redirect_host:
+                    current_base_url = f"https://{redirect_host}"
+            elif status == "expired":
+                refresh_count += 1
+                if refresh_count > 3:
+                    _weixin_qr_session_update(session_id, status="expired")
+                    return
+                # Refresh QR
+                try:
+                    qr_resp = await _wx_api_get(
+                        session,
+                        base_url=ILINK_BASE_URL,
+                        endpoint=f"{EP_GET_BOT_QR}?bot_type=3",
+                        timeout_ms=QR_TIMEOUT_MS,
+                    )
+                    current_qr_value = str(qr_resp.get("qrcode") or "")
+                    new_qr_url = str(qr_resp.get("qrcode_img_content") or current_qr_value)
+                    _weixin_qr_session_update(
+                        session_id,
+                        status="wait",
+                        qr_url=new_qr_url,
+                        qr_value=current_qr_value,
+                    )
+                except Exception:
+                    _weixin_qr_session_update(session_id, status="error", error="QR refresh failed")
+                    return
+            elif status == "confirmed":
+                account_id = str(status_resp.get("ilink_bot_id") or "")
+                token = str(status_resp.get("bot_token") or "")
+                base_url = str(status_resp.get("baseurl") or ILINK_BASE_URL)
+                user_id = str(status_resp.get("ilink_user_id") or "")
+                if account_id and token:
+                    try:
+                        save_weixin_account(
+                            hermes_home,
+                            account_id=account_id,
+                            token=token,
+                            base_url=base_url,
+                            user_id=user_id,
+                        )
+                        # Write to the profile-specific .env so the gateway reads
+                        # them on next start. Use set_hermes_home_override so
+                        # save_env_value targets the correct profile directory
+                        # (same pattern as _write_profile_model).
+                        from hermes_cli.config import save_env_value as _save_env
+                        from hermes_constants import (
+                            set_hermes_home_override as _set_home,
+                            reset_hermes_home_override as _reset_home,
+                        )
+                        _tok = _set_home(hermes_home)
+                        try:
+                            _save_env("WEIXIN_ACCOUNT_ID", account_id)
+                            _save_env("WEIXIN_TOKEN", token)
+                            if base_url and base_url != ILINK_BASE_URL:
+                                _save_env("WEIXIN_BASE_URL", base_url)
+                        finally:
+                            _reset_home(_tok)
+                        _write_platform_enabled("weixin", True)
+                    except Exception as exc:
+                        _log.warning("weixin: save_weixin_account failed: %s", exc)
+                _weixin_qr_session_update(
+                    session_id,
+                    status="confirmed",
+                    credentials={"account_id": account_id, "token": token, "base_url": base_url},
+                )
+                return
+            await asyncio.sleep(1)
+
+    _weixin_qr_session_update(session_id, status="expired")
+
+
+@app.post("/api/messaging/weixin/qr-new")
+async def start_weixin_qr(profile: Optional[str] = None):
+    """Start a WeChat QR login session. Returns the QR data and a session_id for polling."""
+    try:
+        import aiohttp as _aiohttp
+        from gateway.platforms.weixin import (
+            _api_get as _wx_api_get,
+            _make_ssl_connector as _wx_ssl,
+            EP_GET_BOT_QR,
+            ILINK_BASE_URL,
+            QR_TIMEOUT_MS,
+        )
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"WeChat module unavailable: {exc}") from exc
+
+    async with _aiohttp.ClientSession(trust_env=True, connector=_wx_ssl()) as session:
+        try:
+            qr_resp = await _wx_api_get(
+                session,
+                base_url=ILINK_BASE_URL,
+                endpoint=f"{EP_GET_BOT_QR}?bot_type=3",
+                timeout_ms=QR_TIMEOUT_MS,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch WeChat QR: {exc}") from exc
+
+    qr_value = str(qr_resp.get("qrcode") or "")
+    qr_url = str(qr_resp.get("qrcode_img_content") or qr_value)
+    if not qr_value:
+        raise HTTPException(status_code=502, detail="WeChat QR response missing qrcode field.")
+
+    # Resolve profile-specific home so credentials go to the right .env
+    if profile:
+        try:
+            _, profile_path = _cron_profile_home(profile)
+            hermes_home = str(profile_path)
+        except HTTPException:
+            hermes_home = str(get_hermes_home())
+    else:
+        hermes_home = str(get_hermes_home())
+
+    _weixin_qr_prune()
+    session_id = str(_uuid_mod.uuid4())
+    _weixin_qr_session_create(session_id, qr_url=qr_url, qr_value=qr_value)
+    asyncio.create_task(_weixin_qr_poll_task(session_id, qr_value, hermes_home))
+
+    return {"session_id": session_id, "qr_url": qr_url, "qr_value": qr_value}
+
+
+@app.get("/api/messaging/weixin/qr/{session_id}")
+async def get_weixin_qr_status(session_id: str):
+    """Poll the current status of a WeChat QR login session."""
+    with _weixin_qr_lock:
+        rec = _weixin_qr_sessions.get(session_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="WeChat QR session not found. Start a new one.")
+    return {
+        "session_id": session_id,
+        "status": rec["status"],
+        "qr_url": rec.get("qr_url"),
+        "credentials": rec.get("credentials"),
+    }
+
+
+@app.delete("/api/messaging/weixin/qr/{session_id}")
+async def cancel_weixin_qr(session_id: str):
+    """Cancel / clean up a WeChat QR session."""
+    with _weixin_qr_lock:
+        _weixin_qr_sessions.pop(session_id, None)
+    return {"ok": True}
+
+
 @app.get("/api/messaging/platforms")
 async def get_messaging_platforms(profile: Optional[str] = None):
     # Profile-scoped so the dashboard's global profile switcher shows the
@@ -8215,11 +8441,11 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
     if isinstance(result, list):
         if func_name == "list_jobs":
             result = [j for j in result if _cron_job_matches_profile(j, profile_name)]
-        return [_annotate_cron_job(j, profile_name, profile_home) for j in result]
+        return [_annotate_cron_job(j, profile_name, home) for j in result]
     if isinstance(result, dict):
         if func_name == "get_job" and not _cron_job_matches_profile(result, profile_name):
             return None
-        return _annotate_cron_job(result, profile_name, profile_home)
+        return _annotate_cron_job(result, profile_name, home)
     return result
 
 
