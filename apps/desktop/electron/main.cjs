@@ -1572,19 +1572,17 @@ function readVenvHome(venvRoot) {
 function getNoConsoleVenvPython(venvRoot) {
   if (!IS_WINDOWS) return getVenvPython(venvRoot)
 
-  // Prefer the venv's own pythonw shim — it carries pyvenv.cfg / site-packages
-  // wiring. Falling back to the base uv/python.org pythonw.exe skips the venv
-  // and breaks imports (yaml, hermes_cli, …) even when PYTHONPATH is patched.
-  const venvPythonw = path.join(venvRoot, 'Scripts', 'pythonw.exe')
-  if (fileExists(venvPythonw)) return venvPythonw
-
+  // The venv's ``Scripts\pythonw.exe`` is a uv launcher shim that re-execs the
+  // base console ``python.exe``, allocating a conhost/Windows Terminal window
+  // that CREATE_NO_WINDOW can't suppress. Use the base ``pythonw.exe`` directly;
+  // callers put the venv site-packages on PYTHONPATH so imports still resolve.
   const baseHome = readVenvHome(venvRoot)
   if (baseHome) {
     const basePythonw = path.join(baseHome, 'pythonw.exe')
     if (fileExists(basePythonw)) return basePythonw
   }
 
-  return venvPythonw
+  return path.join(venvRoot, 'Scripts', 'pythonw.exe')
 }
 
 function toNoConsolePython(pythonPath) {
@@ -1971,6 +1969,16 @@ async function readCommitLog(cwd, branch) {
 
 let updateInFlight = false
 
+// Set to true when the desktop is about to quit so a detached swap/install/
+// uninstall script can take over. On macOS, app.quit() closes windows but
+// window-all-closed deliberately keeps the process alive (standard Electron
+// macOS convention). Without this flag the process never exits — the detached
+// hand-off script spins its PID-wait for the full timeout, and the user sees a
+// blank app with no window (and an uninstall that appears to do nothing). When
+// set, window-all-closed calls app.quit() on every platform so the process
+// actually dies and the hand-off script can proceed immediately.
+let isQuittingForHandoff = false
+
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
 // apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
@@ -2226,6 +2234,7 @@ async function applyUpdates(opts = {}) {
     // appears), THEN quit to release the venv shim. The updater rebuilds and
     // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
     // and lured users into the #50238 relaunch loop.)
+    isQuittingForHandoff = true
     setTimeout(() => {
       app.quit()
     }, UPDATE_HANDOFF_DWELL_MS)
@@ -2283,6 +2292,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // Same dwell as the in-app update hand-off (#50419): give the updater's
   // window time to appear before we vanish, so the recovery doesn't look like
   // a crash and provoke a mid-recovery relaunch.
+  isQuittingForHandoff = true
   setTimeout(() => {
     app.quit()
   }, UPDATE_HANDOFF_DWELL_MS)
@@ -2490,6 +2500,7 @@ async function applyUpdatesPosixInApp() {
           `[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath} ` +
             `(args=${relaunchArgs.length}, env=${Object.keys(relaunchEnv).length})`
         )
+        isQuittingForHandoff = true
         setTimeout(() => app.quit(), UPDATE_HANDOFF_DWELL_MS)
         return { ok: true, handedOff: true }
       } catch (err) {
@@ -2595,6 +2606,7 @@ fi
   child.unref()
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
+  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 600)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
@@ -2833,7 +2845,7 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [root],
+      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
       venvRoot
     }),
     root,
@@ -2857,7 +2869,7 @@ function createActiveBackend(dashboardArgs) {
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT],
+      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
       venvRoot: VENV_ROOT
     }),
     root: ACTIVE_HERMES_ROOT,
@@ -7359,6 +7371,7 @@ async function runDesktopUninstall(mode) {
 
   // Give the renderer a beat to show its "uninstalling…" state, then quit so
   // the venv python shim + app bundle unlock and the cleanup script can run.
+  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 800)
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
@@ -7564,5 +7577,11 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // macOS convention: keep the process alive in the Dock when the user closes
+  // the last window. But when we're handing off to a detached updater / swap /
+  // uninstall script, the process MUST exit so the script can replace or remove
+  // the bundle and relaunch — without this the script's PID-wait spins to its
+  // full timeout and the user is left with an invisible app (or an uninstall
+  // that appears to do nothing).
+  if (process.platform !== 'darwin' || isQuittingForHandoff) app.quit()
 })
