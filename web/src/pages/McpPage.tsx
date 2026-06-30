@@ -335,7 +335,7 @@ export default function McpPage() {
       {createModalOpen && (
         <div
           ref={createModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) =>
             e.target === e.currentTarget && setCreateModalOpen(false)
           }
@@ -454,7 +454,7 @@ export default function McpPage() {
       {installEntry && (
         <div
           ref={installModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) =>
             e.target === e.currentTarget && setInstallEntry(null)
           }
