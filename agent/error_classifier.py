@@ -160,8 +160,6 @@ _OVERLOADED_PATTERNS = [
     "currently overloaded",
     "at capacity",
     "over capacity",
-=======
->>>>>>> c58c49a16 (fix: add Alibaba/DashScope rate-limit pattern to error classifier)
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
