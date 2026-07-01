@@ -245,3 +245,79 @@ code { font-size: 0.875rem; }
     2px 2px;
 }
 
+
+/* ── Memory page prose ─────────────────────────────────────────────── */
+/* Scoped typography overrides for the memory/soul file viewer.         */
+/* Works with the custom Markdown component (no Tailwind Typography).   */
+.memory-prose {
+  --mp-text:    var(--color-foreground);
+  --mp-muted:   var(--color-muted-foreground);
+  --mp-border:  var(--color-border);
+  --mp-code-bg: color-mix(in srgb, var(--color-secondary) 60%, transparent);
+}
+
+/* Block spacing — looser than chat messages */
+.memory-prose > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;   /* 12px between blocks */
+  line-height: 1.7;
+}
+
+/* Headings */
+.memory-prose h1 { font-size: 1.125rem; font-weight: 700; color: var(--mp-text); }
+.memory-prose h2 { font-size: 1rem;     font-weight: 700; color: var(--mp-text); margin-top: 0.25rem; }
+.memory-prose h3 { font-size: 0.9rem;   font-weight: 600; color: var(--mp-text); }
+.memory-prose h4 { font-size: 0.875rem; font-weight: 500; color: var(--mp-text); }
+
+/* Horizontal rule → visual section divider */
+.memory-prose hr {
+  border: none;
+  border-top: 1px dashed var(--mp-border);
+  margin: 0.25rem 0;
+  opacity: 0.6;
+}
+
+/* Paragraphs */
+.memory-prose p {
+  color: var(--mp-text);
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+/* Lists */
+.memory-prose ul,
+.memory-prose ol {
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+  color: var(--mp-text);
+}
+.memory-prose li { margin-bottom: 0.2rem; }
+
+/* Inline code */
+.memory-prose code {
+  background: var(--mp-code-bg);
+  padding: 0.1em 0.4em;
+  border-radius: 3px;
+  font-size: 0.8em;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* Code blocks */
+.memory-prose pre {
+  background: var(--mp-code-bg);
+  border: 1px solid var(--mp-border);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* Links */
+.memory-prose a {
+  color: var(--color-primary, #4cc9f0);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

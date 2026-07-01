@@ -87,18 +87,11 @@ export interface Translations {
       stopped: string;
     };
     nav: {
-
-      mcp: string;
-      channels: string;
-      webhooks: string;
-      pairing: string;
-      system: string;
       analytics: string;
       chat: string;
       config: string;
       cron: string;
       documentation: string;
-      files?: string;
       keys: string;
       logs: string;
       models: string;
@@ -165,15 +158,6 @@ export interface Translations {
 
   // ── Sessions page ──
   sessions: {
-    clearBinding: string;
-    createTask: string;
-    exportSession: string;
-    bindProfile: string;
-    cancelRename: string;
-    sessionTitlePlaceholder: string;
-    contextHandoff: string;
-    renameSession: string;
-    saveTitle: string;
     title: string;
     history: string;
     overview: string;
@@ -215,339 +199,7 @@ export interface Translations {
   };
 
   // ── Analytics page ──
-  pairing: {
-    clearConfirm: string;
-    mAgo: string;
-    revokeDescUser: string;
-    revoked: string;
-    pendingRequests: string;
-    approveLabel: string;
-    loadFailed: string;
-    approvedUsers: string;
-    clearedCount: string;
-    noApproved: string;
-    revokeDescGeneric: string;
-    error: string;
-    approved: string;
-    noPending: string;
-    revokeLabel: string;
-    missingCode: string;
-    clearPending: string;
-    revokeAccess: string;
-  };
-
-  channels: {
-    platformDescTelegram: string;
-    platformDescDiscord: string;
-    platformDescSlack: string;
-    platformDescMattermost: string;
-    platformDescMatrix: string;
-    platformDescWhatsapp: string;
-    platformDescSignal: string;
-    platformDescBluebubbles: string;
-    platformDescHomeassistant: string;
-    platformDescEmail: string;
-
-    stateConnected: string;
-    statePendingRestart: string;
-    stateGatewayStopped: string;
-    stateDisconnected: string;
-    stateNotConfigured: string;
-    stateDisabled: string;
-    stateError: string;
-
-    telegramStarting: string;
-    telegramExpired: string;
-    restarting: string;
-    telegramOpen: string;
-    telegramAddOneHint: string;
-    cancel: string;
-    gatewayRestartManual: string;
-    notRunningNote: string;
-    gatewayRestartFailed: string;
-    telegramSavedRestartFailedDetail: string;
-    savedSuccess: string;
-    restartGateway: string;
-    telegramOwnerDetected: string;
-    telegramWaitRetry: string;
-    configTitle: string;
-    setupGuide: string;
-    testSuccess: string;
-    summaryNote: string;
-    telegramAddOne: string;
-    saving: string;
-    configure: string;
-    telegramSaveRestart: string;
-    telegramSavedRestartFailed: string;
-    telegramIdNumeric: string;
-    test: string;
-    telegramReady: string;
-    gatewayRestarting: string;
-    telegramUserIdPlaceholder: string;
-    restartNote: string;
-    saveFailed: string;
-    saveEnable: string;
-    passwordPlaceholder: string;
-    saveEmpty: string;
-    enableAria: string;
-    error: string;
-    telegramWaiting: string;
-    fieldRequired: string;
-    telegramAllowedUsers: string;
-    telegramAdd: string;
-    telegramExisting: string;
-    telegramSavedRestarting: string;
-    restartNow: string;
-    telegramSetupQR: string;
-    // WeChat (optional – accessed via ??.)
-    weixinSetupQR?: string;
-    weixinStarting?: string;
-    weixinExisting?: string;
-    weixinWaiting?: string;
-    weixinScaned?: string;
-    weixinConfirmed?: string;
-    weixinSuccess?: string;
-  };
-
-  system: {
-    sysNousPortal: string;
-    sysSkillCurator: string;
-    sysGateway: string;
-    sysMemoryTitle: string;
-    sysCredentialPool: string;
-    sysOperations: string;
-    sysCheckpoints: string;
-    sysShellHooks: string;
-
-    sysSystem: string;
-    sysHostTitle: string;
-    sysOS: string;
-    sysPythonTitle: string;
-    sysHermesTitle: string;
-    sysCpu: string;
-    sysDisk: string;
-    sysCheckUpdate: string;
-    sysUpdateNow: string;
-    sysBehind: string;
-
-    sysRedacted: string;
-    sysNotRedacted: string;
-    sysUploaded: string;
-    sysNotExecutable: string;
-    sysLatest: string;
-
-    sysArch: string;
-    sysHost: string;
-    sysPython: string;
-    sysHermes: string;
-    sysMemory: string;
-    sysUptime: string;
-    sysLoadAvg: string;
-    sysProvider: string;
-    sysApiKey: string;
-    sysLabel: string;
-    sysShareDebug: string;
-    sysRestoreBackup: string;
-    sysCommandPath: string;
-    sysMatcherOpt: string;
-    sysTimeoutSec: string;
-    sysRemoveHook: string;
-    sysRemoveCred: string;
-
-    actionRunning: string;
-    actionDone: string;
-    actionExit: string;
-    actionCloseLog: string;
-    actionStarting: string;
-    copyFailed: string;
-    opFailed: string;
-    hookRemoved: string;
-    credentialRemoved: string;
-    hookRemoveBody: string;
-    updateAvailable: string;
-    updateNowBtn: string;
-    hookCreateFailed: string;
-    opStarted: string;
-    credentialRemoveFailed: string;
-    newHookTitle: string;
-    credentialProviderRequired: string;
-    hookCreated: string;
-    updateAvailableBehind: string;
-    memoryResetSuccess: string;
-    credentialRemoveBody: string;
-    memoryResetBody: string;
-    pruneCheckpointsBody: string;
-    updateCheckFailed: string;
-    curatorPaused: string;
-    curatorResumed: string;
-    hookRemoveFailed: string;
-    hookRemoveTitle: string;
-    updateConfirmTitle: string;
-    hookEventLabel: string;
-    debugShareSuccess: string;
-    credentialAdded: string;
-    updateStarted: string;
-    memoryResetFailed: string;
-    credentialRemoveTitle: string;
-    updateDockerUnsupported: string;
-    pruneStarted: string;
-    memoryResetTitle: string;
-    updateFailed: string;
-    hookCommandRequired: string;
-    curatorToggleFailed: string;
-    updateUpToDate: string;
-    gatewayFailed: string;
-    debugShareFailed: string;
-    updateConfirmBodyBehind: string;
-    pruneCheckpointsTitle: string;
-    pruneFailed: string;
-    credentialAddFailed: string;
-    updateConfirmBody: string;
-    gatewayStarted: string;
-  };
-
-  mcp: {
-    removeDescGeneric: string;
-    add: string;
-    delete: string;
-    urlLabel: string;
-    catalogDesc: string;
-    installFailed: string;
-    badgeInstalled: string;
-    install: string;
-    envVarCount: string;
-    connectionFailed: string;
-    envRequired: string;
-    namePlaceholder: string;
-    testSuccessTools: string;
-    transportLabel: string;
-    argsLabel: string;
-    nameLabel: string;
-    addTitle: string;
-    connectedNoTools: string;
-    transportStdio: string;
-    removeDescName: string;
-    installDesc: string;
-    commandRequired: string;
-    installTitle: string;
-    envLabel: string;
-    addServer: string;
-    disable: string;
-    noCatalog: string;
-    installSuccess: string;
-    addSuccess: string;
-    enable: string;
-    transportHttp: string;
-    restartNote: string;
-    noServers: string;
-    yourServers: string;
-    installing: string;
-    adding: string;
-    catalogTitle: string;
-    removeTitle: string;
-    urlRequired: string;
-    installingBackground: string;
-    badgeDisabled: string;
-    testFailedServer: string;
-    error: string;
-    badgeOfficial: string;
-    nameRequired: string;
-    toolsList: string;
-    deleteSuccess: string;
-    commandLabel: string;
-    testConnection: string;
-    addFailed: string;
-  };
-
-  webhooks: {
-    restarting: string;
-    badgeDeliverOnly: string;
-    urlLabel: string;
-    secretLabel: string;
-    deliverOnlyLabel: string;
-    receiverDisabled: string;
-    btnCreate: string;
-    enabledRestartFailed: string;
-    descPlaceholder: string;
-    eventsPlaceholder: string;
-    createFailed: string;
-    done: string;
-    btnRestarting: string;
-    restartNeeded: string;
-    namePlaceholder: string;
-    promptPlaceholder: string;
-    disabledSub: string;
-    btnEnableSub: string;
-    btnCreating: string;
-    nameLabel: string;
-    createdSuccess: string;
-    descLabel: string;
-    deleteTitle: string;
-    deleteDescName: string;
-    deleteFailed: string;
-    btnEnabling: string;
-    restartFailedExit: string;
-    noSubscriptions: string;
-    deletedSub: string;
-    deliverLabel: string;
-    btnRestart: string;
-    restartFailedManual: string;
-    eventsLabel: string;
-    enabledSub: string;
-    badgeAll: string;
-    btnDisable: string;
-    enableFailed: string;
-    deleteDescGeneric: string;
-    restartFailed: string;
-    loadFailed: string;
-    receiverDisabledDesc: string;
-    badgeDisabled: string;
-    btnEnable: string;
-    error: string;
-    deliverOnlyDesc: string;
-    nameRequired: string;
-    enabledRestarting: string;
-    hotReloadMsg: string;
-    subscriptions: string;
-    promptLabel: string;
-    createdMsg: string;
-    newSubscription: string;
-  };
-
-  files: {
-    folderNameRequired: string;
-    create: string;
-    directoryUnavailable: string;
-    cancel: string;
-    upload: string;
-    target: string;
-    uploading: string;
-    removeFolder: string;
-    deleteItem: string;
-    chooseFiles: string;
-    createFolder: string;
-    dropFilesHere: string;
-    removeFile: string;
-    uploadFailed: string;
-    folderName: string;
-    actions: string;
-    noFiles: string;
-    name: string;
-    filesTitle: string;
-    filesUploaded: string;
-    size: string;
-    loadingFiles: string;
-    folderCreated: string;
-    modified: string;
-    releaseToUpload: string;
-    pathRequired: string;
-  };
-
   analytics: {
-    hiddenDesc3: string;
-    hiddenDesc2: string;
-    hiddenDesc1: string;
-    hiddenTitle: string;
     period: string;
     totalTokens: string;
     totalSessions: string;
@@ -575,36 +227,6 @@ export interface Translations {
 
   // ── Models page ──
   models: {
-    badgeMain: string;
-    cancel: string;
-    expensiveModelTitle: string;
-    useAs: string;
-    auxiliaryTasksDesc: string;
-    tokenCostHiddenNote: string;
-    mainModel: string;
-    resetAllAuto: string;
-    autoUseMain: string;
-    providerDefault: string;
-    auxiliaryTasksTitle: string;
-    auxAllAutoSummary: string;
-    expensiveModelWarning: string;
-    appliesToNewSessions: string;
-    badgeAux: string;
-    configure: string;
-    resetAuxiliaryDesc: string;
-    resetAll: string;
-    modelSettingsTitle: string;
-    auxOverrideSummary: string;
-    setAuxiliaryTitle: string;
-    unset: string;
-    auxiliaryTasksSubTitle: string;
-    allAuxiliaryTasks: string;
-    switchAnyway: string;
-    resetAuxiliaryTitle: string;
-    change: string;
-    missingProvider: string;
-    current: string;
-    setMainModelTitle: string;
     modelsUsed: string;
     estimatedCost: string;
     tokens: string;
@@ -680,9 +302,6 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
-    runHistory: string;
-    runHistoryEmpty: string;
-    runDuration: string;
     delivery: {
       local: string;
       telegram: string;
@@ -692,6 +311,9 @@ export interface Translations {
       needsHomeChannel?: string;
       noneConfigured?: string;
     };
+    runHistory?: string;
+    runHistoryEmpty?: string;
+    runDuration?: string;
   };
 
   // ── Plugins page ──
@@ -736,9 +358,6 @@ export interface Translations {
 
   // ── Profiles page ──
   profiles: {
-    confirmDeleteSkill: string;
-    templates: string;
-    audit: string;
     newProfile: string;
     name: string;
     namePlaceholder: string;
@@ -806,46 +425,6 @@ export interface Translations {
 
   // ── Skills page ──
   skills: {
-    newSkill: string;
-    files: string;
-    emptySkillMd: string;
-    installButton: string;
-    scanFailed: string;
-    rescan: string;
-    installingSkill: string;
-    installFailed: string;
-    done: string;
-    featuredSkillsDesc: string;
-    hubLandingDesc: string;
-    searchButton: string;
-    indexUnavailable: string;
-    runScanDesc: string;
-    details: string;
-    dismiss: string;
-    featuredSkills: string;
-    connectingHubs: string;
-    rateLimitedBadge: string;
-    timedOutCount: string;
-    installedButton: string;
-    previewFailed: string;
-    searchHubPlaceholder: string;
-    configure: string;
-    noSkillSource: string;
-    githubRateLimited: string;
-    updatingSkills: string;
-    running: string;
-    readSkillMd: string;
-    resultsCount: string;
-    browseHub: string;
-    updateAll: string;
-    updateFailed: string;
-    noHubMatch: string;
-    hubSearchFailed: string;
-    connectedHubs: string;
-    starting: string;
-    editSkillMd: string;
-    securityScan: string;
-    resultsFromSources: string;
     title: string;
     searchPlaceholder: string;
     enabledOf: string;
@@ -930,12 +509,6 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
-    oauth?: string;
-    providers?: string;
-    tools?: string;
-    settings?: string;
-    jumpToSection?: string;
-    varDescriptions?: Record<string, string>;
     customTitle: string;
     customHint: string;
     customConfigured: string;
@@ -944,6 +517,12 @@ export interface Translations {
     customKeyNamePlaceholder: string;
     add: string;
     invalidKeyName: string;
+    oauth?: string;
+    providers?: string;
+    tools?: string;
+    settings?: string;
+    jumpToSection?: string;
+    varDescriptions?: Record<string, string>;
   };
 
   // ── OAuth ──
@@ -960,18 +539,6 @@ export interface Translations {
     disconnect: string;
     managedExternally: string;
     copied: string;
-    failedToLoadProviders?: string;
-    disconnectFailed?: string;
-    openDocs?: string;
-    disconnectConfirmDescription?: string;
-    failedToStartLogin?: string;
-    connectedMessage?: string;
-    disconnectedMessage?: string;
-    loginStatus?: string;
-    pollingFailed?: string;
-    tokenExchangeFailed?: string;
-    submitFailed?: string;
-    retryFailed?: string;
     cli: string;
     copyCliCommand: string;
     connect: string;
@@ -996,6 +563,18 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
+    failedToStartLogin?: string;
+    connectedMessage?: string;
+    disconnectedMessage?: string;
+    loginStatus?: string;
+    pollingFailed?: string;
+    tokenExchangeFailed?: string;
+    submitFailed?: string;
+    retryFailed?: string;
+    failedToLoadProviders?: string;
+    disconnectFailed?: string;
+    openDocs?: string;
+    disconnectConfirmDescription?: string;
   };
 
   // ── Language switcher ──
@@ -1267,22 +846,11 @@ export interface Translations {
     logTruncated: string;
     logAt: string;
   };
-
-
   dashboard?: Record<string, string>;
-
-  // ── Memory page ──
-  memory?: {
-    title: string;
-    tabMemory: string;
-    tabUser: string;
-    tabSoul: string;
-    edit: string;
-    save: string;
-    cancel: string;
-    empty: string;
-    saveSuccess: string;
-    saveFailed: string;
-    loading: string;
-  };
+  channels?: Record<string, string>;
+  pairing?: Record<string, string>;
+  mcp?: Record<string, string>;
+  webhooks?: Record<string, string>;
+  system?: Record<string, string>;
+  memory?: Record<string, string>;
 }

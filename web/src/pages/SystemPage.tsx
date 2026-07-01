@@ -103,6 +103,7 @@ function ActionLogViewer({
   onClose: () => void;
   onComplete?: (action: string, exitCode: number | null) => void;
 }) {
+  const { t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -1388,22 +1389,9 @@ export default function SystemPage() {
               disabled={!importPath.trim()}
               onClick={() => {
                 if (!importPath.trim()) return;
-                setImportConfirmOpen(true);
+                setImportConfirmTarget({ kind: "path", path: importPath.trim() });
               }}
             >{t.dashboard?.uiimport || "Import"}</Button>
-            <ConfirmDialog
-              open={importConfirmOpen}
-              title="Restore from backup?"
-              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${importPath.trim() || "the archive"}. This cannot be undone.`}
-              destructive
-              confirmLabel="Restore"
-              cancelLabel="Cancel"
-              onCancel={() => setImportConfirmOpen(false)}
-              onConfirm={() => {
-                setImportConfirmOpen(false);
-                runOp(() => api.runImport(importPath.trim(), true), "Import");
-              }}
-            />
           </CardContent>
         </Card>
       </section>

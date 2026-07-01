@@ -612,7 +612,9 @@ function CronRunHistory({ jobId, profile }: { jobId: string; profile?: string })
           {runs.map((run) => {
             const isExpanded = expandedRunId === run.run_id;
             const msgState = runMessages[run.run_id];
-            const status = run.status || "unknown";
+            // end_reason is the real completion status column in the sessions table
+            const status = run.end_reason || run.status || "unknown";
+            const runTitle = run.title || run.preview || null;
 
             return (
               <div
@@ -646,7 +648,12 @@ function CronRunHistory({ jobId, profile }: { jobId: string; profile?: string })
                   >
                     {status}
                   </span>
-                  <span className="text-xs text-muted-foreground font-mono-ui" style={{ flexShrink: 0 }}>
+                  {runTitle && (
+                    <span className="text-xs font-medium truncate" style={{ flexShrink: 1, minWidth: 0 }}>
+                      {runTitle}
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground font-mono-ui" style={{ flexShrink: 0, marginLeft: "auto" }}>
                     {run.started_at ? new Date(toMs(run.started_at) ?? 0).toLocaleString() : "—"}
                   </span>
                   <span className="text-xs text-muted-foreground" style={{ flexShrink: 0 }}>

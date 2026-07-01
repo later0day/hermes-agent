@@ -1,4 +1,5 @@
 import { useI18n } from "@/i18n/context";
+import { en } from "@/i18n/en";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -38,18 +39,18 @@ import { cn, themedBody } from "@/lib/utils";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
-function stateBadge(state: string, t: any) {
+function stateBadge(state: string, channels: Record<string, string>) {
   const STATE_BADGE: Record<
     string,
     { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
   > = {
-    connected: { tone: "success", label: t.channels.stateConnected },
-    pending_restart: { tone: "warning", label: t.channels.statePendingRestart },
-    gateway_stopped: { tone: "warning", label: t.channels.stateGatewayStopped },
-    disconnected: { tone: "warning", label: t.channels.stateDisconnected },
-    not_configured: { tone: "outline", label: t.channels.stateNotConfigured },
-    disabled: { tone: "secondary", label: t.channels.stateDisabled },
-    fatal: { tone: "destructive", label: t.channels.stateError },
+    connected: { tone: "success", label: channels.stateConnected },
+    pending_restart: { tone: "warning", label: channels.statePendingRestart },
+    gateway_stopped: { tone: "warning", label: channels.stateGatewayStopped },
+    disconnected: { tone: "warning", label: channels.stateDisconnected },
+    not_configured: { tone: "outline", label: channels.stateNotConfigured },
+    disabled: { tone: "secondary", label: channels.stateDisabled },
+    fatal: { tone: "destructive", label: channels.stateError },
   };
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
 }
@@ -103,6 +104,7 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 
 export default function ChannelsPage() {
   const { t } = useI18n();
+  const tCh = (t.channels ?? en.channels) as Record<string, string>;
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
 
@@ -162,14 +164,14 @@ export default function ChannelsPage() {
       if (v.trim()) env[k] = v.trim();
     });
     if (Object.keys(env).length === 0) {
-      showToast(t.channels.saveEmpty, "error");
+      showToast(tCh.saveEmpty, "error");
       return;
     }
     const missing = editing.env_vars.filter(
       (v) => v.required && !v.is_set && !env[v.key],
     );
     if (missing.length > 0) {
-      showToast(`${missing[0].prompt || missing[0].key} ${t.channels.fieldRequired}`, "error");
+      showToast(`${missing[0].prompt || missing[0].key} ${tCh.fieldRequired}`, "error");
       return;
     }
     const nextFieldErrors: Record<string, string> = {};
@@ -186,12 +188,12 @@ export default function ChannelsPage() {
     try {
       const body: MessagingPlatformUpdate = { env, enabled: true };
       await api.updateMessagingPlatform(editing.id, body);
-      showToast(`${editing.name} ${t.channels.savedSuccess}`, "success");
+      showToast(`${editing.name} ${tCh.savedSuccess}`, "success");
       setEditing(null);
       setRestartNeeded(true);
       await load();
     } catch (e) {
-      showToast(`${t.channels.saveFailed} ${e}`, "error");
+      showToast(`${tCh.saveFailed} ${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -233,12 +235,12 @@ export default function ChannelsPage() {
     setRestarting(true);
     try {
       await api.restartGateway();
-      showToast(t.channels.gatewayRestarting, "success");
+      showToast(tCh.gatewayRestarting, "success");
       setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`${t.channels.gatewayRestartFailed} ${e}`, "error");
+      showToast(`${tCh.gatewayRestartFailed} ${e}`, "error");
     } finally {
       setRestarting(false);
     }
@@ -352,7 +354,7 @@ export default function ChannelsPage() {
                 id="channel-config-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                {t.channels.configTitle.replace("{name}", editing.name)}
+                {tCh.configTitle.replace("{name}", editing.name)}
               </h2>
               {editing.docs_url && (
                 <a
@@ -361,7 +363,7 @@ export default function ChannelsPage() {
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
-                  {t.channels.setupGuide} <ExternalLink className="h-3 w-3" />
+                  {tCh.setupGuide} <ExternalLink className="h-3 w-3" />
                 </a>
               )}
             </header>
@@ -398,7 +400,7 @@ export default function ChannelsPage() {
                     type={field.is_password ? "password" : "text"}
                     placeholder={
                       field.is_set
-                        ? field.redacted_value || t.channels.passwordPlaceholder
+                        ? field.redacted_value || tCh.passwordPlaceholder
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}
@@ -424,7 +426,7 @@ export default function ChannelsPage() {
 
               <div className="flex justify-end gap-2 pt-1">
                 <Button ghost size="sm" onClick={() => setEditing(null)}>
-                  {t.channels.cancel}
+                  {tCh.cancel}
                 </Button>
                 <Button
                   className="uppercase"
@@ -433,7 +435,7 @@ export default function ChannelsPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? t.channels.saving : t.channels.saveEnable}
+                  {saving ? tCh.saving : tCh.saveEnable}
                 </Button>
               </div>
             </div>
@@ -444,7 +446,7 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state, t);
+          const badge = stateBadge(platform.state, tCh);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -494,7 +496,7 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`${t.channels.enableAria} ${platform.name}`}
+                          aria-label={`${tCh.enableAria} ${platform.name}`}
                         />
                       )}
                     </div>
@@ -511,7 +513,7 @@ export default function ChannelsPage() {
                         )
                       }
                     >
-                      {t.channels.test}
+                      {tCh.test}
                     </Button>
                     <Button
                       size="sm"
@@ -519,7 +521,7 @@ export default function ChannelsPage() {
                       onClick={() => openConfig(platform)}
                       prefix={<Settings2 className="h-4 w-4" />}
                     >
-                      {t.channels.configure}
+                      {tCh.configure}
                     </Button>
                   </div>
                 </div>
@@ -561,6 +563,7 @@ function TelegramOnboardingPanel({
   setRestartNeeded: (needed: boolean) => void;
   showToast: (message: string, type: "success" | "error") => void;
 }) {  const { t } = useI18n();
+  const tCh = (t.channels ?? en.channels) as Record<string, string>;
   const [setup, setSetup] = useState<TelegramOnboardingStartResponse | null>(
     null,
   );
@@ -770,11 +773,11 @@ function TelegramOnboardingPanel({
           disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
           prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
         >
-          {phase === "starting" ? t.channels.telegramStarting : t.channels.telegramSetupQR}
+          {phase === "starting" ? tCh.telegramStarting : tCh.telegramSetupQR}
         </Button>
         {platform.configured && (
           <span className="text-xs text-muted-foreground">
-            {t.channels.telegramExisting}
+            {tCh.telegramExisting}
           </span>
         )}
       </div>
@@ -791,7 +794,7 @@ function TelegramOnboardingPanel({
             {(phase === "ready" || phase === "applying") && (
               <div className="grid gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="success">{t.channels.telegramReady}</Badge>
+                  <Badge tone="success">{tCh.telegramReady}</Badge>
                   {botUsername && (
                     <span className="font-courier text-sm text-muted-foreground">
                       @{botUsername}
@@ -802,10 +805,10 @@ function TelegramOnboardingPanel({
                 <div className="grid gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-                      {t.channels.telegramAllowedUsers}
+                      {tCh.telegramAllowedUsers}
                     </span>
                     {detectedOwnerId && allowedIds.includes(detectedOwnerId) && (
-                      <Badge tone="success">{t.channels.telegramOwnerDetected}</Badge>
+                      <Badge tone="success">{tCh.telegramOwnerDetected}</Badge>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -826,7 +829,7 @@ function TelegramOnboardingPanel({
                     ))}
                     {allowedIds.length === 0 && (
                       <span className="text-sm text-muted-foreground">
-                        {t.channels.telegramAddOneHint}
+                        {tCh.telegramAddOneHint}
                       </span>
                     )}
                   </div>
@@ -836,11 +839,11 @@ function TelegramOnboardingPanel({
                   <Input
                     value={newAllowedId}
                     onChange={(event) => setNewAllowedId(event.target.value)}
-                    placeholder={t.channels.telegramUserIdPlaceholder}
+                    placeholder={tCh.telegramUserIdPlaceholder}
                     className="font-courier"
                   />
                   <Button size="sm" outlined onClick={addAllowedId} prefix={<Check />}>
-                    {t.channels.telegramAdd}
+                    {tCh.telegramAdd}
                   </Button>
                 </div>
 
@@ -852,10 +855,10 @@ function TelegramOnboardingPanel({
                     disabled={phase === "applying"}
                     prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
                   >
-                    {phase === "applying" ? t.channels.saving : t.channels.telegramSaveRestart}
+                    {phase === "applying" ? tCh.saving : tCh.telegramSaveRestart}
                   </Button>
                   <Button size="sm" ghost onClick={() => void cancel()}>
-                    {t.channels.cancel}
+                    {tCh.cancel}
                   </Button>
                 </div>
               </div>
@@ -865,14 +868,14 @@ function TelegramOnboardingPanel({
           <div className="flex flex-col items-center justify-center gap-3">
             <img
               src={qrDataUrl}
-              alt={t.channels.telegramSetupQR}
+              alt={tCh.telegramSetupQR}
               className="h-56 w-56 bg-white p-2"
             />
             <div className="flex flex-wrap items-center justify-center gap-2 text-sm">
               <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
-                {expiresIn === "expired" ? t.channels.telegramExpired : expiresIn}
+                {expiresIn === "expired" ? tCh.telegramExpired : expiresIn}
               </Badge>
-              {phase === "waiting" && <Badge tone="warning">{t.channels.telegramWaiting}</Badge>}
+              {phase === "waiting" && <Badge tone="warning">{tCh.telegramWaiting}</Badge>}
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <a
@@ -882,10 +885,10 @@ function TelegramOnboardingPanel({
                 className="inline-flex h-8 items-center gap-1 border border-border px-3 text-xs uppercase text-foreground hover:border-foreground/40"
               >
                 <ExternalLink className="h-4 w-4" />
-                {t.channels.telegramOpen}
+                {tCh.telegramOpen}
               </a>
               <Button size="sm" ghost onClick={() => void cancel()}>
-                {t.channels.cancel}
+                {tCh.cancel}
               </Button>
             </div>
           </div>
@@ -905,6 +908,7 @@ function WeixinQRPanel({
   showToast: (msg: string, type: "success" | "error") => void;
 }) {
   const { t } = useI18n();
+  const tCh = (t.channels ?? en.channels) as Record<string, string>;
   const [phase, setPhase] = useState<"idle" | "starting" | "waiting" | "scaned" | "confirmed" | "error">("idle");
   const [sessionId, setSessionId] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState("");
@@ -954,7 +958,7 @@ function WeixinQRPanel({
             setPhase("scaned");
           } else if (res.status === "confirmed") {
             setPhase("confirmed");
-            showToast(t.channels.weixinSuccess ?? "WeChat connected!", "success");
+            showToast(tCh.weixinSuccess ?? "WeChat connected!", "success");
             void onChanged();
             break;
           } else if (res.status === "expired" || res.status === "error") {
@@ -970,14 +974,14 @@ function WeixinQRPanel({
     };
     void poll();
     return () => { cancelled = true; };
-  }, [phase, sessionId, onChanged, showToast, t.channels.weixinSuccess]);
+  }, [phase, sessionId, onChanged, showToast, tCh.weixinSuccess]);
 
   // Status badge label
   const statusLabel = phase === "scaned"
-    ? (t.channels.weixinScaned ?? "Scanned — confirm in WeChat")
+    ? (tCh.weixinScaned ?? "Scanned — confirm in WeChat")
     : phase === "confirmed"
-    ? (t.channels.weixinConfirmed ?? "Connected ✓")
-    : (t.channels.weixinWaiting ?? "Waiting for scan…");
+    ? (tCh.weixinConfirmed ?? "Connected ✓")
+    : (tCh.weixinWaiting ?? "Waiting for scan…");
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
@@ -989,11 +993,11 @@ function WeixinQRPanel({
           disabled={phase === "starting" || phase === "waiting" || phase === "scaned"}
           prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
         >
-          {phase === "starting" ? (t.channels.weixinStarting ?? "Connecting…") : (t.channels.weixinSetupQR ?? "Login with QR Code")}
+          {phase === "starting" ? (tCh.weixinStarting ?? "Connecting…") : (tCh.weixinSetupQR ?? "Login with QR Code")}
         </Button>
         {platform.configured && (
           <span className="text-xs text-muted-foreground">
-            {t.channels.weixinExisting ?? "Already connected. Scan again to re-login."}
+            {tCh.weixinExisting ?? "Already connected. Scan again to re-login."}
           </span>
         )}
       </div>
@@ -1009,7 +1013,7 @@ function WeixinQRPanel({
           <img src={qrDataUrl} alt="WeChat QR" className="h-56 w-56 bg-white p-2" />
           <Badge tone={phase === "scaned" ? "success" : "warning"}>{statusLabel}</Badge>
           <Button size="sm" ghost onClick={() => void cancel()}>
-            {t.channels.cancel}
+            {tCh.cancel}
           </Button>
         </div>
       )}
@@ -1018,7 +1022,7 @@ function WeixinQRPanel({
         <div className="mt-3 flex items-center gap-2">
           <CheckCircle2 className="h-4 w-4 text-green-500" />
           <span className="text-sm text-green-600">
-            {t.channels.weixinSuccess ?? "WeChat connected successfully!"}
+            {tCh.weixinSuccess ?? "WeChat connected successfully!"}
           </span>
         </div>
       )}

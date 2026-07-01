@@ -8778,6 +8778,11 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
             s["archived"] = bool(s.get("archived"))
             if selected:
                 s["profile"] = selected
+            # The session id IS the run id for cron runs; alias both fields
+            # so the frontend CronJobRun interface contract is satisfied.
+            sid = s.get("id") or ""
+            s.setdefault("run_id", sid)
+            s.setdefault("session_id", sid)
         return {"runs": runs, "limit": limit_n}
     finally:
         db.close()

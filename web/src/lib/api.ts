@@ -2078,10 +2078,14 @@ export interface CronJobRun {
   run_id: string;
   job_id: string;
   session_id?: string | null;
+  /** DB column: end_reason (e.g. "cron_complete", "max_iterations") */
   status: string;
+  end_reason?: string | null;
+  title?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
   error?: string | null;
+  preview?: string | null;
 }
 
 export interface CronDeliveryTarget {

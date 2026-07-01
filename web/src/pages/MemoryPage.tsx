@@ -14,6 +14,18 @@ import { PluginSlot } from "@/plugins";
 
 type Tab = "memory" | "user" | "soul";
 
+/**
+ * Preprocess memory file content before Markdown rendering:
+ * - Replace bare § lines with --- (horizontal rule)
+ * - Ensure blank lines around each § so the block parser picks them up
+ */
+function processMemoryContent(raw: string): string {
+  return raw
+    .split("\n")
+    .map((line) => (line.trim() === "§" ? "\n---\n" : line))
+    .join("\n");
+}
+
 const TABS: { id: Tab; labelKey: keyof NonNullable<ReturnType<typeof useI18n>["t"]["memory"]> }[] = [
   { id: "memory", labelKey: "tabMemory" },
   { id: "user", labelKey: "tabUser" },
@@ -26,7 +38,7 @@ function useMemoryFile(tab: Tab) {
   const [error, setError] = useState<string | null>(null);
 
   const fetchContent = useCallback(() => {
-    const profile = getManagementProfile();
+    const profile = getManagementProfile() || "default";
     setLoading(true);
     setError(null);
 
@@ -79,7 +91,7 @@ export default function MemoryPage() {
   }, []);
 
   const saveEdit = useCallback(async () => {
-    const profile = getManagementProfile();
+    const profile = getManagementProfile() || "default";
     setSaving(true);
     try {
       if (tab === "soul") {
@@ -188,8 +200,8 @@ export default function MemoryPage() {
               autoFocus
             />
           ) : content ? (
-            <div className="p-4 min-h-[200px] prose prose-sm max-w-none dark:prose-invert">
-              <Markdown content={content} />
+            <div className="memory-prose p-5 min-h-[200px]">
+              <Markdown content={processMemoryContent(content)} />
             </div>
           ) : (
             <p className="text-muted-foreground text-center py-16 text-sm">

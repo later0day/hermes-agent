@@ -93,20 +93,6 @@ const I18nContext = createContext<I18nContextValue>({
   t: en,
 });
 
-function deepMerge(base: any, overrides: any): any {
-  if (!base || typeof base !== "object") return overrides ?? base;
-  if (!overrides || typeof overrides !== "object") return base;
-  const merged = { ...base };
-  for (const key of Object.keys(overrides)) {
-    if (typeof overrides[key] === "object" && overrides[key] !== null) {
-      merged[key] = deepMerge(base[key], overrides[key]);
-    } else {
-      merged[key] = overrides[key] !== undefined ? overrides[key] : base[key];
-    }
-  }
-  return merged;
-}
-
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
 
@@ -122,7 +108,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const value: I18nContextValue = {
     locale,
     setLocale,
-    t: locale === "en" ? en : deepMerge(en, TRANSLATIONS[locale]),
+    t: TRANSLATIONS[locale],
   };
 
   return (
