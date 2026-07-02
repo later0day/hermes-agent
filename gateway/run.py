@@ -2527,11 +2527,52 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
     return watch_events
 
 
+# Sentinel returned by _maybe_resend_recent_image when the message is not a
+# "resend last image" request or when the platform does not support it.
+# Callers check `result is _RECENT_IMAGE_RESEND_NOT_HANDLED` to decide
+# whether to fall through to normal message handling.
+_RECENT_IMAGE_RESEND_NOT_HANDLED = object()
+
+# Patterns that signal the user wants the most recent image re-sent.
+_RESEND_IMAGE_PATTERNS = re.compile(
+    r"(?:"
+    r"图片.*重新.*发|重新.*发.*图片|刚才.*图片.*发|发.*刚才.*图片"
+    r"|resend\s+(?:the\s+)?(?:last|latest|recent)\s+image"
+    r"|send\s+(?:the\s+)?(?:last|latest|recent)\s+image"
+    r")",
+    re.IGNORECASE,
+)
+
+# Matches "[Image attached at: /some/path.png]" lines written by the gateway
+# image-attachment flow.
+_IMAGE_ATTACHED_RE = re.compile(
+    r"\[Image attached at:\s*(.+?)\]"
+)
+
+
+def _wants_recent_image_resend(text: str) -> bool:
+    """Return True when *text* expresses intent to re-receive the last image."""
+    return bool(_RESEND_IMAGE_PATTERNS.search(text or ""))
+
+
+def _find_latest_attached_image_path(messages: list) -> str | None:
+    """Scan *messages* newest-first and return the path of the most recent
+    existing attached image, or ``None`` if none is found."""
+    for msg in reversed(messages):
+        content = msg.get("content") or ""
+        for m in reversed(list(_IMAGE_ATTACHED_RE.finditer(content))):
+            path = m.group(1).strip()
+            if os.path.isfile(path):
+                return path
+    return None
+
+
 # Module-level weak reference to the active GatewayRunner instance.
 # Used by tools (e.g. send_message) that need to route through a live
 # adapter for plugin platforms.  Set in GatewayRunner.__init__().
 import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
+
 
 
 def _normalize_empty_agent_response(
@@ -13836,6 +13877,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
 
+    async def _maybe_resend_recent_image(
+        self,
+        event: "MessageEvent",
+        source: "SessionSource",
+        session_db,
+        session_id: str,
+    ):
+        """Re-send the most recent attached image when the user asks for it.
+
+        Only active on DingTalk (the platform where image-file re-delivery is
+        most useful and where ``send_image_file`` is fully implemented).
+        Returns ``_RECENT_IMAGE_RESEND_NOT_HANDLED`` when:
+        - the text does not express a resend intent, or
+        - the platform adapter does not support ``send_image_file``.
+        Returns ``None`` after a successful re-delivery, or a plain-text error
+        string when no recent image is found in the session history.
+        """
+        if not _wants_recent_image_resend(event.text or ""):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        # Only DingTalk supports the full image re-delivery flow.
+        from gateway.config import Platform as _Platform
+        if source.platform != _Platform.DINGTALK:
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        adapter = self.adapters.get(source.platform)
+        if adapter is None or not hasattr(adapter, "send_image_file"):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+
+        messages = []
+        try:
+            messages = session_db.get_messages(session_id) or []
+        except Exception:
+            logger.debug("_maybe_resend_recent_image: get_messages failed", exc_info=True)
+
+        path = _find_latest_attached_image_path(messages)
+        if path is None:
+            return "没找到最近的图片，请重新上传。"
+
+        try:
+            await adapter.send_image_file(
+                chat_id=source.chat_id,
+                image_path=path,
+                caption="最近一张图片重新发给你。",
+                reply_to=event.message_id,
+                metadata=None,
+            )
+        except Exception:
+            logger.warning("_maybe_resend_recent_image: send_image_file failed", exc_info=True)
+            return "图片重发失败，请稍后再试。"
+
+        # Record the round-trip in session history so the agent stays aware.
+        try:
+            session_db.append_message(
+                session_id, "user", event.text or "", platform_message_id=event.message_id
+            )
+            session_db.append_message(
+                session_id, "assistant", f"[resent image attachment: {path}]"
+            )
+        except Exception:
+            logger.debug("_maybe_resend_recent_image: append_message failed", exc_info=True)
+
+        return None
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval

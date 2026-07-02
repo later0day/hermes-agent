@@ -3512,6 +3512,9 @@ def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
         if isinstance(allowed, list):
             allowed = ",".join(str(v) for v in allowed)
         os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
+    allow_all = dingtalk_cfg.get("allow_all_users")
+    if allow_all is not None and not os.getenv("DINGTALK_ALLOW_ALL_USERS"):
+        os.environ["DINGTALK_ALLOW_ALL_USERS"] = str(allow_all).lower()
     return None
 
 
