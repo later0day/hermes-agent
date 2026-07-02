@@ -1044,14 +1044,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           {sessionEnded && (
             <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="text-sm tracking-wide text-white/80">
-                Session ended.
+                {t.dashboard?.chatSessionEnded || "Session ended."}
               </div>
               <Button
                 onClick={reconnect}
                 prefix={<RotateCcw className="h-4 w-4" />}
                 aria-label="Start a new chat session"
               >
-                Start new session
+                {t.dashboard?.chatStartNewSession || "Start new session"}
               </Button>
             </div>
           )}
@@ -1076,7 +1076,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? (t.dashboard?.chatCopied || "copied") : (t.dashboard?.chatCopyLastResponse || "copy last response")}
               </span>
             </span>
           </Button>

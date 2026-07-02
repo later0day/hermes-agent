@@ -241,7 +241,7 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: "Context handoff",
+      label: t.dashboard?.sessionsContextHandoff || "Context handoff",
     },
   };
 
@@ -555,7 +555,7 @@ function SessionRow({
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}
-                      placeholder="Session title"
+                      placeholder={t.dashboard?.sessionsTitlePlaceholder || "Session title"}
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
@@ -1120,13 +1120,13 @@ export default function SessionsPage() {
         setOverviewSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
-        showToast("Session renamed", "success");
+        showToast(t.dashboard?.sessionsToastRenamed || "Session renamed", "success");
         loadStats();
       } catch {
-        showToast("Failed to rename session", "error");
+        showToast(t.dashboard?.sessionsToastRenameFailed || "Failed to rename session", "error");
       }
     },
-    [showToast, loadStats],
+    [showToast, loadStats, t.dashboard?.sessionsToastRenamed, t.dashboard?.sessionsToastRenameFailed],
   );
 
   const handleExport = useCallback(
@@ -1149,23 +1149,23 @@ export default function SessionsPage() {
         a.click();
         URL.revokeObjectURL(url);
       } catch {
-        showToast("Failed to export session", "error");
+        showToast(t.dashboard?.sessionsToastExportFailed || "Failed to export session", "error");
       }
     },
-    [showToast],
+    [showToast, t.dashboard?.sessionsToastExportFailed],
   );
 
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
-      showToast("Enter a valid number of days", "error");
+      showToast(t.dashboard?.sessionsToastInvalidDays || "Enter a valid number of days", "error");
       return;
     }
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
       showToast(
-        `Pruned ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
+        `${t.dashboard?.sessionsToastPruned || "Pruned"} ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
         "success",
       );
       setPruneOpen(false);
@@ -1173,11 +1173,11 @@ export default function SessionsPage() {
       setPage(0);
       loadStats();
     } catch {
-      showToast("Failed to prune sessions", "error");
+      showToast(t.dashboard?.sessionsToastPruneFailed || "Failed to prune sessions", "error");
     } finally {
       setPruning(false);
     }
-  }, [pruneDays, showToast, loadSessions, loadStats]);
+  }, [pruneDays, showToast, loadSessions, loadStats, t.dashboard?.sessionsToastInvalidDays, t.dashboard?.sessionsToastPruned, t.dashboard?.sessionsToastPruneFailed]);
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -1337,7 +1337,7 @@ export default function SessionsPage() {
               className="gap-1.5"
             >
               {pruning && <Spinner className="text-sm" />}
-              Prune
+              {t.dashboard?.sessionsPruneBtn || "Prune"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -310,10 +310,16 @@ export interface Translations {
       email: string;
       needsHomeChannel?: string;
       noneConfigured?: string;
+      label?: string;
     };
     runHistory?: string;
     runHistoryEmpty?: string;
     runDuration?: string;
+    advanced?: string;
+    viewJobs?: string;
+    viewBlueprints?: string;
+    saveChanges?: string;
+    repeat?: string;
   };
 
   // ── Plugins page ──
@@ -459,6 +465,7 @@ export interface Translations {
     resetScopeTooltip: string;
     confirmResetScope: string;
     resetScopeToast: string;
+    resetScopeDescription?: string;
     rawYaml: string;
     searchResults: string;
     fields: string;

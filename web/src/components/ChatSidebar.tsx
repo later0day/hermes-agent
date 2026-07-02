@@ -37,6 +37,7 @@ import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/i18n";
 
 interface SessionInfo {
   cwd?: string;
@@ -86,6 +87,7 @@ export function ChatSidebar({
   onDashboardNewSessionRequest,
   onSessionTitleChange,
 }: ChatSidebarProps) {
+  const { t } = useI18n();
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -313,7 +315,7 @@ export function ChatSidebar({
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
-            model
+            {t.dashboard?.sidebarModelLabel || "model"}
           </div>
 
           <Button
@@ -336,7 +338,7 @@ export function ChatSidebar({
         </div>
 
         <Badge tone={STATE_TONE[state]} className="shrink-0">
-          {STATE_LABEL[state]}
+          {t.dashboard?.[`sidebarState${state.charAt(0).toUpperCase()}${state.slice(1)}` as keyof typeof t.dashboard] ?? STATE_LABEL[state]}
         </Badge>
       </Card>
 
@@ -347,6 +349,7 @@ export function ChatSidebar({
             refreshKey={modelRefreshKey}
             onChanged={(effort) =>
               setModelNotice(
+                t.dashboard?.sidebarReasoningSetNotice ||
                 `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`,
               )
             }
@@ -379,7 +382,7 @@ export function ChatSidebar({
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect
+                {t.dashboard?.sidebarReconnect || "reconnect"}
               </Button>
             )}
           </div>
@@ -424,7 +427,9 @@ export function ChatSidebar({
           const m = pendingReloadModel;
           setPendingReloadModel(null);
           setModelNotice(
-            `Model set to ${m}. Run /new or refresh the page to apply it to this chat.`,
+            t.dashboard?.sidebarModelSetNotice
+              ? t.dashboard.sidebarModelSetNotice.replace("{model}", m ?? "")
+              : `Model set to ${m}. Run /new or refresh the page to apply it to this chat.`,
           );
         }}
       />

@@ -140,7 +140,7 @@ export default function FilesPage() {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh files"
+          aria-label={t.dashboard?.filesRefresh || "Refresh files"}
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
@@ -161,7 +161,7 @@ export default function FilesPage() {
   const goToPath = async () => {
     const nextPath = pathInput.trim();
     if (!nextPath) {
-      showToast("Path required", "error");
+      showToast(t.dashboard?.filesToastPathRequired || "Path required", "error");
       return;
     }
     await load(nextPath);
@@ -170,11 +170,11 @@ export default function FilesPage() {
   const createDirectory = async () => {
     const name = folderName.trim();
     if (!activePath) {
-      showToast("Directory unavailable", "error");
+      showToast(t.dashboard?.filesToastDirUnavailable || "Directory unavailable", "error");
       return;
     }
     if (!name) {
-      showToast("Folder name required", "error");
+      showToast(t.dashboard?.filesToastFolderNameRequired || "Folder name required", "error");
       return;
     }
     setCreating(true);
@@ -182,10 +182,10 @@ export default function FilesPage() {
       await api.createDirectory(joinPath(activePath, name));
       setFolderName("");
       setCreateDialogOpen(false);
-      showToast("Folder created", "success");
+      showToast(t.dashboard?.filesToastFolderCreated || "Folder created", "success");
       await load();
     } catch (e) {
-      showToast(`Create failed: ${e}`, "error");
+      showToast(`${t.dashboard?.filesToastCreateFailed || "Create failed"}: ${e}`, "error");
     } finally {
       setCreating(false);
     }
@@ -244,7 +244,7 @@ export default function FilesPage() {
       const file = await api.readFile(entry.path);
       downloadDataUrl(file.data_url, file.name);
     } catch (e) {
-      showToast(`Download failed: ${e}`, "error");
+      showToast(`${t.dashboard?.filesToastDownloadFailed || "Download failed"}: ${e}`, "error");
     }
   };
 
@@ -253,11 +253,11 @@ export default function FilesPage() {
     setDeleting(true);
     try {
       await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
-      showToast("Deleted", "success");
+      showToast(t.dashboard?.filesToastDeleted || "Deleted", "success");
       setPendingDelete(null);
       await load();
     } catch (e) {
-      showToast(`Delete failed: ${e}`, "error");
+      showToast(`${t.dashboard?.filesToastDeleteFailed || "Delete failed"}: ${e}`, "error");
     } finally {
       setDeleting(false);
     }
@@ -341,10 +341,10 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+              {uploading ? (t.dashboard?.filesUploading || "Uploading") : draggingFiles ? (t.dashboard?.filesReleaseToUpload || "Release to upload") : (t.dashboard?.filesDropHere || "Drop files here")}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
-              {activePath || "Loading"}
+              {activePath || (t.dashboard?.filesLoading || "Loading")}
             </span>
           </span>
         </span>
@@ -462,7 +462,7 @@ export default function FilesPage() {
           <DialogHeader>
             <DialogTitle>{t.dashboard?.filesCreateFolder || "Create folder"}</DialogTitle>
             <DialogDescription>
-              Target: {activePath || "Loading"}
+              {`${t.dashboard?.filesTarget || "Target"}: ${activePath || (t.dashboard?.filesLoading || "Loading")}`}
             </DialogDescription>
           </DialogHeader>
           <div className="p-4">
@@ -473,7 +473,7 @@ export default function FilesPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void createDirectory();
               }}
-              placeholder="Folder name"
+              placeholder={t.dashboard?.filesFolderName || "Folder name"}
               disabled={creating}
             />
           </div>
@@ -502,11 +502,11 @@ export default function FilesPage() {
         loading={deleting}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
-        title={pendingDelete ? `Delete ${pendingDelete.name}?` : "Delete item?"}
+        title={pendingDelete ? `${t.dashboard?.miscDelete || "Delete"} ${pendingDelete.name}?` : `${t.dashboard?.miscDelete || "Delete"} item?`}
         description={
           pendingDelete?.is_directory
-            ? "This removes the folder and everything inside it."
-            : "This removes the file."
+            ? (t.dashboard?.filesDeleteFolderDesc || "This removes the folder and everything inside it.")
+            : (t.dashboard?.filesDeleteFileDesc || "This removes the file.")
         }
       />
     </div>

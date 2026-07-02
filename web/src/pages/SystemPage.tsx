@@ -722,7 +722,7 @@ export default function SystemPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="hook-command">Command (absolute path)</Label>
+                <Label htmlFor="hook-command">{t.dashboard?.sysHookCommand || "Command (absolute path)"}</Label>
                 <Input
                   id="hook-command"
                   autoFocus
@@ -733,7 +733,7 @@ export default function SystemPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-matcher">Matcher (optional)</Label>
+                  <Label htmlFor="hook-matcher">{t.dashboard?.sysHookMatcher || "Matcher (optional)"}</Label>
                   <Input
                     id="hook-matcher"
                     placeholder="e.g. terminal"
@@ -742,7 +742,7 @@ export default function SystemPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-timeout">Timeout (s)</Label>
+                  <Label htmlFor="hook-timeout">{t.dashboard?.sysHookTimeout || "Timeout (s)"}</Label>
                   <Input
                     id="hook-timeout"
                     placeholder="10"
@@ -970,22 +970,22 @@ export default function SystemPage() {
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
-                {curator?.paused ? "paused" : curator?.enabled ? "active" : "disabled"}
+                {curator?.paused ? (t.dashboard?.sysCuratorPaused || "paused") : curator?.enabled ? (t.dashboard?.sysCuratorActive || "active") : (t.dashboard?.sysCuratorDisabled || "disabled")}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {curator?.interval_hours ? `every ${curator.interval_hours}h` : ""}
-                {curator?.last_run_at ? ` · last run ${new Date(curator.last_run_at).toLocaleString()}` : " · never run"}
+                {curator?.interval_hours ? `${t.dashboard?.sysEvery || "every"} ${curator.interval_hours}h` : ""}
+                {curator?.last_run_at ? ` · ${t.dashboard?.sysLastRun || "last run"} ${new Date(curator.last_run_at).toLocaleString()}` : ` · ${t.dashboard?.sysNeverRun || "never run"}`}
               </span>
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" ghost onClick={toggleCuratorPaused}>
-                {curator?.paused ? "Resume" : "Pause"}
+                {curator?.paused ? (t.dashboard?.sysCuratorResume || "Resume") : (t.dashboard?.sysCuratorPause || "Pause")}
               </Button>
               <Button
                 size="sm"
                 ghost
                 prefix={<Play className="h-3.5 w-3.5" />}
-                onClick={() => runOp(api.runCurator, "Curator review")}
+                onClick={() => runOp(api.runCurator, t.dashboard?.sysCuratorReview || "Curator review")}
               >{t.dashboard?.uirunNow || "Run now"}</Button>
             </div>
           </CardContent>
@@ -1000,7 +1000,7 @@ export default function SystemPage() {
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={gatewayRunning ? "success" : "secondary"}>
-                {gatewayRunning ? "running" : "stopped"}
+                {gatewayRunning ? (t.dashboard?.sysGatewayRunning || "running") : (t.dashboard?.sysGatewayStopped || "stopped")}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {status?.gateway_state ?? "—"}
@@ -1140,7 +1140,7 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Full backup</Label>
+                <Label>{t.dashboard?.sysFullBackup || "Full backup"}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     size="sm"
@@ -1177,7 +1177,7 @@ export default function SystemPage() {
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Restore from backup upload</Label>
+                <Label>{t.dashboard?.sysRestoreFromUpload || "Restore from backup upload"}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     type="button"

@@ -674,9 +674,16 @@ export default function ConfigPage() {
             ? t.config.searchResults
             : prettyCategoryName(activeCategory),
         )}
-        description={`This will reset ${
-          (isSearching ? searchMatchedFields : activeFields).length
-        } field(s) to their default values.`}
+        description={
+          t.config.resetScopeDescription
+            ? t.config.resetScopeDescription.replace(
+                "{count}",
+                String((isSearching ? searchMatchedFields : activeFields).length),
+              )
+            : `This will reset ${
+                (isSearching ? searchMatchedFields : activeFields).length
+              } field(s) to their default values.`
+        }
         destructive
         confirmLabel={t.config.resetDefaults}
       />
