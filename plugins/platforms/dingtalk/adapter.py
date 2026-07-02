@@ -2776,6 +2776,45 @@ class DingTalkAdapter(BasePlatformAdapter):
                 self.name, e, traceback.format_exc(),
             )
             return None
+    # ------------------------------------------------------------------
+    # Cross-adapter gateway contract: button-based approval / update-confirm
+    # ------------------------------------------------------------------
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send a formatted approval-request card for a dangerous command.
+
+        DingTalk does not yet support interactive callback buttons on AI Cards,
+        so we fall back to a richly-formatted AI Card that clearly shows the
+        command and the available text responses (approve / deny).  The gateway's
+        existing plain-text approval resolver handles the user's reply.
+
+        Reply keywords accepted by the gateway:
+          approve / yes / ok / okay / confirm / y / 👍  → execute
+          approve session                               → allow for this session
+          approve always                                → allow permanently
+          deny                                          → cancel
+        """
+        cmd_preview = command[:400] + "…" if len(command) > 400 else command
+        msg = (
+            f"⚠️ **危险命令请求授权** | Dangerous Command Approval\n\n"
+            f"**原因 / Reason:** {description}\n\n"
+            f"```\n{cmd_preview}\n```\n\n"
+            f"| 操作 | 回复内容 |\n"
+            f"|------|----------|\n"
+            f"| ✅ 执行一次 / Approve once | `approve` |\n"
+            f"| 🔁 本次会话全部允许 / Allow for session | `approve session` |\n"
+            f"| 🌐 永久允许 / Allow always | `approve always` |\n"
+            f"| ❌ 拒绝 / Deny | `deny` |\n\n"
+            f"或直接回复 `👍` 执行。"
+        )
+        return await self.send(chat_id, msg, metadata=metadata)
 
     async def edit_message(
         self,

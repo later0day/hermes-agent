@@ -17333,7 +17333,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # who set thinking_progress:true but kept tool_progress:off got a
             # None callback — so _thinking scratch bubbles never relayed even
             # though the progress queue was created for them.
-            agent.tool_progress_callback = progress_callback if needs_progress_queue else None
+            # Also arm the callback when a turn_status_card is active: the card
+            # replaces the queue (needs_progress_queue is False when the card is
+            # on), but progress_callback is still the routing hub that calls
+            # turn_status_card.on_tool_progress(). Without it, tool events are
+            # silently dropped and tools=0 in every card update. (#turn-card-fix)
+            agent.tool_progress_callback = (
+                progress_callback
+                if (needs_progress_queue or _turn_status_card_enabled)
+                else None
+            )
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
