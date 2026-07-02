@@ -453,8 +453,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
+        aria-label={t.dashboard?.sessionsRenameAria || "Rename session"}
+        title={t.dashboard?.sessionsRenameTitle || "Rename session"}
         onClick={(e) => {
           e.stopPropagation();
           setRenameValue(
@@ -472,8 +472,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
+        aria-label={t.dashboard?.sessionsExportAria || "Export session"}
+        title={t.dashboard?.sessionsExportTitle || "Export session JSON"}
         onClick={(e) => {
           e.stopPropagation();
           onExport(session.id);
@@ -563,8 +563,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
+                      aria-label={t.dashboard?.sessionsSaveTitleAria || "Save title"}
+                      title={t.dashboard?.sessionsSaveTitleTitle || "Save title"}
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
@@ -578,8 +578,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
+                      aria-label={t.dashboard?.sessionsCancelRenameAria || "Cancel rename"}
+                      title={t.dashboard?.sessionsCancelRenameTitle || "Cancel rename"}
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >

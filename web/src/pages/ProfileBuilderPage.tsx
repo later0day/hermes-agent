@@ -287,7 +287,7 @@ export default function ProfileBuilderPage() {
                 <Label htmlFor="pb-name">{t.dashboard?.uiprofileName || "Profile name"}</Label>
                 <Input
                   id="pb-name"
-                  placeholder="coder"
+                  placeholder={t.dashboard?.pbPlaceholderName || "coder"}
                   value={name}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
                 />
@@ -301,7 +301,7 @@ export default function ProfileBuilderPage() {
                 <Label htmlFor="pb-desc">{t.dashboard?.pbDescriptionOptional || "Description (optional)"}</Label>
                 <Input
                   id="pb-desc"
-                  placeholder="What this agent profile is for"
+                  placeholder={t.dashboard?.pbPlaceholderDesc || "What this agent profile is for"}
                   value={description}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setDescription(e.target.value)
@@ -317,7 +317,7 @@ export default function ProfileBuilderPage() {
                 {t.dashboard?.pbModelDesc || "Pick the model+provider for this profile. Skip to use the default."}
               </p>
               <Input
-                placeholder="Filter models…"
+                placeholder={t.dashboard?.pbPlaceholderFilterModels || "Filter models…"}
                 value={modelFilter}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setModelFilter(e.target.value)
@@ -415,7 +415,7 @@ export default function ProfileBuilderPage() {
                 <Label>{t.dashboard?.uiaddFromTheSkillsHub || "Add from the skills hub"}</Label>
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Search the hub (e.g. linear, hyperliquid)…"
+                    placeholder={t.dashboard?.pbPlaceholderSearchHub || "Search the hub (e.g. linear, hyperliquid)…"}
                     value={hubQuery}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       setHubQuery(e.target.value)
@@ -478,28 +478,28 @@ export default function ProfileBuilderPage() {
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <Input
-                  placeholder="Server name"
+                  placeholder={t.dashboard?.pbPlaceholderServerName || "Server name"}
                   value={mcpDraft.name}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setMcpDraft({ ...mcpDraft, name: e.target.value })
                   }
                 />
                 <Input
-                  placeholder="URL (https://…/mcp)"
+                  placeholder={t.dashboard?.pbPlaceholderMcpUrl || "URL (https://…/mcp)"}
                   value={mcpDraft.url}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setMcpDraft({ ...mcpDraft, url: e.target.value })
                   }
                 />
                 <Input
-                  placeholder="Command (e.g. npx)"
+                  placeholder={t.dashboard?.pbPlaceholderCommand || "Command (e.g. npx)"}
                   value={mcpDraft.command}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setMcpDraft({ ...mcpDraft, command: e.target.value })
                   }
                 />
                 <Input
-                  placeholder="Args (space-separated)"
+                  placeholder={t.dashboard?.pbPlaceholderArgs || "Args (space-separated)"}
                   value={mcpDraft.args}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setMcpDraft({ ...mcpDraft, args: e.target.value })
