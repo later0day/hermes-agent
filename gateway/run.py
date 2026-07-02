@@ -11158,6 +11158,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # DingTalk image re-send shortcut — handles "刚才那个图片发给我" style requests.
+            _resend_result = await self._maybe_resend_recent_image(
+                event, source, self._session_db, session_entry.session_id
+            )
+            if _resend_result is not _RECENT_IMAGE_RESEND_NOT_HANDLED:
+                if _resend_result:  # plain-text error/notice string
+                    await self._send_reply(source, _resend_result, event=event)
+                return
+
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
             # below; a /new or another lifecycle transition may move
