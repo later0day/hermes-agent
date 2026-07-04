@@ -2,6 +2,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Plus, Trash2 } from "lucide-react";
+import { useI18n } from "@/i18n";
 
 export function KeyValueEditor({
   value,
@@ -79,6 +80,7 @@ export function ChannelOverridesEditor({
   value: Record<string, any>;
   onChange: (v: Record<string, any>) => void;
 }) {
+  const { t } = useI18n();
   const entries = Object.entries(value || {});
 
   const updateChannel = (oldKey: string, newKey: string) => {
@@ -116,21 +118,21 @@ export function ChannelOverridesEditor({
       {entries.map(([channel, config]) => (
         <div key={channel} className="flex flex-col gap-2 border border-border p-3 rounded">
           <div className="flex items-center justify-between">
-            <Label className="text-xs font-semibold">Channel ID</Label>
+            <Label className="text-xs font-semibold">{t.dashboard?.uiChannelId || "Channel ID"}</Label>
             <Button size="icon" ghost className="text-red-500 hover:text-red-600" onClick={() => removeRow(channel)}>
               <Trash2 className="h-4 w-4" />
             </Button>
           </div>
           <Input
             value={channel}
-            placeholder="Channel ID"
+            placeholder={t.dashboard?.uiChannelId || "Channel ID"}
             onChange={(e) => updateChannel(channel, e.target.value)}
             className="text-xs font-mono"
           />
           
           <div className="grid grid-cols-2 gap-2 mt-2">
             <div className="flex flex-col gap-1">
-              <Label className="text-xs text-muted-foreground">Model Override</Label>
+              <Label className="text-xs text-muted-foreground">{t.dashboard?.uiModelOverride || "Model Override"}</Label>
               <Input
                 value={config.model || ""}
                 placeholder="e.g. anthropic/claude-3-5-sonnet"
@@ -139,7 +141,7 @@ export function ChannelOverridesEditor({
               />
             </div>
             <div className="flex flex-col gap-1">
-              <Label className="text-xs text-muted-foreground">Provider Override</Label>
+              <Label className="text-xs text-muted-foreground">{t.dashboard?.uiProviderOverride || "Provider Override"}</Label>
               <Input
                 value={config.provider || ""}
                 placeholder="e.g. openrouter"
@@ -150,10 +152,10 @@ export function ChannelOverridesEditor({
           </div>
           
           <div className="flex flex-col gap-1 mt-2">
-            <Label className="text-xs text-muted-foreground">System Prompt Override</Label>
+            <Label className="text-xs text-muted-foreground">{t.dashboard?.uiSystemPromptOverride || "System Prompt Override"}</Label>
             <textarea
               value={config.system_prompt || ""}
-              placeholder="Override the agent's identity for this channel..."
+              placeholder={t.dashboard?.uiSystemPromptPlaceholder || "Override the agent's identity for this channel..."}
               onChange={(e) => updateField(channel, "system_prompt", e.target.value)}
               className="flex min-h-[60px] w-full border border-input bg-transparent px-3 py-2 text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />

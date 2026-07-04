@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { useI18n } from "@/i18n";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   Dialog,
@@ -78,6 +79,7 @@ function EditorBody({
   onClose,
   onSaved,
 }: Omit<SkillEditorDialogProps, "open">) {
+  const { t } = useI18n();
   const isEdit = editName !== null;
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
@@ -151,7 +153,7 @@ function EditorBody({
         {!isEdit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-name">Name</Label>
+              <Label htmlFor="skill-editor-name">{t.dashboard?.uiSkillName || "Name"}</Label>
               <Input
                 id="skill-editor-name"
                 autoFocus
@@ -161,7 +163,7 @@ function EditorBody({
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-category">Category (optional)</Label>
+              <Label htmlFor="skill-editor-category">{t.dashboard?.uiSkillCategory || "Category (optional)"}</Label>
               <Input
                 id="skill-editor-category"
                 placeholder="devops"

@@ -320,6 +320,13 @@ export interface Translations {
     viewBlueprints?: string;
     saveChanges?: string;
     repeat?: string;
+    provider?: string;
+    model?: string;
+    defaultOption?: string;
+    baseUrlOverride?: string;
+    script?: string;
+    workdir?: string;
+    skillsOptional?: string;
   };
 
   // ── Plugins page ──

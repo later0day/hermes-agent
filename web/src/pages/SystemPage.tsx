@@ -644,7 +644,7 @@ export default function SystemPage() {
         open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
-        title="Update Hermes?"
+        title={t.dashboard?.uiUpdateHermes || "Update Hermes?"}
         description={
           updateInfo && updateInfo.behind && updateInfo.behind > 0
             ? `This will run 'hermes update' (${updateInfo.update_command}) and pull ${updateInfo.behind} new commit${updateInfo.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`
@@ -657,7 +657,7 @@ export default function SystemPage() {
         open={memoryReset.isOpen}
         onCancel={memoryReset.cancel}
         onConfirm={memoryReset.confirm}
-        title="Reset memory"
+        title={t.dashboard?.uiResetMemory || "Reset memory"}
         description="This permanently erases the selected built-in memory files. This cannot be undone."
         loading={memoryReset.isDeleting}
       />
@@ -665,7 +665,7 @@ export default function SystemPage() {
         open={credDelete.isOpen}
         onCancel={credDelete.cancel}
         onConfirm={credDelete.confirm}
-        title="Remove credential"
+        title={t.dashboard?.uiRemoveCredential || "Remove credential"}
         description="Remove this pooled API key? The agent will no longer rotate through it."
         loading={credDelete.isDeleting}
       />
@@ -673,7 +673,7 @@ export default function SystemPage() {
         open={checkpointsPrune.isOpen}
         onCancel={checkpointsPrune.cancel}
         onConfirm={checkpointsPrune.confirm}
-        title="Prune checkpoints"
+        title={t.dashboard?.uiPruneCheckpoints || "Prune checkpoints"}
         description="Delete the rollback checkpoint shadow store? Existing /rollback points will be lost."
         loading={checkpointsPrune.isDeleting}
       />
@@ -681,7 +681,7 @@ export default function SystemPage() {
         open={hookDelete.isOpen}
         onCancel={hookDelete.cancel}
         onConfirm={hookDelete.confirm}
-        title="Remove shell hook"
+        title={t.dashboard?.uiRemoveShellHook || "Remove shell hook"}
         description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
         loading={hookDelete.isDeleting}
       />
@@ -1222,7 +1222,7 @@ export default function SystemPage() {
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label htmlFor="import-path">Restore from backups path</Label>
+                <Label htmlFor="import-path">{t.dashboard?.uiRestoreBackupsPath || "Restore from backups path"}</Label>
                 <Input
                   id="import-path"
                   value={importPath}
@@ -1246,7 +1246,7 @@ export default function SystemPage() {
             </div>
             <ConfirmDialog
               open={!!importConfirmTarget}
-              title="Restore full Hermes backup?"
+              title={t.dashboard?.uiRestoreBackup || "Restore full Hermes backup?"}
               description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${backupImportLabel(importConfirmTarget)}. This cannot be undone.`}
               destructive
               confirmLabel="Restore"

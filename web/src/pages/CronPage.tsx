@@ -218,7 +218,7 @@ function CronAdvancedFields({
       <div className="mt-3 grid gap-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-provider`}>Provider</Label>
+            <Label htmlFor={`${idPrefix}-provider`}>{t.cron.provider}</Label>
             <Select
               id={`${idPrefix}-provider`}
               value={form.provider}
@@ -226,7 +226,7 @@ function CronAdvancedFields({
                 onChange({ ...form, provider: v, model: "" });
               }}
             >
-              <SelectOption value="">Default</SelectOption>
+              <SelectOption value="">{t.cron.defaultOption}</SelectOption>
               {selectOptions(
                 form.provider,
                 providers.map((p) => ({ value: p.slug, label: p.name })),
@@ -234,13 +234,13 @@ function CronAdvancedFields({
             </Select>
           </div>
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-model`}>Model</Label>
+            <Label htmlFor={`${idPrefix}-model`}>{t.cron.model}</Label>
             <Select
               id={`${idPrefix}-model`}
               value={form.model}
               onValueChange={(v) => update("model", v)}
             >
-              <SelectOption value="">Default</SelectOption>
+              <SelectOption value="">{t.cron.defaultOption}</SelectOption>
               {selectOptions(
                 form.model,
                 models.map((model) => ({ value: model, label: model })),
@@ -250,7 +250,7 @@ function CronAdvancedFields({
         </div>
 
         <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}-base-url`}>Base URL override</Label>
+          <Label htmlFor={`${idPrefix}-base-url`}>{t.cron.baseUrlOverride}</Label>
           <Input
             id={`${idPrefix}-base-url`}
             placeholder={t.dashboard?.cronPlaceholderUrl || "https://api.example.com/v1"}
@@ -270,7 +270,7 @@ function CronAdvancedFields({
             no_agent: run the script only and deliver stdout verbatim
           </label>
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-script`}>Script</Label>
+            <Label htmlFor={`${idPrefix}-script`}>{t.cron.script}</Label>
             <Input
               id={`${idPrefix}-script`}
               value={form.script}
@@ -281,7 +281,7 @@ function CronAdvancedFields({
         </div>
 
         <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}-workdir`}>Workdir</Label>
+          <Label htmlFor={`${idPrefix}-workdir`}>{t.cron.workdir}</Label>
           <Input
             id={`${idPrefix}-workdir`}
             value={form.workdir}
@@ -402,7 +402,7 @@ function CronJobFormFields({
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor={`${idPrefix}-skills`}>Skills (optional)</Label>
+        <Label htmlFor={`${idPrefix}-skills`}>{t.cron.skillsOptional}</Label>
         <NameCheckboxPicker
           id={`${idPrefix}-skills`}
           available={availableSkills}

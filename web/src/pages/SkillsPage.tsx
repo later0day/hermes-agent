@@ -752,7 +752,7 @@ export default function SkillsPage() {
 
       <ConfirmDialog
         open={skillToDelete !== null}
-        title="Delete skill"
+        title={t.dashboard?.uiDeleteSkill || "Delete skill"}
         description={`Delete "${skillToDelete?.name ?? ""}"? This action cannot be undone.`}
         destructive
         loading={deleting}
@@ -1058,7 +1058,7 @@ function HubBrowser({
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
                 className="h-8 pl-8 text-sm"
-                placeholder="Search the skill hub (GitHub, official, community)…"
+                placeholder={t.dashboard?.uiSearchSkillsHubPlaceholder || "Search the skill hub (GitHub, official, community)…"}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {

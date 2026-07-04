@@ -328,7 +328,7 @@ function UseAsMenu({
       )}
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={t.dashboard?.uiExpensiveModelWarning || "Expensive Model Warning"}
         description={pendingConfirm?.message}
         destructive
         confirmLabel="Switch anyway"
@@ -668,7 +668,7 @@ function AuxiliaryTasksModal({
           open={confirmReset}
           onCancel={() => setConfirmReset(false)}
           onConfirm={() => void resetAllAux()}
-          title="Reset auxiliary models"
+          title={t.dashboard?.uiResetAuxiliaryModels || "Reset auxiliary models"}
           description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
           destructive
           confirmLabel="Reset all"
@@ -690,6 +690,7 @@ function MoaModelsModal({
   onClose(): void;
   onSaved(next: MoaConfigResponse): void;
 }) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState<MoaConfigResponse>(config);
   const [selected, setSelected] = useState(config.default_preset || Object.keys(config.presets)[0] || "default");
   const [newName, setNewName] = useState("");
@@ -768,7 +769,7 @@ function MoaModelsModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4">
       <Card className="max-h-[85vh] w-full max-w-2xl overflow-auto">
         <CardHeader>
-          <CardTitle className="text-sm">Configure Mixture of Agents presets</CardTitle>
+          <CardTitle className="text-sm">{t.dashboard?.uiConfigureMoaPresets || "Configure Mixture of Agents presets"}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-text-secondary">
@@ -783,8 +784,8 @@ function MoaModelsModal({
             >
               {presetNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
-            <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>Set default</Button>
-            <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>Delete</Button>
+            <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>{t.dashboard?.uiSetDefault || "Set default"}</Button>
+            <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>{t.common?.delete || "Delete"}</Button>
             <input
               className="border border-border bg-background px-2 py-1 text-xs"
               placeholder="new preset name"
@@ -799,28 +800,28 @@ function MoaModelsModal({
           </div>
 
           <div className="space-y-2">
-            <div className="text-display text-xs font-medium tracking-wider">Reference models</div>
+            <div className="text-display text-xs font-medium tracking-wider">{t.dashboard?.uiReferenceModels || "Reference models"}</div>
             {preset.reference_models.map((slot, index) => (
               <div key={`${selected}-${slot.provider}-${slot.model}-${index}`} className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
                 <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(slot)}</div>
-                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>Change</Button>
+                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>{t.dashboard?.uiChangeModel || "Change"}</Button>
                 <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>Remove</Button>
               </div>
             ))}
-            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))}>Add reference model</Button>
+            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))}>{t.dashboard?.uiAddReferenceModel || "Add reference model"}</Button>
           </div>
 
           <div className="space-y-2">
-            <div className="text-display text-xs font-medium tracking-wider">Aggregator</div>
+            <div className="text-display text-xs font-medium tracking-wider">{t.dashboard?.uiAggregator || "Aggregator"}</div>
             <div className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
               <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(preset.aggregator)}</div>
-              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>Change</Button>
+              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>{t.dashboard?.uiChangeModel || "Change"}</Button>
             </div>
           </div>
 
           {error && <div className="text-xs text-destructive">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
-            <Button ghost onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button ghost onClick={onClose} disabled={busy}>{t.common?.cancel || "Cancel"}</Button>
             <Button onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
           </div>
         </CardContent>
@@ -830,7 +831,7 @@ function MoaModelsModal({
           key={`moa-picker-${refreshKey}-${selected}-${picker.kind}-${picker.kind === "reference" ? picker.index : "agg"}`}
           loader={api.getModelOptions}
           alwaysGlobal
-          title="Select MoA Model"
+          title={t.dashboard?.uiSelectMoaModel || "Select MoA Model"}
           onApply={async ({ provider, model }) => {
             if ((provider || "").toLowerCase() === "moa") {
               setError("MoA presets can't reference or aggregate the Mixture of Agents provider (no recursive MoA).");
@@ -987,7 +988,7 @@ function ModelSettingsPanel({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title="Set Main Model"
+            title={t.dashboard?.uiSetMainModel || "Set Main Model"}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await applyAssignment({
                 confirmExpensiveModel,

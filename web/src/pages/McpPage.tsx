@@ -322,7 +322,7 @@ export default function McpPage() {
         open={serverDelete.isOpen}
         onCancel={serverDelete.cancel}
         onConfirm={serverDelete.confirm}
-        title="Remove MCP server"
+        title={t.dashboard?.uiRemoveMcpServer || "Remove MCP server"}
         description={
           serverDelete.pendingId
             ? `"${truncateText(serverDelete.pendingId, 40)}" — this will remove the server.`
@@ -424,7 +424,7 @@ export default function McpPage() {
               )}
 
               <div className="grid gap-2">
-                <Label htmlFor="mcp-env">Environment (KEY=VALUE per line)</Label>
+                <Label htmlFor="mcp-env">{t.dashboard?.uiMcpEnvironment || "Environment (KEY=VALUE per line)"}</Label>
                 <textarea
                   id="mcp-env"
                   className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
@@ -640,7 +640,7 @@ export default function McpPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Test connection"
+                    title={t.dashboard?.uiTestConnection || "Test connection"}
                     aria-label="Test connection"
                     onClick={() => handleTest(server)}
                     disabled={testing === server.name}
@@ -652,7 +652,7 @@ export default function McpPage() {
                     ghost
                     destructive
                     size="icon"
-                    title="Delete"
+                    title={t.common?.delete || "Delete"}
                     aria-label="Delete"
                     onClick={() => serverDelete.requestDelete(server.name)}
                   >
@@ -732,7 +732,7 @@ export default function McpPage() {
                   {/* Connection detail: what the agent actually talks to. */}
                   {entry.transport === "http" && entry.url && (
                     <p className="mt-1 text-xs text-muted-foreground">
-                      <span className="font-medium">Endpoint:</span>{" "}
+                      <span className="font-medium">{t.dashboard?.uiEndpoint || "Endpoint:"}</span>{" "}
                       <code className="font-mono">{entry.url}</code>
                     </p>
                   )}

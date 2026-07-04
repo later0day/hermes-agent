@@ -191,7 +191,7 @@ export default function PairingPage() {
                     {user.code_hint && (
                       <span
                         className="font-mono text-sm text-muted-foreground"
-                        title="Stored hash prefix, not the pairing code"
+                        title={t.dashboard?.uiStoredHashPrefix || "Stored hash prefix, not the pairing code"}
                       >
                         hash:{user.code_hint}
                       </span>

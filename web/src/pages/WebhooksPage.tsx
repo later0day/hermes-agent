@@ -34,6 +34,7 @@ interface CreatedWebhook {
 }
 
 function CopyButton({ value }: { value: string }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     navigator.clipboard
@@ -48,7 +49,7 @@ function CopyButton({ value }: { value: string }) {
     <Button
       ghost
       size="icon"
-      title="Copy"
+      title={t.dashboard?.uiCopy || "Copy"}
       aria-label="Copy"
       onClick={handleCopy}
       className="text-muted-foreground hover:text-foreground"
@@ -378,7 +379,7 @@ export default function WebhooksPage() {
                   <Label htmlFor="webhook-description">{t.dashboard?.uidescription || "Description"}</Label>
                   <Input
                     id="webhook-description"
-                    placeholder="What this webhook does (optional)"
+                    placeholder={t.dashboard?.uiWebhookDescPlaceholder || "What this webhook does (optional)"}
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                   />
@@ -428,7 +429,7 @@ export default function WebhooksPage() {
                   <textarea
                     id="webhook-prompt"
                     className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-                    placeholder="Instructions for the agent when this webhook fires (optional)"
+                    placeholder={t.dashboard?.uiWebhookPromptPlaceholder || "Instructions for the agent when this webhook fires (optional)"}
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                   />
@@ -582,7 +583,7 @@ export default function WebhooksPage() {
                   ghost
                   destructive
                   size="icon"
-                  title="Delete"
+                  title={t.common?.delete || "Delete"}
                   aria-label="Delete"
                   onClick={() => webhookDelete.requestDelete(sub.name)}
                 >

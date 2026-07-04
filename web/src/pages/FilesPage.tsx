@@ -288,7 +288,7 @@ export default function FilesPage() {
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
               aria-label="Path"
-              placeholder="Path"
+              placeholder={t.dashboard?.uiPathPlaceholder || "Path"}
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">{t.dashboard?.filesGo || "Go"}</Button>

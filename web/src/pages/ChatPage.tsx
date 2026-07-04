@@ -1059,7 +1059,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
+            title={t.dashboard?.uiCopyMarkdown || "Copy last assistant response as raw markdown"}
             aria-label="Copy last assistant response"
             className={cn(
               "absolute z-10",

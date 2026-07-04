@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, X, MessageSquare } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useI18n } from '@/i18n';
 import type { SessionInfo, SessionSearchResult } from '@/lib/api';
 
 interface UnifiedSession {
@@ -30,6 +31,7 @@ interface Props {
 }
 
 export function SessionSearchModal({ open, onClose }: Props) {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
@@ -113,7 +115,7 @@ export function SessionSearchModal({ open, onClose }: Props) {
               setQuery(e.target.value);
               setCursor(0);
             }}
-            placeholder="Search sessions…"
+            placeholder={t.dashboard?.uiSearchSessionsPlaceholder || "Search sessions…"}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
           {loading && <span className="text-xs text-muted-foreground">…</span>}
