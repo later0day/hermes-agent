@@ -356,6 +356,46 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
+def _current_origin_scope() -> Optional[str]:
+    """Return the current cron origin scope (profile name), or None for default.
+
+    Stub: full per-profile scope routing is not yet implemented on this host.
+    Returns None which causes callers to use the default (non-scoped) path.
+    """
+    return None
+
+
+def _context_ref_visible(ref_id: str, scope: Optional[str]) -> bool:
+    """Return True if a context_from job reference is visible in the given scope.
+
+    Stub: with scope=None all jobs are visible (upstream-compatible behaviour).
+    """
+    from cron.jobs import get_job
+    try:
+        job = get_job(ref_id)
+        return job is not None
+    except Exception:
+        return False
+
+
+def _list_jobs_for_scope(include_disabled: bool = False, scope: Optional[str] = None):
+    """List jobs visible in the given scope.
+
+    Stub: scope=None returns all jobs (upstream-compatible behaviour).
+    """
+    from cron.jobs import list_jobs
+    return list_jobs(include_disabled=include_disabled)
+
+
+def _resolve_job_ref_for_scope(job_id: str, scope: Optional[str]):
+    """Resolve a job id/name within the given scope.
+
+    Stub: delegates to cron.jobs.get_job (scope ignored).
+    """
+    from cron.jobs import get_job
+    return get_job(job_id)
+
+
 def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     if skills is None:
         raw_items = [skill] if skill else []

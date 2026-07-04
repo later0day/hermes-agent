@@ -1580,12 +1580,38 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
 
+    # Load gateway config under the job's owner profile so platform checks
+    # (pconfig.enabled) resolve against the profile that owns the job — not
+    # the process-default profile. Without this, delivery runs outside the
+    # _job_profile_context scope and load_gateway_config() reads the default
+    # profile's config.yaml, which has no dingtalk/weixin configured.
+    _job_profile = _job_run_profile(job)
+    _deliver_home_override = None
+    _deliver_home_token = None
+    if _job_profile:
+        try:
+            from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+            from hermes_constants import set_hermes_home_override
+            _norm = normalize_profile_name(_job_profile)
+            _deliver_home_override = resolve_profile_env(_norm)
+            _deliver_home_token = set_hermes_home_override(_deliver_home_override)
+        except Exception as _e:
+            logger.debug("Job '%s': could not scope delivery to profile %r: %s", job.get("id"), _job_profile, _e)
+            _deliver_home_token = None
+
     try:
         config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
+    finally:
+        if _deliver_home_token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+                reset_hermes_home_override(_deliver_home_token)
+            except Exception:
+                pass
 
     delivery_errors = []
 
