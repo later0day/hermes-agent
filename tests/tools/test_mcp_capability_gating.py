@@ -285,7 +285,6 @@ class TestKeepaliveProbeFallback:
         task.session.send_ping.assert_awaited_once()
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
-
     async def test_falls_back_to_list_tools_on_method_not_found(self):
         task = MCPServerTask("test")
         task.initialize_result = _caps(tools=SimpleNamespace())
@@ -347,7 +346,6 @@ class TestKeepaliveProbeFallback:
 
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
-
     async def test_no_ping_no_tools_propagates_method_not_found(self):
         """A server advertising neither working ping nor tools has no cheaper
         probe — the -32601 must propagate rather than calling list_tools on a
@@ -376,5 +374,3 @@ class TestKeepaliveProbeFallback:
         await task._discover_tools()
 
         assert task._ping_unsupported is False
-
-

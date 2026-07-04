@@ -1743,6 +1743,7 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    media_errors: List[str] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None
@@ -2914,6 +2915,12 @@ class BasePlatformAdapter(ABC):
     # such as DingTalk AI Cards) override this to True (class attribute or
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
+
+    # Default: gateway tool progress and assistant streaming use separate
+    # delivery rails. Card-like adapters may opt into a turn-scoped status card
+    # coordinator that keeps tool progress in one editable message while the
+    # final answer is delivered through the normal send path.
+    SUPPORTS_TURN_STATUS_CARD: bool = False
 
     async def create_handoff_thread(
         self,

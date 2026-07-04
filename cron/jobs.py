@@ -744,6 +744,27 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _normalize_profile(profile: Optional[str]) -> Optional[str]:
+    """Normalize and validate a cron job profile override.
+
+    ``None`` / empty means the job keeps legacy scheduler-runtime behavior:
+    no per-job profile override is stored.  A concrete profile is canonicalized
+    through ``hermes_cli.profiles`` and must exist at creation/update time so
+    the scheduler does not later fail in a detached tick.
+    """
+    raw = str(profile or "").strip()
+    if not raw:
+        return None
+
+    from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
+
+    normalized = normalize_profile_name(raw)
+    validate_profile_name(normalized)
+    if not profile_exists(normalized):
+        raise FileNotFoundError(f"Hermes profile not found: {normalized}")
+    return normalized
+
+
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Resolve the global default model the same way the cron ticker does.
 
@@ -909,6 +930,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        profile: Optional Hermes profile id. When set, the scheduler executes
+                this job under that profile's Hermes home. When unset, runtime
+                behavior is unchanged and only ``owner_profile`` defaults to
+                ``default`` for management filtering.
 
     Returns:
         The created job dict
@@ -1016,6 +1041,9 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "owner_profile": owner_profile,
+        "profile": normalized_profile,
+        "run_profile": normalized_profile,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -1111,6 +1139,19 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "profile" in updates:
+                normalized_profile = _normalize_profile(updates.get("profile"))
+                updates["profile"] = normalized_profile
+                updates["run_profile"] = normalized_profile
+                if normalized_profile:
+                    updates["owner_profile"] = normalized_profile
+                elif "owner_profile" not in updates:
+                    updates["owner_profile"] = job.get("owner_profile") or "default"
+            elif "run_profile" in updates:
+                normalized_profile = _normalize_profile(updates.get("run_profile"))
+                updates["run_profile"] = normalized_profile
+                updates["profile"] = normalized_profile
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

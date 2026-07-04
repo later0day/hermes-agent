@@ -936,6 +936,7 @@ def _build_child_progress_callback(
             return
 
         if event == DelegateEvent.TASK_TOOL_COMPLETED:
+            _relay("subagent.tool.completed", tool_name, preview, args, **kwargs)
             return
 
         if event == DelegateEvent.TASK_PROGRESS:
@@ -985,7 +986,7 @@ def _build_child_progress_callback(
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
-            _relay("subagent.tool", tool_name, preview, args)
+            _relay("subagent.tool", tool_name, preview, args, **kwargs)
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
@@ -1000,6 +1001,7 @@ def _build_child_progress_callback(
             _batch.clear()
 
     _callback._flush = _flush
+    setattr(_callback, "__hermes_accepts_tool_progress_metadata__", True)
     return _callback
 
 

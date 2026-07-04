@@ -95,6 +95,7 @@ function TokenBar({
   cacheRead: number;
   reasoning: number;
 }) {
+
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
@@ -157,6 +158,8 @@ function CapabilityBadges({
 }: {
   capabilities: ModelsAnalyticsModelEntry["capabilities"];
 }) {
+  const { t } = useI18n();
+
   const hasAny =
     capabilities.supports_tools ||
     capabilities.supports_vision ||
@@ -168,18 +171,15 @@ function CapabilityBadges({
     <div className="flex flex-wrap items-center gap-1.5">
       {capabilities.supports_tools && (
         <span className="inline-flex items-center gap-1 bg-success/10 px-1.5 py-0.5 text-xs font-medium text-success">
-          <Wrench className="h-2.5 w-2.5" /> Tools
-        </span>
+          <Wrench className="h-2.5 w-2.5" />{t.dashboard?.uitools || "Tools"}</span>
       )}
       {capabilities.supports_vision && (
         <span className="inline-flex items-center gap-1 bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-          <Eye className="h-2.5 w-2.5" /> Vision
-        </span>
+          <Eye className="h-2.5 w-2.5" />{t.dashboard?.uivision || "Vision"}</span>
       )}
       {capabilities.supports_reasoning && (
         <span className="inline-flex items-center gap-1 bg-purple-500/10 px-1.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
-          <Brain className="h-2.5 w-2.5" /> Reasoning
-        </span>
+          <Brain className="h-2.5 w-2.5" />{t.dashboard?.uireasoning || "Reasoning"}</span>
       )}
       {capabilities.model_family && (
         <span className="inline-flex items-center bg-muted px-1.5 py-0.5 text-xs font-medium text-text-secondary">
@@ -208,7 +208,7 @@ function UseAsMenu({
   /** If this model is assigned to a specific aux task, that task's key. */
   mainAuxTask: string | null;
   onAssigned(): void;
-}) {
+}) {  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -276,8 +276,7 @@ function UseAsMenu({
         disabled={busy}
         className="h-6 px-2 text-xs uppercase"
         prefix={busy ? <Spinner /> : null}
-      >
-        Use as <ChevronDown className="h-3 w-3" />
+      >{t.dashboard?.uiuseAs || "Use as"}<ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
@@ -288,19 +287,13 @@ function UseAsMenu({
             className="flex w-full items-center justify-between px-3 py-2 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
           >
             <span className="flex items-center gap-2">
-              <Star className="h-3 w-3" />
-              Main model
-            </span>
+              <Star className="h-3 w-3" />{t.dashboard?.modelsMainModel || "Main model"}</span>
             {isMain && (
-              <span className="text-display text-xs tracking-wider text-primary">
-                current
-              </span>
+              <span className="text-display text-xs tracking-wider text-primary">{t.dashboard?.uicurrent || "current"}</span>
             )}
           </button>
 
-          <div className="border-t border-border/50 px-3 py-1.5 text-display text-xs tracking-wider text-text-tertiary">
-            Auxiliary task
-          </div>
+          <div className="border-t border-border/50 px-3 py-1.5 text-display text-xs tracking-wider text-text-tertiary">{t.dashboard?.uiauxiliaryTask || "Auxiliary task"}</div>
 
           <button
             type="button"
@@ -308,22 +301,20 @@ function UseAsMenu({
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
           >
-            <span>All auxiliary tasks</span>
+            <span>{t.dashboard?.uiallAuxiliaryTasks || "All auxiliary tasks"}</span>
           </button>
 
-          {AUX_TASKS.map((t) => (
+          {AUX_TASKS.map((auxTask) => (
             <button
-              key={t.key}
+              key={auxTask.key}
               type="button"
-              onClick={() => assign("auxiliary", t.key)}
+              onClick={() => assign("auxiliary", auxTask.key)}
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
             >
-              <span>{t.label}</span>
-              {mainAuxTask === t.key && (
-                <span className="text-display text-xs tracking-wider text-primary">
-                  current
-                </span>
+              <span>{auxTask.label}</span>
+              {mainAuxTask === auxTask.key && (
+                <span className="text-display text-xs tracking-wider text-primary">{t.dashboard?.uicurrent || "current"}</span>
               )}
             </button>
           ))}
@@ -374,7 +365,7 @@ function ModelCard({
   onAssigned(): void;
   showTokens: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const provider = entry.provider || modelVendor(entry.model);
   const totalTokens = entry.input_tokens + entry.output_tokens;
   const caps = entry.capabilities;
@@ -406,8 +397,7 @@ function ModelCard({
               </CardTitle>
               {isMain && (
                 <span className="inline-flex items-center gap-0.5 bg-primary/15 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-primary">
-                  <Star className="h-2.5 w-2.5" /> main
-                </span>
+                  <Star className="h-2.5 w-2.5" />{t.dashboard?.uimain || "main"}</span>
               )}
               {mainAuxTask && (
                 <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-purple-600 dark:text-purple-400">
@@ -518,7 +508,7 @@ function ModelCard({
             )}
           </div>
           {entry.last_used_at > 0 && (
-            <span>{timeAgo(entry.last_used_at)}</span>
+            <span>{timeAgo(entry.last_used_at, locale)}</span>
           )}
         </div>
 
@@ -551,6 +541,8 @@ function AuxiliaryTasksModal({
   onSaved(): void;
   onClose(): void;
 }) {
+  const { t } = useI18n();
+
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -597,9 +589,7 @@ function AuxiliaryTasksModal({
             <h2
               id="aux-modal-title"
               className="font-mondwest text-display text-base tracking-wider"
-            >
-              Auxiliary Tasks
-            </h2>
+            >{t.dashboard?.uiauxiliaryTasks69 || "Auxiliary Tasks"}</h2>
             <Button
               size="sm"
               outlined
@@ -607,33 +597,31 @@ function AuxiliaryTasksModal({
               disabled={resetBusy}
               className="h-6 text-xs uppercase"
               prefix={resetBusy ? <Spinner /> : null}
-            >
-              Reset all to auto
-            </Button>
+            >{t.dashboard?.uiresetAllToAuto || "Reset all to auto"}</Button>
           </div>
           <p className="text-xs text-text-secondary mt-2">
             Auxiliary tasks handle side-jobs like vision, session search, and
-            compression. <span className="font-mono">auto</span> means
+            compression. <span className="font-mono">{t.dashboard?.uiauto || "auto"}</span> means
             &quot;use the main model&quot;. Override per-task when you want a
             cheap/fast model for a specific job.
           </p>
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
-          {AUX_TASKS.map((t) => {
-            const cur = aux?.tasks.find((a) => a.task === t.key);
+          {AUX_TASKS.map((auxTask) => {
+            const cur = aux?.tasks.find((a) => a.task === auxTask.key);
             const isAuto =
               !cur || cur.provider === "auto" || !cur.provider;
             return (
               <div
-                key={t.key}
+                key={auxTask.key}
                 className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-medium">{t.label}</span>
+                    <span className="text-xs font-medium">{auxTask.label}</span>
                     <span className="text-xs text-text-tertiary">
-                      {t.hint}
+                      {auxTask.hint}
                     </span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
@@ -645,11 +633,9 @@ function AuxiliaryTasksModal({
                 <Button
                   size="sm"
                   outlined
-                  onClick={() => setPicker({ kind: "aux", task: t.key })}
+                  onClick={() => setPicker({ kind: "aux", task: auxTask.key })}
                   className="h-6 text-xs uppercase"
-                >
-                  Change
-                </Button>
+                >{t.dashboard?.uichange || "Change"}</Button>
               </div>
             );
           })}
@@ -874,7 +860,7 @@ function ModelSettingsPanel({
   aux: AuxiliaryModelsResponse | null;
   refreshKey: number;
   onSaved(): void;
-}) {
+}) {  const { t } = useI18n();
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [moaModalOpen, setMoaModalOpen] = useState(false);
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null);
@@ -924,10 +910,8 @@ function ModelSettingsPanel({
       <CardHeader className="min-w-0 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <CardTitle className="text-sm">Model Settings</CardTitle>
-          <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">
-            applies to new sessions
-          </span>
+          <CardTitle className="text-sm">{t.dashboard?.uimodelSettings || "Model Settings"}</CardTitle>
+          <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">{t.dashboard?.uiappliesToNewSessions || "applies to new sessions"}</span>
         </div>
       </CardHeader>
 
@@ -937,9 +921,7 @@ function ModelSettingsPanel({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
-              <span className="text-display text-xs font-medium tracking-wider">
-                Main model
-              </span>
+              <span className="text-display text-xs font-medium tracking-wider">{t.dashboard?.modelsMainModel || "Main model"}</span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {mainProv || "(unset)"}
@@ -951,9 +933,7 @@ function ModelSettingsPanel({
             size="sm"
             onClick={() => setPicker({ kind: "main" })}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
-          >
-            Change
-          </Button>
+          >{t.dashboard?.uichange || "Change"}</Button>
         </div>
 
         {/* Auxiliary tasks summary + open modal */}
@@ -961,9 +941,7 @@ function ModelSettingsPanel({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-text-tertiary" />
-              <span className="text-display text-xs font-medium tracking-wider">
-                Auxiliary tasks
-              </span>
+              <span className="text-display text-xs font-medium tracking-wider">{t.dashboard?.modelsAuxTasks || "Auxiliary tasks"}</span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {auxOverrideCount > 0
@@ -976,9 +954,7 @@ function ModelSettingsPanel({
             outlined
             onClick={() => setAuxModalOpen(true)}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
-          >
-            Configure
-          </Button>
+          >{t.dashboard?.uiconfigure || "Configure"}</Button>
         </div>
 
         <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
@@ -1245,7 +1221,7 @@ export default function ModelsPage() {
                   …) and provider retries, so they diverge from your provider
                   bill. Enable{" "}
                   <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
+                  in <a href="/config" className="underline">{t.dashboard?.uiconfig || "Config"}</a> to
                   show the local debug estimate anyway.
                 </p>
               )}

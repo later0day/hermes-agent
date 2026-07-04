@@ -2,87 +2,81 @@ name: photon-platform
 label: iMessage via Photon
 kind: platform
 version: 0.3.0
-description: >
-  Photon Spectrum gateway adapter for Hermes Agent.
-  Connects to iMessage (and other Spectrum interfaces) through Photon's
-  managed Spectrum platform. Both directions run over the `spectrum-ts`
-  SDK's long-lived gRPC stream via a small supervised Node sidecar —
-  inbound messages arrive on the SDK's `app.messages` stream (no webhook,
-  no public URL, no signing secret), and outbound messages are sent over
-  the same sidecar.
+description: 'Hermes Agent 的 Photon Spectrum 网关适配器。通过 Photon 的托管 Spectrum 平台连接到 iMessage（及其他
+  Spectrum 接口）。两个方向均通过一个受监督的小型 Node sidecar 在 `spectrum-ts` SDK 的长效 gRPC 流上运行 —— 入站消息到达
+  SDK 的 `app.messages` 流（无 webhook，无公共 URL，无签名机密），出站消息通过同一 sidecar 发送。
 
-  The plugin ships with a `hermes photon` CLI for the one-time device
-  login + project + user setup. Runtime credentials are written to
-  ``~/.hermes/.env`` (``PHOTON_PROJECT_ID`` = the Spectrum project id,
-  ``PHOTON_PROJECT_SECRET``) like every other channel, with management
-  metadata (device token, dashboard project id) in ``~/.hermes/auth.json``.
-  Photon's free shared-line model lets users get started without a paid plan.
+  插件附带一个 `hermes photon` CLI，用于一次性设备登录 + 项目 + 用户设置。运行时凭据被写入 `~/.hermes/.env` (`PHOTON_PROJECT_ID`
+  = Spectrum 项目 ID, `PHOTON_PROJECT_SECRET`)，与管理元数据（设备令牌、控制台项目 ID）一样存储在 `~/.hermes/auth.json`
+  中。Photon 的免费共享线路模型让用户无需付费即可开始。'
 author: NousResearch
 requires_env:
-  - name: PHOTON_PROJECT_ID
-    description: "Spectrum project id (the project's spectrumProjectId; set by `hermes photon setup`)"
-    prompt: "Photon Spectrum project id"
-    url: "https://app.photon.codes/"
-    password: false
-  - name: PHOTON_PROJECT_SECRET
-    description: "Project secret paired with the Spectrum project id (set by `hermes photon setup`)"
-    prompt: "Photon project secret"
-    url: "https://app.photon.codes/"
-    password: true
+- name: PHOTON_PROJECT_ID
+  description: Spectrum 项目 ID (由 `hermes photon setup` 设置)
+  prompt: Photon Spectrum project id
+  url: https://app.photon.codes/
+  password: false
+- name: PHOTON_PROJECT_SECRET
+  description: 与 Spectrum 项目 ID 匹配的项目机密 (由 `hermes photon setup` 设置)
+  prompt: Photon project secret
+  url: https://app.photon.codes/
+  password: true
 optional_env:
-  - name: PHOTON_SIDECAR_PORT
-    description: "Loopback port for the Node sidecar control + inbound channel (default 8789)"
-    prompt: "Sidecar control port"
-    password: false
-  - name: PHOTON_SIDECAR_AUTOSTART
-    description: "Spawn the Node sidecar on connect (true/false, default true)"
-    prompt: "Auto-start the sidecar?"
-    password: false
-  - name: PHOTON_NODE_BIN
-    description: "Path to the node binary (default: shutil.which('node'))"
-    prompt: "Node executable path"
-    password: false
-  - name: PHOTON_DASHBOARD_HOST
-    description: "Photon Dashboard API host (default https://app.photon.codes)"
-    prompt: "Dashboard host"
-    password: false
-  - name: PHOTON_SPECTRUM_HOST
-    description: "Photon Spectrum API host (default https://spectrum.photon.codes)"
-    prompt: "Spectrum API host"
-    password: false
-  - name: PHOTON_ALLOWED_USERS
-    description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
-    prompt: "Allowed users (comma-separated)"
-    password: false
-  - name: PHOTON_ALLOW_ALL_USERS
-    description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
-    prompt: "Allow all users? (true/false)"
-    password: false
-  - name: PHOTON_REQUIRE_MENTION
-    description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
-    prompt: "Require a mention in group chats?"
-    password: false
-  - name: PHOTON_MENTION_PATTERNS
-    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
-    prompt: "Group mention patterns"
-    password: false
-  - name: PHOTON_HOME_CHANNEL
-    description: "Default Photon target for cron / notification delivery: Spectrum space id, DM GUID, or bare E.164 phone number"
-    prompt: "Home Photon target"
-    password: false
-  - name: PHOTON_HOME_CHANNEL_NAME
-    description: "Human label for the home channel"
-    prompt: "Home channel display name"
-    password: false
-  - name: PHOTON_TELEMETRY
-    description: "Enable Spectrum SDK telemetry in the sidecar (true/false, default false; toggle with `hermes photon telemetry on|off`)"
-    prompt: "Enable Spectrum telemetry? (true/false)"
-    password: false
-  - name: PHOTON_MARKDOWN
-    description: "Send agent replies as markdown — iMessage renders it natively, other Spectrum platforms degrade to plain text (true/false, default true)"
-    prompt: "Render replies as markdown? (true/false)"
-    password: false
-  - name: PHOTON_REACTIONS
-    description: "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
-    prompt: "Enable reaction tapbacks? (true/false)"
-    password: false
+- name: PHOTON_SIDECAR_PORT
+  description: Node sidecar 控制和入站频道的环回端口 (默认 8789)
+  prompt: Sidecar control port
+  password: false
+- name: PHOTON_SIDECAR_AUTOSTART
+  description: 连接时生成 Node sidecar (true/false, 默认 true)
+  prompt: Auto-start the sidecar?
+  password: false
+- name: PHOTON_NODE_BIN
+  description: 'Node 二进制文件的路径 (默认: shutil.which(''node''))'
+  prompt: Node executable path
+  password: false
+- name: PHOTON_DASHBOARD_HOST
+  description: Photon Dashboard API 主机 (默认 https://app.photon.codes)
+  prompt: Dashboard host
+  password: false
+- name: PHOTON_SPECTRUM_HOST
+  description: Photon Spectrum API 主机 (默认 https://spectrum.photon.codes)
+  prompt: Spectrum API host
+  password: false
+- name: PHOTON_ALLOWED_USERS
+  description: 允许与机器人对话的逗号分隔的 E.164 电话号码
+  prompt: Allowed users (comma-separated)
+  password: false
+- name: PHOTON_ALLOW_ALL_USERS
+  description: 允许任何发送者触发机器人 (仅开发模式 — 禁用白名单)
+  prompt: Allow all users? (true/false)
+  password: false
+- name: PHOTON_REQUIRE_MENTION
+  description: 除非匹配到提及唤醒词，否则忽略群聊消息 (true/false, 默认 false)
+  prompt: Require a mention in group chats?
+  password: false
+- name: PHOTON_MENTION_PATTERNS
+  description: 群聊的提及唤醒词正则表达式 (JSON 列表或逗号/换行符分隔；默认为 Hermes 唤醒词)
+  prompt: Group mention patterns
+  password: false
+- name: PHOTON_HOME_CHANNEL
+  description: 定时任务/通知投递的默认 Photon 目标：Spectrum 空间 ID、DM GUID 或纯 E.164 电话号码
+  prompt: Home Photon target
+  password: false
+- name: PHOTON_HOME_CHANNEL_NAME
+  description: 主频道的友好名称
+  prompt: Home channel display name
+  password: false
+- name: PHOTON_TELEMETRY
+  description: 在 sidecar 中启用 Spectrum SDK 遥测 (true/false, 默认 false；可通过 `hermes photon
+    telemetry on|off` 切换)
+  prompt: Enable Spectrum telemetry? (true/false)
+  password: false
+- name: PHOTON_MARKDOWN
+  description: 以 markdown 格式发送代理回复 — iMessage 原生渲染，其他 Spectrum 平台降级为纯文本 (true/false,
+    默认 true)
+  prompt: Render replies as markdown? (true/false)
+  password: false
+- name: PHOTON_REACTIONS
+  description: 使用 Tapback 👀/👍/👎 作为处理状态，并将对机器人消息的 tapback 路由回代理 (true/false, 默认 false)
+  prompt: Enable reaction tapbacks? (true/false)
+  password: false

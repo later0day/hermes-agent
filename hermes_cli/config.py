@@ -1281,21 +1281,6 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
-    # Seconds to wait at agent-build time for in-flight MCP server discovery
-    # to finish before the agent snapshots its tool list.  MCP discovery runs
-    # in a background thread so a slow/dead server can't freeze startup; this
-    # bounds how long the first agent build blocks on it.  The wait returns
-    # the INSTANT discovery completes, so users with no MCP servers (the common
-    # case) or fast servers pay ~0s regardless of this value — the bound is
-    # only reached when a server is genuinely still connecting.  The old 0.75s
-    # default was a touch short for HTTP/OAuth servers on a cold connect; a
-    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
-    # only a turn-1 latency/UX knob: a server that misses this window is still
-    # picked up automatically on the next turn by the between-turns refresh
-    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
-    # small so a slow/dead server adds little to first-response latency.
-    "mcp_discovery_timeout": 1.5,
-
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -1315,6 +1300,21 @@ DEFAULT_CONFIG = {
         "max_lines": 2000,
         "max_line_length": 2000,
     },
+
+    # Seconds to wait at agent-build time for in-flight MCP server discovery
+    # to finish before the agent snapshots its tool list.  MCP discovery runs
+    # in a background thread so a slow/dead server can't freeze startup; this
+    # bounds how long the first agent build blocks on it.  The wait returns
+    # the INSTANT discovery completes, so users with no MCP servers (the common
+    # case) or fast servers pay ~0s regardless of this value — the bound is
+    # only reached when a server is genuinely still connecting.  The old 0.75s
+    # default was a touch short for HTTP/OAuth servers on a cold connect; a
+    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
+    # only a turn-1 latency/UX knob: a server that misses this window is still
+    # picked up automatically on the next turn by the between-turns refresh
+    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
+    # small so a slow/dead server adds little to first-response latency.
+    "mcp_discovery_timeout": 1.5,
 
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;
@@ -1367,6 +1367,10 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.5
+                                      # autoraise banner. Set False to keep the
+                                      # 85% threshold autoraise but suppress the
+                                      # user-facing notice in CLI/gateway output.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
@@ -2400,6 +2404,25 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in rooms
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+    },
+
+    # DingTalk platform settings (gateway mode)
+    "dingtalk": {
+        # DingTalk Stream Mode credentials live on the Channels page
+        # (DINGTALK_CLIENT_ID / DINGTALK_CLIENT_SECRET). These are behavior
+        # and AI Card knobs that belong in config.yaml.
+        "app_code": "",                # Optional DingTalk appCode for enterprise API calls
+        "corp_id": "",                 # Optional DingTalk CorpId for enterprise API calls
+        "agent_id": "",                # Optional DingTalk AgentId for enterprise API calls
+        "robot_code": "",              # Optional robotCode/chatBotId override; empty uses client_id
+        "require_mention": True,        # Require @mention to respond in group chats
+        "free_response_chats": "",      # Comma-separated conversation IDs that skip require_mention
+        "allowed_chats": "",           # If set, bot ONLY responds in these group chat IDs
+        "allowed_users": "",           # DingTalk staff_id/sender_id allowlist; "*" = any user
+        "allow_all_users": False,       # Gateway auth allow-all for DingTalk senders
+        "card_template_id": "",         # AI Card template ID; empty uses SDK default
+        "card_content_key": "",         # AI Card variable key for streamed content
+        "reply_at_sender": False,       # @ the triggering sender on final group replies
     },
 
     # Approval mode for dangerous commands:

@@ -49,8 +49,15 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
+import {
+  formatConfigCategoryName,
+  formatConfigDescription,
+  formatConfigFieldLabel,
+  formatConfigSectionName,
+} from "@/lib/configLabels";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { ChannelOverridesEditor, KeyValueEditor } from "@/components/ConfigEditors";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -74,6 +81,7 @@ const CATEGORY_ICONS: Record<
   stt: Ear,
   logging: ClipboardList,
   discord: MessageCircle,
+  dingtalk: MessageCircle,
   auxiliary: Wrench,
   bedrock: Cloud,
   curator: Sparkles,
@@ -122,7 +130,7 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { setEnd } = usePageHeader();
 
   useLayoutEffect(() => {
@@ -156,9 +164,7 @@ export default function ConfigPage() {
   }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
-    const key = cat as keyof typeof t.config.categories;
-    if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    return formatConfigCategoryName(cat, t, locale);
   }
 
   useEffect(() => {
@@ -245,9 +251,19 @@ export default function ConfigPage() {
     return Object.entries(schema).filter(([key, s]) => {
       const label = key.split(".").pop() ?? key;
       const humanLabel = label.replace(/_/g, " ");
+      const translatedLabel = formatConfigFieldLabel(key, locale);
+      const translatedDescription = formatConfigDescription(key, s, locale);
+      const translatedCategory = formatConfigCategoryName(
+        String(s.category ?? "general"),
+        t,
+        locale,
+      );
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
+        translatedLabel.toLowerCase().includes(lowerSearch) ||
+        translatedDescription.toLowerCase().includes(lowerSearch) ||
+        translatedCategory.toLowerCase().includes(lowerSearch) ||
         String(s.category ?? "")
           .toLowerCase()
           .includes(lowerSearch) ||
@@ -256,7 +272,7 @@ export default function ConfigPage() {
           .includes(lowerSearch)
       );
     });
-  }, [isSearching, lowerSearch, schema]);
+  }, [isSearching, locale, lowerSearch, schema, t]);
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
@@ -403,18 +419,44 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {formatConfigSectionName(section, locale)}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>
           )}
           <div className="py-1">
-            <AutoField
-              schemaKey={key}
-              schema={s}
-              value={getNestedValue(config, key)}
-              onChange={(v) => setConfig(setNestedValue(config, key, v))}
-            />
+            {key.endsWith(".channel_overrides") ? (
+              <div className="grid gap-3 border border-border p-3">
+                <div className="text-xs font-medium">{formatConfigFieldLabel(key, locale)}</div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
+                </div>
+                <ChannelOverridesEditor
+                  value={getNestedValue(config, key) as any}
+                  onChange={(v) => setConfig(setNestedValue(config, key, v))}
+                />
+              </div>
+            ) : key.endsWith(".extra_headers") || key.endsWith(".model_routes") ? (
+              <div className="grid gap-3 border border-border p-3">
+                <div className="text-xs font-medium">{formatConfigFieldLabel(key, locale)}</div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
+                </div>
+                <KeyValueEditor
+                  value={getNestedValue(config, key) as any}
+                  onChange={(v) => setConfig(setNestedValue(config, key, v))}
+                  keyPlaceholder={key.endsWith(".extra_headers") ? "Header-Name" : "Client Key"}
+                  valPlaceholder={key.endsWith(".extra_headers") ? "Value" : "Model ID"}
+                />
+              </div>
+            ) : (
+              <AutoField
+                schemaKey={key}
+                schema={s}
+                value={getNestedValue(config, key)}
+                onChange={(v) => setConfig(setNestedValue(config, key, v))}
+              />
+            )}
           </div>
         </div>
       );
@@ -659,9 +701,16 @@ export default function ConfigPage() {
             ? t.config.searchResults
             : prettyCategoryName(activeCategory),
         )}
-        description={`This will reset ${
-          (isSearching ? searchMatchedFields : activeFields).length
-        } field(s) to their default values.`}
+        description={
+          t.config.resetScopeDescription
+            ? t.config.resetScopeDescription.replace(
+                "{count}",
+                String((isSearching ? searchMatchedFields : activeFields).length),
+              )
+            : `This will reset ${
+                (isSearching ? searchMatchedFields : activeFields).length
+              } field(s) to their default values.`
+        }
         destructive
         confirmLabel={t.config.resetDefaults}
       />

@@ -625,15 +625,15 @@ export default function EnvPage() {
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
     const items: { id: string; label: string }[] = [
-      { id: "section-oauth", label: "OAuth" },
-      { id: "section-providers", label: "Providers" },
+      { id: "section-oauth", label: t.env.oauth ?? "OAuth" },
+      { id: "section-providers", label: t.env.providers ?? "Providers" },
     ];
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
+        tool: t.env.tools ?? "Tools",
         messaging: t.common.gateway ?? "Gateway",
-        setting: "Settings",
+        setting: t.env.settings ?? "Settings",
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
@@ -660,7 +660,7 @@ export default function EnvPage() {
     setAfterTitle(
       <nav
         className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
+        aria-label={t.env.jumpToSection}
       >
         {sections.map((s) => (
           <button

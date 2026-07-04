@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/context";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -103,6 +104,7 @@ function ActionLogViewer({
   onClose: () => void;
   onComplete?: (action: string, exitCode: number | null) => void;
 }) {
+  const { t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -143,7 +145,7 @@ function ActionLogViewer({
             <Terminal className="h-4 w-4 text-muted-foreground" />
             <span className="font-mono text-sm">{action}</span>
             {running ? (
-              <Badge tone="warning">running</Badge>
+              <Badge tone="warning">{t.dashboard?.uirunning || "running"}</Badge>
             ) : (
               <Badge tone={exitCode === 0 ? "success" : "destructive"}>
                 {exitCode === 0 ? "done" : `exit ${exitCode}`}
@@ -172,6 +174,7 @@ const HOOK_EVENTS_FALLBACK = [
 ];
 
 export default function SystemPage() {
+  const { t } = useI18n();
   const { toast, showToast } = useToast();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -707,13 +710,11 @@ export default function SystemPage() {
               <X />
             </Button>
             <header className="p-5 pb-3 border-b border-border">
-              <h2 className="font-mondwest text-display text-base tracking-wider">
-                New shell hook
-              </h2>
+              <h2 className="font-mondwest text-display text-base tracking-wider">{t.dashboard?.sysNewHook || "New shell hook"}</h2>
             </header>
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="hook-event">Event</Label>
+                <Label htmlFor="hook-event">{t.dashboard?.uievent || "Event"}</Label>
                 <Select
                   id="hook-event"
                   value={hookEvent}
@@ -727,7 +728,7 @@ export default function SystemPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="hook-command">Command (absolute path)</Label>
+                <Label htmlFor="hook-command">{t.dashboard?.sysHookCommand || "Command (absolute path)"}</Label>
                 <Input
                   id="hook-command"
                   autoFocus
@@ -738,7 +739,7 @@ export default function SystemPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-matcher">Matcher (optional)</Label>
+                  <Label htmlFor="hook-matcher">{t.dashboard?.sysHookMatcher || "Matcher (optional)"}</Label>
                   <Input
                     id="hook-matcher"
                     placeholder="e.g. terminal"
@@ -747,7 +748,7 @@ export default function SystemPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-timeout">Timeout (s)</Label>
+                  <Label htmlFor="hook-timeout">{t.dashboard?.sysHookTimeout || "Timeout (s)"}</Label>
                   <Input
                     id="hook-timeout"
                     placeholder="10"
@@ -803,8 +804,7 @@ export default function SystemPage() {
       {/* ── Host / system stats ───────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Server className="h-4 w-4" /> Host
-        </H2>
+          <Server className="h-4 w-4" />{t.dashboard?.uihost || "Host"}</H2>
         <Card>
           <CardContent className="py-4">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-6 text-sm">
@@ -813,19 +813,19 @@ export default function SystemPage() {
                 <div>{stats?.os} {stats?.os_release}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Arch</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.uiarch || "Arch"}</div>
                 <div>{stats?.arch}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Host</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.uihost || "Host"}</div>
                 <div className="truncate">{stats?.hostname}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Python</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.uipython || "Python"}</div>
                 <div>{stats?.python_impl} {stats?.python_version}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Hermes</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.uihermes || "Hermes"}</div>
                 <div className="flex items-center gap-2">
                   <span>v{stats?.hermes_version}</span>
                   {canUpdateHermes &&
@@ -837,14 +837,13 @@ export default function SystemPage() {
                           : "update available"}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
-                      <Badge tone="success">latest</Badge>
+                      <Badge tone="success">{t.dashboard?.uilatest || "latest"}</Badge>
                     ) : null)}
                 </div>
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <Cpu className="h-3 w-3" /> CPU
-                </div>
+                  <Cpu className="h-3 w-3" />{t.dashboard?.uicpu || "CPU"}</div>
                 <div>
                   {stats?.cpu_count ?? "—"} cores
                   {typeof stats?.cpu_percent === "number"
@@ -854,7 +853,7 @@ export default function SystemPage() {
               </div>
               {stats?.memory && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Memory</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.uimemory || "Memory"}</div>
                   <div>
                     {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)} ({stats.memory.percent}%)
                   </div>
@@ -863,8 +862,7 @@ export default function SystemPage() {
               {stats?.disk && (
                 <div>
                   <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                    <HardDrive className="h-3 w-3" /> Disk
-                  </div>
+                    <HardDrive className="h-3 w-3" />{t.dashboard?.uidisk || "Disk"}</div>
                   <div>
                     {formatBytes(stats.disk.used)} / {formatBytes(stats.disk.total)} ({stats.disk.percent}%)
                   </div>
@@ -872,20 +870,19 @@ export default function SystemPage() {
               )}
               {typeof stats?.uptime_seconds === "number" && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Uptime</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.uiuptime || "Uptime"}</div>
                   <div>{formatDuration(stats.uptime_seconds)}</div>
                 </div>
               )}
               {stats?.load_avg && stats.load_avg.length >= 3 && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Load avg</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.uiloadAvg || "Load avg"}</div>
                   <div>{stats.load_avg.map((n) => n.toFixed(2)).join(" / ")}</div>
                 </div>
               )}
             </div>
             {stats && !stats.psutil && (
-              <p className="mt-3 text-xs text-muted-foreground">
-                Install the <span className="font-mono">psutil</span> extra for
+              <p className="mt-3 text-xs text-muted-foreground">{t.dashboard?.uiinstallThe || "Install the"}<span className="font-mono">{t.dashboard?.uipsutil || "psutil"}</span> extra for
                 CPU / memory / disk metrics.
               </p>
             )}
@@ -903,17 +900,13 @@ export default function SystemPage() {
                     )
                   }
                   onClick={() => void checkForUpdate(true)}
-                >
-                  Check for updates
-                </Button>
+                >{t.dashboard?.uicheckForUpdates || "Check for updates"}</Button>
                 {updateInfo?.update_available && updateInfo.can_apply && (
                   <Button
                     size="sm"
                     prefix={<Download className="h-3.5 w-3.5" />}
                     onClick={() => setUpdateConfirmOpen(true)}
-                  >
-                    Update now
-                  </Button>
+                  >{t.dashboard?.uiupdateNow || "Update now"}</Button>
                 )}
                 {updateInfo &&
                   !updateInfo.can_apply &&
@@ -937,8 +930,7 @@ export default function SystemPage() {
       {/* ── Portal ────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Globe className="h-4 w-4" /> Nous Portal
-        </H2>
+          <Globe className="h-4 w-4" />{t.dashboard?.miscNousPortal || "Nous Portal"}</H2>
         <Card>
           <CardContent className="flex flex-col gap-3 py-4">
             <div className="flex items-center gap-3">
@@ -955,15 +947,11 @@ export default function SystemPage() {
                 target="_blank"
                 rel="noreferrer"
                 className="ml-auto text-xs text-primary underline"
-              >
-                Manage subscription
-              </a>
+              >{t.dashboard?.uimanageSubscription || "Manage subscription"}</a>
             </div>
             {portal?.features && portal.features.length > 0 && (
               <div className="flex flex-col gap-1 border-t border-border pt-3">
-                <span className="text-xs uppercase tracking-wider text-muted-foreground">
-                  Tool Gateway routing
-                </span>
+                <span className="text-xs uppercase tracking-wider text-muted-foreground">{t.dashboard?.sysGatewayRouting || "Tool Gateway routing"}</span>
                 {portal.features.map((f) => (
                   <div key={f.label} className="flex items-center justify-between text-sm">
                     <span>{f.label}</span>
@@ -973,8 +961,7 @@ export default function SystemPage() {
               </div>
             )}
             {!portal?.logged_in && (
-              <p className="text-xs text-muted-foreground">
-                Log in with <span className="font-mono">hermes portal</span>.
+              <p className="text-xs text-muted-foreground">{t.dashboard?.uilogInWith || "Log in with"}<span className="font-mono">{t.dashboard?.uihermesPortal || "hermes portal"}</span>.
               </p>
             )}
           </CardContent>
@@ -984,31 +971,28 @@ export default function SystemPage() {
       {/* ── Curator ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Sparkles className="h-4 w-4" /> Skill curator
-        </H2>
+          <Sparkles className="h-4 w-4" />{t.dashboard?.uiskillCurator || "Skill curator"}</H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
-                {curator?.paused ? "paused" : curator?.enabled ? "active" : "disabled"}
+                {curator?.paused ? (t.dashboard?.sysCuratorPaused || "paused") : curator?.enabled ? (t.dashboard?.sysCuratorActive || "active") : (t.dashboard?.sysCuratorDisabled || "disabled")}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {curator?.interval_hours ? `every ${curator.interval_hours}h` : ""}
-                {curator?.last_run_at ? ` · last run ${new Date(curator.last_run_at).toLocaleString()}` : " · never run"}
+                {curator?.interval_hours ? `${t.dashboard?.sysEvery || "every"} ${curator.interval_hours}h` : ""}
+                {curator?.last_run_at ? ` · ${t.dashboard?.sysLastRun || "last run"} ${new Date(curator.last_run_at).toLocaleString()}` : ` · ${t.dashboard?.sysNeverRun || "never run"}`}
               </span>
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" ghost onClick={toggleCuratorPaused}>
-                {curator?.paused ? "Resume" : "Pause"}
+                {curator?.paused ? (t.dashboard?.sysCuratorResume || "Resume") : (t.dashboard?.sysCuratorPause || "Pause")}
               </Button>
               <Button
                 size="sm"
                 ghost
                 prefix={<Play className="h-3.5 w-3.5" />}
-                onClick={() => runOp(api.runCurator, "Curator review")}
-              >
-                Run now
-              </Button>
+                onClick={() => runOp(api.runCurator, t.dashboard?.sysCuratorReview || "Curator review")}
+              >{t.dashboard?.uirunNow || "Run now"}</Button>
             </div>
           </CardContent>
         </Card>
@@ -1017,13 +1001,12 @@ export default function SystemPage() {
       {/* ── Gateway ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Power className="h-4 w-4" /> Gateway
-        </H2>
+          <Power className="h-4 w-4" />{t.dashboard?.uigateway || "Gateway"}</H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={gatewayRunning ? "success" : "secondary"}>
-                {gatewayRunning ? "running" : "stopped"}
+                {gatewayRunning ? (t.dashboard?.sysGatewayRunning || "running") : (t.dashboard?.sysGatewayStopped || "stopped")}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {status?.gateway_state ?? "—"}
@@ -1037,17 +1020,13 @@ export default function SystemPage() {
                 onClick={() => runGateway("start")}
                 disabled={gatewayRunning}
                 prefix={<Play className="h-3.5 w-3.5" />}
-              >
-                Start
-              </Button>
+              >{t.dashboard?.uistart || "Start"}</Button>
               <Button
                 size="sm"
                 className="uppercase"
                 onClick={() => runGateway("restart")}
                 prefix={<RotateCw className="h-3.5 w-3.5" />}
-              >
-                Restart
-              </Button>
+              >{t.dashboard?.uirestart || "Restart"}</Button>
               <Button
                 size="sm"
                 className="uppercase text-warning"
@@ -1055,9 +1034,7 @@ export default function SystemPage() {
                 onClick={() => runGateway("stop")}
                 disabled={!gatewayRunning}
                 prefix={<Power className="h-3.5 w-3.5" />}
-              >
-                Stop
-              </Button>
+              >{t.dashboard?.uistop || "Stop"}</Button>
             </div>
           </CardContent>
         </Card>
@@ -1066,8 +1043,7 @@ export default function SystemPage() {
       {/* ── Memory ────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Brain className="h-4 w-4" /> Memory
-        </H2>
+          <Brain className="h-4 w-4" />{t.dashboard?.uimemory || "Memory"}</H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -1082,7 +1058,7 @@ export default function SystemPage() {
               </Link>
               <span className="ml-auto">
                 New credentials:{" "}
-                <span className="font-mono">hermes memory setup</span>
+                <span className="font-mono">{t.dashboard?.uihermesMemorySetup || "hermes memory setup"}</span>
               </span>
             </div>
 
@@ -1093,15 +1069,9 @@ export default function SystemPage() {
                 {formatBytes(memory?.builtin_files.user ?? 0)}
               </span>
               <div className="flex items-center gap-2 ml-auto">
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
-                  Reset MEMORY.md
-                </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>
-                  Reset USER.md
-                </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
-                  Reset all
-                </Button>
+                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>{t.dashboard?.uiresetMemoryMd || "Reset MEMORY.md"}</Button>
+                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>{t.dashboard?.uiresetUserMd || "Reset USER.md"}</Button>
+                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>{t.dashboard?.uiresetAll || "Reset all"}</Button>
               </div>
             </div>
           </CardContent>
@@ -1111,33 +1081,28 @@ export default function SystemPage() {
       {/* ── Credential pool ───────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <KeyRound className="h-4 w-4" /> Credential pool
-        </H2>
+          <KeyRound className="h-4 w-4" />{t.dashboard?.uicredentialPool || "Credential pool"}</H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div className="grid gap-2">
-                <Label htmlFor="cred-provider">Provider</Label>
+                <Label htmlFor="cred-provider">{t.dashboard?.uiprovider || "Provider"}</Label>
                 <Input id="cred-provider" value={credProvider} onChange={(e) => setCredProvider(e.target.value)} placeholder="openrouter" />
               </div>
               <div className="grid gap-2 sm:col-span-2">
-                <Label htmlFor="cred-key">API key</Label>
+                <Label htmlFor="cred-key">{t.dashboard?.uiapiKey || "API key"}</Label>
                 <Input id="cred-key" type="password" value={credKey} onChange={(e) => setCredKey(e.target.value)} placeholder="sk-…" />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="cred-label">Label</Label>
+                <Label htmlFor="cred-label">{t.dashboard?.uilabel || "Label"}</Label>
                 <Input id="cred-label" value={credLabel} onChange={(e) => setCredLabel(e.target.value)} placeholder="optional" />
               </div>
             </div>
             <div className="flex justify-end">
-              <Button size="sm" className="uppercase" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>
-                Add key
-              </Button>
+              <Button size="sm" className="uppercase" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>{t.dashboard?.uiaddKey || "Add key"}</Button>
             </div>
             {pool.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                No pooled credentials. Add one above to enable key rotation.
-              </p>
+              <p className="text-sm text-muted-foreground">{t.dashboard?.uinoPooledCredentialsAddOneAbo || "No pooled credentials. Add one above to enable key rotation."}</p>
             )}
             {pool.map((prov) => (
               <div key={prov.provider} className="flex flex-col gap-2">
@@ -1164,31 +1129,19 @@ export default function SystemPage() {
       {/* ── Operations ────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Activity className="h-4 w-4" /> Operations
-        </H2>
+          <Activity className="h-4 w-4" />{t.dashboard?.uioperations || "Operations"}</H2>
         <Card>
           <CardContent className="flex flex-wrap gap-2 py-4">
             <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
-              Open console
+              {t.dashboard?.uiopenConsole || "Open console"}
             </Button>
-            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>
-              Run doctor
-            </Button>
-            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, "Security audit")}>
-              Security audit
-            </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, "Skills update")}>
-              Update skills
-            </Button>
-            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, "Prompt size")}>
-              Prompt size
-            </Button>
-            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, "Support dump")}>
-              Support dump
-            </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, "Config migrate")}>
-              Migrate config
-            </Button>
+            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>{t.dashboard?.uirunDoctor || "Run doctor"}</Button>
+            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, "Security audit")}>{t.dashboard?.uisecurityAudit || "Security audit"}</Button>
+            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(() => api.runBackup(), "Backup")}>{t.dashboard?.uicreateBackup || "Create backup"}</Button>
+            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, "Skills update")}>{t.dashboard?.uiupdateSkills || "Update skills"}</Button>
+            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, "Prompt size")}>{t.dashboard?.uipromptSize || "Prompt size"}</Button>
+            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, "Support dump")}>{t.dashboard?.uisupportDump || "Support dump"}</Button>
+            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, "Config migrate")}>{t.dashboard?.uimigrateConfig || "Migrate config"}</Button>
           </CardContent>
         </Card>
 
@@ -1196,7 +1149,7 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Full backup</Label>
+                <Label>{t.dashboard?.sysFullBackup || "Full backup"}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     size="sm"
@@ -1233,7 +1186,7 @@ export default function SystemPage() {
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Restore from backup upload</Label>
+                <Label>{t.dashboard?.sysRestoreFromUpload || "Restore from backup upload"}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     type="button"
@@ -1317,7 +1270,7 @@ export default function SystemPage() {
               <div className="flex items-start gap-2">
                 <Share2 className="h-4 w-4 mt-0.5 text-muted-foreground" />
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium">Share debug report</span>
+                  <span className="text-sm font-medium">{t.dashboard?.uishareDebugReport || "Share debug report"}</span>
                   <span className="text-xs text-muted-foreground max-w-prose">
                     Uploads system info + logs to a public paste service and
                     returns links to send the Hermes team. Pastes auto-delete
@@ -1361,11 +1314,11 @@ export default function SystemPage() {
               <div className="flex flex-col gap-2 border-t border-border pt-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Badge tone="success">uploaded</Badge>
+                    <Badge tone="success">{t.dashboard?.uiuploaded || "uploaded"}</Badge>
                     {shareResult.redacted ? (
-                      <Badge tone="outline">redacted</Badge>
+                      <Badge tone="outline">{t.dashboard?.uiredacted || "redacted"}</Badge>
                     ) : (
-                      <Badge tone="warning">not redacted</Badge>
+                      <Badge tone="warning">{t.dashboard?.uinotRedacted || "not redacted"}</Badge>
                     )}
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
@@ -1392,9 +1345,7 @@ export default function SystemPage() {
                           "__all__",
                         )
                       }
-                    >
-                      Copy all
-                    </Button>
+                    >{t.dashboard?.uicopyAll || "Copy all"}</Button>
                   )}
                 </div>
 
@@ -1435,22 +1386,36 @@ export default function SystemPage() {
             )}
           </CardContent>
         </Card>
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-end">
+            <div className="grid gap-2 flex-1">
+              <Label htmlFor="import-path">{t.dashboard?.uirestoreFromBackupArchive || "Restore from backup archive"}</Label>
+              <Input id="import-path" value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/path/to/hermes-backup.zip" />
+            </div>
+            <Button
+              size="sm"
+              ghost
+              disabled={!importPath.trim()}
+              onClick={() => {
+                if (!importPath.trim()) return;
+                setImportConfirmTarget({ kind: "path", path: importPath.trim() });
+              }}
+            >{t.dashboard?.uiimport || "Import"}</Button>
+          </CardContent>
+        </Card>
       </section>
 
       {/* ── Checkpoints ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Database className="h-4 w-4" /> Checkpoints
-        </H2>
+          <Database className="h-4 w-4" />{t.dashboard?.uicheckpoints || "Checkpoints"}</H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <span className="text-sm text-muted-foreground">
               {checkpoints?.sessions.length ?? 0} session(s) ·{" "}
               {formatBytes(checkpoints?.total_bytes ?? 0)}
             </span>
-            <Button size="sm" ghost className="text-destructive" disabled={!checkpoints?.sessions.length} prefix={<Trash2 className="h-3.5 w-3.5" />} onClick={() => checkpointsPrune.requestDelete("all")}>
-              Prune
-            </Button>
+            <Button size="sm" ghost className="text-destructive" disabled={!checkpoints?.sessions.length} prefix={<Trash2 className="h-3.5 w-3.5" />} onClick={() => checkpointsPrune.requestDelete("all")}>{t.dashboard?.uiprune || "Prune"}</Button>
           </CardContent>
         </Card>
       </section>
@@ -1459,17 +1424,12 @@ export default function SystemPage() {
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-            <Terminal className="h-4 w-4" /> Shell hooks
-          </H2>
-          <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
-            New hook
-          </Button>
+            <Terminal className="h-4 w-4" />{t.dashboard?.uishellHooks || "Shell hooks"}</H2>
+          <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>{t.dashboard?.uinewHook || "New hook"}</Button>
         </div>
         {(!hooks || hooks.hooks.length === 0) && (
           <Card>
-            <CardContent className="py-6 text-center text-sm text-muted-foreground">
-              No shell hooks configured.
-            </CardContent>
+            <CardContent className="py-6 text-center text-sm text-muted-foreground">{t.dashboard?.uinoShellHooksConfigured || "No shell hooks configured."}</CardContent>
           </Card>
         )}
         {hooks?.hooks.map((h: HookEntry, i) => (
@@ -1481,7 +1441,7 @@ export default function SystemPage() {
               )}
               <span className="font-mono text-xs truncate flex-1">{h.command}</span>
               {h.executable === false && (
-                <Badge tone="destructive">not executable</Badge>
+                <Badge tone="destructive">{t.dashboard?.uinotExecutable || "not executable"}</Badge>
               )}
               <Badge tone={h.allowed ? "success" : "warning"}>
                 {h.allowed ? "allowed" : "not approved"}

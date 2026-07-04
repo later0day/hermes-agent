@@ -1429,7 +1429,6 @@ async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
     adapter._auto_create_thread.assert_awaited_once()
     adapter._fetch_channel_context.assert_not_awaited()
 
-
 @pytest.mark.asyncio
 async def test_discord_reply_in_free_channel_triggers_backfill(adapter, monkeypatch):
     """Replying to a message hydrates context even in a free-response channel.
@@ -1485,4 +1484,3 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_not_awaited()
-

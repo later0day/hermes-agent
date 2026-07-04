@@ -1219,6 +1219,7 @@ def _home_target_env_var(platform_name: str) -> str:
     registry via ``cron.scheduler._resolve_home_env_var``, then falls back
     to ``<PLATFORM>_HOME_CHANNEL`` for unknown names.
     """
+    _prefer_project_package("cron")
     from cron.scheduler import _resolve_home_env_var
 
     resolved = _resolve_home_env_var(platform_name)
@@ -1257,7 +1258,52 @@ os.environ["_HERMES_GATEWAY"] = "1"
 _ensure_ssl_certs()
 
 # Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+
+def _prefer_project_package(package_name: str) -> None:
+    """Prefer the Hermes source-tree package over profile state directories.
+
+    Profile gateways run with cwd set to ``HERMES_HOME`` for service stability.
+    Some profile homes contain state directories whose names match source
+    packages, notably ``cron/``. If such a directory is cached as a namespace
+    package before the gateway imports ``cron.scheduler``, submodule imports
+    fail even though the project root is also on ``sys.path``.
+    """
+    project_entry = str(_PROJECT_ROOT)
+    sys.path[:] = [p for p in sys.path if p != project_entry]
+    sys.path.insert(0, project_entry)
+
+    module = sys.modules.get(package_name)
+    if module is None:
+        return
+
+    expected_dir = (_PROJECT_ROOT / package_name).resolve()
+    locations: list[Path] = []
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        try:
+            locations.append(Path(module_file).resolve())
+        except OSError:
+            pass
+    module_path = getattr(module, "__path__", None)
+    if module_path:
+        for path_entry in module_path:
+            try:
+                locations.append(Path(path_entry).resolve())
+            except OSError:
+                pass
+
+    if any(loc == expected_dir or expected_dir in loc.parents for loc in locations):
+        return
+
+    for loaded_name in list(sys.modules):
+        if loaded_name == package_name or loaded_name.startswith(f"{package_name}."):
+            sys.modules.pop(loaded_name, None)
+
+
+_prefer_project_package("cron")
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
@@ -1976,6 +2022,15 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
+def _build_media_error_placeholder(event) -> str:
+    """Build a text note for attachments that failed before they became files."""
+    parts = []
+    media_errors = getattr(event, "media_errors", None) or []
+    for error in media_errors:
+        parts.append(f"[Media attachment unavailable: {error}]")
+    return "\n".join(parts)
+
+
 def _build_document_context_note(display_name: str, agent_path: str, mtype: str) -> str:
     """Context note prepended to a user turn when they attach a document.
 
@@ -2484,11 +2539,52 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
     return watch_events
 
 
+# Sentinel returned by _maybe_resend_recent_image when the message is not a
+# "resend last image" request or when the platform does not support it.
+# Callers check `result is _RECENT_IMAGE_RESEND_NOT_HANDLED` to decide
+# whether to fall through to normal message handling.
+_RECENT_IMAGE_RESEND_NOT_HANDLED = object()
+
+# Patterns that signal the user wants the most recent image re-sent.
+_RESEND_IMAGE_PATTERNS = re.compile(
+    r"(?:"
+    r"图片.*重新.*发|重新.*发.*图片|刚才.*图片.*发|发.*刚才.*图片"
+    r"|resend\s+(?:the\s+)?(?:last|latest|recent)\s+image"
+    r"|send\s+(?:the\s+)?(?:last|latest|recent)\s+image"
+    r")",
+    re.IGNORECASE,
+)
+
+# Matches "[Image attached at: /some/path.png]" lines written by the gateway
+# image-attachment flow.
+_IMAGE_ATTACHED_RE = re.compile(
+    r"\[Image attached at:\s*(.+?)\]"
+)
+
+
+def _wants_recent_image_resend(text: str) -> bool:
+    """Return True when *text* expresses intent to re-receive the last image."""
+    return bool(_RESEND_IMAGE_PATTERNS.search(text or ""))
+
+
+def _find_latest_attached_image_path(messages: list) -> str | None:
+    """Scan *messages* newest-first and return the path of the most recent
+    existing attached image, or ``None`` if none is found."""
+    for msg in reversed(messages):
+        content = msg.get("content") or ""
+        for m in reversed(list(_IMAGE_ATTACHED_RE.finditer(content))):
+            path = m.group(1).strip()
+            if os.path.isfile(path):
+                return path
+    return None
+
+
 # Module-level weak reference to the active GatewayRunner instance.
 # Used by tools (e.g. send_message) that need to route through a live
 # adapter for plugin platforms.  Set in GatewayRunner.__init__().
 import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
+
 
 
 def _normalize_empty_agent_response(
@@ -2707,6 +2803,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        from gateway.source_agent_binding import SourceAgentBindingStore
+        from hermes_constants import get_default_hermes_root
+        self._source_agent_binding_store = SourceAgentBindingStore()
+        self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
+        self._agent_delete_confirmations = {}
         # Multi-profile multiplexing: adapters for NON-default profiles live
         # here, keyed by profile name then Platform. self.adapters stays the
         # default/active profile's map so the ~93 existing self.adapters[...]
@@ -9082,6 +9183,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /agents (/tasks alias) should be query-only and never interrupt.
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "agent":
+                return await self._handle_agent_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "agent":
+                return await self._handle_agent_command(event)
+
+                return await self._handle_agents_command(event)
 
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
@@ -9420,6 +9527,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_status_command(event)
 
         if canonical == "agents":
+            return await self._handle_agents_command(event)
+        if canonical == "agent":
+            return await self._handle_agent_command(event)
+        if canonical == "agent":
+            return await self._handle_agent_command(event)
+
             return await self._handle_agents_command(event)
 
         if canonical == "platform":
@@ -10142,6 +10255,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"with it if their intent is genuinely unclear.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
+
+        media_errors = getattr(event, "media_errors", None) or []
+        if media_errors:
+            _media_error_note = _build_media_error_placeholder(event)
+            if _media_error_note:
+                message_text = f"{_media_error_note}\n\n{message_text}" if message_text else _media_error_note
 
         if event.media_urls:
             import mimetypes as _mimetypes
@@ -11076,6 +11195,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # DingTalk image re-send shortcut — handles "刚才那个图片发给我" style requests.
+            _resend_result = await self._maybe_resend_recent_image(
+                event, source, self._session_db, session_entry.session_id
+            )
+            if _resend_result is not _RECENT_IMAGE_RESEND_NOT_HANDLED:
+                if _resend_result:  # plain-text error/notice string
+                    await self._send_reply(source, _resend_result, event=event)
+                return
+
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
             # below; a /new or another lifecycle transition may move
@@ -11601,6 +11729,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
+
+            # Tell the platform adapter (if it supports per-chat reply
+            # state) what the outcome of this turn was, so the final
+            # reaction it fires can reflect error/interrupted state
+            # instead of always celebrating completion. Adapters that
+            # don't define ``set_pending_reply_state`` are unaffected.
+            try:
+                _state_adapter = self.adapters.get(source.platform)
+                if _state_adapter is not None and hasattr(
+                    _state_adapter, "set_pending_reply_state",
+                ):
+                    if agent_result.get("interrupted"):
+                        _reply_state = "interrupted"
+                    elif agent_result.get("failed") or agent_result.get("error"):
+                        _reply_state = "error"
+                    else:
+                        _reply_state = "success"
+                    _state_adapter.set_pending_reply_state(
+                        source.chat_id, _reply_state,
+                    )
+            except Exception:
+                logger.debug(
+                    "set_pending_reply_state failed for session %s",
+                    session_entry.session_id,
+                    exc_info=True,
+                )
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -13769,6 +13923,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
 
+    async def _maybe_resend_recent_image(
+        self,
+        event: "MessageEvent",
+        source: "SessionSource",
+        session_db,
+        session_id: str,
+    ):
+        """Re-send the most recent attached image when the user asks for it.
+
+        Only active on DingTalk (the platform where image-file re-delivery is
+        most useful and where ``send_image_file`` is fully implemented).
+        Returns ``_RECENT_IMAGE_RESEND_NOT_HANDLED`` when:
+        - the text does not express a resend intent, or
+        - the platform adapter does not support ``send_image_file``.
+        Returns ``None`` after a successful re-delivery, or a plain-text error
+        string when no recent image is found in the session history.
+        """
+        if not _wants_recent_image_resend(event.text or ""):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        # Only DingTalk supports the full image re-delivery flow.
+        from gateway.config import Platform as _Platform
+        if source.platform != _Platform.DINGTALK:
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        adapter = self.adapters.get(source.platform)
+        if adapter is None or not hasattr(adapter, "send_image_file"):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+
+        messages = []
+        try:
+            messages = session_db.get_messages(session_id) or []
+        except Exception:
+            logger.debug("_maybe_resend_recent_image: get_messages failed", exc_info=True)
+
+        path = _find_latest_attached_image_path(messages)
+        if path is None:
+            return "没找到最近的图片，请重新上传。"
+
+        try:
+            await adapter.send_image_file(
+                chat_id=source.chat_id,
+                image_path=path,
+                caption="最近一张图片重新发给你。",
+                reply_to=event.message_id,
+                metadata=None,
+            )
+        except Exception:
+            logger.warning("_maybe_resend_recent_image: send_image_file failed", exc_info=True)
+            return "图片重发失败，请稍后再试。"
+
+        # Record the round-trip in session history so the agent stays aware.
+        try:
+            session_db.append_message(
+                session_id, "user", event.text or "", platform_message_id=event.message_id
+            )
+            session_db.append_message(
+                session_id, "assistant", f"[resent image attachment: {path}]"
+            )
+        except Exception:
+            logger.debug("_maybe_resend_recent_image: append_message failed", exc_info=True)
+
+        return None
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval
@@ -14643,6 +14858,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         audio_paths: List[str] = []
         media_urls = getattr(event, "media_urls", None) or []
         media_types = getattr(event, "media_types", None) or []
+        media_errors = getattr(event, "media_errors", None) or []
         for i, path in enumerate(media_urls):
             mtype = media_types[i] if i < len(media_types) else ""
             is_audio = (
@@ -14676,7 +14892,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return enriched_text or None
 
         # Non-audio fallback: preserve original _dequeue_pending_text semantics.
-        if not text and media_urls:
+        if media_errors:
+            _media_error_note = _build_media_error_placeholder(event)
+            if _media_error_note:
+                text = f"{_media_error_note}\n\n{text}" if text else _media_error_note
+        elif not text and media_urls:
             text = _build_media_placeholder(event)
         return text or None
 
@@ -16277,7 +16497,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from hermes_cli.profiles import get_active_profile_name, get_profile_dir
         try:
-            name = (source.profile or "").strip() or get_active_profile_name() or "default"
+            name = (source.profile or "").strip()
+            if not name:
+                try:
+                    from gateway.session import build_source_binding_key
+                    binding = self._source_agent_binding_store.get_binding(build_source_binding_key(source))
+                    if binding:
+                        name = binding.profile_name
+                except Exception:
+                    pass
+            name = name or get_active_profile_name() or "default"
             return get_profile_dir(name)
         except Exception:
             from hermes_constants import get_hermes_home
@@ -16392,7 +16621,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
-        from gateway.config import Platform
+        from gateway.config import Platform, StreamingConfig
         tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
         # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
@@ -16424,11 +16653,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform=source.platform,
             require_platform_override_for={Platform.MATTERMOST},
         )
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        _scfg = getattr(getattr(self, "config", None), "streaming", None)
+        if _scfg is None:
+            _scfg = StreamingConfig()
+        _plat_streaming = resolve_display_setting(
+            user_config, platform_key, "streaming"
+        )
+        _streaming_enabled_for_status = (
+            _scfg.enabled and _scfg.transport != "off"
+            if _plat_streaming is None
+            else bool(_plat_streaming)
+        )
+        _turn_status_adapter = self.adapters.get(source.platform)
+        _turn_status_card_enabled = bool(
+            _turn_status_adapter is not None
+            and getattr(_turn_status_adapter, "SUPPORTS_TURN_STATUS_CARD", False) is True
+            and (
+                tool_progress_enabled
+                or _thinking_enabled
+                or interim_assistant_messages_enabled
+                or _streaming_enabled_for_status
+            )
+        )
+        needs_progress_queue = (
+            tool_progress_enabled or _thinking_enabled
+        ) and not _turn_status_card_enabled
 
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
+        turn_status_card_holder = [None]
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -16502,18 +16756,82 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            turn_status_card = turn_status_card_holder[0]
             # "log" mode: append tool.started lines to the log queue and stay
             # silent in chat. Handled before the progress_queue guard because
             # log mode runs without a chat progress queue.
             if log_queue is not None:
                 if event_type == "tool.started" and tool_name and tool_name != "_thinking":
+                    from datetime import datetime
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     preview_str = f' "{preview}"' if preview else ""
                     log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
-                if not progress_queue:
+                if not progress_queue and turn_status_card is None:
                     return
-            if not progress_queue or not _run_still_current():
+            if not _run_still_current():
                 return
+
+            # Stage-aware reaction hook (DingTalk + any adapter that opts
+            # in by defining ``notify_tool_started``). Runs BEFORE the
+            # existing dispatch so the user-message reaction updates even
+            # when tool progress bubbles are off and the status card is
+            # disabled — the reaction is the smallest, cheapest progress
+            # signal we have.
+            if event_type in {"tool.started", "subagent.tool"} and tool_name:
+                try:
+                    _stage_adapter = self.adapters.get(source.platform)
+                    if _stage_adapter is not None and hasattr(
+                        _stage_adapter, "notify_tool_started",
+                    ):
+                        _stage_adapter.notify_tool_started(
+                            source.chat_id, tool_name, preview=preview,
+                        )
+                except Exception:
+                    logger.debug(
+                        "notify_tool_started failed for %s",
+                        tool_name, exc_info=True,
+                    )
+
+            if not progress_queue and turn_status_card is None:
+                return
+
+            if event_type in {"subagent.tool", "subagent.tool.completed"}:
+                mapped_event = (
+                    "tool.completed"
+                    if event_type == "subagent.tool.completed"
+                    else "tool.started"
+                )
+                if turn_status_card is not None:
+                    turn_status_card.on_tool_progress(
+                        mapped_event, tool_name, preview, args, **kwargs,
+                    )
+                    return
+                if (
+                    progress_queue is not None
+                    and tool_progress_enabled
+                    and event_type == "subagent.tool"
+                ):
+                    subagent_tool = tool_name or "subagent"
+                    msg = f"🔀 {subagent_tool}"
+                    if preview:
+                        msg += f" — {preview}"
+                    progress_queue.put(msg)
+                return
+
+            if event_type in {
+                "subagent.start",
+                "subagent.complete",
+                "subagent.progress",
+                "subagent.thinking",
+            }:
+                subagent_text = preview or tool_name or ""
+                if not subagent_text:
+                    return
+                if turn_status_card is not None:
+                    turn_status_card.on_commentary(f"🔀 {subagent_text}")
+                    return
+                if progress_queue is not None:
+                    progress_queue.put(f"🔀 {subagent_text}")
 
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -16522,9 +16840,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
             if event_type == "tool.completed" and not long_tool_hint_fired[0]:
+                if turn_status_card is not None:
+                    turn_status_card.on_tool_progress(
+                        event_type, tool_name, preview, args, **kwargs,
+                    )
                 try:
                     duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                    if (
+                        progress_queue is not None
+                        and duration >= _LONG_TOOL_THRESHOLD_S
+                        and progress_mode == "all"
+                    ):
                         from agent.onboarding import (
                             TOOL_PROGRESS_FLAG,
                             is_seen,
@@ -16554,17 +16880,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 thinking_text = preview if tool_name == "_thinking" else tool_name
                 msg = f"💬 {thinking_text}" if thinking_text else None
+                if turn_status_card is not None:
+                    turn_status_card.on_tool_progress(
+                        event_type, tool_name, msg, args, **kwargs,
+                    )
+                    return
                 if msg:
                     progress_queue.put(msg)
                 return
 
-            # If tool_progress is off, only _thinking passes through (above).
-            # Regular tool calls are suppressed.
-            if not tool_progress_enabled:
+            # If tool_progress is off, only _thinking passes through unless a
+            # turn status card is active.  The status card replaces noisy
+            # streaming/interim bubbles and still needs real tool lifecycle
+            # events to render progress.
+            if not tool_progress_enabled and turn_status_card is None:
                 return
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
+                if turn_status_card is not None and event_type == "tool.completed":
+                    turn_status_card.on_tool_progress(
+                        event_type, tool_name, preview, args, **kwargs,
+                    )
+                return
+
+            if turn_status_card is not None:
+                turn_status_card.on_tool_progress(
+                    event_type, tool_name, preview, args, **kwargs,
+                )
                 return
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
@@ -16713,6 +17056,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             repeat_count[0] = 0
             
             progress_queue.put(msg)
+        setattr(progress_callback, "__hermes_accepts_tool_progress_metadata__", True)
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
@@ -16738,6 +17082,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
             else None
         )
+        if _turn_status_card_enabled and _turn_status_adapter is not None:
+            try:
+                from gateway.turn_status_card import (
+                    TurnStatusCardConfig,
+                    TurnStatusCardCoordinator,
+                )
+                _turn_preview_len = resolve_display_setting(
+                    user_config, platform_key, "tool_preview_length", 0,
+                )
+                try:
+                    _turn_preview_len = int(_turn_preview_len or 40)
+                except Exception:
+                    _turn_preview_len = 40
+                if _turn_preview_len <= 0:
+                    _turn_preview_len = 40
+                turn_status_card_holder[0] = TurnStatusCardCoordinator(
+                    adapter=_turn_status_adapter,
+                    chat_id=source.chat_id,
+                    metadata=_progress_metadata,
+                    config=TurnStatusCardConfig(
+                        edit_interval=0.5,
+                        preview_max_len=_turn_preview_len,
+                    ),
+                )
+            except Exception as _tsc_err:
+                logger.debug("Could not set up turn status card: %s", _tsc_err)
+                if progress_queue is None and (tool_progress_enabled or _thinking_enabled):
+                    progress_queue = queue.Queue()
 
         async def write_tool_log():
             """Drain log_queue and append tool-call lines to tool_calls.log.
@@ -17296,27 +17668,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
-            _scfg = getattr(getattr(self, 'config', None), 'streaming', None)
-            if _scfg is None:
-                from gateway.config import StreamingConfig
-                _scfg = StreamingConfig()
-
-            # Per-platform streaming gate: display.platforms.<plat>.streaming
-            # can disable streaming for specific platforms even when the global
-            # streaming config is enabled.
-            _plat_streaming = resolve_display_setting(
-                user_config, platform_key, "streaming"
-            )
-            # None = no per-platform override → follow global config
-            _streaming_enabled = (
-                _scfg.enabled and _scfg.transport != "off"
-                if _plat_streaming is None
-                else bool(_plat_streaming)
-            )
+            _streaming_enabled = _streaming_enabled_for_status
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
-            if _want_stream_deltas or _want_interim_consumer:
+            _turn_status_card = turn_status_card_holder[0]
+            if _turn_status_card is not None:
+                if _want_stream_deltas:
+                    def _stream_delta_cb(text: str) -> None:
+                        if _run_still_current():
+                            _turn_status_card.on_delta(text)
+            elif _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
@@ -17386,6 +17748,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
+                    return
+                if _turn_status_card is not None:
+                    if already_streamed:
+                        _turn_status_card.on_delta(None)
+                    else:
+                        _turn_status_card.on_commentary(text)
                     return
                 if _stream_consumer is not None:
                     if already_streamed:
@@ -17588,8 +17956,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # who set thinking_progress:true but kept tool_progress:off got a
             # None callback — so _thinking scratch bubbles never relayed even
             # though the progress queue was created for them.
+            # Also arm the callback when a turn_status_card is active: the card
+            # replaces the queue (needs_progress_queue is False when the card is
+            # on), but progress_callback is still the routing hub that calls
+            # turn_status_card.on_tool_progress(). Without it, tool events are
+            # silently dropped and tools=0 in every card update. (#turn-card-fix)
             agent.tool_progress_callback = (
-                progress_callback if (needs_progress_queue or log_mode_enabled) else None
+                progress_callback
+                if (needs_progress_queue or _turn_status_card_enabled or log_mode_enabled)
+                else None
             )
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
@@ -18159,6 +18534,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
+            _turn_status_card = turn_status_card_holder[0]
+            if _turn_status_card is not None:
+                _turn_status_card.finish()
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
@@ -18423,6 +18801,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
 
+        turn_status_task = None
+        if turn_status_card_holder[0] is not None:
+            turn_status_task = asyncio.create_task(turn_status_card_holder[0].run())
+
         # Start the tool-call log writer when tool_progress == "log".
         log_task = None
         if log_mode_enabled:
@@ -18516,6 +18898,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 # 🎙️ echo back to the user.
                                 _media_urls = getattr(_peek_event, "media_urls", None) or []
                                 _media_types = getattr(_peek_event, "media_types", None) or []
+                                _media_errors = getattr(_peek_event, "media_errors", None) or []
                                 _audio_paths = []
                                 for _i, _path in enumerate(_media_urls):
                                     _mtype = _media_types[_i] if _i < len(_media_types) else ""
@@ -18548,6 +18931,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     except Exception as _trans_exc:
                                         logger.warning(
                                             "Voice-interrupt transcription failed: %s", _trans_exc,
+                                        )
+                                elif _media_errors:
+                                    _media_error_note = _build_media_error_placeholder(_peek_event)
+                                    if _media_error_note:
+                                        pending_text = (
+                                            f"{_media_error_note}\n\n{pending_text}"
+                                            if pending_text else _media_error_note
                                         )
                                 elif not pending_text and _media_urls:
                                     pending_text = _build_media_placeholder(_peek_event)
@@ -19226,6 +19616,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await stream_task
                         except asyncio.CancelledError:
                             pass
+
+            _turn_status_card = turn_status_card_holder[0]
+            if _turn_status_card is not None:
+                try:
+                    _turn_status_card.finish()
+                except Exception:
+                    pass
+            if turn_status_task:
+                try:
+                    await asyncio.wait_for(turn_status_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    turn_status_task.cancel()
+                    try:
+                        await turn_status_task
+                    except asyncio.CancelledError:
+                        pass
             
             # Clean up tracking
             tracking_task.cancel()
@@ -19559,6 +19965,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     longer runs gateway housekeeping — that moved to
     ``_start_gateway_housekeeping``.
     """
+    _prefer_project_package("cron")
     from cron.scheduler_provider import InProcessCronScheduler
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
@@ -19593,10 +20000,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         acquire_gateway_runtime_lock,
         get_running_pid,
         get_process_start_time,
+        mark_current_process_as_gateway_runtime,
         release_gateway_runtime_lock,
         remove_pid_file,
         terminate_pid,
     )
+    mark_current_process_as_gateway_runtime()
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
@@ -20018,6 +20427,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # historical in-process 60s ticker; an external provider (e.g. chronos)
     # may arm a schedule and return. Pass the event loop so cron delivery can
     # use live adapters (E2EE support).
+    _prefer_project_package("cron")
     from cron.scheduler_provider import resolve_cron_scheduler
     cron_stop = threading.Event()
     cron_provider = resolve_cron_scheduler()
