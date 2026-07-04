@@ -1750,7 +1750,10 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):
             return expanded
-    here = os.getcwd()
+    try:
+        here = os.getcwd()
+    except FileNotFoundError:
+        return staging_dir
     if os.path.isdir(here):
         return here
     return staging_dir

@@ -1,3 +1,5 @@
+import { useI18n } from "@/i18n/context";
+import { en } from "@/i18n/en";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -37,21 +39,19 @@ import { cn, themedBody } from "@/lib/utils";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
-const STATE_BADGE: Record<
-  string,
-  { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
-> = {
-  connected: { tone: "success", label: "Connected" },
-  pending_restart: { tone: "warning", label: "Restart to apply" },
-  gateway_stopped: { tone: "warning", label: "Gateway stopped" },
-  startup_failed: { tone: "destructive", label: "Start failed" },
-  disconnected: { tone: "warning", label: "Disconnected" },
-  not_configured: { tone: "outline", label: "Not configured" },
-  disabled: { tone: "secondary", label: "Disabled" },
-  fatal: { tone: "destructive", label: "Error" },
-};
-
-function stateBadge(state: string) {
+function stateBadge(state: string, channels: Record<string, string>) {
+  const STATE_BADGE: Record<
+    string,
+    { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
+  > = {
+    connected: { tone: "success", label: channels.stateConnected },
+    pending_restart: { tone: "warning", label: channels.statePendingRestart },
+    gateway_stopped: { tone: "warning", label: channels.stateGatewayStopped },
+    disconnected: { tone: "warning", label: channels.stateDisconnected },
+    not_configured: { tone: "outline", label: channels.stateNotConfigured },
+    disabled: { tone: "secondary", label: channels.stateDisabled },
+    fatal: { tone: "destructive", label: channels.stateError },
+  };
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
 }
 
@@ -103,11 +103,11 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 }
 
 export default function ChannelsPage() {
+  const { t } = useI18n();
+  const tCh = (t.channels ?? en.channels) as Record<string, string>;
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
-  const [gatewayStartCommand, setGatewayStartCommand] = useState(
-    "hermes gateway start",
-  );
+
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
@@ -137,7 +137,6 @@ export default function ChannelsPage() {
       .then((res) => {
         setPlatforms(res.platforms);
         setEnvPath(res.env_path || "~/.hermes/.env");
-        setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
       })
       .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
@@ -165,14 +164,14 @@ export default function ChannelsPage() {
       if (v.trim()) env[k] = v.trim();
     });
     if (Object.keys(env).length === 0) {
-      showToast("Nothing to save — fill in at least one field.", "error");
+      showToast(tCh.saveEmpty, "error");
       return;
     }
     const missing = editing.env_vars.filter(
       (v) => v.required && !v.is_set && !env[v.key],
     );
     if (missing.length > 0) {
-      showToast(`${missing[0].prompt || missing[0].key} is required`, "error");
+      showToast(`${missing[0].prompt || missing[0].key} ${tCh.fieldRequired}`, "error");
       return;
     }
     const nextFieldErrors: Record<string, string> = {};
@@ -189,12 +188,12 @@ export default function ChannelsPage() {
     try {
       const body: MessagingPlatformUpdate = { env, enabled: true };
       await api.updateMessagingPlatform(editing.id, body);
-      showToast(`${editing.name} saved`, "success");
+      showToast(`${editing.name} ${tCh.savedSuccess}`, "success");
       setEditing(null);
       setRestartNeeded(true);
       await load();
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(`${tCh.saveFailed} ${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -236,12 +235,12 @@ export default function ChannelsPage() {
     setRestarting(true);
     try {
       await api.restartGateway();
-      showToast("Gateway restarting…", "success");
+      showToast(tCh.gatewayRestarting, "success");
       setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to restart: ${e}`, "error");
+      showToast(`${tCh.gatewayRestartFailed} ${e}`, "error");
     } finally {
       setRestarting(false);
     }
@@ -256,12 +255,12 @@ export default function ChannelsPage() {
         disabled={restarting}
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
-        {restarting ? "Restarting…" : "Restart gateway"}
+        {restarting ? (t.dashboard?.uirestarting || "Restarting…") : (t.dashboard?.uirestartGateway || "Restart gateway")}
       </Button>,
     );
     return () => setEnd(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setEnd, restarting]);
+  }, [setEnd, restarting, t]);
 
   const configured = useMemo(
     () => platforms.filter((p) => p.configured).length,
@@ -287,7 +286,7 @@ export default function ChannelsPage() {
             <div className="flex items-center gap-2 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
               <span>
-                Changes are saved. Restart the gateway for them to take effect.
+                {t.dashboard?.uichangesAreSavedRestartTheGat || "Changes are saved. Restart the gateway for them to take effect."}
               </span>
             </div>
             <Button
@@ -297,7 +296,7 @@ export default function ChannelsPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart now"}
+              {restarting ? (t.dashboard?.uirestarting || "Restarting…") : (t.dashboard?.uirestartNow || "Restart now")}
             </Button>
           </CardContent>
         </Card>
@@ -308,18 +307,20 @@ export default function ChannelsPage() {
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
-              The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
-              (or the Restart button above).
+              {t.dashboard?.uitheGatewayIsNotRunningConfig || "The gateway is not running. Configure channels here, then start the gateway with"} <code className="font-courier">{t.dashboard?.uihermesGatewayStart || "hermes gateway start"}</code>{" "}
+              {t.dashboard?.uiOrRestartButtonAbove || "(or the Restart button above)."}
             </span>
           </CardContent>
         </Card>
       )}
 
       <p className="text-xs text-muted-foreground">
-        {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; the
-        gateway connects each enabled channel on its next restart.
+        {(t.dashboard?.uiChannelsConfiguredCount || "{configured} of {total} channels configured.")
+          .replace("{configured}", String(configured))
+          .replace("{total}", String(platforms.length))}{" "}
+        {t.dashboard?.uiCredentialsWrittenTo || "Credentials are written to"}{" "}
+        <code className="font-courier">{envPath}</code>;{" "}
+        {t.dashboard?.uiGatewayConnectsOnRestart || "the gateway connects each enabled channel on its next restart."}
       </p>
 
       {/* Config modal */}
@@ -353,7 +354,7 @@ export default function ChannelsPage() {
                 id="channel-config-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                Configure {editing.name}
+                {tCh.configTitle.replace("{name}", editing.name)}
               </h2>
               {editing.docs_url && (
                 <a
@@ -362,7 +363,7 @@ export default function ChannelsPage() {
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
-                  Setup guide <ExternalLink className="h-3 w-3" />
+                  {tCh.setupGuide} <ExternalLink className="h-3 w-3" />
                 </a>
               )}
             </header>
@@ -399,7 +400,7 @@ export default function ChannelsPage() {
                     type={field.is_password ? "password" : "text"}
                     placeholder={
                       field.is_set
-                        ? field.redacted_value || "•••••• (set — leave blank to keep)"
+                        ? field.redacted_value || tCh.passwordPlaceholder
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}
@@ -425,7 +426,7 @@ export default function ChannelsPage() {
 
               <div className="flex justify-end gap-2 pt-1">
                 <Button ghost size="sm" onClick={() => setEditing(null)}>
-                  Cancel
+                  {tCh.cancel}
                 </Button>
                 <Button
                   className="uppercase"
@@ -434,7 +435,7 @@ export default function ChannelsPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? "Saving…" : "Save & enable"}
+                  {saving ? tCh.saving : tCh.saveEnable}
                 </Button>
               </div>
             </div>
@@ -445,7 +446,7 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const badge = stateBadge(platform.state, tCh);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -495,7 +496,7 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`Enable ${platform.name}`}
+                          aria-label={`${tCh.enableAria} ${platform.name}`}
                         />
                       )}
                     </div>
@@ -512,7 +513,7 @@ export default function ChannelsPage() {
                         )
                       }
                     >
-                      Test
+                      {tCh.test}
                     </Button>
                     <Button
                       size="sm"
@@ -520,7 +521,7 @@ export default function ChannelsPage() {
                       onClick={() => openConfig(platform)}
                       prefix={<Settings2 className="h-4 w-4" />}
                     >
-                      Configure
+                      {tCh.configure}
                     </Button>
                   </div>
                 </div>
@@ -530,6 +531,13 @@ export default function ChannelsPage() {
                     onRestartNeeded={() => setRestartNeeded(true)}
                     platform={platform}
                     setRestartNeeded={setRestartNeeded}
+                    showToast={showToast}
+                  />
+                )}
+                {platform.id === "weixin" && (
+                  <WeixinQRPanel
+                    onChanged={load}
+                    platform={platform}
                     showToast={showToast}
                   />
                 )}
@@ -554,7 +562,8 @@ function TelegramOnboardingPanel({
   platform: MessagingPlatform;
   setRestartNeeded: (needed: boolean) => void;
   showToast: (message: string, type: "success" | "error") => void;
-}) {
+}) {  const { t } = useI18n();
+  const tCh = (t.channels ?? en.channels) as Record<string, string>;
   const [setup, setSetup] = useState<TelegramOnboardingStartResponse | null>(
     null,
   );
@@ -603,7 +612,7 @@ function TelegramOnboardingPanel({
           setSetup(null);
           setQrDataUrl("");
           setPhase("idle");
-          setError("Telegram pairing expired. Start a new QR setup to try again.");
+          setError(tCh.telegramPairingExpired || "Telegram pairing expired. Start a new QR setup to try again.");
           return;
         }
 
@@ -673,7 +682,7 @@ function TelegramOnboardingPanel({
   const addAllowedId = () => {
     const trimmed = newAllowedId.trim();
     if (!TELEGRAM_USER_ID_RE.test(trimmed)) {
-      setError("Allowed Telegram user IDs must be numeric.");
+      setError(tCh.telegramUserIdNumeric || "Allowed Telegram user IDs must be numeric.");
       return;
     }
     setError("");
@@ -710,7 +719,7 @@ function TelegramOnboardingPanel({
   const apply = async () => {
     if (!setup) return;
     if (allowedIds.length === 0) {
-      setError("Add at least one allowed Telegram user ID.");
+      setError(tCh.telegramAddUserId || "Add at least one allowed Telegram user ID.");
       return;
     }
     setPhase("applying");
@@ -721,14 +730,14 @@ function TelegramOnboardingPanel({
       });
       resetSetup();
       if (result.restart_started) {
-        showToast("Telegram saved; gateway restarting…", "success");
+        showToast(tCh.telegramSavedRestarting || "Telegram saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
         void watchRestartOutcome();
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
           await api.restartGateway();
-          showToast("Telegram saved; gateway restarting…", "success");
+          showToast(tCh.telegramSavedRestarting || "Telegram saved; gateway restarting…", "success");
           setRestartNeeded(false);
           setTimeout(() => void onChanged(), 4000);
         } catch (restartError) {
@@ -764,11 +773,11 @@ function TelegramOnboardingPanel({
           disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
           prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
         >
-          {phase === "starting" ? "Starting…" : "Set up with QR"}
+          {phase === "starting" ? tCh.telegramStarting : tCh.telegramSetupQR}
         </Button>
         {platform.configured && (
           <span className="text-xs text-muted-foreground">
-            Existing Telegram credentials are configured.
+            {tCh.telegramExisting}
           </span>
         )}
       </div>
@@ -785,7 +794,7 @@ function TelegramOnboardingPanel({
             {(phase === "ready" || phase === "applying") && (
               <div className="grid gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="success">Ready</Badge>
+                  <Badge tone="success">{tCh.telegramReady}</Badge>
                   {botUsername && (
                     <span className="font-courier text-sm text-muted-foreground">
                       @{botUsername}
@@ -796,10 +805,10 @@ function TelegramOnboardingPanel({
                 <div className="grid gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-                      Allowed users
+                      {tCh.telegramAllowedUsers}
                     </span>
                     {detectedOwnerId && allowedIds.includes(detectedOwnerId) && (
-                      <Badge tone="success">owner detected</Badge>
+                      <Badge tone="success">{tCh.telegramOwnerDetected}</Badge>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -820,7 +829,7 @@ function TelegramOnboardingPanel({
                     ))}
                     {allowedIds.length === 0 && (
                       <span className="text-sm text-muted-foreground">
-                        Add at least one Telegram user ID.
+                        {tCh.telegramAddOneHint}
                       </span>
                     )}
                   </div>
@@ -830,11 +839,11 @@ function TelegramOnboardingPanel({
                   <Input
                     value={newAllowedId}
                     onChange={(event) => setNewAllowedId(event.target.value)}
-                    placeholder="Telegram user ID"
+                    placeholder={tCh.telegramUserIdPlaceholder}
                     className="font-courier"
                   />
                   <Button size="sm" outlined onClick={addAllowedId} prefix={<Check />}>
-                    Add
+                    {tCh.telegramAdd}
                   </Button>
                 </div>
 
@@ -846,10 +855,10 @@ function TelegramOnboardingPanel({
                     disabled={phase === "applying"}
                     prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
                   >
-                    {phase === "applying" ? "Saving…" : "Save and restart"}
+                    {phase === "applying" ? tCh.saving : tCh.telegramSaveRestart}
                   </Button>
                   <Button size="sm" ghost onClick={() => void cancel()}>
-                    Cancel
+                    {tCh.cancel}
                   </Button>
                 </div>
               </div>
@@ -859,14 +868,14 @@ function TelegramOnboardingPanel({
           <div className="flex flex-col items-center justify-center gap-3">
             <img
               src={qrDataUrl}
-              alt="Telegram setup QR code"
+              alt={tCh.telegramSetupQR}
               className="h-56 w-56 bg-white p-2"
             />
             <div className="flex flex-wrap items-center justify-center gap-2 text-sm">
               <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
-                {expiresIn}
+                {expiresIn === "expired" ? tCh.telegramExpired : expiresIn}
               </Badge>
-              {phase === "waiting" && <Badge tone="warning">waiting</Badge>}
+              {phase === "waiting" && <Badge tone="warning">{tCh.telegramWaiting}</Badge>}
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <a
@@ -876,13 +885,145 @@ function TelegramOnboardingPanel({
                 className="inline-flex h-8 items-center gap-1 border border-border px-3 text-xs uppercase text-foreground hover:border-foreground/40"
               >
                 <ExternalLink className="h-4 w-4" />
-                Open Telegram
+                {tCh.telegramOpen}
               </a>
               <Button size="sm" ghost onClick={() => void cancel()}>
-                Cancel
+                {tCh.cancel}
               </Button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WeixinQRPanel({
+  onChanged,
+  platform,
+  showToast,
+}: {
+  onChanged: () => Promise<void>;
+  platform: MessagingPlatform;
+  showToast: (msg: string, type: "success" | "error") => void;
+}) {
+  const { t } = useI18n();
+  const tCh = (t.channels ?? en.channels) as Record<string, string>;
+  const [phase, setPhase] = useState<"idle" | "starting" | "waiting" | "scaned" | "confirmed" | "error">("idle");
+  const [sessionId, setSessionId] = useState("");
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [error, setError] = useState("");
+
+  const cancel = useCallback(async () => {
+    if (sessionId) {
+      try { await api.cancelWeixinQR(sessionId); } catch { /* ignore */ }
+    }
+    setPhase("idle");
+    setSessionId("");
+    setQrDataUrl("");
+    setError("");
+  }, [sessionId]);
+
+  const start = useCallback(async () => {
+    setPhase("starting");
+    setError("");
+    setQrDataUrl("");
+    try {
+      const res = await api.startWeixinQR();
+      setSessionId(res.session_id);
+      // Convert the QR URL/value to a QR code image
+      const qrContent = res.qr_url || res.qr_value;
+      const dataUrl = await QRCode.toDataURL(qrContent, { width: 224, margin: 2 });
+      setQrDataUrl(dataUrl);
+      setPhase("waiting");
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }, []);
+
+  // Poll for status
+  useEffect(() => {
+    if (phase !== "waiting" && phase !== "scaned") return;
+    if (!sessionId) return;
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (cancelled) break;
+        try {
+          const res = await api.getWeixinQRStatus(sessionId);
+          if (cancelled) break;
+          if (res.status === "scaned") {
+            setPhase("scaned");
+          } else if (res.status === "confirmed") {
+            setPhase("confirmed");
+            showToast(tCh.weixinSuccess ?? "WeChat connected!", "success");
+            void onChanged();
+            break;
+          } else if (res.status === "expired" || res.status === "error") {
+            // QR refreshed on backend; update image if qr_url changed
+            if (res.qr_url) {
+              const dataUrl = await QRCode.toDataURL(res.qr_url, { width: 224, margin: 2 });
+              if (!cancelled) setQrDataUrl(dataUrl);
+            }
+            setPhase("waiting");
+          }
+        } catch { break; }
+      }
+    };
+    void poll();
+    return () => { cancelled = true; };
+  }, [phase, sessionId, onChanged, showToast, tCh.weixinSuccess]);
+
+  // Status badge label
+  const statusLabel = phase === "scaned"
+    ? (tCh.weixinScaned ?? "Scanned — confirm in WeChat")
+    : phase === "confirmed"
+    ? (tCh.weixinConfirmed ?? "Connected ✓")
+    : (tCh.weixinWaiting ?? "Waiting for scan…");
+
+  return (
+    <div className="rounded-sm border border-border bg-background/35 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          className="uppercase"
+          onClick={() => void start()}
+          disabled={phase === "starting" || phase === "waiting" || phase === "scaned"}
+          prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
+        >
+          {phase === "starting" ? (tCh.weixinStarting ?? "Connecting…") : (tCh.weixinSetupQR ?? "Login with QR Code")}
+        </Button>
+        {platform.configured && (
+          <span className="text-xs text-muted-foreground">
+            {tCh.weixinExisting ?? "Already connected. Scan again to re-login."}
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <div className="mt-3 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {qrDataUrl && phase !== "confirmed" && (
+        <div className="mt-4 flex flex-col items-center gap-3">
+          <img src={qrDataUrl} alt="WeChat QR" className="h-56 w-56 bg-white p-2" />
+          <Badge tone={phase === "scaned" ? "success" : "warning"}>{statusLabel}</Badge>
+          <Button size="sm" ghost onClick={() => void cancel()}>
+            {tCh.cancel}
+          </Button>
+        </div>
+      )}
+
+      {phase === "confirmed" && (
+        <div className="mt-3 flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 text-green-500" />
+          <span className="text-sm text-green-600">
+            {tCh.weixinSuccess ?? "WeChat connected successfully!"}
+          </span>
         </div>
       )}
     </div>

@@ -196,7 +196,7 @@ export default function PluginsPage() {
                   value={contextSel}
                   onValueChange={setContextSel}
                 >
-                  <SelectOption value="compressor">compressor</SelectOption>
+                  <SelectOption value="compressor">{t.dashboard?.uicompressor || "compressor"}</SelectOption>
 
                   {providers.context_options
                     .filter((o) => o.name !== "compressor")

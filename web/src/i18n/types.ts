@@ -310,7 +310,16 @@ export interface Translations {
       email: string;
       needsHomeChannel?: string;
       noneConfigured?: string;
+      label?: string;
     };
+    runHistory?: string;
+    runHistoryEmpty?: string;
+    runDuration?: string;
+    advanced?: string;
+    viewJobs?: string;
+    viewBlueprints?: string;
+    saveChanges?: string;
+    repeat?: string;
   };
 
   // ── Plugins page ──
@@ -456,6 +465,7 @@ export interface Translations {
     resetScopeTooltip: string;
     confirmResetScope: string;
     resetScopeToast: string;
+    resetScopeDescription?: string;
     rawYaml: string;
     searchResults: string;
     fields: string;
@@ -514,6 +524,12 @@ export interface Translations {
     customKeyNamePlaceholder: string;
     add: string;
     invalidKeyName: string;
+    oauth?: string;
+    providers?: string;
+    tools?: string;
+    settings?: string;
+    jumpToSection?: string;
+    varDescriptions?: Record<string, string>;
   };
 
   // ── OAuth ──
@@ -554,6 +570,18 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
+    failedToStartLogin?: string;
+    connectedMessage?: string;
+    disconnectedMessage?: string;
+    loginStatus?: string;
+    pollingFailed?: string;
+    tokenExchangeFailed?: string;
+    submitFailed?: string;
+    retryFailed?: string;
+    failedToLoadProviders?: string;
+    disconnectFailed?: string;
+    openDocs?: string;
+    disconnectConfirmDescription?: string;
   };
 
   // ── Language switcher ──
@@ -825,4 +853,11 @@ export interface Translations {
     logTruncated: string;
     logAt: string;
   };
+  dashboard?: Record<string, string>;
+  channels?: Record<string, string>;
+  pairing?: Record<string, string>;
+  mcp?: Record<string, string>;
+  webhooks?: Record<string, string>;
+  system?: Record<string, string>;
+  memory?: Record<string, string>;
 }

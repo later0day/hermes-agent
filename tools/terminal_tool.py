@@ -1207,6 +1207,42 @@ def _safe_getcwd() -> str:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
+def _repair_deleted_cwd() -> Optional[str]:
+    """Move the process back to a real directory if its cwd was removed.
+
+    Background cleanup runs long after the command that created a scratch cwd
+    may have finished.  If that cwd is deleted, unrelated cleanup work can hit
+    FileNotFoundError through stdlib helpers that implicitly call getcwd().
+    """
+    try:
+        os.getcwd()
+        return None
+    except FileNotFoundError:
+        repo_root = str(Path(__file__).resolve().parents[1])
+        candidates = [
+            os.getenv("TERMINAL_CWD"),
+            os.getenv("HERMES_CWD"),
+            repo_root,
+            os.path.expanduser("~"),
+        ]
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            expanded = os.path.expanduser(candidate)
+            if not os.path.isabs(expanded):
+                expanded = os.path.join(repo_root, expanded)
+            if not os.path.isdir(expanded):
+                continue
+            try:
+                os.chdir(expanded)
+                logger.info("Recovered process cwd after deleted working directory: %s", expanded)
+                return expanded
+            except OSError:
+                continue
+        return None
+
+
 # Path prefixes that identify a *host* working directory which cannot exist
 # inside a container sandbox. Covers POSIX user dirs and Windows drive paths
 # (``C:\Users\...`` / ``C:/Users/...``) — the latter is how a Windows host's
@@ -1255,6 +1291,8 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
 
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
+    _repair_deleted_cwd()
+
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
@@ -1602,6 +1640,7 @@ def _cleanup_thread_worker():
     """Background thread worker that periodically cleans up inactive environments."""
     while _cleanup_running:
         try:
+            _repair_deleted_cwd()
             config = _get_env_config()
             _cleanup_inactive_envs(config["lifetime_seconds"])
         except Exception as e:

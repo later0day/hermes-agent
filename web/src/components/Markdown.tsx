@@ -1,4 +1,27 @@
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useRef, useMemo, type ReactNode } from "react";
+import mermaid from "mermaid";
+
+let _mermaidInited = false;
+function ensureMermaid() {
+  if (_mermaidInited) return;
+  _mermaidInited = true;
+  mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+}
+
+function MermaidBlock({ code }: { code: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const id = `mermaid-${Math.random().toString(36).slice(2)}`;
+  useEffect(() => {
+    ensureMermaid();
+    if (!ref.current) return;
+    mermaid
+      .render(id, code)
+      .then(({ svg }) => { if (ref.current) ref.current.innerHTML = svg; })
+      .catch(() => { if (ref.current) ref.current.textContent = code; });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+  return <div ref={ref} className="my-4 flex justify-center overflow-x-auto" />;
+}
 
 /**
  * Lightweight markdown renderer for LLM output.
@@ -167,6 +190,7 @@ function Block({
 }) {
   switch (block.type) {
     case "code":
+      if (block.lang === "mermaid") return <MermaidBlock key={block.content} code={block.content} />;
       return (
         <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
           <code>

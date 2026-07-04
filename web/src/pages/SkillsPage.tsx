@@ -415,7 +415,7 @@ export default function SkillsPage() {
                 />
                 <PanelItem
                   icon={Search}
-                  label="Browse hub"
+                  label={t.dashboard?.skillsBrowseHub || "Browse hub"}
                   active={view === "hub"}
                   onClick={() => {
                     setView("hub");
@@ -530,16 +530,14 @@ export default function SkillsPage() {
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
-                      Learn a skill
+                      {t.dashboard?.skillsLearnASkill || "Learn a skill"}
                     </Button>
                     <Button
                       size="sm"
                       outlined
                       onClick={openCreateEditor}
                       prefix={<Plus />}
-                    >
-                      New skill
-                    </Button>
+                    >{t.dashboard?.uinewSkill || "New skill"}</Button>
                   </div>
                 </div>
               </CardHeader>
@@ -638,8 +636,8 @@ export default function SkillsPage() {
                                   onClick={() => setConfigToolset(ts)}
                                   prefix={<Wrench />}
                                 >
-                                  Configure
-                                </Button>
+                                  {t.dashboard?.uiconfigure || "Configure"}</Button>
+
                               </div>
                             </div>
                           </div>
@@ -673,17 +671,15 @@ export default function SkillsPage() {
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogTitle>{t.dashboard?.skillsLearnASkill || "Learn a skill"}</DialogTitle>
             <DialogDescription>
-              Point Hermes at anything and it will distill a reusable skill —
-              following the house authoring standards. Fill in any combination
-              below; the agent gathers the sources and writes the skill in chat.
+              {t.dashboard?.skillsLearnDialogDesc || "Point Hermes at anything and it will distill a reusable skill — following the house authoring standards. Fill in any combination below; the agent gathers the sources and writes the skill in chat."}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Local file or directory
+                {t.dashboard?.skillsLocalFileOrDir || "Local file or directory"}
               </label>
               <Input
                 placeholder="~/projects/some-sdk  (read with read_file / search_files)"
@@ -693,7 +689,7 @@ export default function SkillsPage() {
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                URL
+                {t.dashboard?.skillsUrlLabel || "URL"}
               </label>
               <Input
                 placeholder="https://docs.example.com/api  (fetched with web_extract)"
@@ -703,8 +699,7 @@ export default function SkillsPage() {
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Anything else — describe the workflow, paste notes, or say
-                "what we just did"
+                {t.dashboard?.skillsAnythingElse || "Anything else — describe the workflow, paste notes, or say \"what we just did\""}
               </label>
               <textarea
                 className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -716,14 +711,14 @@ export default function SkillsPage() {
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <Button ghost onClick={() => setLearnOpen(false)}>
-              Cancel
+              {t.dashboard?.skillsLearnCancel || "Cancel"}
             </Button>
             <Button
               onClick={submitLearn}
               prefix={<Sparkles />}
               disabled={!learnDir.trim() && !learnUrl.trim() && !learnText.trim()}
             >
-              Learn it
+              {t.dashboard?.skillsLearnIt || "Learn it"}
             </Button>
           </div>
         </DialogContent>
@@ -740,6 +735,7 @@ function SkillRow({
   onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
+  const { t } = useI18n();
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
@@ -767,7 +763,7 @@ function SkillRow({
         ghost
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-        title="Edit SKILL.md"
+        title={t.dashboard?.skillsEditSkillMd || "Edit SKILL.md"}
         aria-label={`Edit ${skill.name}`}
         onClick={onEdit}
       >
@@ -778,6 +774,7 @@ function SkillRow({
 }
 
 function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
+
   return (
     <ListItem
       active={active}
@@ -814,35 +811,35 @@ interface SkillRowProps {
 /* ------------------------------------------------------------------ */
 
 /** Map a trust level to a Badge tone + label + icon. */
-function trustVisual(level: string): {
+function trustVisual(level: string, td?: Record<string, string> | null): {
   tone: "success" | "secondary" | "warning" | "outline";
   label: string;
 } {
   switch (level) {
     case "trusted":
-      return { tone: "success", label: "trusted" };
+      return { tone: "success", label: (td?.skillsTrustTrusted || "trusted") };
     case "builtin":
-      return { tone: "secondary", label: "builtin" };
+      return { tone: "secondary", label: (td?.skillsTrustBuiltin || "builtin") };
     case "community":
-      return { tone: "warning", label: "community" };
+      return { tone: "warning", label: (td?.skillsTrustCommunity || "community") };
     default:
-      return { tone: "outline", label: level || "unknown" };
+      return { tone: "outline", label: level || (td?.skillsTrustUnknown || "unknown") };
   }
 }
 
 /** Map a scan verdict to tone + icon. */
-function verdictVisual(verdict: string): {
+function verdictVisual(verdict: string, td?: Record<string, string> | null): {
   tone: "success" | "warning" | "destructive";
   Icon: React.ComponentType<{ className?: string }>;
   label: string;
 } {
   switch (verdict) {
     case "safe":
-      return { tone: "success", Icon: ShieldCheck, label: "Safe" };
+      return { tone: "success", Icon: ShieldCheck, label: (td?.skillsVerdictSafe || "Safe") };
     case "caution":
-      return { tone: "warning", Icon: ShieldAlert, label: "Caution" };
+      return { tone: "warning", Icon: ShieldAlert, label: (td?.skillsVerdictCaution || "Caution") };
     case "dangerous":
-      return { tone: "destructive", Icon: ShieldAlert, label: "Dangerous" };
+      return { tone: "destructive", Icon: ShieldAlert, label: (td?.skillsVerdictDangerous || "Dangerous") };
     default:
       return { tone: "warning", Icon: ShieldQuestion, label: verdict };
   }
@@ -862,7 +859,7 @@ function HubBrowser({
   showToast: (msg: string, kind: "success" | "error") => void;
   /** Optional profile scoping installs + installed-state badges. */
   profile?: string;
-}) {
+}) {  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -968,7 +965,7 @@ function HubBrowser({
     async (identifier: string) => {
       try {
         const res = await api.installSkillFromHub(identifier, profile);
-        showToast(`Installing ${identifier}…`, "success");
+        showToast(`${t.dashboard?.skillsInstalling || "Installing"} ${identifier}…`, "success");
         setActionLog([]);
         setActionRunning(true);
         setAction(res.name);
@@ -983,14 +980,14 @@ function HubBrowser({
   const updateAll = useCallback(async () => {
     try {
       const res = await api.updateSkillsFromHub(profile);
-      showToast("Updating installed skills…", "success");
+      showToast(t.dashboard?.skillsUpdating || "Updating installed skills…", "success");
       setActionLog([]);
       setActionRunning(true);
       setAction(res.name);
     } catch (e) {
       showToast(`Update failed: ${e}`, "error");
     }
-  }, [showToast, profile]);
+  }, [showToast, profile, t]);
 
   const isInstalled = useCallback(
     (identifier: string) => Boolean(installed[identifier]),
@@ -1022,17 +1019,13 @@ function HubBrowser({
               onClick={() => void runSearch()}
               disabled={searching || !query.trim()}
               prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
-            >
-              Search
-            </Button>
+            >{t.dashboard?.uisearch || "Search"}</Button>
             <Button
               size="sm"
               outlined
               onClick={() => void updateAll()}
               prefix={<RefreshCw className="h-3.5 w-3.5" />}
-            >
-              Update all
-            </Button>
+            >{t.dashboard?.uiupdateAll || "Update all"}</Button>
           </div>
 
           {/* Connected hubs strip — proves the tab is wired up. */}
@@ -1048,9 +1041,9 @@ function HubBrowser({
               <Download className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="font-mono text-xs">{action}</span>
               {actionRunning ? (
-                <Badge tone="warning">running</Badge>
+                <Badge tone="warning">{t.dashboard?.uirunning || "running"}</Badge>
               ) : (
-                <Badge tone="success">done</Badge>
+                <Badge tone="success">{t.dashboard?.uidone90 || "done"}</Badge>
               )}
               {!actionRunning && (
                 <Button
@@ -1082,11 +1075,9 @@ function HubBrowser({
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 px-1">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
-                <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
-                  Featured skills
-                </span>
+                <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">{t.dashboard?.skillsFeatured || "Featured skills"}</span>
                 <span className="text-xs text-text-tertiary">
-                  from the Hermes index — search above for thousands more
+                  {t.dashboard?.skillsFeaturedSubtitle || "from the Hermes index — search above for thousands more"}
                 </span>
               </div>
               {featured.map((r) => (
@@ -1102,8 +1093,7 @@ function HubBrowser({
           ) : (
             <Card className="rounded-none">
               <CardContent className="py-10 text-center text-sm text-muted-foreground">
-                Search the hub above to browse installable skills from the
-                connected sources.
+                {t.dashboard?.skillsSearchHubPrompt || "Search the hub above to browse installable skills from the connected sources."}
               </CardContent>
             </Card>
           )}
@@ -1128,9 +1118,7 @@ function HubBrowser({
           />
           {results.length === 0 ? (
             <Card className="rounded-none">
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                No matching skills found in the hub.
-              </CardContent>
+              <CardContent className="py-8 text-center text-sm text-muted-foreground">{t.dashboard?.uinoMatchingSkillsFoundInTheHu || "No matching skills found in the hub."}</CardContent>
             </Card>
           ) : (
             results.map((r) => (
@@ -1167,17 +1155,17 @@ function ConnectedHubs({
 }: {
   sources: SkillHubSource[];
   loading: boolean;
-}) {
+}) {  const { t } = useI18n();
   if (loading) {
     return (
-      <p className="text-xs text-muted-foreground">Connecting to skill hubs…</p>
+      <p className="text-xs text-muted-foreground">{t.dashboard?.skillsConnectingToHubs || "Connecting to skill hubs…"}</p>
     );
   }
   if (sources.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        Results come from the same sources as{" "}
-        <span className="font-mono">hermes skills search</span>.
+        {t.dashboard?.skillsResultsFrom || "Results come from the same sources as"}{" "}
+        <span className="font-mono">{t.dashboard?.uihermesSkillsSearch || "hermes skills search"}</span>.
       </p>
     );
   }
@@ -1185,7 +1173,7 @@ function ConnectedHubs({
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="flex items-center gap-1 text-xs text-text-tertiary">
         <Globe className="h-3 w-3" />
-        Connected hubs:
+        {t.dashboard?.skillsConnectedHubs || "Connected hubs:"}
       </span>
       {sources.map((s) => {
         const down =
@@ -1205,7 +1193,7 @@ function ConnectedHubs({
             }
           >
             {s.label}
-            {s.id === "github" && s.rate_limited ? " (rate-limited)" : ""}
+            {s.id === "github" && s.rate_limited ? (t.dashboard?.skillsRateLimited || " (rate-limited)") : ""}
           </Badge>
         );
       })}
@@ -1225,11 +1213,12 @@ function SearchMeta({
   timedOut: string[];
   ms: number | null;
 }) {
+  const { t } = useI18n();
   const entries = Object.entries(sourceCounts).filter(([, n]) => n > 0);
   return (
     <div className="flex flex-wrap items-center gap-2 px-1 text-xs text-text-tertiary">
       <Badge tone="secondary" className="text-xs">
-        {count} result{count !== 1 ? "s" : ""}
+        {t.dashboard?.skillsResultCount?.replace("{n}", String(count)) || `${count} result${count !== 1 ? "s" : ""}`}
       </Badge>
       {ms != null && <span>{(ms / 1000).toFixed(1)}s</span>}
       {entries.length > 0 && (
@@ -1244,7 +1233,7 @@ function SearchMeta({
       {timedOut.length > 0 && (
         <span className="flex items-center gap-1 text-amber-400">
           <AlertTriangle className="h-3 w-3" />
-          {timedOut.join(", ")} timed out
+          {timedOut.join(", ")} {t.dashboard?.skillsTimedOut || "timed out"}
         </span>
       )}
     </div>
@@ -1263,7 +1252,9 @@ function HubResultCard({
   onOpen: () => void;
   onInstall: () => void;
 }) {
-  const trust = trustVisual(result.trust_level);
+  const { t } = useI18n();
+
+  const trust = trustVisual(result.trust_level, t.dashboard as Record<string, string> | null);
   return (
     <Card className="rounded-none transition-colors hover:bg-muted/30">
       <CardContent className="py-3 flex items-start gap-3">
@@ -1284,9 +1275,7 @@ function HubResultCard({
               {result.source}
             </Badge>
             {installed && (
-              <Badge tone="success" className="text-xs">
-                installed
-              </Badge>
+              <Badge tone="success" className="text-xs">{t.dashboard?.uiinstalled83 || "installed"}</Badge>
             )}
           </div>
           <p className="text-xs text-text-secondary line-clamp-2">
@@ -1312,21 +1301,15 @@ function HubResultCard({
             outlined
             onClick={onOpen}
             prefix={<FileText className="h-3.5 w-3.5" />}
-          >
-            Details
-          </Button>
+          >{t.dashboard?.uidetails || "Details"}</Button>
           {installed ? (
-            <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-              Installed
-            </Button>
+            <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>{t.dashboard?.mcpInstalled || "Installed"}</Button>
           ) : (
             <Button
               size="sm"
               onClick={onInstall}
               prefix={<Download className="h-3.5 w-3.5" />}
-            >
-              Install
-            </Button>
+            >{t.dashboard?.uiinstall || "Install"}</Button>
           )}
         </div>
       </CardContent>
@@ -1348,12 +1331,14 @@ function SkillDetailDialog({
   onInstall: () => void;
   showToast: (msg: string, kind: "success" | "error") => void;
 }) {
+  const { t } = useI18n();
+
   const [tab, setTab] = useState<"readme" | "scan">("readme");
   const [preview, setPreview] = useState<SkillHubPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(true);
   const [scan, setScan] = useState<SkillHubScan | null>(null);
   const [scanning, setScanning] = useState(false);
-  const trust = trustVisual(result.trust_level);
+  const trust = trustVisual(result.trust_level, t.dashboard as Record<string, string> | null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1397,9 +1382,7 @@ function SkillDetailDialog({
               {result.source}
             </Badge>
             {installed && (
-              <Badge tone="success" className="text-xs">
-                installed
-              </Badge>
+              <Badge tone="success" className="text-xs">{t.dashboard?.uiinstalled83 || "installed"}</Badge>
             )}
           </DialogTitle>
           <DialogDescription className="sr-only">
@@ -1422,9 +1405,7 @@ function SkillDetailDialog({
             outlined={tab !== "readme"}
             onClick={() => setTab("readme")}
             prefix={<FileText className="h-3.5 w-3.5" />}
-          >
-            Read SKILL.md
-          </Button>
+          >{t.dashboard?.uireadSkillMd || "Read SKILL.md"}</Button>
           <Button
             size="sm"
             outlined={tab !== "scan"}
@@ -1438,7 +1419,7 @@ function SkillDetailDialog({
               )
             }
           >
-            {scan ? "Re-scan" : "Security scan"}
+            {scan ? (t.dashboard?.skillsRescan || "Re-scan") : (t.dashboard?.skillsSecurityScan || "Security scan")}
           </Button>
           <div className="ml-auto flex items-center gap-3">
             {result.repo && (
@@ -1453,17 +1434,13 @@ function SkillDetailDialog({
               </a>
             )}
             {installed ? (
-              <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-                Installed
-              </Button>
+              <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>{t.dashboard?.mcpInstalled || "Installed"}</Button>
             ) : (
               <Button
                 size="sm"
                 onClick={onInstall}
                 prefix={<Download className="h-3.5 w-3.5" />}
-              >
-                Install
-              </Button>
+              >{t.dashboard?.uiinstall || "Install"}</Button>
             )}
           </div>
         </div>
@@ -1492,19 +1469,17 @@ function SkillDetailDialog({
                 {preview.files.length > 0 && (
                   <div className="text-xs text-text-tertiary">
                     <span className="font-mondwest tracking-[0.1em] uppercase">
-                      Files:{" "}
+                      {t.dashboard?.skillsFiles || "Files: "}{" "}
                     </span>
                     <span className="font-mono">{preview.files.join("  ")}</span>
                   </div>
                 )}
                 <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
-                  {(preview.skill_md || "").trim() || "(SKILL.md is empty)"}
+                  {(preview.skill_md || "").trim() || (t.dashboard?.skillsMdEmpty || "(SKILL.md is empty)")}
                 </pre>
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground text-center py-10">
-                Couldn't load the skill source.
-              </p>
+              <p className="text-sm text-muted-foreground text-center py-10">{t.dashboard?.uicouldnTLoadTheSkillSource || "Couldn't load the skill source."}</p>
             )
           ) : (
             <ScanPanel scan={scan} scanning={scanning} />
@@ -1523,12 +1498,14 @@ function ScanPanel({
   scan: SkillHubScan | null;
   scanning: boolean;
 }) {
+  const { t } = useI18n();
+
   if (scanning && !scan) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
         <span className="text-xs text-muted-foreground">
-          Fetching, quarantining, and scanning…
+          {t.dashboard?.skillsScanningProgress || "Fetching, quarantining, and scanning…"}
         </span>
       </div>
     );
@@ -1536,13 +1513,12 @@ function ScanPanel({
   if (!scan) {
     return (
       <p className="text-sm text-muted-foreground text-center py-10">
-        Run a security scan to inspect this skill for risky patterns before
-        installing.
+        {t.dashboard?.skillsRunScanPrompt || "Run a security scan to inspect this skill for risky patterns before installing."}
       </p>
     );
   }
 
-  const v = verdictVisual(scan.verdict);
+  const v = verdictVisual(scan.verdict, t.dashboard as Record<string, string> | null);
   const policyTone =
     scan.policy === "allow"
       ? "success"
@@ -1551,10 +1527,10 @@ function ScanPanel({
         : "destructive";
   const policyLabel =
     scan.policy === "allow"
-      ? "Install allowed"
+      ? (t.dashboard?.skillsPolicyAllowed || "Install allowed")
       : scan.policy === "ask"
-        ? "Needs confirmation"
-        : "Install blocked";
+        ? (t.dashboard?.skillsPolicyConfirm || "Needs confirmation")
+        : (t.dashboard?.skillsPolicyBlocked || "Install blocked");
 
   return (
     <div className="flex flex-col gap-3">
@@ -1572,14 +1548,13 @@ function ScanPanel({
         />
         <div className="flex flex-col">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">Verdict: {v.label}</span>
+            <span className="text-sm font-medium">{`${t.dashboard?.skillsVerdict || "Verdict"}: ${v.label}`}</span>
             <Badge tone={v.tone} className="text-xs">
               {scan.verdict}
             </Badge>
           </div>
           <span className="text-xs text-text-tertiary">
-            {scan.trust_level} source · {scan.findings.length} finding
-            {scan.findings.length !== 1 ? "s" : ""}
+            {scan.trust_level} {t.dashboard?.skillsSource || "source"} · {scan.findings.length} {t.dashboard?.skillsFinding || "finding"}{scan.findings.length !== 1 ? "s" : ""}
           </span>
         </div>
         <Badge tone={policyTone} className="ml-auto text-xs">
@@ -1600,9 +1575,7 @@ function ScanPanel({
         })}
         {scan.findings.length === 0 && (
           <span className="flex items-center gap-1 text-xs text-emerald-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            No risky patterns detected
-          </span>
+            <CheckCircle2 className="h-3.5 w-3.5" />{t.dashboard?.uinoRiskyPatternsDetected || "No risky patterns detected"}</span>
         )}
       </div>
 

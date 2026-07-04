@@ -117,6 +117,22 @@ def _ra():
     return run_agent
 
 
+def _emit_tool_progress(agent, event_type: str, tool_name: str, preview: Any, args: Any, **kwargs: Any) -> None:
+    """Emit tool progress without changing the legacy callback contract.
+
+    Existing callbacks historically accepted exactly four positional arguments.
+    Gateway presentation code can opt into stable tool identity metadata by
+    setting ``__hermes_accepts_tool_progress_metadata__`` on the callback.
+    """
+    callback = getattr(agent, "tool_progress_callback", None)
+    if not callback:
+        return
+    if getattr(callback, "__hermes_accepts_tool_progress_metadata__", False):
+        callback(event_type, tool_name, preview, args, **kwargs)
+    else:
+        callback(event_type, tool_name, preview, args)
+
+
 def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
     return "cannot schedule new futures after interpreter shutdown" in str(exc)
 
@@ -501,7 +517,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
                 print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
-    for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
+    for _idx, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         if block_result is not None:
             continue
         if agent.tool_progress_callback:
@@ -874,10 +890,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
             if not blocked and agent.tool_progress_callback:
                 try:
-                    agent.tool_progress_callback(
+                    _emit_tool_progress(
+                        agent,
                         "tool.completed", function_name, None, None,
                         duration=tool_duration, is_error=is_error,
                         result=function_result,
+                        tool_call_id=getattr(tc, "id", "") or "",
+                        index=i,
                     )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
@@ -1542,10 +1561,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:
-                agent.tool_progress_callback(
+                _emit_tool_progress(
+                    agent,
                     "tool.completed", function_name, None, None,
                     duration=tool_duration, is_error=_is_error_result,
                     result=function_result,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    index=i - 1,
                 )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")

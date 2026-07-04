@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { Package, Power, Server, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -64,6 +65,8 @@ const TRANSPORT_TONE: Record<string, "success" | "warning" | "secondary"> = {
 };
 
 export default function McpPage() {
+  const { t } = useI18n();
+
   const [servers, setServers] = useState<McpServer[]>([]);
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
   const [diagnostics, setDiagnostics] = useState<McpCatalogDiagnostic[]>([]);
@@ -291,9 +294,7 @@ export default function McpPage() {
         className="uppercase"
         size="sm"
         onClick={() => setCreateModalOpen(true)}
-      >
-        Add Server
-      </Button>,
+      >{t.dashboard?.uiaddServer58 || "Add Server"}</Button>,
     );
     return () => {
       setEnd(null);
@@ -362,14 +363,12 @@ export default function McpPage() {
               <h2
                 id="create-mcp-title"
                 className="font-mondwest text-display text-base tracking-wider"
-              >
-                Add MCP server
-              </h2>
+              >{t.dashboard?.mcpAddServer || "Add MCP server"}</h2>
             </header>
 
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="mcp-name">Name</Label>
+                <Label htmlFor="mcp-name">{t.dashboard?.webhookName || "Name"}</Label>
                 <Input
                   id="mcp-name"
                   autoFocus
@@ -380,20 +379,20 @@ export default function McpPage() {
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="mcp-transport">Transport</Label>
+                <Label htmlFor="mcp-transport">{t.dashboard?.mcpTransport || "Transport"}</Label>
                 <Select
                   id="mcp-transport"
                   value={transport}
                   onValueChange={(v) => setTransport(v as Transport)}
                 >
                   <SelectOption value="http">HTTP/SSE</SelectOption>
-                  <SelectOption value="stdio">stdio</SelectOption>
+                  <SelectOption value="stdio">{t.dashboard?.uistdio || "stdio"}</SelectOption>
                 </Select>
               </div>
 
               {transport === "http" ? (
                 <div className="grid gap-2">
-                  <Label htmlFor="mcp-url">URL</Label>
+                  <Label htmlFor="mcp-url">{t.dashboard?.mcpUrl || "URL"}</Label>
                   <Input
                     id="mcp-url"
                     placeholder="https://example.com/mcp"
@@ -404,7 +403,7 @@ export default function McpPage() {
               ) : (
                 <>
                   <div className="grid gap-2">
-                    <Label htmlFor="mcp-command">Command</Label>
+                    <Label htmlFor="mcp-command">{t.dashboard?.mcpCommand || "Command"}</Label>
                     <Input
                       id="mcp-command"
                       placeholder="npx"
@@ -413,7 +412,7 @@ export default function McpPage() {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="mcp-args">Args</Label>
+                    <Label htmlFor="mcp-args">{t.dashboard?.mcpArgs || "Args"}</Label>
                     <Input
                       id="mcp-args"
                       placeholder="-y @modelcontextprotocol/server-foo"
@@ -489,9 +488,7 @@ export default function McpPage() {
             </header>
 
             <div className="p-5 grid gap-4">
-              <p className="text-xs text-muted-foreground">
-                This MCP requires the following values to be configured.
-              </p>
+              <p className="text-xs text-muted-foreground">{t.dashboard?.uithisMcpRequiresTheFollowingV || "This MCP requires the following values to be configured."}</p>
               {installEntry.required_env.map((item) => (
                 <div className="grid gap-2" key={item.name}>
                   <Label htmlFor={`install-env-${item.name}`}>
@@ -553,9 +550,7 @@ export default function McpPage() {
 
         {servers.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No MCP servers configured.
-            </CardContent>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">{t.dashboard?.uinoMcpServersConfigured || "No MCP servers configured."}</CardContent>
           </Card>
         )}
 
@@ -582,7 +577,7 @@ export default function McpPage() {
                       {server.transport}
                     </Badge>
                     {!server.enabled && (
-                      <Badge tone="outline">disabled</Badge>
+                      <Badge tone="outline">{t.dashboard?.uidisabled || "disabled"}</Badge>
                     )}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -682,15 +677,11 @@ export default function McpPage() {
           </H2>
         </div>
 
-        <p className="text-xs text-muted-foreground">
-          Browse Nous-approved MCP servers and install them with one click.
-        </p>
+        <p className="text-xs text-muted-foreground">{t.dashboard?.uibrowseNousApprovedMcpServers || "Browse Nous-approved MCP servers and install them with one click."}</p>
 
         {catalog.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No catalog entries available.
-            </CardContent>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">{t.dashboard?.uinoCatalogEntriesAvailable || "No catalog entries available."}</CardContent>
           </Card>
         )}
 
@@ -727,10 +718,10 @@ export default function McpPage() {
                       )
                     )}
                     {entry.installed && (
-                      <Badge tone="success">Installed</Badge>
+                      <Badge tone="success">{t.dashboard?.mcpInstalled || "Installed"}</Badge>
                     )}
                     {entry.installed && !entry.enabled && (
-                      <Badge tone="outline">disabled</Badge>
+                      <Badge tone="outline">{t.dashboard?.uidisabled || "disabled"}</Badge>
                     )}
                   </div>
                   {entry.description && (
@@ -811,7 +802,7 @@ export default function McpPage() {
 
                 <div className="flex items-center gap-1 shrink-0">
                   {entry.installed ? (
-                    <Badge tone="success">Installed</Badge>
+                    <Badge tone="success">{t.dashboard?.mcpInstalled || "Installed"}</Badge>
                   ) : (
                     <Button
                       className="uppercase"

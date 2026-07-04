@@ -158,6 +158,23 @@ class TestPatchCrossProfileGuard:
         assert "cross-profile" in result["error"].lower()
         assert target.read_text() == original
 
+    def test_v4a_move_destination_extracts_path_for_guard(self, fake_hermes):
+        """Move destinations are embedded in the V4A header too; they must
+        receive the same cross-profile guard as Update/Add/Delete paths."""
+        from tools.file_tools import patch_tool
+        target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
+        original = target.read_text()
+        v4a = (
+            "*** Begin Patch\n"
+            f"*** Move File: safe.txt -> {target}\n"
+            "*** End Patch"
+        )
+        result_json = patch_tool(mode="patch", patch=v4a)
+        result = json.loads(result_json)
+        assert result.get("error"), f"V4A move cross-profile must block: {result}"
+        assert "cross-profile" in result["error"].lower()
+        assert target.read_text() == original
+
 
 # ---------------------------------------------------------------------------
 # skill_manage — error message naming other profile (item D)

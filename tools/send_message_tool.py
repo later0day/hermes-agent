@@ -31,6 +31,7 @@ _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_DINGTALK_CONVERSATION_RE = re.compile(r"^\s*(cid[-A-Za-z0-9+/=]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -142,6 +143,10 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "IMPORTANT: In a live gateway/IM conversation, use target='origin' "
+        "or target='current' to send back to the current chat. Do NOT use a "
+        "bare platform name like 'dingtalk' for the current chat; bare platform "
+        "targets use the configured home channel only.\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
@@ -158,7 +163,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Use 'origin' or 'current' for the current gateway/IM chat. Format: 'platform' (uses home channel only), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'origin', 'telegram', 'telegram:-1001234567890:17585', 'dingtalk:cidUKHyy+TSBvzQY6P34TpjPA==', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -295,6 +300,29 @@ def _handle_react(args, remove=False):
     return json.dumps({"success": bool(result)})
 
 
+def _resolve_origin_target():
+    """Resolve target='origin'/'current' from the active gateway session."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception as exc:
+        return None, None, None, None, _error(
+            f"Could not read current gateway session context: {exc}"
+        )
+
+    platform_name = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "").strip().lower()
+    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
+
+    if not platform_name or platform_name in {"cli", "local"} or not chat_id:
+        return None, None, None, None, _error(
+            "target='origin' is only available inside a live gateway/IM conversation. "
+            "Use send_message(action='list') and send to an explicit platform target instead."
+        )
+
+    return platform_name, chat_id, thread_id, chat_type, None
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
@@ -302,16 +330,32 @@ def _handle_send(args):
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    thread_id = None
-
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    target_text = str(target).strip()
+    used_origin_target = target_text.lower() in {"origin", "current"}
+    send_metadata = None
+    if used_origin_target:
+        platform_name, chat_id, thread_id, origin_chat_type, origin_error = _resolve_origin_target()
+        if origin_error:
+            return json.dumps(origin_error)
+        target_ref = chat_id
+        is_explicit = True
+        if platform_name == "dingtalk" and origin_chat_type:
+            send_metadata = {
+                "conversation_type": "2"
+                if origin_chat_type in {"group", "channel", "thread", "forum"}
+                else "1"
+            }
     else:
-        is_explicit = False
+        parts = target_text.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        chat_id = None
+        thread_id = None
+
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        else:
+            is_explicit = False
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -395,6 +439,14 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
+            if platform_name == "dingtalk":
+                return json.dumps({
+                    "error": (
+                        "No home channel set for dingtalk to determine where to send the message. "
+                        "Specify a DingTalk target directly, e.g. 'dingtalk:赣神魔', "
+                        "or set a valid DingTalk openConversationId via /sethome or dingtalk.home_channel."
+                    )
+                })
             home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
                 platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
             )
@@ -432,19 +484,26 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
+        send_kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files,
+            "force_document": force_document_attachments,
+        }
+        if send_metadata:
+            send_kwargs["metadata"] = send_metadata
         result = _run_async(
             _send_to_platform(
                 platform,
                 pconfig,
                 chat_id,
                 cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document_attachments,
+                **send_kwargs,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        if used_origin_target and isinstance(result, dict) and result.get("success"):
+            result["resolved_target"] = f"{platform_name}:{chat_id}"
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -531,6 +590,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "dingtalk":
+        match = _DINGTALK_CONVERSATION_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name == "whatsapp":
         # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
         # are explicit targets — pass through verbatim. E.164 '+' numbers fall
@@ -720,7 +783,110 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _await_on_gateway_loop(coro, loop):
+    """Await a coroutine on the gateway loop when we are in a tool worker loop."""
+    if loop is not None and getattr(loop, "is_running", lambda: False)():
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is not loop:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return await asyncio.wrap_future(future)
+    return await coro
+
+
+async def _send_dingtalk_with_live_adapter(chat_id, message, media_files=None, metadata=None):
+    """Send DingTalk media through the active gateway adapter when available.
+
+    The live adapter keeps per-chat DingTalk message context, including the
+    incoming robot_code and conversation_type. Standalone sends only have
+    config defaults, which can upload media successfully and then fail native
+    sends with resource.not.found when the configured robot_code is not the
+    robot that received the current message.
+    """
+    media_files = media_files or []
+    try:
+        from gateway.config import Platform
+        from gateway.run import _gateway_runner_ref
+    except Exception:
+        return None
+
+    runner = None
+    try:
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    if runner is None:
+        return None
+
+    try:
+        adapter = runner.adapters.get(Platform.DINGTALK)
+    except Exception:
+        adapter = None
+    if adapter is None:
+        return None
+
+    gateway_loop = getattr(runner, "_gateway_loop", None)
+    metadata = metadata or None
+
+    async def _send():
+        last_result = None
+        if message.strip():
+            last_result = await adapter.send(chat_id=chat_id, content=message, metadata=metadata)
+            if last_result and not getattr(last_result, "success", True):
+                return _error(f"DingTalk live adapter text send failed: {getattr(last_result, 'error', 'unknown')}")
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Media file not found: {media_path}")
+
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                send_result = await adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                send_result = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
+            elif ext in _VOICE_EXTS and is_voice:
+                send_result = await adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+            elif ext in _AUDIO_EXTS:
+                send_result = await adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+            else:
+                send_result = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
+
+            if send_result and not getattr(send_result, "success", True):
+                return _error(f"DingTalk live adapter media send failed: {getattr(send_result, 'error', 'unknown')}")
+            last_result = send_result
+
+        if last_result is None:
+            return None
+
+        return {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": chat_id,
+            "message_id": getattr(last_result, "message_id", None),
+            "via": "live_adapter",
+        }
+
+    try:
+        return await _await_on_gateway_loop(_send(), gateway_loop)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.debug("DingTalk live adapter media send raised", exc_info=True)
+        return _error(f"DingTalk live adapter media send failed: {exc}")
+
+
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    metadata=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits

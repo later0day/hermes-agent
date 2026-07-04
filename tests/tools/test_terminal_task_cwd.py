@@ -245,3 +245,44 @@ def test_safe_getcwd_falls_back_to_home_when_no_terminal_cwd(monkeypatch):
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.setattr(terminal_tool.os.path, "expanduser", lambda p: "/home/me")
     assert terminal_tool._safe_getcwd() == "/home/me"
+
+
+def test_repair_deleted_cwd_changes_to_terminal_cwd(monkeypatch, tmp_path):
+    target = tmp_path / "live"
+    target.mkdir()
+    chdir_calls = []
+
+    def _boom():
+        raise FileNotFoundError()
+
+    def _chdir(path):
+        chdir_calls.append(path)
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _boom)
+    monkeypatch.setattr(terminal_tool.os, "chdir", _chdir)
+    monkeypatch.setenv("TERMINAL_CWD", str(target))
+
+    assert terminal_tool._repair_deleted_cwd() == str(target)
+    assert chdir_calls == [str(target)]
+
+
+def test_get_env_config_repairs_deleted_cwd_before_local_default(monkeypatch, tmp_path):
+    target = tmp_path / "live"
+    target.mkdir()
+    state = {"deleted": True, "cwd": str(target)}
+
+    def _getcwd():
+        if state["deleted"]:
+            raise FileNotFoundError()
+        return state["cwd"]
+
+    def _chdir(path):
+        state["deleted"] = False
+        state["cwd"] = path
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _getcwd)
+    monkeypatch.setattr(terminal_tool.os, "chdir", _chdir)
+    monkeypatch.setenv("TERMINAL_CWD", str(target))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+
+    assert terminal_tool._get_env_config()["cwd"] == str(target)

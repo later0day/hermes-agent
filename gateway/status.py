@@ -35,6 +35,8 @@ _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
+_GATEWAY_RUNTIME_MARKER = "gateway-runtime"
+_current_process_is_gateway_runtime = False
 _gateway_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
@@ -148,6 +150,12 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         return int(round(psutil.Process(pid).create_time() * 100))
     except Exception:
         return None
+
+
+def mark_current_process_as_gateway_runtime() -> None:
+    """Mark subsequent PID/status records as belonging to a live gateway run."""
+    global _current_process_is_gateway_runtime
+    _current_process_is_gateway_runtime = True
 
 
 def get_process_start_time(pid: int) -> Optional[int]:
@@ -302,6 +310,8 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     """Validate gateway identity from PID-file metadata when cmdline is unavailable."""
     if record.get("kind") != _GATEWAY_KIND:
         return False
+    if record.get("runtime") == _GATEWAY_RUNTIME_MARKER:
+        return True
 
     argv = record.get("argv")
     if not isinstance(argv, list) or not argv:
@@ -394,12 +404,15 @@ def _record_matches_live_gateway_pid(
 
 
 def _build_pid_record() -> dict:
-    return {
+    record = {
         "pid": os.getpid(),
         "kind": _GATEWAY_KIND,
         "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
     }
+    if _current_process_is_gateway_runtime:
+        record["runtime"] = _GATEWAY_RUNTIME_MARKER
+    return record
 
 
 def _build_runtime_status_record() -> dict[str, Any]:
@@ -413,6 +426,52 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "updated_at": _utc_now_iso(),
     })
     return payload
+
+
+def _record_matches_current_process(record: dict[str, Any], current_record: dict[str, Any]) -> bool:
+    record_pid = _pid_from_record(record)
+    current_pid = _pid_from_record(current_record)
+    if record_pid is None or current_pid is None or record_pid != current_pid:
+        return False
+
+    record_start = record.get("start_time")
+    current_start = current_record.get("start_time")
+    if record_start is not None and current_start is not None:
+        return record_start == current_start
+    return True
+
+
+def _record_is_live_gateway(record: dict[str, Any]) -> bool:
+    pid = _pid_from_record(record)
+    if pid is None:
+        return False
+
+    recorded_start = record.get("start_time")
+    current_start = _get_process_start_time(pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return False
+
+    record_identity_ok = _record_looks_like_gateway(record)
+    if not record_identity_ok:
+        return False
+
+    if not _pid_exists(pid):
+        return False
+
+    return _looks_like_gateway_process(pid) or record_identity_ok
+
+
+def _runtime_status_owned_by_other_live_gateway(
+    payload: dict[str, Any],
+    current_record: dict[str, Any],
+) -> bool:
+    if _record_matches_current_process(payload, current_record):
+        return False
+    return _record_is_live_gateway(payload)
 
 
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
@@ -758,11 +817,17 @@ def write_runtime_status(
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
+    if _runtime_status_owned_by_other_live_gateway(payload, current_record):
+        return
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    if "runtime" in current_record:
+        payload["runtime"] = current_record["runtime"]
+    else:
+        payload.pop("runtime", None)
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

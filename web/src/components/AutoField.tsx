@@ -2,17 +2,29 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { useI18n } from "@/i18n";
+import {
+  formatConfigDescription,
+  formatConfigFieldLabel,
+  formatConfigPathLabel,
+} from "@/lib/configLabels";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
-  const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const description = schema.description ? String(schema.description) : "";
+  const { locale } = useI18n();
+  const keyPath = schemaKey.includes(".")
+    ? locale === "zh"
+      ? formatConfigPathLabel(schemaKey, locale)
+      : schemaKey
+    : "";
+  const description = formatConfigDescription(schemaKey, schema, locale);
+  const showDescription = description && description !== keyPath;
 
   if (!keyPath && !description) return null;
 
   return (
     <div className="flex flex-col gap-0.5">
       {keyPath && <span className="text-xs font-mono text-text-tertiary">{keyPath}</span>}
-      {description && <span className="text-xs text-text-secondary">{description}</span>}
+      {showDescription && <span className="text-xs text-text-secondary">{description}</span>}
     </div>
   );
 }
@@ -88,8 +100,10 @@ export function AutoField({
   value,
   onChange,
 }: AutoFieldProps) {
-  const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
-  const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const { locale } = useI18n();
+  const label = formatConfigFieldLabel(schemaKey, locale);
+  const emptyOption = locale === "zh" ? "（无）" : "(none)";
+  const commaSeparatedPlaceholder = locale === "zh" ? "多个值用逗号分隔" : "comma-separated values";
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
@@ -122,7 +136,7 @@ export function AutoField({
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
-              {opt || "(none)"}
+              {opt || emptyOption}
             </SelectOption>
           ))}
         </Select>
@@ -183,7 +197,7 @@ export function AutoField({
                 .filter(Boolean),
             )
           }
-          placeholder="comma-separated values"
+          placeholder={commaSeparatedPlaceholder}
         />
       </div>
     );

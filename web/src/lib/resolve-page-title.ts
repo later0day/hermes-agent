@@ -30,7 +30,8 @@ export function resolvePageTitle(
   }
   const key = BUILTIN[normalized];
   if (key) {
-    return t.app.nav[key];
+    const val = t.app.nav[key];
+    if (val) return val;
   }
   // Derive title from pathname: "/profiles" → "Profiles"
   const segment = normalized.slice(1);

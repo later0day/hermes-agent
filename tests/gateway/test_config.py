@@ -192,6 +192,94 @@ class TestGetConnectedPlatforms:
         )
         assert Platform.DINGTALK not in config.get_connected_platforms()
 
+    def test_dingtalk_allow_all_users_bridged_from_yaml(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "dingtalk:\n"
+            "  allow_all_users: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DINGTALK_ALLOW_ALL_USERS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ["DINGTALK_ALLOW_ALL_USERS"] == "true"
+
+    def test_dingtalk_allow_all_users_env_wins_over_yaml(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "dingtalk:\n"
+            "  allow_all_users: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_ALLOW_ALL_USERS", "false")
+
+        load_gateway_config()
+
+        assert os.environ["DINGTALK_ALLOW_ALL_USERS"] == "false"
+
+    def test_dingtalk_root_config_bridged_to_platform_extra(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "dingtalk:\n"
+            "  app_code: app-code\n"
+            "  corp_id: corp-1\n"
+            "  agent_id: '12345'\n"
+            "  robot_code: robot-yaml\n"
+            "  require_mention: true\n"
+            "  free_response_chats: chat-a,chat-b\n"
+            "  allowed_chats: chat-a\n"
+            "  allowed_users: user-a\n"
+            "  allow_all_users: true\n"
+            "  card_template_id: template-1\n"
+            "  card_content_key: content\n"
+            "  reply_at_sender: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "secret")
+        monkeypatch.delenv("DINGTALK_ROBOT_CODE", raising=False)
+        monkeypatch.delenv("DINGTALK_ALLOW_ALL_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.DINGTALK].extra
+        assert extra["app_code"] == "app-code"
+        assert extra["corp_id"] == "corp-1"
+        assert extra["agent_id"] == "12345"
+        assert extra["robot_code"] == "robot-yaml"
+        assert extra["require_mention"] is True
+        assert extra["free_response_chats"] == "chat-a,chat-b"
+        assert extra["allowed_chats"] == "chat-a"
+        assert extra["allowed_users"] == "user-a"
+        assert extra["allow_all_users"] is True
+        assert extra["card_template_id"] == "template-1"
+        assert extra["reply_at_sender"] is True
+        assert "card_content_key" not in extra
+        assert os.environ["DINGTALK_ALLOW_ALL_USERS"] == "true"
+
+    def test_dingtalk_robot_code_env_populates_platform_extra(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("DINGTALK_ROBOT_CODE", "robot-env")
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.DINGTALK].extra
+        assert extra["client_id"] == "cid"
+        assert extra["client_secret"] == "secret"
+        assert extra["robot_code"] == "robot-env"
+
     def test_dingtalk_disabled_not_connected(self):
         config = GatewayConfig(
             platforms={

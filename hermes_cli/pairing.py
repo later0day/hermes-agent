@@ -39,11 +39,11 @@ def _cmd_list(store):
 
     if pending:
         print(f"\n  Pending Pairing Requests ({len(pending)}):")
-        print(f"  {'Platform':<12} {'Code':<10} {'User ID':<20} {'Name':<20} {'Age'}")
+        print(f"  {'Platform':<12} {'Hint':<10} {'User ID':<20} {'Name':<20} {'Age'}")
         print(f"  {'--------':<12} {'----':<10} {'-------':<20} {'----':<20} {'---'}")
         for p in pending:
             print(
-                f"  {p['platform']:<12} {p['code']:<10} {p['user_id']:<20} "
+                f"  {p['platform']:<12} {p.get('code_hint', ''):<10} {p['user_id']:<20} "
                 f"{(p.get('user_name') or ''):<20} {p['age_minutes']}m ago"
             )
     else:
@@ -93,7 +93,7 @@ def _cmd_approve(store, platform: str, code: str):
         )
     else:
         print(f"\n  Code '{code}' not found or expired for platform '{platform}'.")
-        print("  Run 'hermes pairing list' to see pending codes.\n")
+        print("  Run 'hermes pairing list' to see pending requests.\n")
 
 
 def _cmd_revoke(store, platform: str, user_id: str):

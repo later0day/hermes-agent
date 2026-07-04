@@ -120,6 +120,28 @@ class TestGatewayPidState:
         finally:
             status.release_gateway_runtime_lock()
 
+    def test_get_running_pid_accepts_gateway_runtime_marker_for_restart_argv(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_current_process_is_gateway_runtime", False)
+        monkeypatch.setattr(
+            status.sys,
+            "argv",
+            ["python", "-m", "hermes_cli.main", "gateway", "restart"],
+        )
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        status.mark_current_process_as_gateway_runtime()
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            status.write_pid_file()
+            payload = json.loads((tmp_path / "gateway.pid").read_text())
+            assert payload["runtime"] == "gateway-runtime"
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.remove_pid_file()
+            status.release_gateway_runtime_lock()
+
     def test_get_running_pid_accepts_explicit_pid_path_without_cleanup(self, tmp_path, monkeypatch):
         other_home = tmp_path / "profile-home"
         other_home.mkdir()
@@ -360,6 +382,22 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_write_runtime_status_records_gateway_runtime_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_current_process_is_gateway_runtime", False)
+        monkeypatch.setattr(
+            status.sys,
+            "argv",
+            ["python", "-m", "hermes_cli.main", "gateway", "restart"],
+        )
+
+        status.mark_current_process_as_gateway_runtime()
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["runtime"] == "gateway-runtime"
+        assert payload["argv"] == ["python", "-m", "hermes_cli.main", "gateway", "restart"]
+
     def test_runtime_status_running_pid_rejects_stale_record_for_supervisor_pid(self, monkeypatch):
         """Regression: stale profile runtime state must not mark s6 supervisors live.
 
@@ -568,6 +606,48 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_write_runtime_status_does_not_clobber_other_live_gateway(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        current_pid = 111
+        owner_pid = 222
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": owner_pid,
+            "kind": "hermes-gateway",
+            "runtime": "gateway-runtime",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "restart"],
+            "start_time": 200,
+            "gateway_state": "running",
+            "platforms": {
+                "dingtalk": {
+                    "state": "connected",
+                    "updated_at": "2026-06-20T00:00:00+00:00",
+                }
+            },
+            "updated_at": "2026-06-20T00:00:00+00:00",
+        }), encoding="utf-8")
+
+        monkeypatch.setattr(status.os, "getpid", lambda: current_pid)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == owner_pid)
+        monkeypatch.setattr(
+            status,
+            "_get_process_start_time",
+            lambda pid: 200 if pid == owner_pid else 100,
+        )
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+
+        status.write_runtime_status(
+            gateway_state="running",
+            platform="dingtalk",
+            platform_state="disconnected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == owner_pid
+        assert payload["platforms"]["dingtalk"]["state"] == "connected"
 
 
 class TestGetProcessStartTime:

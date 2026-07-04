@@ -297,6 +297,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
+            "chat_type": get_session_env("HERMES_SESSION_CHAT_TYPE") or None,
             "thread_id": thread_id,
             # Captured so an opt-in delivery mirror (cron.mirror_delivery /
             # attach_to_session) can resolve the exact participant's session in
@@ -598,6 +599,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("owner_profile"):
+        result["owner_profile"] = job["owner_profile"]
+    if job.get("run_profile"):
+        result["run_profile"] = job["run_profile"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
     return result
 
 
@@ -674,6 +681,7 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+        origin_scope = _current_origin_scope()
 
         if normalized == "create":
             if not schedule:
@@ -713,10 +721,13 @@ def cronjob(
 
             # Validate context_from references existing jobs
             if context_from:
-                from cron.jobs import get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    try:
+                        visible = _context_ref_visible(ref_id, origin_scope)
+                    except AmbiguousJobReference as exc:
+                        return tool_error(str(exc), success=False)
+                    if not visible:
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
                             "Use cronjob(action='list') to see available jobs.",
@@ -764,14 +775,20 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [
+                _format_job(job)
+                for job in _list_jobs_for_scope(
+                    include_disabled=include_disabled,
+                    scope=origin_scope,
+                )
+            ]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         try:
-            job = resolve_job_ref(job_id)
+            job = _resolve_job_ref_for_scope(job_id, origin_scope)
         except AmbiguousJobReference as exc:
             return json.dumps(
                 {
@@ -900,9 +917,12 @@ def cronjob(
                 else:
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
                 if refs:
-                    from cron.jobs import get_job as _get_job
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        try:
+                            visible = _context_ref_visible(ref_id, origin_scope)
+                        except AmbiguousJobReference as exc:
+                            return tool_error(str(exc), success=False)
+                        if not visible:
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
                                 "Use cronjob(action='list') to see available jobs.",
@@ -931,6 +951,9 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if profile is not None:
+                updates["profile"] = profile if profile else None
+                updates["run_profile"] = profile if profile else None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -1130,6 +1153,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        profile=args.get("profile"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

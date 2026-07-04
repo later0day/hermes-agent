@@ -14,22 +14,28 @@ export const themedBody = "font-mondwest normal-case";
 /** Mondwest brand chrome — uppercase section headers and nav labels. */
 export const themedChrome = "font-mondwest text-display";
 
-/** Relative time from a Unix epoch timestamp (seconds). */
-export function timeAgo(ts: number): string {
+/** Relative time from a Unix epoch timestamp (seconds).
+ *  Pass a BCP-47 locale string (e.g. "zh", "zh-hant", "ja") to get
+ *  a localised result via Intl.RelativeTimeFormat. Defaults to "en". */
+export function timeAgo(ts: number, locale = "en"): string {
   const delta = Date.now() / 1000 - ts;
-  if (delta < 60) return "just now";
-  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-  if (delta < 172800) return "yesterday";
-  return `${Math.floor(delta / 86400)}d ago`;
+  return _relativeTime(-delta, locale);
 }
 
-/** Relative time from an ISO-8601 timestamp string. */
-export function isoTimeAgo(iso: string): string {
+/** Relative time from an ISO-8601 timestamp string.
+ *  Pass a BCP-47 locale string to get a localised result. */
+export function isoTimeAgo(iso: string, locale = "en"): string {
   const delta = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (delta < 0 || Number.isNaN(delta)) return "unknown";
-  if (delta < 60) return "just now";
-  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-  return `${Math.floor(delta / 86400)}d ago`;
+  if (delta < 0 || Number.isNaN(delta)) return "—";
+  return _relativeTime(-delta, locale);
+}
+
+/** Internal: format a relative-time delta (negative = past) using Intl. */
+function _relativeTime(deltaSeconds: number, locale: string): string {
+  const abs = Math.abs(deltaSeconds);
+  const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  if (abs < 60) return rtf.format(Math.round(deltaSeconds), "second");
+  if (abs < 3600) return rtf.format(Math.round(deltaSeconds / 60), "minute");
+  if (abs < 86400) return rtf.format(Math.round(deltaSeconds / 3600), "hour");
+  return rtf.format(Math.round(deltaSeconds / 86400), "day");
 }

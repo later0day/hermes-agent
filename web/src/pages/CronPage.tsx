@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -8,6 +8,7 @@ import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type {
   CronJob,
+  CronJobRun,
   CronDeliveryTarget,
   ModelOptionsResponse,
   ProfileInfo,
@@ -194,6 +195,7 @@ function CronAdvancedFields({
   modelOptions: ModelOptionsResponse | null;
   availableToolsets: ToolsetInfo[];
 }) {
+  const { t } = useI18n();
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
     next: CronJobEditorState[K],
@@ -210,7 +212,7 @@ function CronAdvancedFields({
   return (
     <details className="border border-border bg-background/30 p-3" open>
       <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Advanced fields
+        {t.cron.advanced ?? "Advanced fields"}
       </summary>
       <div className="mt-3 grid gap-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -250,7 +252,7 @@ function CronAdvancedFields({
           <Label htmlFor={`${idPrefix}-base-url`}>Base URL override</Label>
           <Input
             id={`${idPrefix}-base-url`}
-            placeholder="https://api.example.com/v1"
+            placeholder={t.dashboard?.cronPlaceholderUrl || "https://api.example.com/v1"}
             value={form.base_url}
             onChange={(e) => update("base_url", e.target.value)}
           />
@@ -272,7 +274,7 @@ function CronAdvancedFields({
               id={`${idPrefix}-script`}
               value={form.script}
               onChange={(e) => update("script", e.target.value)}
-              placeholder="relative/path/in/scripts"
+              placeholder={t.dashboard?.cronPlaceholderScript || "relative/path/in/scripts"}
             />
           </div>
         </div>
@@ -283,7 +285,7 @@ function CronAdvancedFields({
             id={`${idPrefix}-workdir`}
             value={form.workdir}
             onChange={(e) => update("workdir", e.target.value)}
-            placeholder="/absolute/project/path"
+            placeholder={t.dashboard?.cronPlaceholderProject || "/absolute/project/path"}
           />
         </div>
 
@@ -293,7 +295,7 @@ function CronAdvancedFields({
             <textarea
               id={`${idPrefix}-context-from`}
               className="flex min-h-[64px] w-full border border-border bg-background/40 px-3 py-2 text-xs font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-              placeholder="one job id per line"
+              placeholder={t.dashboard?.cronPlaceholderJobIds || "one job id per line"}
               value={form.context_from}
               onChange={(e) => update("context_from", e.target.value)}
             />
@@ -507,6 +509,238 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   error: "destructive",
   completed: "destructive",
 };
+
+const RUN_STATUS_STYLE: Record<string, React.CSSProperties> = {
+  active: { color: "var(--color-warning, #f59e0b)" },
+  running: { color: "var(--color-warning, #f59e0b)" },
+  completed: { color: "var(--color-success, #22c55e)" },
+  success: { color: "var(--color-success, #22c55e)" },
+  archived: { color: "var(--color-muted-foreground, #888)" },
+  error: { color: "var(--color-destructive, #ef4444)" },
+  failed: { color: "var(--color-destructive, #ef4444)" },
+};
+
+function toMs(ts: string | number | null | undefined): number | null {
+  if (ts == null || ts === "") return null;
+  const n = Number(ts);
+  if (isNaN(n)) return null;
+  // DB stores seconds (float). Heuristic: if value < 1e10 it's seconds, else already ms.
+  return n < 1e10 ? n * 1000 : n;
+}
+
+function formatDuration(startedAt?: string | null, endedAt?: string | null): string {
+  if (!startedAt || !endedAt) return "\u2014";
+  const ms = (toMs(endedAt) ?? 0) - (toMs(startedAt) ?? 0);
+  if (ms < 0) return "\u2014";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const mins = Math.floor(ms / 60000);
+  const secs = Math.round((ms % 60000) / 1000);
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+}
+
+import React from "react";
+
+function CronRunHistory({ jobId, profile }: { jobId: string; profile?: string }) {
+  const { t } = useI18n();
+  const [runs, setRuns] = useState<CronJobRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [runMessages, setRunMessages] = useState<Record<string, { loading: boolean; messages: Array<{ role: string; content: unknown }> }>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .listCronJobRuns(jobId, profile)
+      .then((res) => {
+        if (!cancelled) setRuns(res.runs ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setRuns([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [jobId, profile]);
+
+  const toggleRun = async (run: CronJobRun) => {
+    const rid = run.run_id;
+    if (expandedRunId === rid) {
+      setExpandedRunId(null);
+      return;
+    }
+    setExpandedRunId(rid);
+    if (run.session_id && !runMessages[rid]) {
+      setRunMessages((prev) => ({ ...prev, [rid]: { loading: true, messages: [] } }));
+      try {
+        const res = await api.getSessionMessages(run.session_id, profile);
+        setRunMessages((prev) => ({ ...prev, [rid]: { loading: false, messages: res.messages } }));
+      } catch {
+        setRunMessages((prev) => ({ ...prev, [rid]: { loading: false, messages: [] } }));
+      }
+    }
+  };
+
+  const runStatusStyle = (status: string): React.CSSProperties =>
+    RUN_STATUS_STYLE[status.toLowerCase()] ?? {};
+
+  return (
+    <div style={{ marginTop: 12, borderTop: "1px solid var(--color-border)" }}>
+      <p
+        className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+        style={{ padding: "8px 0 6px" }}
+      >
+        {t.cron.runHistory}
+      </p>
+
+      {loading && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, paddingBottom: 8 }}>
+          <Spinner className="text-sm" />
+          <span className="text-xs text-muted-foreground">{t.common.loading}</span>
+        </div>
+      )}
+
+      {!loading && runs.length === 0 && (
+        <p className="text-xs text-muted-foreground" style={{ paddingBottom: 8 }}>
+          {t.cron.runHistoryEmpty}
+        </p>
+      )}
+
+      {!loading && runs.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {runs.map((run) => {
+            const isExpanded = expandedRunId === run.run_id;
+            const msgState = runMessages[run.run_id];
+            // end_reason is the real completion status column in the sessions table
+            const status = run.end_reason || run.status || "unknown";
+            const runTitle = run.title || run.preview || null;
+
+            return (
+              <div
+                key={run.run_id}
+                style={{
+                  border: "1px solid var(--color-border)",
+                  background: isExpanded ? "var(--color-muted, rgba(0,0,0,.04))" : "transparent",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleRun(run)}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "6px 8px",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <span style={{ color: "var(--color-muted-foreground)", flexShrink: 0, display: "flex" }}>
+                    {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </span>
+                  <span
+                    className="text-xs font-medium"
+                    style={{ ...runStatusStyle(status), flexShrink: 0, minWidth: 64 }}
+                  >
+                    {status}
+                  </span>
+                  {runTitle && (
+                    <span className="text-xs font-medium truncate" style={{ flexShrink: 1, minWidth: 0 }}>
+                      {runTitle}
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground font-mono-ui" style={{ flexShrink: 0, marginLeft: "auto" }}>
+                    {run.started_at ? new Date(toMs(run.started_at) ?? 0).toLocaleString() : "—"}
+                  </span>
+                  <span className="text-xs text-muted-foreground" style={{ flexShrink: 0 }}>
+                    {t.cron.runDuration}: {formatDuration(run.started_at, run.ended_at)}
+                  </span>
+                  {run.error && (
+                    <span className="text-xs truncate" style={{ color: "var(--color-destructive)" }}>
+                      {run.error}
+                    </span>
+                  )}
+                </button>
+
+                {isExpanded && (
+                  <div
+                    style={{
+                      padding: "4px 8px 8px 24px",
+                      borderTop: "1px solid var(--color-border)",
+                    }}
+                  >
+                    {!run.session_id && (
+                      <p className="text-xs text-muted-foreground">No session recorded.</p>
+                    )}
+                    {run.session_id && msgState?.loading && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 0" }}>
+                        <Spinner className="text-sm" />
+                        <span className="text-xs text-muted-foreground">{t.common.loading}</span>
+                      </div>
+                    )}
+                    {run.session_id && !msgState?.loading && msgState && msgState.messages.length === 0 && (
+                      <p className="text-xs text-muted-foreground">{t.sessions.noMessages}</p>
+                    )}
+                    {run.session_id && !msgState?.loading && msgState && msgState.messages.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}>
+                        {msgState.messages.map((msg, idx) => {
+                          const role = typeof msg.role === "string" ? msg.role : "unknown";
+                          const content =
+                            typeof msg.content === "string"
+                              ? msg.content
+                              : Array.isArray(msg.content)
+                              ? msg.content
+                                  .map((c: unknown) =>
+                                    typeof c === "object" && c !== null && "text" in c
+                                      ? String((c as { text: unknown }).text)
+                                      : ""
+                                  )
+                                  .join("")
+                              : JSON.stringify(msg.content);
+                          if (!content) return null;
+                          return (
+                            <div key={idx} style={{ display: "flex", gap: 8 }}>
+                              <span
+                                className="text-xs font-medium font-mono-ui"
+                                style={{
+                                  flexShrink: 0,
+                                  width: 64,
+                                  color:
+                                    role === "assistant"
+                                      ? "var(--color-primary)"
+                                      : role === "user"
+                                      ? "var(--color-foreground)"
+                                      : "var(--color-muted-foreground)",
+                                }}
+                              >
+                                {role}
+                              </span>
+                              <span
+                                className="text-xs text-foreground"
+                                style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+                              >
+                                {content.length > 500 ? content.slice(0, 500) + "…" : content}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
@@ -782,8 +1016,8 @@ export default function CronPage() {
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
-          { value: "jobs", label: "Jobs" },
-          { value: "blueprints", label: "Blueprints" },
+          { value: "jobs", label: t.cron.viewJobs ?? "Jobs" },
+          { value: "blueprints", label: t.cron.viewBlueprints ?? "Blueprints" },
         ]}
       />
 
@@ -826,7 +1060,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -842,7 +1076,7 @@ export default function CronPage() {
 
             <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">Profile</Label>
+                <Label htmlFor="cron-profile">{t.dashboard?.cronProfile || "Profile"}</Label>
                 <Select
                   id="cron-profile"
                   value={createProfile}
@@ -901,7 +1135,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setEditJob(null)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -910,9 +1144,7 @@ export default function CronPage() {
               <h2
                 id="edit-cron-title"
                 className="font-mondwest text-display text-base tracking-wider"
-              >
-                Edit job
-              </h2>
+              >{t.dashboard?.cronEditJob || "Edit job"}</h2>
             </header>
 
             <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
@@ -940,7 +1172,7 @@ export default function CronPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? t.common.loading : "Save changes"}
+                  {saving ? t.common.loading : (t.cron.saveChanges ?? "Save changes")}
                 </Button>
               </div>
             </div>
@@ -960,13 +1192,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
+            <Label htmlFor="cron-profile-filter">{t.dashboard?.cronProfile || "Profile"}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">All profiles</SelectOption>
+              <SelectOption value="all">{t.dashboard?.cronAllProfiles || "All profiles"}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}
@@ -1043,7 +1275,7 @@ export default function CronPage() {
                     <span className="font-mono-ui">
                       {getJobScheduleDisplay(job, scheduleDescribeStrings)}
                     </span>
-                    <span>repeat: {getRepeatDisplay(job)}</span>
+                    <span>{t.cron.repeat ?? "repeat"}: {getRepeatDisplay(job)}</span>
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>
@@ -1053,7 +1285,7 @@ export default function CronPage() {
                   </div>
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">
-                      delivery: {job.last_delivery_error}
+                      {t.cron.delivery.label ?? "delivery"}: {job.last_delivery_error}
                     </p>
                   )}
                   {job.last_error && (
@@ -1061,6 +1293,7 @@ export default function CronPage() {
                       {job.last_error}
                     </p>
                   )}
+                  <CronRunHistory jobId={job.id} profile={profile === "all" ? undefined : profile} />
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
@@ -1092,8 +1325,8 @@ export default function CronPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Edit job"
-                    aria-label="Edit job"
+                    title={t.dashboard?.cronEditJob || "Edit job"}
+                    aria-label={t.dashboard?.cronEditJob || "Edit job"}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />

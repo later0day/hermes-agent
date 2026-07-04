@@ -5,7 +5,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import {
@@ -26,6 +28,7 @@ import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -48,6 +51,104 @@ import { cn, themedBody } from "@/lib/utils";
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+// ---------------------------------------------------------------------------
+// Binding management types
+// ---------------------------------------------------------------------------
+
+type MemoryFileName = "MEMORY.md" | "USER.md";
+
+type MemoryEditorState = {
+  profile: string;
+  file: MemoryFileName;
+  content: string;
+  loading: boolean;
+  saving: boolean;
+};
+
+type SkillEditorState = {
+  profile: string;
+  skill: string;
+  content: string;
+  loading: boolean;
+  saving: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Binding/webhook utility helpers
+// ---------------------------------------------------------------------------
+
+function profileWebhookSummary(profile: ProfileInfo, t: any): string {
+  const summary = profile.binding_summary;
+  const prefix = t.profiles?.webhookPrefix || "Webhook: ";
+  const suffix = t.profiles?.webhookExpiredSuffix || " expired";
+  if (!summary || summary.total === 0) return `${prefix}0/0`;
+  const expired = summary.webhook_expired > 0 ? `, ${summary.webhook_expired}${suffix}` : "";
+  return `${prefix}${summary.webhook_configured}/${summary.total}${expired}`;
+}
+
+// ---------------------------------------------------------------------------
+// ProfileManagementModal — generic modal shell for memory/skill editing
+// ---------------------------------------------------------------------------
+
+function ProfileManagementModal({
+  children,
+  description,
+  onClose,
+  title,
+  wide = false,
+}: {
+  children: ReactNode;
+  description?: string;
+  onClose: () => void;
+  title: string;
+  wide?: boolean;
+}) {
+  const modalRef = useModalBehavior({ open: true, onClose });
+
+  return createPortal(
+    <div
+      ref={modalRef}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="profile-management-modal-title"
+    >
+      <div
+        className={
+          "relative flex max-h-[86vh] w-full flex-col border border-border bg-card shadow-2xl " +
+          (wide ? "max-w-6xl" : "max-w-3xl")
+        }
+      >
+        <Button
+          ghost
+          size="icon"
+          onClick={onClose}
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          aria-label="Close"
+        >
+          <X />
+        </Button>
+        <header className="border-b border-border p-5 pb-3 pr-12">
+          <h2
+            id="profile-management-modal-title"
+            className="font-display text-base uppercase tracking-wider"
+          >
+            {title}
+          </h2>
+          {description && (
+            <p className="mt-1 text-xs normal-case tracking-normal text-muted-foreground">
+              {description}
+            </p>
+          )}
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto p-5">{children}</div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 /** Braille unicode spinner (`unicode-animations`); static first frame when reduced motion is preferred. */
 function ProfilesLoadingSpinner() {
@@ -365,6 +466,16 @@ export default function ProfilesPage() {
   // Per-profile "set active" in-flight name
   const [settingActive, setSettingActive] = useState<string | null>(null);
 
+
+  // Profile model picker (via ModelPickerDialog)
+  const [modelPickerFor, setModelPickerFor] = useState<string | null>(null);
+
+  // Memory file editor modal
+  const [memoryEditor, setMemoryEditor] = useState<MemoryEditorState | null>(null);
+
+  // Skill manifest editor modal
+  const [skillEditor, setSkillEditor] = useState<SkillEditorState | null>(null);
+
   const modelKey = (provider: string | null, model: string | null) =>
     provider && model ? `${provider}\u0000${model}` : "";
 
@@ -418,6 +529,54 @@ export default function ProfilesPage() {
         (activeInfo.active === "default" && p.is_default)),
     [activeInfo],
   );
+
+  // ---------------------------------------------------------------------------
+  // Profile details helpers
+  // ---------------------------------------------------------------------------
+
+  // Refresh helper — silently ignored until details panel is added to JSX
+  const refreshProfileDetails = useCallback(async (_name: string) => {
+    // no-op: details panel not yet rendered; will be wired when binding UI is added
+  }, []);
+
+
+  // ---------------------------------------------------------------------------
+  // Memory file editor
+  // ---------------------------------------------------------------------------
+
+  const handleSaveMemory = async () => {
+    if (!memoryEditor) return;
+    const current = memoryEditor;
+    setMemoryEditor({ ...current, saving: true });
+    try {
+      await api.updateProfileMemoryFile(current.profile, current.file, current.content);
+      showToast(`${current.profile}: ${current.file} saved`, "success");
+      await refreshProfileDetails(current.profile);
+      setMemoryEditor({ ...current, saving: false });
+    } catch (e) {
+      setMemoryEditor({ ...current, saving: false });
+      showToast(`${t.status.error}: ${e}`, "error");
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Skill manifest editor
+  // ---------------------------------------------------------------------------
+
+  const handleSaveSkillManifest = async () => {
+    if (!skillEditor) return;
+    const current = skillEditor;
+    setSkillEditor({ ...current, saving: true });
+    try {
+      await api.updateProfileSkillManifest(current.profile, current.skill, current.content);
+      showToast(`${current.profile}: ${current.skill} saved`, "success");
+      await refreshProfileDetails(current.profile);
+      setSkillEditor({ ...current, saving: false });
+    } catch (e) {
+      setSkillEditor({ ...current, saving: false });
+      showToast(`${t.status.error}: ${e}`, "error");
+    }
+  };
 
   const handleCreate = async () => {
     const name = newName.trim();
@@ -754,9 +913,7 @@ export default function ProfilesPage() {
           size="sm"
           outlined
           onClick={() => navigate("/profiles/new")}
-        >
-          Build
-        </Button>
+        >{t.dashboard?.uibuild || "Build"}</Button>
         <Button
           className="uppercase"
           size="sm"
@@ -1216,6 +1373,12 @@ export default function ProfilesPage() {
                           {t.profiles.skills}: {p.skill_count}
                         </span>
 
+                        {p.binding_summary && p.binding_summary.total > 0 && (
+                          <span className="truncate text-muted-foreground/70">
+                            {profileWebhookSummary(p, t)}
+                          </span>
+                        )}
+
                         <span className="font-mono truncate">{p.path}</span>
                       </div>
                     </>
@@ -1391,6 +1554,89 @@ export default function ProfilesPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {memoryEditor && (
+        <ProfileManagementModal
+          title={`${memoryEditor.profile}: ${memoryEditor.file}`}
+          description="Preview and edit the profile-local memory file. Raw content is loaded only after this modal opens."
+          onClose={() => setMemoryEditor(null)}
+          wide
+        >
+          {memoryEditor.loading ? (
+            <div className="text-sm text-muted-foreground">Loading memory file...</div>
+          ) : (
+            <div className="grid gap-3">
+              <textarea
+                className="min-h-[48vh] w-full border border-input bg-background/40 px-3 py-2 font-mono text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={memoryEditor.content}
+                onChange={(e) =>
+                  setMemoryEditor((prev) =>
+                    prev ? { ...prev, content: e.target.value } : prev,
+                  )
+                }
+              />
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  disabled={memoryEditor.saving}
+                  onClick={handleSaveMemory}
+                >
+                  {memoryEditor.saving ? "Saving" : "Save memory"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </ProfileManagementModal>
+      )}
+
+      {skillEditor && (
+        <ProfileManagementModal
+          title={`${skillEditor.profile}: ${skillEditor.skill}/SKILL.md`}
+          description="Edits only this profile-local skill manifest. Default profile skills remain protected from this dashboard editor."
+          onClose={() => setSkillEditor(null)}
+          wide
+        >
+          {skillEditor.loading ? (
+            <div className="text-sm text-muted-foreground">Loading skill manifest...</div>
+          ) : (
+            <div className="grid gap-3">
+              <textarea
+                className="min-h-[52vh] w-full border border-input bg-background/40 px-3 py-2 font-mono text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={skillEditor.content}
+                onChange={(e) =>
+                  setSkillEditor((prev) =>
+                    prev ? { ...prev, content: e.target.value } : prev,
+                  )
+                }
+              />
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  disabled={skillEditor.saving}
+                  onClick={handleSaveSkillManifest}
+                >
+                  {skillEditor.saving ? "Saving" : "Save skill"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </ProfileManagementModal>
+      )}
+
+      {modelPickerFor && (
+        <ModelPickerDialog
+          loader={() => api.getProfileModelOptions(modelPickerFor)}
+          alwaysGlobal
+          title={`Set model: ${modelPickerFor}`}
+          onApply={async ({ provider, model }) => {
+            await api.setProfileModel(modelPickerFor, provider, model);
+            showToast(`Model updated: ${modelPickerFor}`, "success");
+            await refreshProfileDetails(modelPickerFor);
+            load();
+          }}
+          onClose={() => setModelPickerFor(null)}
+        />
       )}
     </div>
   );

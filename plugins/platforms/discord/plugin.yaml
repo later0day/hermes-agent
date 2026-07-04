@@ -2,33 +2,29 @@ name: discord-platform
 label: Discord
 kind: platform
 version: 1.0.0
-description: >
-  Discord gateway adapter for Hermes Agent.
-  Connects to Discord via the discord.py library and relays messages
-  between Discord guilds/DMs and the Hermes agent. Supports voice mode,
-  slash commands, free-response channels, role-based DM auth, threads,
-  reactions, and channel skill bindings.
+description: Hermes Agent 的 Discord 网关适配器。通过 discord.py 库连接到 Discord，并在 Discord 公会/私信与
+  Hermes 代理之间中继消息。支持语音模式、斜杠命令、自由回复频道、基于角色的私信认证、主题、表情回应以及频道技能绑定。
 author: NousResearch
 requires_env:
-  - name: DISCORD_BOT_TOKEN
-    description: "Discord bot token"
-    prompt: "Discord bot token"
-    url: "https://discord.com/developers/applications"
-    password: true
+- name: DISCORD_BOT_TOKEN
+  description: Discord 机器人令牌
+  prompt: Discord 机器人令牌
+  url: https://discord.com/developers/applications
+  password: true
 optional_env:
-  - name: DISCORD_ALLOWED_USERS
-    description: "Comma-separated Discord user IDs allowed to talk to the bot"
-    prompt: "Allowed users (comma-separated)"
-    password: false
-  - name: DISCORD_ALLOW_ALL_USERS
-    description: "Allow any Discord user to trigger the bot (dev only)"
-    prompt: "Allow all users? (true/false)"
-    password: false
-  - name: DISCORD_HOME_CHANNEL
-    description: "Default channel ID for cron / notification delivery"
-    prompt: "Home channel ID"
-    password: false
-  - name: DISCORD_HOME_CHANNEL_NAME
-    description: "Display name for the Discord home channel"
-    prompt: "Home channel display name"
-    password: false
+- name: DISCORD_ALLOWED_USERS
+  description: 允许与机器人对话的逗号分隔的 Discord 用户 ID
+  prompt: Allowed users (comma-separated)
+  password: false
+- name: DISCORD_ALLOW_ALL_USERS
+  description: 允许任何 Discord 用户触发机器人 (仅开发模式)
+  prompt: Allow all users? (true/false)
+  password: false
+- name: DISCORD_HOME_CHANNEL
+  description: 定时任务/通知投递的默认频道 ID
+  prompt: Home channel ID
+  password: false
+- name: DISCORD_HOME_CHANNEL_NAME
+  description: Discord 主频道的显示名称
+  prompt: Home channel display name
+  password: false

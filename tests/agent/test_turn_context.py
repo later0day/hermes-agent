@@ -314,7 +314,6 @@ def test_between_turns_refresh_no_churn_when_unchanged():
 
     assert agent.tools is same  # not replaced → no churn
 
-
 def test_preflight_skips_when_persisted_cooldown_survives_restart(tmp_path):
     agent = _make_agent_with_cooldown(
         tmp_path / "state.db",
@@ -363,4 +362,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

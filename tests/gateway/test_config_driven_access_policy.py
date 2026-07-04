@@ -53,8 +53,10 @@ def _clear_auth_env(monkeypatch) -> None:
         "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "TELEGRAM_ALLOWED_USERS",
+        "DINGTALK_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
+        "DINGTALK_ALLOW_ALL_USERS",
         "WECOM_ALLOW_ALL_USERS",
         "WEIXIN_ALLOW_ALL_USERS",
         "YUANBAO_ALLOW_ALL_USERS",
@@ -194,6 +196,39 @@ def test_own_policy_default_open_dm_is_fail_closed(monkeypatch, platform):
     adapter._dm_policy = "open"  # as the live adapter resolves the default
 
     assert runner._is_user_authorized(_source(platform)) is False
+
+
+def test_platform_config_allow_all_authorizes_without_env_allowlist(monkeypatch):
+    """``dingtalk.allow_all_users: true`` is a config-level allow-all opt-in."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.DINGTALK: PlatformConfig(
+                enabled=True,
+                extra={"allow_all_users": True},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.DINGTALK, config, enforces=False)
+
+    assert runner._is_user_authorized(_source(Platform.DINGTALK)) is True
+
+
+def test_platform_allow_all_env_false_overrides_config_allow_all(monkeypatch):
+    """Env vars keep precedence over config when explicitly set to false."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("DINGTALK_ALLOW_ALL_USERS", "false")
+    config = GatewayConfig(
+        platforms={
+            Platform.DINGTALK: PlatformConfig(
+                enabled=True,
+                extra={"allow_all_users": True},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.DINGTALK, config, enforces=False)
+
+    assert runner._is_user_authorized(_source(Platform.DINGTALK)) is False
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)

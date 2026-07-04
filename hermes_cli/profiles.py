@@ -796,25 +796,26 @@ def _profile_yaml_path(profile_dir: Path) -> Path:
 def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``<profile_dir>/profile.yaml`` and return a dict.
 
-    Returns ``{"description": "", "description_auto": False}`` when the
-    file is missing or unreadable. Never raises — a corrupt
+    Returns ``{"description": "", "description_auto": False, "template": False}``
+    when the file is missing or unreadable. Never raises — a corrupt
     profile.yaml on an unrelated profile must not break
     ``hermes profile list``.
     """
     path = _profile_yaml_path(profile_dir)
     if not path.is_file():
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "template": False}
     try:
         import yaml
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except Exception:
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "template": False}
     if not isinstance(data, dict):
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "template": False}
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
+        "template": bool(data.get("template", False)),
     }
 
 
@@ -823,6 +824,7 @@ def write_profile_meta(
     *,
     description: Optional[str] = None,
     description_auto: Optional[bool] = None,
+    template: Optional[bool] = None,
 ) -> None:
     """Update ``<profile_dir>/profile.yaml`` in place.
 
@@ -847,6 +849,8 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
+    if template is not None:
+        existing["template"] = bool(template)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
 
@@ -973,6 +977,8 @@ def create_profile(
     clone_from: Optional[str] = None,
     clone_all: bool = False,
     clone_config: bool = False,
+    clone_env: bool = True,
+    clone_skills: bool = True,
     no_alias: bool = False,
     no_skills: bool = False,
     description: Optional[str] = None,
@@ -989,22 +995,29 @@ def create_profile(
     clone_all:
         If True, do a full copytree of the source (all state).
     clone_config:
-        If True, copy config files (config.yaml, .env, SOUL.md), installed
-        skills, and selected profile identity files from the source profile.
+        If True, copy config files (config.yaml, optionally .env, SOUL.md),
+        optionally installed skills, and selected profile identity files from
+        the source profile.
+    clone_env:
+        If False, skip copying or seeding ``.env``. This is used by dashboard
+        config-only/template clone flows so secrets do not leak into the new
+        profile.
+    clone_skills:
+        If False, skip copying the source profile's ``skills/`` tree while
+        still allowing config/identity files to be cloned.
     no_alias:
         If True, skip wrapper script creation.
     no_skills:
         If True, create an empty profile with no bundled skills, and write
         a marker file so ``hermes update`` skips re-seeding this profile's
-        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
-        explicitly copy skills from the source).
+        skills. Mutually exclusive with clone flows that would copy skills.
 
     Returns
     -------
     Path
         The newly created profile directory.
     """
-    if no_skills and (clone_from is not None or clone_config or clone_all):
+    if no_skills and (clone_all or (clone_skills and (clone_from is not None or clone_config))):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
@@ -1056,6 +1069,8 @@ def create_profile(
         # Clone config files from source
         if source_dir is not None:
             for filename in _CLONE_CONFIG_FILES:
+                if filename == ".env" and not clone_env:
+                    continue
                 src = source_dir / filename
                 if src.exists():
                     dst = profile_dir / filename
@@ -1075,7 +1090,7 @@ def create_profile(
             # and user-installed skills so the new profile immediately has the
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
-            if source_skills.is_dir():
+            if clone_skills and source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
 
             # Clone memory and other subdirectory files
@@ -1093,7 +1108,7 @@ def create_profile(
     # environment — users reasonably read that as "the new profile reads
     # the root .env". Skipped when --clone/--clone-all already copied one.
     env_path = profile_dir / ".env"
-    if not env_path.exists():
+    if clone_env and not env_path.exists():
         try:
             env_path.write_text(
                 "# Per-profile secrets for this Hermes profile.\n"

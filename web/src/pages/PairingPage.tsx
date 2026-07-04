@@ -1,7 +1,10 @@
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { Check, ShieldCheck, Trash2, Users, X } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
@@ -28,10 +31,14 @@ function getUserLabel(user: PairingUser): string {
 }
 
 export default function PairingPage() {
+  const { t } = useI18n();
+  const tPairing = (t.pairing ?? en.pairing) as Record<string, string>;
+
   const [pending, setPending] = useState<PairingUser[]>([]);
   const [approved, setApproved] = useState<PairingUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState<string | null>(null);
+  const [manualCodes, setManualCodes] = useState<Record<string, string>>({});
   const [clearing, setClearing] = useState(false);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
@@ -43,41 +50,47 @@ export default function PairingPage() {
         setPending(res.pending);
         setApproved(res.approved);
       })
-      .catch(() => showToast("Failed to load pairing requests", "error"))
+      .catch(() => showToast(tPairing.loadFailed, "error"))
       .finally(() => setLoading(false));
-  }, [showToast]);
+  }, [showToast, t]);
 
   useEffect(() => {
     loadPairing();
   }, [loadPairing]);
 
   const handleApprove = async (user: PairingUser) => {
-    if (!user.code) {
-      showToast("Missing pairing code", "error");
+    const key = getUserKey(user);
+    const code = (manualCodes[key] || "").trim().toUpperCase();
+    if (!code) {
+      showToast(tPairing.missingCode, "error");
       return;
     }
-    const key = getUserKey(user);
     setApproving(key);
     try {
-      await api.approvePairing(user.platform, user.code);
-      showToast(`Approved: "${getUserLabel(user)}"`, "success");
+      await api.approvePairing(user.platform, code);
+      showToast(tPairing.approved.replace("{name}", getUserLabel(user)), "success");
+      setManualCodes((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       loadPairing();
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`${tPairing.error}: ${e}`, "error");
     } finally {
       setApproving(null);
     }
   };
 
   const handleClearPending = async () => {
-    if (!window.confirm("Clear all pending pairing requests?")) return;
+    if (!window.confirm(tPairing.clearConfirm)) return;
     setClearing(true);
     try {
       const res = await api.clearPendingPairing();
-      showToast(`Cleared ${res.cleared} pending request(s)`, "success");
+      showToast(tPairing.clearedCount.replace("{count}", String(res.cleared)), "success");
       loadPairing();
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`${tPairing.error}: ${e}`, "error");
     } finally {
       setClearing(false);
     }
@@ -91,16 +104,16 @@ export default function PairingPage() {
         try {
           await api.revokePairing(platform, user_id);
           showToast(
-            `Revoked: "${user ? getUserLabel(user) : user_id}"`,
+            tPairing.revoked.replace("{name}", user ? getUserLabel(user) : user_id),
             "success",
           );
           loadPairing();
         } catch (e) {
-          showToast(`Error: ${e}`, "error");
+          showToast(`${tPairing.error}: ${e}`, "error");
           throw e;
         }
       },
-      [approved, loadPairing, showToast],
+      [approved, loadPairing, showToast, t],
     ),
   });
 
@@ -113,15 +126,13 @@ export default function PairingPage() {
         onClick={handleClearPending}
         disabled={clearing}
         prefix={clearing ? <Spinner /> : <Trash2 className="h-4 w-4" />}
-      >
-        Clear pending
-      </Button>,
+      >{tPairing.clearPending}</Button>,
     );
     return () => {
       setEnd(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setEnd, clearing]);
+  }, [setEnd, clearing, t]);
 
   if (loading) {
     return (
@@ -143,13 +154,13 @@ export default function PairingPage() {
         open={userRevoke.isOpen}
         onCancel={userRevoke.cancel}
         onConfirm={userRevoke.confirm}
-        title="Revoke access"
+        title={tPairing.revokeAccess}
         description={
           pendingRevokeUser
-            ? `"${getUserLabel(pendingRevokeUser)}" will lose access. This cannot be undone.`
-            : "This user will lose access. This cannot be undone."
+            ? tPairing.revokeDescUser.replace("{name}", getUserLabel(pendingRevokeUser))
+            : tPairing.revokeDescGeneric
         }
-        confirmLabel="Revoke"
+        confirmLabel={tPairing.revokeLabel}
         loading={userRevoke.isDeleting}
       />
 
@@ -160,14 +171,12 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Users className="h-4 w-4" />
-          Pending requests ({pending.length})
+          {tPairing.pendingRequests} ({pending.length})
         </H2>
 
         {pending.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No pending pairing requests
-            </CardContent>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">{tPairing.noPending}</CardContent>
           </Card>
         )}
 
@@ -179,8 +188,13 @@ export default function PairingPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <Badge tone="outline">{user.platform}</Badge>
-                    {user.code && (
-                      <span className="font-mono text-sm">{user.code}</span>
+                    {user.code_hint && (
+                      <span
+                        className="font-mono text-sm text-muted-foreground"
+                        title="Stored hash prefix, not the pairing code"
+                      >
+                        hash:{user.code_hint}
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -189,17 +203,35 @@ export default function PairingPage() {
                       <span className="truncate">{user.user_name}</span>
                     )}
                     {typeof user.age_minutes === "number" && (
-                      <span>{user.age_minutes}m ago</span>
+                      <span>{tPairing.mAgo.replace("{count}", String(user.age_minutes))}</span>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:min-w-72 sm:flex-row sm:items-center">
+                  <Input
+                    className="h-8 font-mono text-xs uppercase"
+                    placeholder={tPairing.missingCode}
+                    value={manualCodes[key] || ""}
+                    onChange={(e) =>
+                      setManualCodes((prev) => ({
+                        ...prev,
+                        [key]: e.target.value.toUpperCase(),
+                      }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        void handleApprove(user);
+                      }
+                    }}
+                    autoCapitalize="characters"
+                    autoComplete="one-time-code"
+                  />
                   <Button
                     size="sm"
                     className="uppercase"
                     onClick={() => handleApprove(user)}
-                    disabled={approving === key || !user.code}
+                    disabled={approving === key || !(manualCodes[key] || "").trim()}
                     prefix={
                       approving === key ? (
                         <Spinner />
@@ -207,9 +239,7 @@ export default function PairingPage() {
                         <Check className="h-4 w-4" />
                       )
                     }
-                  >
-                    Approve
-                  </Button>
+                  >{tPairing.approveLabel}</Button>
                 </div>
               </CardContent>
             </Card>
@@ -224,14 +254,12 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <ShieldCheck className="h-4 w-4" />
-          Approved users ({approved.length})
+          {tPairing.approvedUsers} ({approved.length})
         </H2>
 
         {approved.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No approved users
-            </CardContent>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">{tPairing.noApproved}</CardContent>
           </Card>
         )}
 
@@ -258,8 +286,8 @@ export default function PairingPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Revoke"
-                    aria-label="Revoke"
+                    title={tPairing.revokeLabel}
+                    aria-label={tPairing.revokeLabel}
                     className="text-destructive"
                     onClick={() => userRevoke.requestDelete(key)}
                   >
