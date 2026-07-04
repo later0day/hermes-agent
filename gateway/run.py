@@ -2791,6 +2791,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        from gateway.source_agent_binding import SourceAgentBindingStore
+        from hermes_constants import get_default_hermes_root
+        self._source_agent_binding_store = SourceAgentBindingStore()
+        self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
+        self._agent_delete_confirmations = {}
         # Multi-profile multiplexing: adapters for NON-default profiles live
         # here, keyed by profile name then Platform. self.adapters stays the
         # default/active profile's map so the ~93 existing self.adapters[...]
@@ -9163,6 +9168,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /agents (/tasks alias) should be query-only and never interrupt.
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "agent":
+                return await self._handle_agent_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "agent":
+                return await self._handle_agent_command(event)
+
+                return await self._handle_agents_command(event)
 
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
@@ -9501,6 +9512,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_status_command(event)
 
         if canonical == "agents":
+            return await self._handle_agents_command(event)
+        if canonical == "agent":
+            return await self._handle_agent_command(event)
+        if canonical == "agent":
+            return await self._handle_agent_command(event)
+
             return await self._handle_agents_command(event)
 
         if canonical == "platform":
@@ -16312,7 +16329,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from hermes_cli.profiles import get_active_profile_name, get_profile_dir
         try:
-            name = (source.profile or "").strip() or get_active_profile_name() or "default"
+            name = (source.profile or "").strip()
+            if not name:
+                try:
+                    from gateway.session import build_source_binding_key
+                    binding = self._source_agent_binding_store.get_binding(build_source_binding_key(source))
+                    if binding:
+                        name = binding.profile_name
+                except Exception:
+                    pass
+            name = name or get_active_profile_name() or "default"
             return get_profile_dir(name)
         except Exception:
             from hermes_constants import get_hermes_home

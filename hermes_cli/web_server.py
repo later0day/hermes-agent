@@ -838,10 +838,29 @@ CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 # the "model" key so it renders adjacent in the frontend.
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
+_ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
         _ordered_schema["model_context_length"] = _mcl_entry
+
+_ordered_schema["extra_headers"] = {
+    "type": "record",
+    "description": "Extra Headers (per-provider/global HTTP headers)",
+    "category": "general",
+}
+_ordered_schema["api_server.model_routes"] = {
+    "type": "record",
+    "description": "Model Routes (Client Key -> Model String)",
+    "category": "api_server",
+}
+for plat in ("discord", "slack", "telegram", "dingtalk", "mattermost", "matrix", "whatsapp", "wecom", "weixin", "qqbot"):
+    _ordered_schema[f"{plat}.channel_overrides"] = {
+        "type": "record",
+        "description": "Channel Overrides (per-channel model/provider overrides)",
+        "category": plat,
+    }
+
 CONFIG_SCHEMA = _ordered_schema
 
 

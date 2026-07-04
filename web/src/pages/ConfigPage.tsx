@@ -57,6 +57,7 @@ import {
 } from "@/lib/configLabels";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { ChannelOverridesEditor, KeyValueEditor } from "@/components/ConfigEditors";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -424,12 +425,38 @@ export default function ConfigPage() {
             </div>
           )}
           <div className="py-1">
-            <AutoField
-              schemaKey={key}
-              schema={s}
-              value={getNestedValue(config, key)}
-              onChange={(v) => setConfig(setNestedValue(config, key, v))}
-            />
+            {key.endsWith(".channel_overrides") ? (
+              <div className="grid gap-3 border border-border p-3">
+                <div className="text-xs font-medium">{formatConfigFieldLabel(key, locale)}</div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
+                </div>
+                <ChannelOverridesEditor
+                  value={getNestedValue(config, key) as any}
+                  onChange={(v) => setConfig(setNestedValue(config, key, v))}
+                />
+              </div>
+            ) : key.endsWith(".extra_headers") || key.endsWith(".model_routes") ? (
+              <div className="grid gap-3 border border-border p-3">
+                <div className="text-xs font-medium">{formatConfigFieldLabel(key, locale)}</div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
+                </div>
+                <KeyValueEditor
+                  value={getNestedValue(config, key) as any}
+                  onChange={(v) => setConfig(setNestedValue(config, key, v))}
+                  keyPlaceholder={key.endsWith(".extra_headers") ? "Header-Name" : "Client Key"}
+                  valPlaceholder={key.endsWith(".extra_headers") ? "Value" : "Model ID"}
+                />
+              </div>
+            ) : (
+              <AutoField
+                schemaKey={key}
+                schema={s}
+                value={getNestedValue(config, key)}
+                onChange={(v) => setConfig(setNestedValue(config, key, v))}
+              />
+            )}
           </div>
         </div>
       );
