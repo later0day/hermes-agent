@@ -6,6 +6,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import type {
   CronJob,
   CronJobRun,
@@ -745,7 +746,13 @@ function CronRunHistory({ jobId, profile }: { jobId: string; profile?: string })
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
-  const [selectedProfile, setSelectedProfile] = useState("all");
+  const { profile: globalProfile } = useProfileScope();
+  const [selectedProfile, setSelectedProfile] = useState(globalProfile || "default");
+
+  // Sync with global profile when it changes from the sidebar/header
+  useEffect(() => {
+    setSelectedProfile(globalProfile || "default");
+  }, [globalProfile]);
   const [view, setView] = useState<"jobs" | "blueprints">("jobs");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
@@ -801,6 +808,7 @@ export default function CronPage() {
   // a job's current skills are always shown even if not in it.
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [availableToolsets, setAvailableToolsets] = useState<ToolsetInfo[]>([]);
+  const [expandedJobKey, setExpandedJobKey] = useState<string | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
 
   const resourceProfile = editJob ? getJobProfile(editJob) : createProfile;
@@ -1230,10 +1238,55 @@ export default function CronPage() {
             ? job.enabled_toolsets.filter(Boolean)
             : [];
 
+          const isJobExpanded = expandedJobKey === jobKey;
+
           return (
             <Card key={jobKey}>
-              <CardContent className="flex items-start gap-4 py-4">
-                <div className="flex-1 min-w-0">
+              <CardContent className="py-0 px-0">
+                {/* Collapsed header — always visible */}
+                <button
+                  type="button"
+                  onClick={() => setExpandedJobKey(isJobExpanded ? null : jobKey)}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "10px 16px",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <span style={{ color: "var(--color-muted-foreground)", flexShrink: 0, display: "flex" }}>
+                    {isJobExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </span>
+                  <span className="font-medium text-sm truncate">
+                    {title}
+                  </span>
+                  <Badge tone={STATUS_TONE[state] ?? "secondary"}>
+                    {state}
+                  </Badge>
+                  <Badge tone="outline">{profileLabel(profile)}</Badge>
+                  {deliver && deliver !== "local" && (
+                    <Badge tone="outline">{deliver}</Badge>
+                  )}
+                  {mode !== "agent" && (
+                    <Badge tone="outline">{mode}</Badge>
+                  )}
+                  <span className="text-xs text-muted-foreground font-mono-ui" style={{ marginLeft: "auto", flexShrink: 0 }}>
+                    {getJobScheduleDisplay(job, scheduleDescribeStrings)}
+                  </span>
+                  <span className="text-xs text-muted-foreground" style={{ flexShrink: 0 }}>
+                    {t.cron.last}: {formatTime(job.last_run_at)}
+                  </span>
+                </button>
+
+                {/* Expanded detail */}
+                {isJobExpanded && (
+                <div className="flex items-start gap-4 px-4 pb-4" style={{ borderTop: "1px solid var(--color-border)" }}>
+                <div className="flex-1 min-w-0 pt-3">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-medium text-sm truncate">
                       {title}
@@ -1343,6 +1396,8 @@ export default function CronPage() {
                     <Trash2 />
                   </Button>
                 </div>
+                </div>
+                )}
               </CardContent>
             </Card>
           );

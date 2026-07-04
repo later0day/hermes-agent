@@ -8838,6 +8838,9 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     list under each job in the desktop cron detail. Same row shape as
     ``/api/sessions`` so the frontend can reuse SessionInfo.
 
+    For ``no_agent`` jobs (pure script, no AIAgent), session DB has no records.
+    Falls back to scanning ``cron/output/{job_id}/`` directory for run history.
+
     Backed by ``SessionDB.list_cron_job_runs`` — a bounded ``[prefix, hi)``
     id-range scan, not the compression-chain CTE used for the recents list,
     so the cost scales with the requested window and not the (unbounded) total
@@ -8846,10 +8849,11 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     selected = profile or _find_cron_job_profile(job_id)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
+    job_data = None
     if selected:
-        job = _call_cron_for_profile(selected, "get_job", job_id)
-        if job and job.get("id"):
-            canonical = str(job["id"])
+        job_data = _call_cron_for_profile(selected, "get_job", job_id)
+        if job_data and job_data.get("id"):
+            canonical = str(job_data["id"])
 
     try:
         limit_n = max(1, min(int(limit), 100))
@@ -8873,6 +8877,64 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
             sid = s.get("id") or ""
             s.setdefault("run_id", sid)
             s.setdefault("session_id", sid)
+
+        # Fallback for no_agent jobs: scan cron/output/{job_id}/ directory.
+        # These jobs run pure scripts without AIAgent, so they never write
+        # session records to state.db, but their output is saved as .md/.txt
+        # files in the output directory.
+        if not runs and job_data and job_data.get("no_agent"):
+            try:
+                _profile_name, _profile_home = _cron_profile_home(selected)
+                output_dir = _profile_home / "cron" / "output" / canonical
+                if output_dir.is_dir():
+                    output_files = sorted(output_dir.iterdir(), reverse=True)[:limit_n]
+                    for f in output_files:
+                        if not f.is_file():
+                            continue
+                        stem = f.stem  # e.g. "2026-07-05_01-05-21"
+                        # Parse filename into epoch seconds for toMs() compatibility
+                        epoch_ts = 0.0
+                        try:
+                            parts = stem.split("_")
+                            date_part = parts[0]  # "2026-07-05"
+                            time_part = parts[1].replace("-", ":") if len(parts) > 1 else "00:00:00"
+                            from datetime import datetime as _dt
+                            epoch_ts = _dt.fromisoformat(f"{date_part}T{time_part}").timestamp()
+                        except Exception:
+                            pass
+                        run_id = f"cron_{canonical}_{stem}"
+                        content_preview = ""
+                        try:
+                            raw = f.read_text(encoding="utf-8")[:2000]
+                            # Strip the metadata header, show actual content
+                            if "---" in raw:
+                                after = raw.split("---", 2)[-1].strip()
+                                content_preview = after[:500]
+                            else:
+                                content_preview = raw[:500]
+                        except Exception:
+                            pass
+                        runs.append({
+                            "id": run_id,
+                            "run_id": run_id,
+                            "session_id": None,
+                            "source": "cron",
+                            "model": "script",
+                            "title": job_data.get("name", canonical),
+                            "started_at": epoch_ts,
+                            "ended_at": epoch_ts,
+                            "end_reason": "completed",
+                            "status": "ok",
+                            "is_active": False,
+                            "archived": False,
+                            "no_agent": True,
+                            "output_file": str(f),
+                            "preview": content_preview[:200] if content_preview else None,
+                            "profile": selected,
+                        })
+            except Exception as _e:
+                _log.debug("cron output scan for %s failed: %s", canonical, _e)
+
         return {"runs": runs, "limit": limit_n}
     finally:
         db.close()
@@ -12452,8 +12514,29 @@ def _delete_profile_skill(profile_dir: Path, skill_name: str) -> str:
 
     skills_dir = profile_dir / "skills"
     target = skills_dir.joinpath(*parts)
+
+    # If the path doesn't exist, try resolving by SKILL.md name field —
+    # the frontend passes skill.name (from frontmatter), not the directory
+    # name, so a skill stored in "foo-skill/" but named "foo" would 404.
     if not target.is_dir() or not (target / "SKILL.md").is_file():
-        raise HTTPException(status_code=404, detail=f"Skill '{safe_name}' not found in profile")
+        found_dir = None
+        if skills_dir.is_dir():
+            for skill_dir in skills_dir.rglob("SKILL.md"):
+                try:
+                    content = skill_dir.read_text(encoding="utf-8")[:2000]
+                    if safe_name in content:
+                        # Verify the name field matches
+                        import re
+                        m = re.search(r'^name:\s*(.+)$', content, re.MULTILINE)
+                        if m and m.group(1).strip() == safe_name:
+                            found_dir = skill_dir.parent
+                            break
+                except Exception:
+                    continue
+        if found_dir is not None:
+            target = found_dir
+        else:
+            raise HTTPException(status_code=404, detail=f"Skill '{safe_name}' not found in profile")
 
     try:
         shutil.rmtree(target)

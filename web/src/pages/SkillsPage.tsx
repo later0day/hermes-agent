@@ -28,8 +28,10 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type {
   SkillInfo,
   ToolsetInfo,
@@ -133,6 +135,8 @@ export default function SkillsPage() {
   const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
+  const [skillToDelete, setSkillToDelete] = useState<SkillInfo | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
   // Skill editor dialog: open + which skill is being edited (null = create).
   const [editorOpen, setEditorOpen] = useState(false);
@@ -195,6 +199,25 @@ export default function SkillsPage() {
         next.delete(skill.name);
         return next;
       });
+    }
+  };
+
+  const handleDeleteSkill = async (skill: SkillInfo) => {
+    const profile = selectedProfile && selectedProfile !== "all" ? selectedProfile : null;
+    if (!profile || profile === "default") {
+      showToast("Cannot delete skills from default profile", "error");
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.deleteSkill(skill.name, profile);
+      setSkills((prev) => prev.filter((s) => s.name !== skill.name));
+      showToast(`${skill.name} deleted`, "success");
+      setSkillToDelete(null);
+    } catch (e) {
+      showToast(`Failed to delete ${skill.name}: ${e instanceof Error ? e.message : "unknown error"}`, "error");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -497,6 +520,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={skill.provenance === "agent" && selectedProfile && selectedProfile !== "all" && selectedProfile !== "default" ? () => setSkillToDelete(skill) : undefined}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -557,6 +581,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={skill.provenance === "agent" && selectedProfile && selectedProfile !== "all" && selectedProfile !== "default" ? () => setSkillToDelete(skill) : undefined}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -724,6 +749,18 @@ export default function SkillsPage() {
         </DialogContent>
       </Dialog>
       <PluginSlot name="skills:bottom" />
+
+      <ConfirmDialog
+        open={skillToDelete !== null}
+        title="Delete skill"
+        description={`Delete "${skillToDelete?.name ?? ""}"? This action cannot be undone.`}
+        destructive
+        loading={deleting}
+        confirmLabel={t.common?.delete || "Delete"}
+        cancelLabel={t.common?.cancel || "Cancel"}
+        onCancel={() => skillToDelete && setSkillToDelete(null)}
+        onConfirm={() => skillToDelete && handleDeleteSkill(skillToDelete)}
+      />
     </div>
   );
 }
@@ -733,6 +770,7 @@ function SkillRow({
   toggling,
   onToggle,
   onEdit,
+  onDelete,
   noDescriptionLabel,
 }: SkillRowProps) {
   const { t } = useI18n();
@@ -769,6 +807,19 @@ function SkillRow({
       >
         <Pencil />
       </Button>
+      {onDelete && (
+        <Button
+          ghost
+          destructive
+          size="icon"
+          className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+          title={t.common?.delete || "Delete"}
+          aria-label={`Delete ${skill.name}`}
+          onClick={onDelete}
+        >
+          <Trash2 />
+        </Button>
+      )}
     </div>
   );
 }
@@ -802,6 +853,7 @@ interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
   onEdit: () => void;
+  onDelete?: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }

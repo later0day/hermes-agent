@@ -769,6 +769,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, enabled, profile: profile || undefined }),
     }),
+  deleteSkill: (name: string, profile: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(profile)}/skills/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
   getSkillContent: (name: string, profile?: string) =>
     fetchJSON<SkillContent>(
       `/api/skills/content?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
@@ -2123,6 +2127,8 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+  provenance?: string;
+  usage?: number;
 }
 
 export interface SkillContent {
