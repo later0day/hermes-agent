@@ -886,6 +886,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -966,6 +967,18 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+
+    # Normalize profile: when provided (by _call_cron_for_profile), validate
+    # and store as owner_profile/run_profile for scheduler scoping.
+    if profile:
+        try:
+            normalized_profile = _normalize_profile(profile)
+        except Exception:
+            normalized_profile = profile
+        owner_profile = normalized_profile
+    else:
+        normalized_profile = None
+        owner_profile = "default"
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never

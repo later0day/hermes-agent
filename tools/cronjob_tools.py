@@ -714,6 +714,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    profile: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -791,6 +792,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                profile=profile,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
