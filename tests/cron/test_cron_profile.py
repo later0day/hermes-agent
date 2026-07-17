@@ -19,6 +19,9 @@ def isolated_cron_profile_home(tmp_path, monkeypatch):
     profile_home = root / "profiles" / "support"
     profile_home.mkdir(parents=True)
     (root / "cron").mkdir(parents=True)
+    # A profile job re-loads the profile's .env at run time; create it so
+    # load_hermes_dotenv actually reaches the (monkeypatched) dotenv loader.
+    (profile_home / ".env").write_text("HERMES_PROFILE_MARKER=1\n", encoding="utf-8")
 
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr("cron.jobs.CRON_DIR", root / "cron")
@@ -233,13 +236,18 @@ class TestRunJobProfileContext:
         monkeypatch.setattr(sched, "_hermes_home", None)
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
 
-        import dotenv
+        import hermes_cli.env_loader as env_loader
 
-        def fake_load_dotenv(path, *_a, **_kw):
-            observed.setdefault("dotenv_paths", []).append(str(path))
+        def fake_load_dotenv(dotenv_path=None, *_a, **_kw):
+            observed.setdefault("dotenv_paths", []).append(str(dotenv_path))
             return True
 
-        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+        # The scheduler loads a profile's env via
+        # ``env_loader.load_hermes_dotenv(hermes_home=<profile home>)``, which
+        # binds ``load_dotenv`` at import time. Patch the module-local name so
+        # the fake is actually reached (patching ``dotenv.load_dotenv`` would
+        # not affect env_loader's already-bound reference).
+        monkeypatch.setattr(env_loader, "load_dotenv", fake_load_dotenv)
 
     def test_run_job_sets_and_restores_profile_home(
         self, isolated_cron_profile_home, monkeypatch
@@ -298,7 +306,7 @@ class TestRunJobProfileContext:
     def test_profile_dotenv_environment_is_restored(
         self, isolated_cron_profile_home, monkeypatch
     ):
-        import dotenv
+        import hermes_cli.env_loader as env_loader
         import cron.scheduler as sched
 
         root, profile_home = isolated_cron_profile_home
@@ -307,14 +315,16 @@ class TestRunJobProfileContext:
         monkeypatch.setenv("HERMES_PROFILE_TEST_SHARED", "outer")
         monkeypatch.delenv("HERMES_PROFILE_TEST_ONLY", raising=False)
 
-        def fake_load_dotenv(path, *_a, **_kw):
-            observed.setdefault("dotenv_paths", []).append(str(path))
+        def fake_load_dotenv(dotenv_path=None, *_a, **_kw):
+            observed.setdefault("dotenv_paths", []).append(str(dotenv_path))
             os.environ["HERMES_PROFILE_TEST_SHARED"] = "profile-value"
             os.environ["HERMES_PROFILE_TEST_ONLY"] = "profile-only"
             os.environ["HERMES_CRON_TIMEOUT"] = "123"
             return True
 
-        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+        # Patch the module-local name env_loader actually calls (see
+        # _install_agent_stubs) rather than dotenv.load_dotenv.
+        monkeypatch.setattr(env_loader, "load_dotenv", fake_load_dotenv)
 
         job = {
             "id": "env-profile",
@@ -453,7 +463,7 @@ class TestTickProfilePartition:
 
         calls: list[tuple[str, str]] = []
 
-        def fake_run_job(job):
+        def fake_run_job(job, *, defer_agent_teardown=None):
             calls.append((job["id"], threading.current_thread().name))
             return True, "output", "response", None
 
@@ -467,6 +477,12 @@ class TestTickProfilePartition:
         assert n == 2
         ids = [job_id for job_id, _thread_name in calls]
         assert ids.index("a") < ids.index("b")
+        # Profile jobs are dispatched to the persistent single-thread
+        # cron-seq pool (same as workdir jobs) — non-blocking, one at a
+        # time — NOT run inline on the ticker thread. See
+        # TestTickWorkdirPartition.test_workdir_jobs_run_sequentially for
+        # the equivalent workdir-job assertion.
         main_thread_name = threading.current_thread().name
         profile_thread_name = next(thread for job_id, thread in calls if job_id == "a")
-        assert profile_thread_name == main_thread_name
+        assert profile_thread_name != main_thread_name
+        assert profile_thread_name.startswith("cron-seq"), profile_thread_name

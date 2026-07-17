@@ -133,7 +133,7 @@ class TestDingTalkRequirements:
 
 class TestDingTalkHttpClient:
     def test_http_client_kwargs_default_uses_limits(self, monkeypatch):
-        from gateway.platforms import dingtalk as dt
+        from plugins.platforms.dingtalk import adapter as dt
 
         monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: [])
         monkeypatch.setattr(
@@ -146,7 +146,7 @@ class TestDingTalkHttpClient:
         assert kwargs == {"timeout": 30.0, "limits": "limits"}
 
     def test_http_client_kwargs_force_ipv4_uses_ipv4_transport(self, monkeypatch):
-        from gateway.platforms import dingtalk as dt
+        from plugins.platforms.dingtalk import adapter as dt
 
         def fake_getaddrinfo(*args, **kwargs):
             return []
@@ -205,7 +205,7 @@ class TestDingTalkAdapterInit:
         monkeypatch.setenv("DINGTALK_CLIENT_ID", "env-id")
         monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "env-secret")
         monkeypatch.setenv("DINGTALK_ROBOT_CODE", "env-robot")
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         config = PlatformConfig(enabled=True)
         adapter = DingTalkAdapter(config)
         assert adapter._robot_code == "env-robot"
@@ -427,7 +427,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_send_uses_ai_card_without_session_webhook(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         adapter = DingTalkAdapter(
             PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
@@ -461,7 +461,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_ai_card_send_without_reply_to_finalizes_unless_expect_edits(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         adapter = DingTalkAdapter(
             PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
@@ -489,7 +489,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_ai_card_expect_edits_keeps_card_streaming_even_with_reply_to(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         adapter = DingTalkAdapter(
             PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
@@ -531,7 +531,7 @@ class TestSend:
         one-shot plain-text notice via webhook so the user sees that
         live progress is unavailable rather than staring at silence.
         """
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         adapter = DingTalkAdapter(
             PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
@@ -582,7 +582,7 @@ class TestSend:
         We never want a webhook-lookup failure to mask the original AI
         Card failure or to raise back to the caller.
         """
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         adapter = DingTalkAdapter(
             PlatformConfig(enabled=True, extra={"robot_code": "cfg-robot"})
@@ -615,7 +615,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_dm_image_file_sends_card_1_0_with_uploaded_media(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         from gateway.platforms.base import SendResult
 
         adapter = DingTalkAdapter(
@@ -658,7 +658,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_native_dm_send_defaults_to_batch_oto_with_config_robot_code(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         adapter = DingTalkAdapter(
             PlatformConfig(
@@ -700,7 +700,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_native_dm_send_uses_private_chat_route_when_requested(self):
-        from gateway.platforms.dingtalk import DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         adapter = DingTalkAdapter(
             PlatformConfig(
@@ -1285,7 +1285,7 @@ class TestIncomingHandlerProcess:
     async def test_process_preserves_robot_code_and_chatbot_user_id_separately(self):
         """robotCode is the OpenAPI robot identifier; chatbotUserId is the
         robot user's DingTalk account. They must not be collapsed."""
-        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import _IncomingHandler, DingTalkAdapter
 
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._on_message = AsyncMock()
@@ -1313,7 +1313,7 @@ class TestIncomingHandlerProcess:
     async def test_process_does_not_use_chatbot_user_id_as_robot_code(self):
         """Older/newer SDK mappings may miss robotCode, but chatbotUserId is
         still not a valid robotCode fallback."""
-        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+        from plugins.platforms.dingtalk.adapter import _IncomingHandler, DingTalkAdapter
 
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._on_message = AsyncMock()

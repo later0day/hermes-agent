@@ -4244,25 +4244,24 @@ def tick(
                     return None
                 raise
 
-        # Sequential (inline) pass for env-mutating (workdir/profile) jobs.
+        # Sequential pass for env/context-mutating (workdir/profile) jobs.
         # Profile/workdir jobs touch process-global runtime state inside
-        # run_job (os.environ, _hermes_home hook). They MUST run on the
-        # calling thread to avoid race conditions with parallel pool jobs.
-        # Running inline keeps them sequential and avoids env corruption.
+        # run_job (os.environ, _hermes_home hook). They MUST run one at a
+        # time to avoid corrupting each other's env/profile state — but must
+        # NOT block the ticker thread, so they're queued to a persistent
+        # single-thread pool (same non-blocking dispatch as the parallel
+        # pass, just serialized). The in-flight dedup guard (shared via
+        # _submit_with_guard) prevents a still-running job from being
+        # re-queued on the next tick.
         if sequential_jobs:
+            seq_pool = _get_sequential_pool()
             for job in sequential_jobs:
-                job_id = job["id"]
-                with _running_lock:
-                    if job_id in _running_job_ids:
-                        logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                        continue
-                    _running_job_ids.add(job_id)
-                try:
-                    result = _process_job(job)
-                    _results.append(result)
-                finally:
-                    with _running_lock:
-                        _running_job_ids.discard(job_id)
+                fut = _submit_with_guard(job, seq_pool)
+                if fut is None:
+                    continue
+                _all_futures.append(fut)
+                if not sync:
+                    _results.append(True)  # optimistically counted
 
         # Parallel pass — persistent pool, non-blocking dispatch.
         # Jobs that are already running (from a previous tick) are skipped.
