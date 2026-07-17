@@ -553,6 +553,8 @@ export interface Translations {
     disconnect: string;
     managedExternally: string;
     copied: string;
+    copyCode: string;
+    copyFailed: string;
     cli: string;
     copyCliCommand: string;
     connect: string;
