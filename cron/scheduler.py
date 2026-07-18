@@ -2532,39 +2532,17 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             }
         env = _sanitize_subprocess_env(os.environ.copy())
         env.update(env_overlay)
-        proc = subprocess.Popen(
+        result = subprocess.run(
             argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
+            timeout=script_timeout,
             cwd=str(path.parent),
             env=env,
             **popen_kwargs,
         )
-        try:
-            stdout_raw, stderr_raw = proc.communicate(timeout=script_timeout)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except Exception as kill_exc:
-                # Test live-system guards may block kill() when subprocess
-                # ancestry cannot be proven. The user-facing result is still a
-                # timeout; keep cleanup best-effort instead of returning the
-                # guard's implementation detail.
-                logger.debug(
-                    "cron script timeout cleanup failed for %s: %s",
-                    path, kill_exc,
-                )
-            else:
-                try:
-                    proc.communicate(timeout=1)
-                except Exception:
-                    pass
-            return False, f"Script timed out after {script_timeout}s: {path}"
-
-        returncode = proc.returncode
-        stdout = (stdout_raw or "").strip()
-        stderr = (stderr_raw or "").strip()
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2576,8 +2554,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if returncode != 0:
-            parts = [f"Script exited with code {returncode}"]
+        if result.returncode != 0:
+            parts = [f"Script exited with code {result.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -2590,6 +2568,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
+
+
 
 
 def _run_job_script_with_claim_heartbeat(
