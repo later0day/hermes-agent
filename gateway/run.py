@@ -9890,10 +9890,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return await self._handle_agents_command(event)
             if _cmd_def_inner and _cmd_def_inner.name == "agent":
                 return await self._handle_agent_command(event)
-            if _cmd_def_inner and _cmd_def_inner.name == "agent":
-                return await self._handle_agent_command(event)
-
-                return await self._handle_agents_command(event)
 
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
@@ -10251,10 +10247,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_agents_command(event)
         if canonical == "agent":
             return await self._handle_agent_command(event)
-        if canonical == "agent":
-            return await self._handle_agent_command(event)
-
-            return await self._handle_agents_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)
