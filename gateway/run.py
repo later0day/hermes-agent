@@ -17947,8 +17947,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if binding and binding.profile_name:
                         name = binding.profile_name
                         explicit_profile = name  # Binding explicitly set this profile
-                except Exception:
-                    pass
+                except Exception as _bs_exc:
+                    logger.debug("binding store lookup failed for source %s: %s", getattr(source, "chat_id", "?"), _bs_exc)
             if not name:
                 name = self._profile_name_for_source(source)
                 if name:

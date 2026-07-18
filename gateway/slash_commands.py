@@ -5124,8 +5124,12 @@ class GatewaySlashCommandsMixin:
                                         f"Agent profile `{target}` was deleted. This chat has been unbound.",
                                         metadata=metadata_to_send
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as _notify_exc:
+                                    logger.debug(
+                                        "/agent delete: failed to notify binding %s after profile delete: %s",
+                                        b.fallback_target.get("chat_id"),
+                                        _notify_exc,
+                                    )
                                     
                 return f"Deleted agent profile `{target}`."
             except Exception as e:
