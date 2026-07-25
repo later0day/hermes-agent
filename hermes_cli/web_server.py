@@ -9892,11 +9892,18 @@ async def cancel_weixin_qr(session_id: str):
 async def get_messaging_platforms(profile: Optional[str] = None):
     # Profile-scoped so the dashboard's global profile switcher shows the
     # TARGET profile's channel credentials/state, not the root install's.
-    # Inside _profile_scope, load_env()/read_runtime_status()/get_running_pid()
-    # all resolve against the requested profile's HERMES_HOME.
+    # Inside _profile_scope, load_env() and get_env_path() resolve against
+    # the requested profile's HERMES_HOME. read_runtime_status() uses
+    # _get_process_hermes_home() which reads os.environ (not the contextvar),
+    # so we must pass the explicit path for profile-scoped queries — same
+    # pattern as /api/status (issue #69143).
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
-        runtime = read_runtime_status()
+        runtime = (
+            read_runtime_status(path=scoped_dir / "gateway_state.json")
+            if scoped_dir
+            else read_runtime_status()
+        )
         return {
             "env_path": str(get_env_path()),
             "gateway_start_command": _gateway_display_command(profile, "start"),
