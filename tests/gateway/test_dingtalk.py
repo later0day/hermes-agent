@@ -1151,7 +1151,7 @@ class TestExtractMedia:
         )
         assert msg_type == MessageType.VOICE
         assert urls == ["dl_voice_rt"]
-        assert mtypes == ["audio"]
+        assert mtypes == ["audio/ogg"]
 
     def test_richtext_with_image_still_photo(self):
         """richText with only an embedded image keeps the PHOTO promotion."""
