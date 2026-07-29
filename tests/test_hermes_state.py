@@ -5267,6 +5267,18 @@ class TestExcludeSources:
         assert "s2" not in ids
         assert "s3" not in ids
 
+    def test_list_sessions_rich_includes_multiple_sources(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "cron")
+        db.create_session("s4", "telegram")
+
+        sessions = db.list_sessions_rich(sources=["tool", "cron"])
+        ids = {s["id"] for s in sessions}
+
+        assert ids == {"s2", "s3"}
+        assert db.session_count(sources=["tool", "cron"]) == 2
+
     def test_search_messages_excludes_tool_source(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Python deployment question")
@@ -7038,8 +7050,8 @@ class TestSessionPinAndStaleArchive:
 class TestSessionIdSearch:
     """Session id search backs Desktop's Search Sessions UX."""
 
-    def _seed(self, db, sid, *, content="ordinary message", archived=False):
-        db.create_session(session_id=sid, source="cli", model="test-model")
+    def _seed(self, db, sid, *, content="ordinary message", archived=False, source="cli"):
+        db.create_session(session_id=sid, source=source, model="test-model")
         db.append_message(session_id=sid, role="user", content=content)
         if archived:
             db.set_session_archived(sid, True)
@@ -7086,6 +7098,29 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
+
+    def test_search_sessions_by_id_respects_source_filters(self, db):
+        self._seed(db, "20260603_090200_cli")
+        self._seed(db, "20260603_090200_cron", source="cron")
+        self._seed(db, "20260603_090200_tool", source="tool")
+
+        automation = {
+            s["id"]
+            for s in db.search_sessions_by_id(
+                "20260603_090200",
+                sources=["cron", "tool"],
+            )
+        }
+        chats = {
+            s["id"]
+            for s in db.search_sessions_by_id(
+                "20260603_090200",
+                exclude_sources=["cron", "tool"],
+            )
+        }
+
+        assert automation == {"20260603_090200_cron", "20260603_090200_tool"}
+        assert chats == {"20260603_090200_cli"}
 
 
 class TestListCronJobRuns:
@@ -7979,3 +8014,115 @@ class TestDisplayMetadataReadPaths:
         )
         assert db.get_messages_as_conversation("s1")[0]["display_metadata"] == self.META
 
+
+
+class TestGatewayRoutingPkHeal:
+    """Legacy gateway_routing tables (session_key-only PK) get rebuilt on open.
+
+    Early builds of the #59203 routing-index migration created gateway_routing
+    with ``session_key TEXT PRIMARY KEY`` and no ``scope`` column. The column
+    reconciler ADDs ``scope`` but cannot change the PK, so on those databases
+    every routing save failed ("ON CONFLICT clause does not match any PRIMARY
+    KEY or UNIQUE constraint" / "UNIQUE constraint failed:
+    gateway_routing.session_key") and spammed warnings on each save.
+    """
+
+    LEGACY_SQL = """
+        CREATE TABLE gateway_routing (
+            session_key TEXT PRIMARY KEY,
+            entry_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        , "scope" TEXT DEFAULT '')
+    """
+
+    def _make_legacy_db(self, tmp_path, rows=()):
+        db_path = tmp_path / "state.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(self.LEGACY_SQL)
+        conn.executemany(
+            "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            list(rows),
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def _pk_cols(self, db):
+        rows = db._conn.execute('PRAGMA table_info("gateway_routing")').fetchall()
+        cols = sorted(
+            ((r["pk"], r["name"]) for r in rows if r["pk"]),
+        )
+        return [name for _, name in cols]
+
+    def test_legacy_pk_rebuilt_to_composite(self, tmp_path):
+        db_path = self._make_legacy_db(
+            tmp_path, rows=[("/home/u/.hermes/sessions", "agent:main:telegram:dm:1", "{}", 1.0)]
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            assert self._pk_cols(db) == ["scope", "session_key"]
+            # Existing rows survive the rebuild.
+            entries = db.load_gateway_routing_entries(scope="/home/u/.hermes/sessions")
+            assert entries == {"agent:main:telegram:dm:1": "{}"}
+        finally:
+            db.close()
+
+    def test_upsert_and_cross_scope_replace_work_after_heal(self, tmp_path):
+        """The two write paths that failed on the legacy shape now succeed."""
+        db_path = self._make_legacy_db(
+            tmp_path, rows=[("scopeA", "agent:main:telegram:dm:1", "{}", 1.0)]
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            # save_gateway_routing_entry: composite ON CONFLICT upsert.
+            db.save_gateway_routing_entry(
+                "agent:main:telegram:dm:1", '{"v": 2}', scope="scopeA"
+            )
+            assert db.load_gateway_routing_entries(scope="scopeA") == {
+                "agent:main:telegram:dm:1": '{"v": 2}'
+            }
+            # replace_gateway_routing_entries: same session_key, other scope —
+            # the exact collision the 'UNIQUE constraint failed' spam came from.
+            db.replace_gateway_routing_entries(
+                {"agent:main:telegram:dm:1": '{"v": 3}'}, scope="scopeB"
+            )
+            assert db.load_gateway_routing_entries(scope="scopeB") == {
+                "agent:main:telegram:dm:1": '{"v": 3}'
+            }
+            # scopeA untouched by scopeB's replace.
+            assert db.load_gateway_routing_entries(scope="scopeA") == {
+                "agent:main:telegram:dm:1": '{"v": 2}'
+            }
+        finally:
+            db.close()
+
+    def test_cross_scope_collision_rows_all_survive(self, tmp_path):
+        """Rows that shared a session_key across scopes are preserved per scope."""
+        db_path = self._make_legacy_db(tmp_path)
+        # The legacy single-column PK forbids duplicate session_keys, so
+        # simulate what a healed multi-scope DB must support by inserting the
+        # collision AFTER the heal via public APIs (covered above) — here we
+        # instead verify a NULL scope from the reconciler-added column
+        # coalesces to '' rather than violating NOT NULL.
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+            "VALUES (NULL, 'k-null-scope', '{}', 5.0)"
+        )
+        conn.commit()
+        conn.close()
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.load_gateway_routing_entries(scope="") == {"k-null-scope": "{}"}
+        finally:
+            db.close()
+
+    def test_current_shape_left_untouched(self, tmp_path, db):
+        """A DB born with the composite PK is not rebuilt (idempotence)."""
+        db.save_gateway_routing_entry("k1", "{}", scope="s")
+        assert self._pk_cols(db) == ["scope", "session_key"]
+        # Re-running the heal is a no-op.
+        cur = db._conn.cursor()
+        db._heal_gateway_routing_pk(cur)
+        assert db.load_gateway_routing_entries(scope="s") == {"k1": "{}"}

@@ -3496,6 +3496,79 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _heal_gateway_routing_pk(self, cursor: sqlite3.Cursor) -> None:
+        """Rebuild ``gateway_routing`` when its PRIMARY KEY predates scoping.
+
+        Early builds of the routing-index migration (#59203) created the
+        table with ``session_key TEXT PRIMARY KEY`` and no ``scope`` column.
+        ``_reconcile_columns()`` ADDs the missing ``scope`` column on those
+        databases, but SQLite cannot ALTER a primary key, so the shipped
+        composite ``PRIMARY KEY (scope, session_key)`` never lands.  On such
+        tables every write path is broken:
+
+        * ``save_gateway_routing_entry`` fails with "ON CONFLICT clause does
+          not match any PRIMARY KEY or UNIQUE constraint" (its upsert targets
+          the composite key), and
+        * ``replace_gateway_routing_entries`` fails with "UNIQUE constraint
+          failed: gateway_routing.session_key" whenever the same session_key
+          exists under a different scope — the exact isolation the composite
+          key exists to provide.
+
+        Each failed save logs a warning and falls back to sessions.json,
+        so a legacy-shaped table produces endless per-save warning spam.
+        Rebuild it once, preserving rows.  On a session_key collision across
+        scopes (possible while the PK was wrong) the newest row wins.
+        """
+        try:
+            rows = cursor.execute(
+                'PRAGMA table_info("gateway_routing")'
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        if not rows:
+            return
+
+        def _col(row, idx, name):
+            return row[idx] if isinstance(row, (tuple, list)) else row[name]
+
+        pk_cols = [
+            _col(r, 1, "name")
+            for r in sorted(
+                (r for r in rows if _col(r, 5, "pk")),
+                key=lambda r: _col(r, 5, "pk"),
+            )
+        ]
+        if pk_cols == ["scope", "session_key"]:
+            return
+
+        logger.info(
+            "gateway_routing has legacy primary key %r; rebuilding with "
+            "composite (scope, session_key) key",
+            pk_cols,
+        )
+        cursor.execute(
+            "ALTER TABLE gateway_routing RENAME TO gateway_routing_legacy_pk"
+        )
+        cursor.execute(
+            """CREATE TABLE gateway_routing (
+    scope TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    entry_json TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (scope, session_key)
+)"""
+        )
+        # INSERT OR REPLACE + updated_at ordering: if the broken PK ever let
+        # two scopes race over one session_key, keep the newest row per
+        # (scope, session_key) pair.
+        cursor.execute(
+            "INSERT OR REPLACE INTO gateway_routing "
+            "(scope, session_key, entry_json, updated_at) "
+            "SELECT COALESCE(scope, ''), session_key, entry_json, updated_at "
+            "FROM gateway_routing_legacy_pk ORDER BY updated_at ASC"
+        )
+        cursor.execute("DROP TABLE gateway_routing_legacy_pk")
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -3519,6 +3592,11 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # Rebuild gateway_routing if it still carries the pre-scope PRIMARY
+        # KEY (session_key alone). ADD COLUMN cannot fix a PK, so this is
+        # the one table-shape repair reconciliation can't express.
+        self._heal_gateway_routing_pk(cursor)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -6399,6 +6477,7 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
+        sources: List[str] = None,
         exclude_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
@@ -6476,9 +6555,11 @@ class SessionDB:
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
-        if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+        include_sources = [source] if source else list(sources or [])
+        if include_sources:
+            placeholders = ",".join("?" for _ in include_sources)
+            where_clauses.append(f"s.source IN ({placeholders})")
+            params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -6781,6 +6862,15 @@ class SessionDB:
         s = dict(row)
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
         return s
+
+    def get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
+        """Public wrapper for :meth:`_get_session_rich_row`.
+
+        Exposes the single-session enriched row (same columns as
+        ``list_sessions_rich``: preview + last_active) for callers outside
+        this module, e.g. the web server's session-search hydration.
+        """
+        return self._get_session_rich_row(session_id, compact_rows=compact_rows)
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Titled sessions whose first user turn was a ``/skill`` invocation.
@@ -9165,6 +9255,9 @@ class SessionDB:
         query: str,
         limit: int = 20,
         include_archived: bool = True,
+        source: str = None,
+        sources: List[str] = None,
+        exclude_sources: List[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search surfaced sessions by exact/prefix/substring session id.
 
@@ -9185,6 +9278,9 @@ class SessionDB:
         # in-Python exact/prefix/substring ranking below has enough candidates
         # to order, then truncate.
         candidates = self.list_sessions_rich(
+            source=source,
+            sources=sources,
+            exclude_sources=exclude_sources,
             limit=max(limit * 4, limit),
             offset=0,
             include_archived=include_archived,
@@ -9260,6 +9356,7 @@ class SessionDB:
     def session_count(
         self,
         source: str = None,
+        sources: List[str] = None,
         cwd_prefix: str = None,
         min_message_count: int = 0,
         include_archived: bool = False,
@@ -9290,9 +9387,11 @@ class SessionDB:
             # children (parent ended with end_reason='branched').
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
-        if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+        include_sources = [source] if source else list(sources or [])
+        if include_sources:
+            placeholders = ",".join("?" for _ in include_sources)
+            where_clauses.append(f"s.source IN ({placeholders})")
+            params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
