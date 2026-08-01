@@ -4067,6 +4067,30 @@ OPTIONAL_ENV_VARS = {
         "prompt": "QQ Home Channel Name",
         "category": "messaging",
     },
+    "DINGTALK_CLIENT_ID": {
+        "description": "DingTalk Stream Mode client ID (AppKey) from the Channels page",
+        "prompt": "DingTalk Client ID (AppKey)",
+        "url": "https://open-dev.dingtalk.com",
+        "password": True,
+        "category": "messaging",
+    },
+    "DINGTALK_CLIENT_SECRET": {
+        "description": "DingTalk Stream Mode client secret (AppSecret)",
+        "prompt": "DingTalk Client Secret (AppSecret)",
+        "url": "https://open-dev.dingtalk.com",
+        "password": True,
+        "category": "messaging",
+    },
+    "DINGTALK_HOME_CHANNEL": {
+        "description": "Default DingTalk conversation for cron delivery and notifications",
+        "prompt": "DingTalk Home Channel",
+        "category": "messaging",
+    },
+    "DINGTALK_HOME_CHANNEL_NAME": {
+        "description": "Display name for the DingTalk home channel",
+        "prompt": "DingTalk Home Channel Name",
+        "category": "messaging",
+    },
     "QQ_SANDBOX": {
         "description": "Enable QQ sandbox mode for development testing (true/false)",
         "prompt": "QQ Sandbox Mode",
