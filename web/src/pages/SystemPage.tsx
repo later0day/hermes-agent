@@ -1,6 +1,6 @@
 import { useI18n } from "@/i18n/context";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import {
   Activity,
   Brain,
