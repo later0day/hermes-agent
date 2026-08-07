@@ -25446,10 +25446,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.debug("Heartbeat edit failed: %s", _ee)
                             _notify_res = None
                     if not (_notify_res and getattr(_notify_res, "success", False)):
+                        # The next interval edits this same message in place, so
+                        # declare the editable lifecycle up front.  Without it an
+                        # AI-Card adapter finalizes on create and the follow-up
+                        # edit reopens the card (closed→streaming flicker).
+                        _heartbeat_metadata = dict(
+                            _non_conversational_metadata(
+                                _status_thread_metadata, platform=source.platform,
+                            )
+                            or {}
+                        )
+                        _heartbeat_metadata["expect_edits"] = True
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,
-                            metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                            metadata=_heartbeat_metadata,
                         )
                         if getattr(_notify_res, "success", False) and getattr(
                             _notify_res, "message_id", None

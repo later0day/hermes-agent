@@ -1363,6 +1363,34 @@ class TestCardLifecycle:
         assert "chat-1" not in a._streaming_cards
 
     @pytest.mark.asyncio
+    async def test_expect_edits_send_then_edit_never_reopens_card(
+        self, adapter_with_card,
+    ):
+        """An editable card must stay open across create → edit → finalize.
+
+        Guards the upstream property that ``test_intermediate_send_stays
+        _streaming`` protected: no closed→streaming flicker for a card that
+        gets edited later.  The fork moved the signal from ``reply_to`` to
+        ``metadata["expect_edits"]``, so every producer that edits its own
+        message must declare it (see the gateway heartbeat in
+        ``test_run_heartbeat_expect_edits.py``).
+        """
+        a = adapter_with_card
+        r = await a.send(
+            "chat-1", "⏳ Working — 3 min", metadata={"expect_edits": True},
+        )
+        assert r.success
+        create_req = a._card_sdk.streaming_update_with_options_async.call_args[0][0]
+        assert create_req.is_finalize is False
+        assert r.message_id in a._streaming_cards.get("chat-1", {})
+
+        # Interval 2 edits in place — still open, so no reopen happened.
+        await a.edit_message("chat-1", r.message_id, "⏳ Working — 6 min")
+        edit_req = a._card_sdk.streaming_update_with_options_async.call_args[0][0]
+        assert edit_req.is_finalize is False
+        assert r.message_id in a._streaming_cards.get("chat-1", {})
+
+    @pytest.mark.asyncio
     async def test_edit_message_requires_message_id(self, adapter_with_card):
         a = adapter_with_card
         result = await a.edit_message(
