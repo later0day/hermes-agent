@@ -312,6 +312,16 @@ a:hover { text-decoration: underline; }
 <strong>目录</strong>
 <ol>
   <li><a href="#s1">一句话定位 & 与现有概念的关系</a></li>
+  <li><a href="#s_arch">架构图集（6 张 SVG）</a>
+    <ol style="margin-top:4px;font-size:13px;color:var(--text-dim);">
+      <li><a href="#arch1">系统全景</a></li>
+      <li><a href="#arch2">数据模型 · 三存储位置</a></li>
+      <li><a href="#arch3">消息路由时序</a></li>
+      <li><a href="#arch4">观察者 Profile 内部结构</a></li>
+      <li><a href="#arch5">Session ID 三层命名空间</a></li>
+      <li><a href="#arch6">Fence 机制状态机</a></li>
+    </ol>
+  </li>
   <li><a href="#s2">四期路线图（M1 / M2 / M3 / M4）</a></li>
   <li><a href="#s3">用户决策一览（全部拍板结果）</a></li>
   <li><a href="#s4">M1 数据模型</a></li>
@@ -362,6 +372,506 @@ a:hover { text-decoration: underline; }
   <td>观察者 <code>route_to_member</code> 工具执行后强制中断 agent loop，避免继续 iterate 浪费 token。</td>
 </tr>
 </table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- §Arch 架构图集 ─ 6 张 SVG                                  -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="s_arch">🎨 架构图集 · 6 张 SVG</h2>
+<p class="diagram-caption">先睹为快，六张架构图完整覆盖 Room 系统的所有关键面。每张图对应下文一个或多个章节的详细文字描述。</p>
+
+<!-- ────────── ① 系统全景 ────────── -->
+<h3 id="arch1">① 系统全景 · Room 在 hermes-agent 中的位置</h3>
+<p class="diagram-caption">从 IM 平台入站消息到 agent 应答的完整数据流，Room 层是叠加在现有单 profile 通路上的新分支</p>
+
+<div class="diagram-box">
+<svg width="1080" height="520" viewBox="0 0 1120 520" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#56d364"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ffa657"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="30" width="180" height="80" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="120" y="60" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="600">DingTalk 群</text>
+  <text x="120" y="82" text-anchor="middle" fill="#8b949e" font-size="11">用户在此发消息</text>
+  <text x="120" y="98" text-anchor="middle" fill="#8b949e" font-size="11">session_webhook 可回写</text>
+
+  <rect x="290" y="30" width="220" height="80" rx="8" fill="#1a1f28" stroke="#c9d1d9" stroke-width="1"/>
+  <text x="400" y="55" text-anchor="middle" fill="#f0f6fc" font-size="13" font-weight="600">Gateway 消息入口</text>
+  <text x="400" y="75" text-anchor="middle" fill="#8b949e" font-size="11">gateway/run.py::process_message</text>
+  <text x="400" y="92" text-anchor="middle" fill="#8b949e" font-size="11">_resolve_profile_home_for_source()</text>
+
+  <rect x="580" y="30" width="240" height="80" rx="8" fill="#1a1f28" stroke="#c9d1d9" stroke-width="1"/>
+  <text x="700" y="55" text-anchor="middle" fill="#f0f6fc" font-size="13" font-weight="600">SourceAgentBindingStore</text>
+  <text x="700" y="75" text-anchor="middle" fill="#8b949e" font-size="11">source_binding_key → binding</text>
+  <text x="700" y="92" text-anchor="middle" fill="#8b949e" font-size="11">检查 fallback_extra.room_id</text>
+
+  <rect x="880" y="30" width="110" height="80" rx="4" fill="#2d2410" stroke="#e3b341" stroke-width="1.5"/>
+  <text x="935" y="60" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">分支判断</text>
+  <text x="935" y="78" text-anchor="middle" fill="#8b949e" font-size="10">room_id</text>
+  <text x="935" y="92" text-anchor="middle" fill="#8b949e" font-size="10">是否存在</text>
+
+  <rect x="620" y="180" width="260" height="70" rx="8" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="750" y="203" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">单 Profile 分支（现有 · 不变）</text>
+  <text x="750" y="222" text-anchor="middle" fill="#8b949e" font-size="11">binding.profile_name → _profile_runtime_scope</text>
+  <text x="750" y="238" text-anchor="middle" fill="#8b949e" font-size="11">走原有 _run_agent_inner</text>
+
+  <rect x="240" y="180" width="320" height="70" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="400" y="203" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">Room 分支（新增 · 本设计）</text>
+  <text x="400" y="222" text-anchor="middle" fill="#8b949e" font-size="11">AgentRoomStore.get_room(room_id)</text>
+  <text x="400" y="238" text-anchor="middle" fill="#8b949e" font-size="11">走 AgentRoomRouter._process_message_via_room()</text>
+
+  <rect x="70" y="310" width="240" height="90" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="190" y="335" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">Observer Profile</text>
+  <text x="190" y="355" text-anchor="middle" fill="#8b949e" font-size="11">room_&lt;name&gt;_observer</text>
+  <text x="190" y="372" text-anchor="middle" fill="#8b949e" font-size="11">toolsets: [room_observer]</text>
+  <text x="190" y="388" text-anchor="middle" fill="#8b949e" font-size="11">调用 route_to_member 决策</text>
+
+  <rect x="360" y="310" width="240" height="90" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="480" y="335" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Member Profiles (≤5)</text>
+  <text x="480" y="355" text-anchor="middle" fill="#8b949e" font-size="11">客服 / 财务 / 技术 / ...</text>
+  <text x="480" y="372" text-anchor="middle" fill="#8b949e" font-size="11">被路由的成员跑一次完整 turn</text>
+  <text x="480" y="388" text-anchor="middle" fill="#8b949e" font-size="11">通过 session_webhook 回消息</text>
+
+  <rect x="70" y="440" width="980" height="60" rx="8" fill="#0d1e1a" stroke="#56d364" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="560" y="465" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">现有基础设施（复用，不改动）</text>
+  <text x="560" y="486" text-anchor="middle" fill="#8b949e" font-size="11">_profile_runtime_scope · request_hard_interrupt · get_active_subagent_parent · aux LLM client · DingTalk session_webhook · _run_agent_inner</text>
+
+  <path d="M 210 70 L 285 70" stroke="#58a6ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 510 70 L 575 70" stroke="#58a6ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 820 70 L 875 70" stroke="#58a6ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+  <path d="M 990 100 Q 900 145 810 178" stroke="#56d364" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <path d="M 900 110 Q 700 145 480 178" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arrow-orange)"/>
+
+  <text x="880" y="150" fill="#56d364" font-size="11">无 room_id</text>
+  <text x="580" y="155" fill="#d2a8ff" font-size="11">有 room_id</text>
+
+  <path d="M 340 250 Q 250 275 190 305" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arrow-orange)"/>
+  <path d="M 470 250 Q 470 275 480 305" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arrow-orange)"/>
+
+  <text x="215" y="285" fill="#d2a8ff" font-size="11">路由决策</text>
+  <text x="500" y="285" fill="#d2a8ff" font-size="11">派发执行</text>
+
+  <path d="M 310 355 L 355 355" stroke="#e3b341" stroke-width="1.5" fill="none" marker-end="url(#arrow)" stroke-dasharray="3,3"/>
+  <text x="315" y="348" fill="#e3b341" font-size="10">选中</text>
+
+  <path d="M 380 400 Q 200 460 120 110" stroke="#79c0ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.6"/>
+  <text x="220" y="415" fill="#79c0ff" font-size="10">异步 session_webhook 回消息</text>
+
+  <path d="M 190 400 L 190 435" stroke="#56d364" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <path d="M 480 400 L 480 435" stroke="#56d364" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <path d="M 750 250 L 750 435" stroke="#56d364" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+</svg>
+</div>
+
+<div class="callout callout-info">
+<b>关键点</b>：Room 分支是<b>叠加</b>在现有单 profile 通路上的第二种绑定形态，通过 <code>SourceAgentBinding.fallback_extra.room_id</code> 区分。所有现有的"群→单 profile"绑定继续走绿色分支，零迁移。
+</div>
+
+<!-- ────────── ② 数据模型 ────────── -->
+<h3 id="arch2">② 数据模型 · 三个存储位置的关系</h3>
+<p class="diagram-caption">Room 数据分散在三处：新表 agent_rooms、扩展现有 SourceAgentBinding、profile 目录</p>
+
+<div class="diagram-box">
+<svg width="1080" height="490" viewBox="0 0 1120 490" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="30" width="330" height="290" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <rect x="30" y="30" width="330" height="34" rx="8" fill="#2b1f45"/>
+  <text x="195" y="52" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">agent_rooms  【新表】</text>
+  <text x="42" y="80" fill="#8b949e" font-size="10">gateway_agent_rooms.sqlite</text>
+  <text x="42" y="105" fill="#f0f6fc" font-size="11.5" font-family="monospace">room_id          PRIMARY KEY</text>
+  <text x="42" y="125" fill="#f0f6fc" font-size="11.5" font-family="monospace">room_name        UNIQUE</text>
+  <text x="42" y="145" fill="#f0f6fc" font-size="11.5" font-family="monospace">description</text>
+  <text x="42" y="165" fill="#f0f6fc" font-size="11.5" font-family="monospace">observer_profile ────┐</text>
+  <text x="42" y="185" fill="#f0f6fc" font-size="11.5" font-family="monospace">members_json     JSON│</text>
+  <text x="42" y="205" fill="#f0f6fc" font-size="11.5" font-family="monospace">default_member       │</text>
+  <text x="42" y="225" fill="#f0f6fc" font-size="11.5" font-family="monospace">created_at, ...      │</text>
+  <text x="42" y="258" fill="#e3b341" font-size="11">▸ N3: members_json 最多 5</text>
+  <text x="42" y="275" fill="#e3b341" font-size="11">▸ N1: observer 每 room 独立</text>
+  <text x="42" y="295" fill="#e3b341" font-size="11">▸ profile 是文件目录，无外键</text>
+
+  <rect x="400" y="30" width="330" height="290" rx="8" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5"/>
+  <rect x="400" y="30" width="330" height="34" rx="8" fill="#1a3529"/>
+  <text x="565" y="52" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">SourceAgentBinding  【扩展】</text>
+  <text x="412" y="80" fill="#8b949e" font-size="10">gateway_source_agent_bindings.sqlite（现有）</text>
+  <text x="412" y="105" fill="#f0f6fc" font-size="11.5" font-family="monospace">source_binding_key  PK</text>
+  <text x="412" y="125" fill="#f0f6fc" font-size="11.5" font-family="monospace">profile_name</text>
+  <text x="412" y="145" fill="#f0f6fc" font-size="11.5" font-family="monospace">agent_id</text>
+  <text x="412" y="165" fill="#f0f6fc" font-size="11.5" font-family="monospace">fallback_target     JSON</text>
+  <text x="412" y="185" fill="#f0f6fc" font-size="11.5" font-family="monospace">fallback_extra      JSON  ★</text>
+  <text x="412" y="205" fill="#f0f6fc" font-size="11.5" font-family="monospace">created_at, ...</text>
+  <text x="412" y="238" fill="#79c0ff" font-size="11">★ fallback_extra 内容（M1 新增）：</text>
+  <text x="422" y="256" fill="#c9d1d9" font-size="11" font-family="monospace">"session_webhook": ...,</text>
+  <text x="422" y="272" fill="#c9d1d9" font-size="11" font-family="monospace">"session_webhook_expired": ...,</text>
+  <text x="422" y="288" fill="#d2a8ff" font-size="11" font-family="monospace" font-weight="600">"room_id": "room_ab12cd34"  ← 新</text>
+  <text x="422" y="308" fill="#56d364" font-size="11">不改表结构 · 零迁移</text>
+
+  <rect x="770" y="30" width="320" height="290" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <rect x="770" y="30" width="320" height="34" rx="8" fill="#1a3549"/>
+  <text x="930" y="52" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Profile 目录  【文件系统】</text>
+  <text x="782" y="80" fill="#8b949e" font-size="10">~/.hermes/profiles/&lt;name&gt;/</text>
+  <text x="782" y="106" fill="#f0f6fc" font-size="11.5" font-family="monospace">SOUL.md      自动生成 ★</text>
+  <text x="782" y="126" fill="#f0f6fc" font-size="11.5" font-family="monospace">config.yaml  toolsets 锁死</text>
+  <text x="782" y="146" fill="#f0f6fc" font-size="11.5" font-family="monospace">profile.yaml description</text>
+  <text x="782" y="166" fill="#f0f6fc" font-size="11.5" font-family="monospace">.observer    标记文件 ★</text>
+  <text x="782" y="186" fill="#f0f6fc" font-size="11.5" font-family="monospace">memory/      不启用</text>
+  <text x="782" y="220" fill="#e3b341" font-size="11">▸ SOUL.md 成员变动时重生成</text>
+  <text x="782" y="237" fill="#e3b341" font-size="11">▸ .observer 用于删除时保护</text>
+  <text x="782" y="254" fill="#e3b341" font-size="11">▸ memory 默认关闭（无需配）</text>
+  <text x="782" y="272" fill="#e3b341" font-size="11">▸ toolsets: [room_observer]</text>
+  <text x="782" y="289" fill="#e3b341" font-size="11">    只装 route_to_member 一个</text>
+  <text x="782" y="306" fill="#e3b341" font-size="11">    工具，行为被锁死</text>
+
+  <path d="M 360 165 L 400 165" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr-blue)"/>
+  <text x="360" y="158" fill="#58a6ff" font-size="10">room_id →</text>
+
+  <path d="M 305 175 Q 500 400 780 175" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)" stroke-dasharray="4,3" opacity="0.7"/>
+  <text x="530" y="420" fill="#d2a8ff" font-size="11">observer_profile 指向 profile 目录</text>
+
+  <path d="M 200 205 Q 400 460 830 200" stroke="#79c0ff" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)" stroke-dasharray="4,3" opacity="0.7"/>
+  <text x="360" y="480" fill="#79c0ff" font-size="11">members_json 各元素 → profile 目录</text>
+</svg>
+</div>
+
+<div class="callout callout-warn">
+<b>一致性维护</b>：三处存储的 CRUD 需要保证同步。<b>创建 room</b>：先建 profile 目录 → 再插 rooms 表；<b>删除 room</b>：先解绑（清 fallback_extra.room_id）→ Fence → 删 rooms 表 → 删 profile 目录。M1 需要一个孤立数据扫描修复逻辑跑在 gateway 启动时。
+</div>
+
+<!-- ────────── ③ 消息路由时序 ────────── -->
+<h3 id="arch3">③ 消息路由时序 · 5 步 + 摘要注入</h3>
+<p class="diagram-caption">从群消息到达到成员回复的完整时序，含 N4 轻量分类分支和 §8 跨成员摘要注入</p>
+
+<div class="diagram-box">
+<svg width="1080" height="720" viewBox="0 0 1120 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="seq-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c9d1d9"/>
+    </marker>
+    <marker id="seq-arr-return" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <rect x="40" y="20" width="120" height="40" rx="4" fill="#0f2537" stroke="#58a6ff"/>
+  <text x="100" y="45" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600">DingTalk 群</text>
+  <line x1="100" y1="60" x2="100" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="200" y="20" width="120" height="40" rx="4" fill="#161b22" stroke="#c9d1d9"/>
+  <text x="260" y="45" text-anchor="middle" fill="#f0f6fc" font-size="12" font-weight="600">Gateway 入口</text>
+  <line x1="260" y1="60" x2="260" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="360" y="20" width="140" height="40" rx="4" fill="#1c1730" stroke="#d2a8ff"/>
+  <text x="430" y="45" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="600">RoomRouter</text>
+  <line x1="430" y1="60" x2="430" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="540" y="20" width="140" height="40" rx="4" fill="#2d2410" stroke="#e3b341"/>
+  <text x="610" y="45" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">Aux LLM 分类</text>
+  <line x1="610" y1="60" x2="610" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="720" y="20" width="140" height="40" rx="4" fill="#1c1730" stroke="#d2a8ff"/>
+  <text x="790" y="45" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="600">Observer Profile</text>
+  <line x1="790" y1="60" x2="790" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="900" y="20" width="140" height="40" rx="4" fill="#0f2537" stroke="#58a6ff"/>
+  <text x="970" y="45" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600">Member Profile</text>
+  <line x1="970" y1="60" x2="970" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <path d="M 100 100 L 258 100" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="180" y="93" text-anchor="middle" fill="#c9d1d9" font-size="11">用户消息</text>
+  <text x="6" y="105" fill="#58a6ff" font-size="11" font-weight="600">STEP 1</text>
+
+  <path d="M 258 130 L 102 130" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="180" y="123" text-anchor="middle" fill="#79c0ff" font-size="11">立刻回："已收到，正在选择处理人..."</text>
+  <text x="6" y="135" fill="#79c0ff" font-size="10">(不进入 turn)</text>
+
+  <path d="M 260 170 L 428 170" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="345" y="163" text-anchor="middle" fill="#c9d1d9" font-size="11">检测到 room_id，走 room 路径</text>
+
+  <path d="M 430 200 L 608 200" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="519" y="193" text-anchor="middle" fill="#c9d1d9" font-size="11">最近5条历史 + last_routed</text>
+  <text x="6" y="205" fill="#58a6ff" font-size="11" font-weight="600">STEP 2</text>
+
+  <path d="M 608 230 L 432 230" stroke="#8b949e" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="519" y="223" text-anchor="middle" fill="#8b949e" font-size="11">{ is_new_topic, confidence }</text>
+
+  <rect x="150" y="270" width="880" height="70" rx="6" fill="#1a1c14" stroke="#e3b341" stroke-dasharray="3,3"/>
+  <text x="590" y="292" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">分支 3a · 沿用路由：is_new_topic=False && confidence &gt; 0.7</text>
+  <text x="590" y="311" text-anchor="middle" fill="#8b949e" font-size="11">target_member = last_routed_member（跳过观察者 turn，省钱）</text>
+  <text x="590" y="328" text-anchor="middle" fill="#8b949e" font-size="11">→ 直接跳到 STEP 4</text>
+
+  <path d="M 430 370 L 788 370" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="605" y="363" text-anchor="middle" fill="#c9d1d9" font-size="11">分支 3b · 触发完整观察者 turn</text>
+  <text x="6" y="375" fill="#58a6ff" font-size="11" font-weight="600">STEP 3b</text>
+  <text x="605" y="386" text-anchor="middle" fill="#8b949e" font-size="10">_profile_runtime_scope + session=room_observer:{room_id}</text>
+
+  <rect x="720" y="405" width="140" height="60" rx="4" fill="#3d2a5e" stroke="#d2a8ff"/>
+  <text x="790" y="425" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">route_to_member</text>
+  <text x="790" y="442" text-anchor="middle" fill="#8b949e" font-size="10">工具调用 →</text>
+  <text x="790" y="457" text-anchor="middle" fill="#8b949e" font-size="10">request_hard_interrupt</text>
+
+  <path d="M 788 495 L 432 495" stroke="#8b949e" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="605" y="488" text-anchor="middle" fill="#8b949e" font-size="11">{ member, reason, is_new_topic } · loop 强制中断</text>
+
+  <path d="M 430 530 L 102 530" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="265" y="523" text-anchor="middle" fill="#79c0ff" font-size="11">edit_message：转交给 {target_member} 处理...</text>
+  <text x="6" y="535" fill="#58a6ff" font-size="11" font-weight="600">STEP 4</text>
+
+  <rect x="150" y="555" width="880" height="42" rx="6" fill="#331e1e" stroke="#f85149" stroke-dasharray="3,3"/>
+  <text x="590" y="575" text-anchor="middle" fill="#f85149" font-size="12" font-weight="600">STEP 4.5 · 跨成员摘要注入（M1 必做补丁）</text>
+  <text x="590" y="591" text-anchor="middle" fill="#8b949e" font-size="11">若 reason 含上一位成员的摘要 → 拼到成员消息前作为 context prefix</text>
+
+  <path d="M 430 630 L 968 630" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="700" y="623" text-anchor="middle" fill="#c9d1d9" font-size="11">派发（_profile_runtime_scope + _run_agent_inner）</text>
+  <text x="6" y="635" fill="#58a6ff" font-size="11" font-weight="600">STEP 5</text>
+  <text x="700" y="646" text-anchor="middle" fill="#8b949e" font-size="10">session=room_member:{room_id}:{member}</text>
+
+  <path d="M 970 690 Q 500 700 102 690" stroke="#79c0ff" stroke-width="1.5" fill="none" marker-end="url(#seq-arr-return)"/>
+  <text x="530" y="708" text-anchor="middle" fill="#79c0ff" font-size="11">异步 session_webhook · 成员回复消息</text>
+</svg>
+</div>
+
+<div class="callout callout-info">
+<b>关键防抖</b>：STEP 2 的轻量分类（N4）是核心成本控制——话题延续时直接沿用上次路由，避免每条消息都跑完整 observer turn。<b>关键 loop 终止</b>：STEP 3b 里的 <code>request_hard_interrupt</code> 是 M1 唯一必做的架构补丁，避免观察者调完 tool 后继续 iterate 浪费 token。
+</div>
+
+<!-- ────────── ④ 观察者 Profile 内部 ────────── -->
+<h3 id="arch4">④ 观察者 Profile 内部结构</h3>
+<p class="diagram-caption">观察者是普通 profile 目录，通过 4 个特殊约定被锁定成"只能路由不能干活"</p>
+
+<div class="diagram-box">
+<svg width="1080" height="480" viewBox="0 0 1120 480" xmlns="http://www.w3.org/2000/svg">
+  <rect x="30" y="30" width="1060" height="430" rx="10" fill="#1c1730" stroke="#d2a8ff" stroke-width="2"/>
+  <rect x="30" y="30" width="1060" height="40" rx="10" fill="#2b1f45"/>
+  <text x="560" y="55" text-anchor="middle" fill="#d2a8ff" font-size="14" font-weight="600">~/.hermes/profiles/room_&lt;name&gt;_observer/  【自动生成 · 用户不应手改】</text>
+
+  <rect x="60" y="100" width="240" height="200" rx="6" fill="#0f1621" stroke="#79c0ff"/>
+  <rect x="60" y="100" width="240" height="30" rx="6" fill="#1a3549"/>
+  <text x="180" y="120" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="600">SOUL.md  【自动模板】</text>
+  <text x="70" y="150" fill="#c9d1d9" font-size="11" font-family="monospace">You are the observer</text>
+  <text x="70" y="167" fill="#c9d1d9" font-size="11" font-family="monospace">for {room_name}...</text>
+  <text x="70" y="188" fill="#8b949e" font-size="11" font-family="monospace">## Members</text>
+  <text x="70" y="203" fill="#c9d1d9" font-size="11" font-family="monospace">- client_svc: desc</text>
+  <text x="70" y="218" fill="#c9d1d9" font-size="11" font-family="monospace">- finance:    desc</text>
+  <text x="70" y="233" fill="#c9d1d9" font-size="11" font-family="monospace">- tech:       desc</text>
+  <text x="70" y="255" fill="#8b949e" font-size="11" font-family="monospace">## Workflow</text>
+  <text x="70" y="270" fill="#c9d1d9" font-size="11" font-family="monospace">Emit route_to_member</text>
+  <text x="70" y="285" fill="#e3b341" font-size="10" font-style="italic">▸ 成员变动时重生成</text>
+
+  <rect x="330" y="100" width="240" height="200" rx="6" fill="#0f1621" stroke="#e3b341"/>
+  <rect x="330" y="100" width="240" height="30" rx="6" fill="#2d2410"/>
+  <text x="450" y="120" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">config.yaml  【锁死行为】</text>
+  <text x="340" y="150" fill="#c9d1d9" font-size="11" font-family="monospace">toolsets:</text>
+  <text x="340" y="167" fill="#d2a8ff" font-size="11" font-family="monospace" font-weight="600">  - room_observer  ★</text>
+  <text x="340" y="188" fill="#c9d1d9" font-size="11" font-family="monospace">model:</text>
+  <text x="340" y="203" fill="#c9d1d9" font-size="11" font-family="monospace">  provider: (aux)</text>
+  <text x="340" y="220" fill="#c9d1d9" font-size="11" font-family="monospace">  name: (aux)</text>
+  <text x="340" y="243" fill="#8b949e" font-size="10">memory 什么都不写</text>
+  <text x="340" y="258" fill="#8b949e" font-size="10">→ memory_enabled 默认 False</text>
+  <text x="340" y="282" fill="#e3b341" font-size="10" font-style="italic">▸ 只装 route_to_member 一个工具</text>
+
+  <rect x="600" y="100" width="240" height="200" rx="6" fill="#0f1621" stroke="#56d364"/>
+  <rect x="600" y="100" width="240" height="30" rx="6" fill="#1a3529"/>
+  <text x="720" y="120" text-anchor="middle" fill="#56d364" font-size="12" font-weight="600">profile.yaml</text>
+  <text x="610" y="150" fill="#c9d1d9" font-size="11" font-family="monospace">description: |</text>
+  <text x="610" y="167" fill="#c9d1d9" font-size="11" font-family="monospace">  Room observer for</text>
+  <text x="610" y="182" fill="#c9d1d9" font-size="11" font-family="monospace">  客户支持组</text>
+  <text x="610" y="203" fill="#d2a8ff" font-size="11" font-family="monospace" font-weight="600">description_auto: true</text>
+  <text x="610" y="220" fill="#c9d1d9" font-size="11" font-family="monospace">template: false</text>
+  <text x="610" y="255" fill="#56d364" font-size="10" font-style="italic">▸ description_auto=true</text>
+  <text x="610" y="272" fill="#56d364" font-size="10" font-style="italic">   意味着可编辑但会被</text>
+  <text x="610" y="287" fill="#56d364" font-size="10" font-style="italic">   下次成员变动重写</text>
+
+  <rect x="870" y="100" width="200" height="200" rx="6" fill="#0f1621" stroke="#f85149"/>
+  <rect x="870" y="100" width="200" height="30" rx="6" fill="#331e1e"/>
+  <text x="970" y="120" text-anchor="middle" fill="#f85149" font-size="12" font-weight="600">.observer  【标记】</text>
+  <text x="880" y="155" fill="#c9d1d9" font-size="11">（空文件）</text>
+  <text x="880" y="182" fill="#8b949e" font-size="11">存在即表示：</text>
+  <text x="880" y="200" fill="#c9d1d9" font-size="11">此 profile 是自动生成</text>
+  <text x="880" y="218" fill="#c9d1d9" font-size="11">的 room observer</text>
+  <text x="880" y="248" fill="#e3b341" font-size="10">用途：</text>
+  <text x="880" y="265" fill="#c9d1d9" font-size="10">▸ /agent list 打 badge</text>
+  <text x="880" y="280" fill="#c9d1d9" font-size="10">▸ 删除时检查是否被</text>
+  <text x="880" y="295" fill="#c9d1d9" font-size="10">   room 引用</text>
+
+  <rect x="60" y="330" width="1010" height="110" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="565" y="356" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">工具锁死机制（Spike 已验证）</text>
+  <text x="80" y="382" fill="#c9d1d9" font-size="11.5">
+    观察者的 <tspan fill="#79c0ff" font-family="monospace">config.yaml</tspan> 只声明 <tspan fill="#d2a8ff" font-family="monospace">toolsets: [room_observer]</tspan>，
+    整个 <tspan fill="#e3b341" font-family="monospace">_HERMES_CORE_TOOLS</tspan>（terminal / read_file / write_file / delegate_task / cronjob / ...）都不会进来。
+  </text>
+  <text x="80" y="402" fill="#c9d1d9" font-size="11.5">
+    这是通过 <tspan fill="#79c0ff" font-family="monospace">toolsets.py</tspan> 里 <tspan font-weight="600">命名 toolset 显式打包</tspan> 的设计实现的——核心工具不是"自动注入"，
+    而是被打包成 <tspan fill="#c9d1d9" font-family="monospace">hermes-cli / hermes-cron / hermes-telegram / ...</tspan>
+  </text>
+  <text x="80" y="422" fill="#c9d1d9" font-size="11.5">
+    等命名 toolsets，只在 <tspan fill="#d2a8ff" font-family="monospace">enabled_toolsets</tspan> 明确列出时才装载。观察者只列 <tspan fill="#d2a8ff" font-family="monospace">room_observer</tspan>，就只能调 <tspan fill="#79c0ff" font-family="monospace">route_to_member</tspan> 一个工具。
+  </text>
+</svg>
+</div>
+
+<!-- ────────── ⑤ Session ID ────────── -->
+<h3 id="arch5">⑤ Session ID 三层命名空间</h3>
+<p class="diagram-caption">Room 用两种确定性 session_id 隔离观察者与成员，不影响现有单聊 session_key</p>
+
+<div class="diagram-box">
+<svg width="1080" height="470" viewBox="0 0 1120 470" xmlns="http://www.w3.org/2000/svg">
+  <rect x="30" y="30" width="340" height="410" rx="10" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <rect x="30" y="30" width="340" height="40" rx="10" fill="#2b1f45"/>
+  <text x="200" y="55" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">观察者 Session（每 room 一条）</text>
+  <text x="45" y="95" fill="#c9d1d9" font-size="12">命名：</text>
+  <rect x="45" y="105" width="310" height="30" rx="4" fill="#0f1621"/>
+  <text x="200" y="125" text-anchor="middle" fill="#79c0ff" font-size="12" font-family="monospace">room_observer:{room_id}</text>
+  <text x="45" y="160" fill="#c9d1d9" font-size="12">生命周期：Room 存在则持续</text>
+  <text x="45" y="185" fill="#c9d1d9" font-size="12">上下文：极小</text>
+  <text x="60" y="205" fill="#8b949e" font-size="11">观察者只调 route_to_member 工具</text>
+  <text x="60" y="220" fill="#8b949e" font-size="11">不产任何用户可见文本</text>
+  <text x="45" y="248" fill="#c9d1d9" font-size="12">重置触发：</text>
+  <text x="60" y="268" fill="#e3b341" font-size="11">▸ 成员名册变动（Fence）</text>
+  <text x="60" y="285" fill="#e3b341" font-size="11">▸ /room delete</text>
+  <text x="60" y="302" fill="#e3b341" font-size="11">▸ 手动 clear-context 命令</text>
+  <text x="45" y="335" fill="#c9d1d9" font-size="12">典型历史内容：</text>
+  <rect x="45" y="345" width="310" height="80" rx="4" fill="#0f1621"/>
+  <text x="55" y="363" fill="#8b949e" font-size="10" font-family="monospace">[user] 用户消息 1</text>
+  <text x="55" y="377" fill="#8b949e" font-size="10" font-family="monospace">[tool_call] route_to_member(finance)</text>
+  <text x="55" y="391" fill="#8b949e" font-size="10" font-family="monospace">[user] 用户消息 2</text>
+  <text x="55" y="405" fill="#8b949e" font-size="10" font-family="monospace">[tool_call] route_to_member(client)</text>
+  <text x="55" y="419" fill="#8b949e" font-size="10" font-family="monospace">...</text>
+
+  <rect x="390" y="30" width="340" height="410" rx="10" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <rect x="390" y="30" width="340" height="40" rx="10" fill="#1a3549"/>
+  <text x="560" y="55" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">成员 Session（每 room × member 一条）</text>
+  <text x="405" y="95" fill="#c9d1d9" font-size="12">命名：</text>
+  <rect x="405" y="105" width="310" height="30" rx="4" fill="#0f1621"/>
+  <text x="560" y="125" text-anchor="middle" fill="#79c0ff" font-size="11.5" font-family="monospace">room_member:{room_id}:{member}</text>
+  <text x="405" y="160" fill="#c9d1d9" font-size="12">生命周期：Room 存在则持续</text>
+  <text x="405" y="185" fill="#c9d1d9" font-size="12">上下文：正常大小</text>
+  <text x="420" y="205" fill="#8b949e" font-size="11">M1: 只含自己被路由过的历史</text>
+  <text x="420" y="220" fill="#8b949e" font-size="11">M3: 完整 room 历史 + 单人称改写</text>
+  <text x="405" y="248" fill="#c9d1d9" font-size="12">重置触发：</text>
+  <text x="420" y="268" fill="#e3b341" font-size="11">▸ 该成员从 room 移除</text>
+  <text x="420" y="285" fill="#e3b341" font-size="11">▸ /room delete</text>
+  <text x="420" y="302" fill="#e3b341" font-size="11">▸ 手动 clear-context 命令</text>
+  <text x="405" y="335" fill="#c9d1d9" font-size="12">典型历史内容：</text>
+  <rect x="405" y="345" width="310" height="80" rx="4" fill="#0f1621"/>
+  <text x="415" y="363" fill="#8b949e" font-size="10" font-family="monospace">[user] &gt; 上一位: {摘要}</text>
+  <text x="415" y="377" fill="#8b949e" font-size="10" font-family="monospace">        &gt; 用户消息</text>
+  <text x="415" y="391" fill="#8b949e" font-size="10" font-family="monospace">[assistant] {成员回复}</text>
+  <text x="415" y="405" fill="#8b949e" font-size="10" font-family="monospace">[tool_call] ... (成员真的干活)</text>
+  <text x="415" y="419" fill="#8b949e" font-size="10" font-family="monospace">[assistant] {最终回复}</text>
+
+  <rect x="750" y="30" width="340" height="410" rx="10" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <rect x="750" y="30" width="340" height="40" rx="10" fill="#1a3529"/>
+  <text x="920" y="55" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">现有单聊 Session（不变）</text>
+  <text x="765" y="95" fill="#c9d1d9" font-size="12">命名：</text>
+  <rect x="765" y="105" width="310" height="30" rx="4" fill="#0f1621"/>
+  <text x="920" y="125" text-anchor="middle" fill="#79c0ff" font-size="11.5" font-family="monospace">build_session_key(source, ...)</text>
+  <text x="765" y="160" fill="#c9d1d9" font-size="12">生命周期：会话生命周期</text>
+  <text x="765" y="185" fill="#c9d1d9" font-size="12">上下文：正常大小</text>
+  <text x="780" y="205" fill="#8b949e" font-size="11">用户在群/DM 里连续对话</text>
+  <text x="765" y="248" fill="#c9d1d9" font-size="12">规则：</text>
+  <text x="780" y="268" fill="#e3b341" font-size="11">▸ DM: source:{platform}:dm:{chat_id}</text>
+  <text x="780" y="285" fill="#e3b341" font-size="11">▸ 群+线程: +thread_id</text>
+  <text x="780" y="302" fill="#e3b341" font-size="11">▸ 群无线程: +user_id (可选)</text>
+  <text x="765" y="335" fill="#c9d1d9" font-size="12">M1 保证：</text>
+  <rect x="765" y="345" width="310" height="80" rx="4" fill="#0d1f1a"/>
+  <text x="775" y="365" fill="#56d364" font-size="11">✓ 未绑定 room 的会话完全不受影响</text>
+  <text x="775" y="383" fill="#56d364" font-size="11">✓ session_key 与 room 前缀不撞</text>
+  <text x="775" y="401" fill="#56d364" font-size="11">✓ 老用户升级零迁移</text>
+  <text x="775" y="419" fill="#56d364" font-size="11">✓ 单 profile 绑定的群继续走它</text>
+</svg>
+</div>
+
+<!-- ────────── ⑥ Fence 机制 ────────── -->
+<h3 id="arch6">⑥ Fence 机制 · 保护正在跑的 turn 不污染新状态</h3>
+<p class="diagram-caption">当 room 结构发生变动时，正在执行的 agent turn 输出被丢弃，防止旧状态迟到污染</p>
+
+<div class="diagram-box">
+<svg width="1080" height="500" viewBox="0 0 1120 500" xmlns="http://www.w3.org/2000/svg">
+  <line x1="60" y1="450" x2="1060" y2="450" stroke="#30363d" stroke-width="2"/>
+  <text x="60" y="475" fill="#8b949e" font-size="11">t=0</text>
+  <text x="1030" y="475" fill="#8b949e" font-size="11">t →</text>
+
+  <line x1="120" y1="440" x2="120" y2="460" stroke="#58a6ff" stroke-width="2"/>
+  <text x="120" y="435" text-anchor="middle" fill="#58a6ff" font-size="11">用户发消息</text>
+
+  <line x1="240" y1="440" x2="240" y2="460" stroke="#d2a8ff" stroke-width="2"/>
+  <text x="240" y="435" text-anchor="middle" fill="#d2a8ff" font-size="11">Observer turn 开始</text>
+
+  <line x1="380" y1="440" x2="380" y2="460" stroke="#f85149" stroke-width="2"/>
+  <text x="380" y="435" text-anchor="middle" fill="#f85149" font-size="11">用户 /room unbind</text>
+  <text x="380" y="415" text-anchor="middle" fill="#f85149" font-size="11" font-weight="600">FENCE!</text>
+
+  <line x1="580" y1="440" x2="580" y2="460" stroke="#d2a8ff" stroke-width="2"/>
+  <text x="580" y="435" text-anchor="middle" fill="#d2a8ff" font-size="11">Observer 完成 · 输出被丢弃</text>
+
+  <line x1="780" y1="440" x2="780" y2="460" stroke="#8b949e" stroke-width="2" stroke-dasharray="3,3"/>
+  <text x="780" y="435" text-anchor="middle" fill="#8b949e" font-size="11">Member turn 未派发</text>
+
+  <rect x="30" y="30" width="330" height="240" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="195" y="55" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">Fence 触发条件</text>
+  <text x="45" y="90" fill="#c9d1d9" font-size="12" font-weight="600">/room delete &lt;name&gt;</text>
+  <text x="55" y="107" fill="#8b949e" font-size="11">删除整个 room</text>
+  <text x="45" y="135" fill="#c9d1d9" font-size="12" font-weight="600">/room unbind</text>
+  <text x="55" y="152" fill="#8b949e" font-size="11">解绑当前群</text>
+  <text x="45" y="180" fill="#c9d1d9" font-size="12" font-weight="600">/room members add|remove</text>
+  <text x="55" y="197" fill="#8b949e" font-size="11">成员名册变动</text>
+  <text x="45" y="225" fill="#c9d1d9" font-size="12" font-weight="600">/room clear-context</text>
+  <text x="55" y="242" fill="#8b949e" font-size="11">显式清空历史</text>
+  <text x="45" y="262" fill="#f85149" font-size="10" font-style="italic">▸ 都会同步执行下面的动作 →</text>
+
+  <rect x="400" y="30" width="330" height="240" rx="8" fill="#331e1e" stroke="#f85149" stroke-width="1.5"/>
+  <text x="565" y="55" text-anchor="middle" fill="#f85149" font-size="13" font-weight="600">Fence 动作</text>
+  <text x="415" y="90" fill="#c9d1d9" font-size="12">1. 收集 room 所有活跃 session_id：</text>
+  <text x="430" y="108" fill="#8b949e" font-size="10.5" font-family="monospace">room_observer:{room_id}</text>
+  <text x="430" y="123" fill="#8b949e" font-size="10.5" font-family="monospace">room_member:{room_id}:{m1}</text>
+  <text x="430" y="138" fill="#8b949e" font-size="10.5" font-family="monospace">room_member:{room_id}:{m2}</text>
+  <text x="430" y="153" fill="#8b949e" font-size="10.5" font-family="monospace">...</text>
+  <text x="415" y="180" fill="#c9d1d9" font-size="12">2. 加入 fenced_sessions 内存集合：</text>
+  <rect x="430" y="188" width="260" height="34" rx="4" fill="#0f1621"/>
+  <text x="440" y="209" fill="#f85149" font-size="11" font-family="monospace">AgentRoomStore.fenced_sessions</text>
+  <text x="415" y="240" fill="#c9d1d9" font-size="12">3. 后续检查</text>
+  <text x="430" y="257" fill="#8b949e" font-size="11">每次要 emit 消息前检查</text>
+
+  <rect x="770" y="30" width="320" height="240" rx="8" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5"/>
+  <text x="930" y="55" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">检查点（守门函数）</text>
+  <text x="785" y="90" fill="#c9d1d9" font-size="12">观察者 turn 完成前：</text>
+  <text x="800" y="107" fill="#8b949e" font-size="11">检查 room_observer:xxx 是否 fenced</text>
+  <text x="800" y="122" fill="#f85149" font-size="11">是 → 丢弃 route_to_member 决策</text>
+  <text x="785" y="155" fill="#c9d1d9" font-size="12">成员派发前：</text>
+  <text x="800" y="172" fill="#8b949e" font-size="11">检查 room_member:xxx:m 是否 fenced</text>
+  <text x="800" y="187" fill="#f85149" font-size="11">是 → 不派发成员 turn</text>
+  <text x="785" y="220" fill="#c9d1d9" font-size="12">成员回消息前：</text>
+  <text x="800" y="237" fill="#8b949e" font-size="11">检查是否 fenced</text>
+  <text x="800" y="252" fill="#f85149" font-size="11">是 → 丢弃输出不发到群</text>
+
+  <rect x="30" y="290" width="1060" height="140" rx="8" fill="#0f1621" stroke="#30363d"/>
+  <text x="560" y="315" text-anchor="middle" fill="#f0f6fc" font-size="13" font-weight="600">时序示例：改绑发生在观察者 turn 进行中</text>
+  <rect x="240" y="335" width="340" height="16" rx="3" fill="#3d2a5e" opacity="0.6"/>
+  <text x="410" y="347" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="600">Observer turn 执行中</text>
+  <rect x="240" y="360" width="140" height="16" rx="3" fill="#56d364" opacity="0.3"/>
+  <text x="310" y="372" text-anchor="middle" fill="#56d364" font-size="10">turn 正常</text>
+  <rect x="380" y="360" width="200" height="16" rx="3" fill="#f85149" opacity="0.3"/>
+  <text x="480" y="372" text-anchor="middle" fill="#f85149" font-size="10">已被 fenced（迟到）</text>
+  <text x="60" y="405" fill="#8b949e" font-size="11">用户在 t=380 触发 fence 时，t=240 就开始的 observer turn 已经在跑；</text>
+  <text x="60" y="420" fill="#8b949e" font-size="11">turn 在 t=580 完成后，守门函数检查发现 session 已 fenced，丢弃决策 → 成员 turn 不派发 → 无污染。</text>
+</svg>
+</div>
+
+<div class="callout callout-warn">
+<b>为什么需要 Fence</b>：如果不做这个保护，用户 unbind 后正在跑的 observer 完成 → 派发成员 → 成员完成 → session_webhook 发消息回群——群已经解绑但收到了一条迟到的 room 消息，用户会困惑。M1 简化版 Fence 只在 <b>room 结构变化</b> 时触发（Studio 版本是每消息细粒度 fence），对 M1 场景足够。
+</div>
 
 <!-- ─────────────────── §2 四期路线图 ─────────────────── -->
 <h2 id="s2">2. 四期路线图</h2>
