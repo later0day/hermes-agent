@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Room · M1 设计文档</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-code: #1a1f28;
+  --bg-hover: #21262d;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --text-strong: #f0f6fc;
+  --accent: #58a6ff;
+  --accent-dim: #79c0ff;
+  --green: #56d364;
+  --yellow: #e3b341;
+  --red: #f85149;
+  --purple: #d2a8ff;
+  --tag-bg: #1f2937;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  line-height: 1.65;
+  margin: 0;
+  padding: 0;
+  font-size: 14.5px;
+}
+
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 40px 32px;
+}
+
+header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 24px;
+  margin-bottom: 32px;
+}
+
+h1 {
+  color: var(--text-strong);
+  font-size: 30px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+.subtitle {
+  color: var(--text-dim);
+  font-size: 15px;
+  margin-bottom: 12px;
+}
+
+.meta-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.meta-row span {
+  background: var(--bg-card);
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+h2 {
+  color: var(--text-strong);
+  font-size: 22px;
+  font-weight: 600;
+  margin: 40px 0 16px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+h3 {
+  color: var(--text-strong);
+  font-size: 17px;
+  font-weight: 600;
+  margin: 24px 0 12px 0;
+}
+
+h4 {
+  color: var(--accent-dim);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 18px 0 10px 0;
+}
+
+p { margin: 12px 0; }
+
+code {
+  background: var(--bg-code);
+  color: var(--accent-dim);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Consolas, Monaco, monospace;
+  font-size: 13px;
+}
+
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+pre code {
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13.5px;
+}
+
+th, td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+
+th {
+  color: var(--text-strong);
+  font-weight: 600;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+tr:hover { background: rgba(88, 166, 255, 0.04); }
+
+ul, ol { padding-left: 22px; margin: 10px 0; }
+
+li { margin: 6px 0; }
+
+blockquote {
+  border-left: 3px solid var(--accent);
+  background: var(--bg-card);
+  padding: 12px 18px;
+  margin: 16px 0;
+  color: var(--text);
+  border-radius: 0 6px 6px 0;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin: 14px 0;
+}
+
+.card h3, .card h4 { margin-top: 0; }
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  font-weight: 500;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.tag-m1 { background: rgba(88, 166, 255, 0.15); color: var(--accent-dim); border: 1px solid rgba(88, 166, 255, 0.35); }
+.tag-m2 { background: rgba(210, 168, 255, 0.15); color: var(--purple); border: 1px solid rgba(210, 168, 255, 0.35); }
+.tag-m3 { background: rgba(227, 179, 65, 0.15); color: var(--yellow); border: 1px solid rgba(227, 179, 65, 0.35); }
+.tag-m4 { background: rgba(248, 81, 73, 0.15); color: var(--red); border: 1px solid rgba(248, 81, 73, 0.35); }
+
+.tag-good { background: rgba(86, 211, 100, 0.15); color: var(--green); }
+.tag-warn { background: rgba(227, 179, 65, 0.15); color: var(--yellow); }
+.tag-risk { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+
+.callout {
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 14px 0;
+  border-left: 3px solid;
+}
+
+.callout-info { background: rgba(88, 166, 255, 0.08); border-left-color: var(--accent); }
+.callout-warn { background: rgba(227, 179, 65, 0.08); border-left-color: var(--yellow); }
+.callout-good { background: rgba(86, 211, 100, 0.08); border-left-color: var(--green); }
+.callout-risk { background: rgba(248, 81, 73, 0.08); border-left-color: var(--red); }
+
+.callout-title {
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 6px;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 14px 0;
+}
+
+.decision-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.decision-key { color: var(--accent-dim); font-weight: 600; font-size: 13px; }
+.decision-value { color: var(--text-strong); font-size: 13.5px; margin-top: 4px; }
+
+.toc {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 24px;
+  margin-bottom: 32px;
+}
+
+.toc ol { padding-left: 20px; margin: 8px 0; }
+.toc li { margin: 4px 0; font-size: 13.5px; }
+.toc a { color: var(--accent); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+
+.arrow-flow {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  line-height: 2;
+  overflow-x: auto;
+}
+
+.footer {
+  margin-top: 60px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.spike-good::before {
+  content: "✓ ";
+  color: var(--green);
+  font-weight: bold;
+}
+.spike-fix::before {
+  content: "✎ ";
+  color: var(--yellow);
+  font-weight: bold;
+}
+.spike-warn::before {
+  content: "⚠ ";
+  color: var(--red);
+  font-weight: bold;
+}
+
+.number-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  text-align: center;
+  line-height: 22px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+<h1>Agent Room · M1 设计文档</h1>
+<div class="subtitle">给 hermes-agent 加"一组 profile + 一个观察者"的会话组织结构，绑定 DingTalk 群自动路由消息</div>
+<div class="meta-row">
+  <span>分支 <code>feat/agent-room-m1-design</code></span>
+  <span>基准 <code>449d4e711</code> (upstream tip 2026-08-07)</span>
+  <span>阶段 <span class="tag tag-m1">M1</span></span>
+  <span>状态 设计完成 · 待启动开发</span>
+</div>
+</header>
+
+<div class="toc">
+<strong>目录</strong>
+<ol>
+  <li><a href="#s1">一句话定位 & 与现有概念的关系</a></li>
+  <li><a href="#s2">四期路线图（M1 / M2 / M3 / M4）</a></li>
+  <li><a href="#s3">用户决策一览（全部拍板结果）</a></li>
+  <li><a href="#s4">M1 数据模型</a></li>
+  <li><a href="#s5">观察者 Profile 的构造与终止机制</a></li>
+  <li><a href="#s6">运行时路由完整流程</a></li>
+  <li><a href="#s7">Slash Commands + REST API</a></li>
+  <li><a href="#s8">跨成员上下文摘要（M1 关键补丁）</a></li>
+  <li><a href="#s9">架构评估（Spike 验证后 · 9/10 契合）</a></li>
+  <li><a href="#s10">M1 前置工作 + 工作量估计</a></li>
+  <li><a href="#s11">验收标准</a></li>
+</ol>
+</div>
+
+<!-- ─────────────────── §1 定位 ─────────────────── -->
+<h2 id="s1">1. 一句话定位</h2>
+
+<div class="callout callout-info">
+<div class="callout-title">Agent Room 是什么</div>
+一个 <b>DingTalk 群</b> ↔ 一份 <b>成员 profile 名册</b> + 一个自动生成的 <b>观察者 profile</b>。
+群里的消息由观察者判断该路由到哪个成员 profile 应答，成员回复异步发回原群。
+<br><br>
+<b>M1 只做核心闭环</b>：手动创建 room、手动绑定群、单成员路由、异步回复。
+自动规划（M2）、并发多成员回复（M3）、任务拆分（M4）不在本文档范围内。
+</div>
+
+<h3>与 hermes-agent 现有概念的关系</h3>
+
+<table>
+<tr><th>现有概念</th><th>Agent Room 如何用</th></tr>
+<tr>
+  <td><code>Profile</code></td>
+  <td>观察者和成员都是普通 profile 目录（<code>~/.hermes/profiles/&lt;name&gt;/</code>），完全同构。观察者只是自动生成 + 打了 <code>.observer</code> 标记文件。</td>
+</tr>
+<tr>
+  <td><code>SourceAgentBinding</code></td>
+  <td>复用现有绑定表，通过 <code>fallback_extra.room_id</code> JSON 字段扩展，<b>零迁移、完全向后兼容</b>。旧的"群→单 profile"绑定继续正常工作。</td>
+</tr>
+<tr>
+  <td><code>_profile_runtime_scope</code></td>
+  <td>核心原语——临时切换 <code>HERMES_HOME</code> + secret scope。Room 路由的"先跑观察者、再跑成员"两次 turn 直接嵌套/串接它。</td>
+</tr>
+<tr>
+  <td>Kanban <code>decompose</code></td>
+  <td>M1 借鉴其 aux LLM 分诊模式的设计，但独立实现（输入是群消息，输出是 tool call）。M4 才复用其任务图能力。</td>
+</tr>
+<tr>
+  <td><code>request_hard_interrupt</code> + <code>get_active_subagent_parent</code></td>
+  <td>观察者 <code>route_to_member</code> 工具执行后强制中断 agent loop，避免继续 iterate 浪费 token。</td>
+</tr>
+</table>
+
+<!-- ─────────────────── §2 四期路线图 ─────────────────── -->
+<h2 id="s2">2. 四期路线图</h2>
+
+<table>
+<tr><th>阶段</th><th>核心能力</th><th>与 M1 的关系</th></tr>
+<tr>
+  <td><span class="tag tag-m1">M1</span></td>
+  <td>手动创建 room、手动绑定群、观察者单成员路由、异步回复、成员看"自己被路由过的历史"</td>
+  <td><b>本文档全部内容</b></td>
+</tr>
+<tr>
+  <td><span class="tag tag-m2">M2</span></td>
+  <td>从一句自然语言需求自动规划 room（能力域拆解 → 匹配现有 profile / 缺失自动创建 + 描述生成）</td>
+  <td>M1 提供的"手动流程"直接自动化，数据模型不变</td>
+</tr>
+<tr>
+  <td><span class="tag tag-m3">M3</span></td>
+  <td>完整上下文投影层：成员看到 room 完整历史 + 单人称改写 + 消息乱序修复 + 并发多成员回复</td>
+  <td>M1 §8 的"跨成员摘要"是 M3 前的临时替代方案</td>
+</tr>
+<tr>
+  <td><span class="tag tag-m4">M4</span></td>
+  <td>观察者判定"复杂任务"时走 kanban 拆分路径，子任务图执行 + 综合回群</td>
+  <td>需要给 <code>room_observer</code> toolset 加第二个工具</td>
+</tr>
+</table>
+
+<!-- ─────────────────── §3 决策一览 ─────────────────── -->
+<h2 id="s3">3. 用户决策一览（拍板结果）</h2>
+
+<div class="grid-2">
+  <div class="decision-box"><div class="decision-key">A1 · 观察者形态</div><div class="decision-value">有状态 agent（真实 profile，非无状态 LLM 调用）</div></div>
+  <div class="decision-box"><div class="decision-key">A2 · 路由粒度</div><div class="decision-value">默认单成员，多方讨论/任务拆分放 M4</div></div>
+  <div class="decision-box"><div class="decision-key">A3 · 回复时序</div><div class="decision-value">异步（DingTalk 场景强制）</div></div>
+  <div class="decision-box"><div class="decision-key">A4 · 成员并发</div><div class="decision-value">上下文共享 + 单点触发（<b>理解 X</b>）</div></div>
+  <div class="decision-box"><div class="decision-key">A5 · 命令入口</div><div class="decision-value">Slash command + Dashboard UI 双入口</div></div>
+  <div class="decision-box"><div class="decision-key">A6 · 群 ↔ Room</div><div class="decision-value">一对一（改绑必须先解绑）</div></div>
+  <div class="decision-box"><div class="decision-key">N1 · 观察者记忆</div><div class="decision-value">每 room 独立观察者 profile，各记各的</div></div>
+  <div class="decision-box"><div class="decision-key">N2 · 消息乱序</div><div class="decision-value">M1 只按时间戳，M3 再做保序</div></div>
+  <div class="decision-box"><div class="decision-key">N3 · Room 规模</div><div class="decision-value">最多 5 成员，优先复用现有 profile</div></div>
+  <div class="decision-box"><div class="decision-key">N4 · 观察者调用时机</div><div class="decision-value">先跑轻量分类，是新话题才跑完整观察者 turn</div></div>
+</div>
+
+<!-- ─────────────────── §4 数据模型 ─────────────────── -->
+<h2 id="s4">4. M1 数据模型</h2>
+
+<h3>4.1 新表 <code>agent_rooms</code></h3>
+
+<p>存储位置：<code>~/.hermes/gateway_agent_rooms.sqlite</code>，与 <code>gateway_source_agent_bindings.sqlite</code> 同级。运行时数据，不入 profile 目录。</p>
+
+<pre><code>CREATE TABLE agent_rooms (
+    room_id           TEXT PRIMARY KEY,        -- 形如 "room_ab12cd34"
+    room_name         TEXT NOT NULL UNIQUE,    -- 用户可读名，形如 "客户支持组"
+    description       TEXT NOT NULL DEFAULT '',
+    observer_profile  TEXT NOT NULL,           -- 观察者 profile 名
+    members_json      TEXT NOT NULL DEFAULT '[]',  -- ["客服","财务","技术"]
+    default_member    TEXT NOT NULL DEFAULT '',    -- 兜底路由目标
+    created_at        INTEGER NOT NULL,
+    created_by        TEXT NOT NULL DEFAULT '',
+    updated_at        INTEGER NOT NULL,
+    updated_by        TEXT NOT NULL DEFAULT ''
+);
+
+CREATE UNIQUE INDEX idx_agent_rooms_name ON agent_rooms(room_name);</code></pre>
+
+<div class="callout callout-info">
+<div class="callout-title">为什么不建 room_members 独立表</div>
+成员就是 profile 名的字符串数组，profile 是文件系统目录不是 SQL 表，建外键关联意义不大。
+M1 用 <code>members_json</code> 存字符串数组，配合 <b>N3 硬上限 5 个</b> 完全够用。
+M3 阶段需要给成员挂更多元数据时再迁移到独立表。
+</div>
+
+<h3>4.2 扩展 <code>SourceAgentBindingStore</code>（不改表结构）</h3>
+
+<p>复用现有 <code>fallback_extra</code> JSON 字段，加一个可选键 <code>room_id</code>：</p>
+
+<pre><code>{
+    "session_webhook": "...",
+    "session_webhook_expired_time": 12345,
+    "room_id": "room_ab12cd34"       ← 新增，可选
+}</code></pre>
+
+<p><code>gateway/run.py::_resolve_profile_home_for_source</code>（约 24690 行）加分支：</p>
+
+<pre><code>binding = source_agent_binding_store.get_binding(source_binding_key)
+if binding:
+    room_id = (binding.fallback_extra or {}).get("room_id")
+    if room_id:
+        → 进入 room 路由流程（§6）
+    else:
+        → 使用 binding.profile_name（原单 profile 分支，不变）</code></pre>
+
+<div class="callout callout-good">
+<div class="callout-title">向后兼容 · 零迁移</div>
+所有现有"群→单 profile"绑定不受任何影响。Room 是叠加语义。
+</div>
+
+<!-- ─────────────────── §5 观察者构造 ─────────────────── -->
+<h2 id="s5">5. 观察者 Profile 的构造与终止机制</h2>
+
+<h3>5.1 目录结构</h3>
+
+<p><code>~/.hermes/profiles/&lt;observer_profile_name&gt;/</code>：跟普通 profile 完全同构，但有几处 M1 特殊约定：</p>
+
+<table>
+<tr><th>文件</th><th>M1 内容</th></tr>
+<tr><td><code>SOUL.md</code></td><td>代码自动生成（模板见 §5.2），成员变动时重写</td></tr>
+<tr><td><code>config.yaml</code></td><td><code>toolsets: [room_observer]</code>——只装载新增的观察者 toolset</td></tr>
+<tr><td><code>profile.yaml</code></td><td><code>description: "Room observer for &lt;room_name&gt;"</code>，<code>description_auto: true</code></td></tr>
+<tr><td><code>.observer</code></td><td>空标记文件，标识"自动生成的观察者"，用于 CRUD 时区别对待</td></tr>
+</table>
+
+<div class="callout callout-good">
+<span class="spike-good"></span><b>Spike 结论：memory 什么都不用配</b>——<code>memory.memory_enabled</code> 字段（<code>agent/agent_init.py:1691</code>）默认 <code>False</code>，观察者 profile 不写就自动无长期记忆。
+</div>
+
+<div class="callout callout-good">
+<span class="spike-good"></span><b>Spike 结论：单 toolset 能真正锁死行为</b>——<code>_HERMES_CORE_TOOLS</code>（<code>toolsets.py:31</code>）是打包进 <code>hermes-cli/hermes-cron/…</code> 等命名 toolset 的，不是自动注入。<code>toolsets: [room_observer]</code> 意味着观察者只能调用 <code>route_to_member</code> 这一个工具。
+</div>
+
+<h3>5.2 SOUL.md 模板</h3>
+
+<pre><code># Observer Agent for Room: {room_name}
+
+You are the observer for a group of specialized agents. Your job is to read
+incoming messages and decide which member should respond.
+
+## Room description
+{room.description}
+
+## Members
+- **{member_1}**: {member_1.description}
+- **{member_2}**: {member_2.description}
+- **{member_3}**: {member_3.description}
+
+## Your workflow
+1. Read the latest message (see conversation history).
+2. Determine whether this is a NEW topic or a continuation.
+   - Continuation: keep routing to the same member as last time.
+   - New topic: pick the best-matching member by their descriptions.
+3. Emit your routing decision by calling `route_to_member` with:
+   - `member`: profile name from the roster above
+   - `reason`: 1-sentence explanation (see §8 for cross-member summary rules)
+   - `is_new_topic`: true if you consider this a new topic
+
+If ambiguous → route to `{default_member}` with reason "fallback".
+
+Do NOT write any user-facing reply yourself.
+Your only output is the `route_to_member` tool call.</code></pre>
+
+<h3>5.3 <code>route_to_member</code> 工具 + Loop 终止（M1 关键实现）</h3>
+
+<div class="card">
+<h4>tools/room_router_tool.py</h4>
+<pre><code>def route_to_member(
+    member: str,
+    reason: str,
+    is_new_topic: bool = False,
+) -> dict:
+    """Emit a routing decision. Called by the observer agent only."""
+
+    # 拿到当前正在跑的 agent 实例（ContextVar 已经在 tool 调度期间绑定）
+    from agent.subagent_lifecycle import get_active_subagent_parent
+    from agent.interrupt_compat import request_hard_interrupt
+
+    agent = get_active_subagent_parent()
+    if agent is not None:
+        # 强制中断 agent loop，避免继续 iterate 浪费 token
+        request_hard_interrupt(agent, f"Route decided: {member}")
+
+    return {
+        "action": "route_to_member",
+        "member": member,
+        "reason": reason,
+        "is_new_topic": is_new_topic,
+    }</code></pre>
+</div>
+
+<div class="callout callout-good">
+<div class="callout-title"><span class="spike-good"></span>Spike 结论：终止机制零件全在</div>
+<code>agent/subagent_lifecycle.py::get_active_subagent_parent</code> 已经通过
+<code>_ACTIVE_PARENT_AGENT</code> ContextVar 在 tool 调度期间绑定当前 agent；
+<code>agent/interrupt_compat.py::request_hard_interrupt</code> 是现成的强制中断。
+<b>不需要改 agent runtime、不需要新的 turn 终止协议</b>。
+</div>
+
+<h3>5.4 N4 · 轻量分类先行</h3>
+
+<p>观察者跑完整 agent turn 有成本。M1 用一个 aux LLM 前置过滤：</p>
+
+<div class="arrow-flow">
+消息进入
+   ↓
+【轻量分类 aux LLM】(复用 <code>agent/auxiliary_client.py</code>)
+   ├── 输入: 最近5条历史 + last_routed_member（内存缓存）
+   └── 输出: { is_new_topic: bool, confidence: float }
+   ↓
+if is_new_topic == False && confidence > 0.7 && last_routed_member 存在:
+    → 沿用 last_routed_member，跳过观察者 turn
+else:
+    → 触发完整观察者 turn
+</div>
+
+<div class="callout callout-info">
+<code>last_routed_member</code> 只在内存里缓存（不落库），进程重启后失效。重启后第一条消息触发完整观察者判断，这是正常代价——避免额外 IO，且 Fence 时天然失效。
+</div>
+
+<!-- ─────────────────── §6 运行时路由 ─────────────────── -->
+<h2 id="s6">6. 运行时路由完整流程</h2>
+
+<div class="card">
+<h4>入口分支（<code>gateway/run.py</code>）</h4>
+<pre><code>def _resolve_room_for_source(self, source) -> Optional[RoomBinding]:
+    binding = self._source_agent_binding_store.get_binding(
+        build_source_binding_key(source)
+    )
+    if not binding:
+        return None
+    room_id = (binding.fallback_extra or {}).get("room_id")
+    if not room_id:
+        return None
+    return self._agent_room_store.get_room(room_id)
+
+# 在 process_message 主分支前置：
+room = self._resolve_room_for_source(source)
+if room:
+    return await self._process_message_via_room(message, source, room)
+# 否则走现有单 profile 流程（不变）</code></pre>
+</div>
+
+<h3>6.1 异步路由五步（含 §8 摘要注入）</h3>
+
+<div class="arrow-flow">
+<span class="number-badge">1</span> <b>立刻回一句</b> "已收到，正在为你选择处理人..."
+   └─ 通过 DingTalk session_webhook，不进入任何 agent turn
+
+<span class="number-badge">2</span> <b>轻量分类</b> aux LLM 调用（§5.4）
+   └─ 输出 { is_new_topic, confidence }
+
+<span class="number-badge">3</span> <b>路由决策</b>
+   ├─ 沿用: target_member = last_routed_member
+   └─ 或跑完整观察者 turn:
+       ├─ 加载 observer_profile 的 HERMES_HOME
+       ├─ 使用 <code>_profile_runtime_scope</code>（ContextVar 隔离，async-safe）
+       ├─ session_id = <code>room_observer:{room_id}</code>
+       ├─ 观察者输出 route_to_member 工具调用
+       ├─ 提取 target_member, reason, is_new_topic
+       ├─ 校验 target_member ∈ members_json，否则用 default_member
+       └─ 更新 last_routed_member 内存缓存
+
+<span class="number-badge">4</span> <b>更新群消息</b> "转交给 {target_member} 处理..."
+   └─ 用 DingTalk adapter 的 edit_message（fork 已实现）
+
+<span class="number-badge">4.5</span> <b>跨成员摘要注入</b>（§8）
+   └─ 如果 reason 字段含跨成员摘要，拼到给成员的消息前面作为 context prefix
+
+<span class="number-badge">5</span> <b>派发成员执行</b>
+   ├─ 加载 target_member profile 的 HERMES_HOME
+   ├─ session_id = <code>room_member:{room_id}:{target_member}</code>
+   ├─ 走 hermes-agent 现有 <code>_run_agent_inner</code> 完整 turn
+   └─ 成员输出通过 session_webhook 发回原群
+</div>
+
+<h3>6.2 Session ID 命名约定</h3>
+
+<table>
+<tr><th>用途</th><th>命名</th><th>生命周期</th></tr>
+<tr>
+  <td>观察者 session</td>
+  <td><code>room_observer:{room_id}</code></td>
+  <td>Room 生命周期内持续；上下文小（只调工具不产文本）</td>
+</tr>
+<tr>
+  <td>成员 session</td>
+  <td><code>room_member:{room_id}:{member_profile}</code></td>
+  <td>Room 生命周期内持续；跟单聊 session 完全隔离</td>
+</tr>
+<tr>
+  <td>非 room 单 profile 绑定</td>
+  <td>不变，走 <code>build_session_key</code></td>
+  <td>不变</td>
+</tr>
+</table>
+
+<h3>6.3 Session Fence（借鉴 Studio）</h3>
+
+<p><code>AgentRoomStore</code> 内存维护 <code>fenced_sessions: set[str]</code>。触发 Fence 的操作：</p>
+
+<ul>
+<li>删除 room</li>
+<li>解绑群</li>
+<li>成员名册变动</li>
+</ul>
+
+<p>触发时把当前 room 所有活跃 session（观察者 + 成员）加入 Fence 集合。<b>每次回消息前检查 session 是否被 fenced</b>——是则丢弃输出，防止"清空后旧 turn 迟到污染新状态"。</p>
+
+<div class="callout callout-info">
+M1 只在 room 结构变化时 Fence，不做 Studio 那种每消息细粒度 Fence。此简化对 M1 场景够用。
+</div>
+
+<!-- ─────────────────── §7 命令入口 ─────────────────── -->
+<h2 id="s7">7. Slash Commands + REST API</h2>
+
+<h3>7.1 群内 Slash Commands（<code>gateway/slash_commands.py</code>）</h3>
+
+<table>
+<tr><th>命令</th><th>作用</th></tr>
+<tr><td><code>/room create &lt;name&gt; --members &lt;p1,p2,p3&gt; [--description ...] [--default-member ...]</code></td><td>创建 room，自动生成观察者 profile</td></tr>
+<tr><td><code>/room list</code></td><td>列出所有 room</td></tr>
+<tr><td><code>/room info &lt;name&gt;</code></td><td>查看 room 详情：成员、观察者、绑定的群列表</td></tr>
+<tr><td><code>/room bind &lt;name&gt;</code></td><td>把当前 IM 群绑定到 room（已有绑定则报错）</td></tr>
+<tr><td><code>/room unbind</code></td><td>解绑当前群</td></tr>
+<tr><td><code>/room delete &lt;name&gt;</code></td><td>删除：先解绑所有关联群 → Fence → 删观察者 profile → 删 room 记录</td></tr>
+<tr><td><code>/room members &lt;name&gt; add|remove &lt;profile&gt;</code></td><td>调整成员，触发 SOUL.md 重生成 + Fence</td></tr>
+<tr><td><code>/room set-default-member &lt;name&gt; &lt;profile&gt;</code></td><td>设置观察者兜底路由</td></tr>
+</table>
+
+<h3>7.2 Dashboard REST API（<code>hermes_cli/web_server.py</code>）</h3>
+
+<table>
+<tr><th>方法</th><th>路径</th><th>作用</th></tr>
+<tr><td><code>GET</code></td><td><code>/api/rooms</code></td><td>列表</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/rooms</code></td><td>创建</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/rooms/{room_id}</code></td><td>详情</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/api/rooms/{room_id}</code></td><td>修改成员/描述/默认成员</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/api/rooms/{room_id}</code></td><td>删除</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/rooms/{room_id}/bind</code></td><td>绑定 IM 群</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/rooms/{room_id}/unbind</code></td><td>解绑</td></tr>
+</table>
+
+<!-- ─────────────────── §8 摘要注入 ─────────────────── -->
+<h2 id="s8">8. 跨成员上下文摘要（M1 关键补丁）</h2>
+
+<div class="callout callout-risk">
+<div class="callout-title">M1 简化取舍的 UX 断崖</div>
+M1 里成员的 session 只包含"自己被路由过的历史"，看不到"另一个成员之前说了什么"。
+真实场景例：用户先问客服"怎么退款"→客服答→用户接着问"再问下之前的账单"→观察者
+判断话题延续但换到财务→财务 profile 看不到之前客服的对话，只看到"再问下之前的账单"。
+</div>
+
+<h3>缓解方案 · 在 M1 里必须做</h3>
+
+<ol>
+<li><b>观察者 SOUL.md 加规则</b>：当检测到 <code>is_new_topic=False</code> 且要换成员时，在 <code>reason</code> 字段带上"上一位成员最后回复的一句摘要"</li>
+<li><b>Room router 在派发前解析 reason</b>：如果含跨成员摘要，前置到给成员的消息</li>
+</ol>
+
+<div class="card">
+<h4>格式约定</h4>
+<pre><code>&gt; 上一位处理人 {previous_member} 的回复摘要：{summary}
+&gt; ---
+&gt; 用户消息：{original_message}</code></pre>
+</div>
+
+<div class="callout callout-info">
+这不是 M3 那种完整 <code>context-projection</code>（Studio 的单人称改写），只是最小可用的缓解。
+M3 会完整替换掉这一层。<b>但 M1 交付时必须至少有这个</b>，否则用户第一次跨成员对话就会觉得系统很傻。
+</div>
+
+<!-- ─────────────────── §9 架构评估 ─────────────────── -->
+<h2 id="s9">9. 架构评估 · Spike 验证后</h2>
+
+<div class="callout callout-good">
+<div class="callout-title">整体契合度：9 / 10</div>
+初版评估 8/10 时基于印象判断。做完 8 组代码 spike 后，v1 里两处主要摩擦点被推翻，评分上调到 9/10。<b>没有发现任何设计层面必须回退或大改的问题</b>。
+</div>
+
+<h3>9.1 已验证的关键机制</h3>
+
+<table>
+<tr><th>#</th><th>Spike 目标</th><th>初版假设</th><th>Spike 结论</th></tr>
+<tr>
+  <td>1</td>
+  <td><code>_profile_runtime_scope</code> 通用性</td>
+  <td>假设是无条件的通用原语</td>
+  <td class="spike-good">机制无条件工作，只是现有代码只在 multiplex 模式下调用。Room 主动无条件调用是新调用模式，不是新机制</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><code>memory.enabled</code> 字段</td>
+  <td>假设需要新加</td>
+  <td class="spike-fix">已存在为 <code>memory.memory_enabled</code>，默认 False，观察者不需要显式配置</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>默认工具注入锁定</td>
+  <td>担心锁不住</td>
+  <td class="spike-good">核心工具通过命名 toolset 显式打包，不自动注入，<code>toolsets:[room_observer]</code> 能真正锁死</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>观察者 loop 终止</td>
+  <td>三方案备选</td>
+  <td class="spike-good">方案 A 有完整现成路径：<code>get_active_subagent_parent</code> + <code>request_hard_interrupt</code>，无需改 runtime</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td><code>SessionSource</code> 克隆</td>
+  <td>需验证</td>
+  <td class="spike-good">纯 dataclass，<code>dataclasses.replace(source, profile=...)</code> 直接可用</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td><code>_active_profile_name</code> 全仓审计</td>
+  <td>担心 93 处调用点污染</td>
+  <td class="spike-good">通过 <code>get_hermes_home()</code> 读 ContextVar，scope-aware，自动跟随。初版担忧基本推翻</td>
+</tr>
+<tr>
+  <td>7</td>
+  <td>agent turn 入口</td>
+  <td>假设复用现成 wrapper</td>
+  <td class="spike-good">确认可行——写平级新 wrapper 无条件套 scope，模式清晰可仿</td>
+</tr>
+<tr>
+  <td>8</td>
+  <td>ContextVar 隔离</td>
+  <td>假设 async-safe</td>
+  <td class="spike-good">确认 <code>_HERMES_HOME_OVERRIDE</code> 是 ContextVar，asyncio 天然隔离，无需加锁</td>
+</tr>
+</table>
+
+<h3>9.2 M1 唯一保留的必做补丁</h3>
+
+<ol>
+<li><b>观察者 loop 终止用方案 A</b>（§5.3 已给出完整代码）——不改 runtime，用现成 <code>request_hard_interrupt</code></li>
+<li><b>跨成员上下文摘要注入</b>（§8）——不做的话 M1 交付时用户体验会断崖</li>
+</ol>
+
+<h3>9.3 与其他子系统的交互评估</h3>
+
+<table>
+<tr><th>子系统</th><th>交互影响</th></tr>
+<tr><td>Cron</td><td class="spike-good">无冲突。cron 派任务给 room 成员时不影响 room 路由</td></tr>
+<tr><td>Kanban</td><td class="spike-good">M1 不直接依赖，M4 才集成</td></tr>
+<tr><td>Multiplexer</td><td>需 M1 后跑测试确认双重 scope 嵌套（约 30 分钟）</td></tr>
+<tr><td>delegate_task</td><td class="spike-good">成员 turn 内可调，无冲突</td></tr>
+<tr><td>Approval / write-gate</td><td class="spike-good">走原有机制，无冲突</td></tr>
+<tr><td>Curator / memory</td><td class="spike-good">观察者不写 memory.md，成员正常写自己 profile 的 memory.md</td></tr>
+</table>
+
+<!-- ─────────────────── §10 前置工作 + 工作量 ─────────────────── -->
+<h2 id="s10">10. M1 前置工作 + 工作量估计</h2>
+
+<h3>10.1 前置架构工作</h3>
+
+<div class="callout callout-good">
+<div class="callout-title">从 2-4 小时降到 30 分钟</div>
+初版列了 6 项前置 spike。Spike 完成后 5 项已消解，只剩 1 项<b>多路复用交互测试</b>——需要在 M1 实现出来后跑（不能提前）。
+</div>
+
+<h3>10.2 组件文件清单</h3>
+
+<table>
+<tr><th>文件</th><th>类型</th><th>估计行数</th><th>用途</th></tr>
+<tr><td><code>gateway/agent_room_store.py</code></td><td>新</td><td>~250</td><td>SQLite CRUD + Fence 集合管理</td></tr>
+<tr><td><code>gateway/agent_room_router.py</code></td><td>新</td><td>~350</td><td>路由主流程（轻量分类 + 观察者 + 派发）</td></tr>
+<tr><td><code>gateway/agent_room_bootstrapper.py</code></td><td>新</td><td>~200</td><td>观察者 profile 目录 + SOUL.md 生成</td></tr>
+<tr><td><code>tools/room_router_tool.py</code></td><td>新</td><td>~80</td><td><code>route_to_member</code> 工具</td></tr>
+<tr><td><code>toolsets.py</code></td><td>改</td><td>~10</td><td>注册 <code>room_observer</code> toolset</td></tr>
+<tr><td><code>gateway/slash_commands.py</code></td><td>改</td><td>~300</td><td><code>_handle_room_command</code> + 子命令</td></tr>
+<tr><td><code>gateway/run.py</code></td><td>改</td><td>~50</td><td>Room 分支前置</td></tr>
+<tr><td><code>hermes_cli/web_server.py</code></td><td>改</td><td>~250</td><td>7 个 REST 端点</td></tr>
+<tr><td>Dashboard 前端页面</td><td>新</td><td>~400</td><td>简版 Room 管理 UI</td></tr>
+<tr><td>单元 + 集成测试</td><td>新</td><td>~600</td><td>Store CRUD、bootstrapper、路由、Fence</td></tr>
+<tr><td colspan="2"><b>合计</b></td><td><b>~2500-3000</b></td><td><b>2 周实际编码时间</b>（含测试，不含 review 迭代）</td></tr>
+</table>
+
+<!-- ─────────────────── §11 验收标准 ─────────────────── -->
+<h2 id="s11">11. 验收标准</h2>
+
+<h3>11.1 单元测试</h3>
+<ul>
+<li><code>AgentRoomStore</code> CRUD、并发读写、损坏数据容错</li>
+<li>观察者 SOUL.md 生成正确性：成员名册注入准确、增删成员后重生成正确</li>
+<li>Fence 集合：删除/改成员时正确加入，回消息前正确检查</li>
+</ul>
+
+<h3>11.2 集成测试</h3>
+<ul>
+<li>完整链路：建 room → 绑定（模拟 DingTalk source）→ 发消息 → 观察者路由 → 成员回复 → 回落原群</li>
+<li>沿用路由（N4）：连续 3 条消息，只有第 1 条跑完整观察者，后 2 条走轻量分类沿用</li>
+<li>兜底：观察者返回不存在的成员时走 default_member / members[0]</li>
+<li>Fence：进行中 session 被 fenced 时输出被丢弃</li>
+<li><b>多路复用 gateway 下的 Room 路由</b>：双重 scope 嵌套不出错</li>
+</ul>
+
+<h3>11.3 线上真实环境测试</h3>
+<ul>
+<li>本机创建测试 room（成员：<code>default</code> + 一个新建的 <code>test_profile</code>）</li>
+<li>用真实 DingTalk 群发消息</li>
+<li>验证：观察者被真实调用、路由决策合理、成员真实回复、消息真回落原群</li>
+</ul>
+
+<div class="footer">
+文档版本 v2 · 基于 8 组代码 spike 验证 · 生成于 hermes-agent <code>449d4e711</code>
+<br>
+源文件：<code>docs/design/agent-room/README.md</code> / <code>m1-spec.md</code> / <code>architecture-assessment-v2.md</code>
+</div>
+
+</div>
+</body>
+</html>
