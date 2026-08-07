@@ -3251,11 +3251,16 @@ def run_job(
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
     with _job_profile_context(job_id, _job_run_profile(job)):
-        return _run_job_impl(job, defer_agent_teardown=defer_agent_teardown)
+        return _run_job_impl(
+            job,
+            defer_agent_teardown=defer_agent_teardown,
+            extra_prompt=extra_prompt,
+        )
 
 
 def _run_job_impl(
-    job: dict, *, defer_agent_teardown: Optional[list] = None
+    job: dict, *, defer_agent_teardown: Optional[list] = None,
+    extra_prompt: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
