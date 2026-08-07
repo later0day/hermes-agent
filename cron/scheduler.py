@@ -2296,7 +2296,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
         if not delivered:
-            if dingtalk_session_webhook and (cleaned_delivery_content.strip() or not media_files):
+            # A relay-fronted target is exempt: the captured session webhook is
+            # a native DingTalk credential the connector does not own, so using
+            # it here would re-deliver behind relay's back — the very
+            # double-delivery the fail-closed branch below prevents. The origin
+            # keys this webhook, not the transport, so gate it explicitly.
+            relay_owns_target = transport is not None and transport.is_relay
+            if (
+                dingtalk_session_webhook
+                and not relay_owns_target
+                and (cleaned_delivery_content.strip() or not media_files)
+            ):
                 try:
                     result = asyncio.run(
                         _send_dingtalk_session_webhook(
@@ -2347,6 +2357,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             if transport is not None and transport.is_relay:
+                # Relay owns the logical destination and its connector owns the
+                # platform credential. A native retry could duplicate delivery
+                # and cannot be authenticated correctly, so fail closed.
                 if not target_errors:
                     target_errors.append(
                         f"relay delivery to {platform_name}:{chat_id} failed"
