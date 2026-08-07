@@ -352,8 +352,12 @@ a:hover { text-decoration: underline; }
 一个 <b>DingTalk 群</b> ↔ 一份 <b>成员 profile 名册</b> + 一个自动生成的 <b>观察者 profile</b>。
 群里的消息由观察者判断该路由到哪个成员 profile 应答，成员回复异步发回原群。
 <br><br>
-<b>M1 只做核心闭环</b>：手动创建 room、手动绑定群、单成员路由、异步回复。
-自动规划（M2）、并发多成员回复（M3）、任务拆分（M4）不在本文档范围内。
+<b>本文档覆盖 Agent Room 完整四期规划（M1 → M4）</b>：
+<ul style="margin:8px 0 0 0;padding-left:22px;">
+  <li><b>M1</b>（本次开发目标）：手动创建 room、手动绑定群、单成员路由、异步回复 —— 拿到详细技术规格 + 前置架构 spike + 完整验收方案</li>
+  <li><b>M2 / M3 / M4</b>：自动规划、并发多成员、任务拆分 —— 拿到范围边界、工作量粗估、依赖关系、验收标准 + 线上测试方案</li>
+</ul>
+详见 §2 路线图和 §11 各期验收。
 </div>
 
 <h3>与 hermes-agent 现有概念的关系</h3>
