@@ -331,7 +331,16 @@ a:hover { text-decoration: underline; }
   <li><a href="#s8">跨成员上下文摘要（M1 关键补丁）</a></li>
   <li><a href="#s9">架构评估（Spike 验证后 · 9/10 契合）</a></li>
   <li><a href="#s10">M1 前置工作 + 工作量估计</a></li>
-  <li><a href="#s11">验收标准</a></li>
+  <li><a href="#s11">各期验收标准 + 线上测试方案</a>
+    <ol style="margin-top:4px;font-size:13px;color:var(--text-dim);">
+      <li><a href="#s11m1">M1 验收 · 手动 room + 自动路由</a></li>
+      <li><a href="#s11m2">M2 验收 · 自动规划 room</a></li>
+      <li><a href="#s11m3">M3 验收 · 完整投影 + 并发多成员</a></li>
+      <li><a href="#s11m4">M4 验收 · 任务拆分</a></li>
+      <li><a href="#s11cross">跨期回归测试原则</a></li>
+      <li><a href="#s11env">线上测试环境准备</a></li>
+    </ol>
+  </li>
 </ol>
 </div>
 
@@ -876,29 +885,158 @@ a:hover { text-decoration: underline; }
 <!-- ─────────────────── §2 四期路线图 ─────────────────── -->
 <h2 id="s2">2. 四期路线图</h2>
 
+<p class="diagram-caption">
+每期边界严格互斥（不重叠）。前期做的东西后期不重做，只是扩展。<b>验收标准 + 线上测试方案</b>见 §11。
+</p>
+
+<h3>2.1 总览</h3>
+
 <table>
-<tr><th>阶段</th><th>核心能力</th><th>与 M1 的关系</th></tr>
+<tr>
+  <th>阶段</th>
+  <th>核心能力（本期新增）</th>
+  <th>工作量估算</th>
+  <th>关键依赖</th>
+</tr>
 <tr>
   <td><span class="tag tag-m1">M1</span></td>
-  <td>手动创建 room、手动绑定群、观察者单成员路由、异步回复、成员看"自己被路由过的历史"</td>
-  <td><b>本文档全部内容</b></td>
+  <td>手动创建 room、手动绑定 IM 群、观察者 <b>自动</b> 生成、单成员路由、异步回复</td>
+  <td>~2700-3000 行 / 2 周</td>
+  <td>无（仅依赖现有 hermes-agent 基础设施）</td>
 </tr>
 <tr>
   <td><span class="tag tag-m2">M2</span></td>
-  <td>从一句自然语言需求自动规划 room（能力域拆解 → 匹配现有 profile / 缺失自动创建 + 描述生成）</td>
-  <td>M1 提供的"手动流程"直接自动化，数据模型不变</td>
+  <td>从自然语言需求自动规划 room（拆能力域 → 匹配 profile / 缺失自动 create + 生成 description）</td>
+  <td>~1500-2000 行 / 1.5 周</td>
+  <td>M1 完整交付（M2 只写"规划器"，落地调 M1 的 Room CRUD）</td>
 </tr>
 <tr>
   <td><span class="tag tag-m3">M3</span></td>
-  <td>完整上下文投影层：成员看到 room 完整历史 + 单人称改写 + 消息乱序修复 + 并发多成员回复</td>
-  <td>M1 §8 的"跨成员摘要"是 M3 前的临时替代方案</td>
+  <td>完整上下文投影层：成员看 room 完整历史（单人称改写）+ 消息乱序修复 + 并发多成员回复</td>
+  <td>~2500-3000 行 / 3 周</td>
+  <td>M1 完整交付。<b>会重写 M1 的成员 session 加载逻辑</b>（M1 的"看自己历史"是简版，M3 换成完整投影）</td>
 </tr>
 <tr>
   <td><span class="tag tag-m4">M4</span></td>
-  <td>观察者判定"复杂任务"时走 kanban 拆分路径，子任务图执行 + 综合回群</td>
-  <td>需要给 <code>room_observer</code> toolset 加第二个工具</td>
+  <td>观察者判定"复杂任务"时走 kanban 拆分：任务图 + 依赖执行 + 综合回群</td>
+  <td>~1500-2000 行 / 2 周</td>
+  <td>M1 + kanban 现有 decompose 能力。<b>给 room_observer toolset 加第二个工具</b>（M1 的"单工具锁死"设计需放松）</td>
+</tr>
+<tr>
+  <td colspan="2"><b>合计（M1→M4 全交付）</b></td>
+  <td><b>~8000-10000 行 / 8-10 周</b></td>
+  <td>非并行，每期依赖前期，需线性排期</td>
 </tr>
 </table>
+
+<div class="callout callout-info">
+<div class="callout-title">路线选择建议</div>
+如果你觉得"手动 <code>/room create --members ...</code> 太憋屈、上线就要一句需求自动组装"——那 <b>M1 + M2 合并做</b>（3.5 周）而不是拆两期。<br>
+如果你觉得"先跑通再说，手动组一次能验证机制没毛病"——那 <b>M1 独立交付</b>，用 1-2 周实际使用数据决定要不要投 M2/M3/M4。
+</div>
+
+<h3>2.2 M1 · 核心闭环（本文档所有细节章节的对象）</h3>
+
+<table>
+<tr><th>M1 明确包含</th><th>M1 明确不包含（推给后续期）</th></tr>
+<tr>
+<td>
+▸ 数据模型：<code>agent_rooms</code> 表、扩展 <code>SourceAgentBinding.fallback_extra.room_id</code><br>
+▸ <code>/room create --members p1,p2,p3</code>（手动指定成员）<br>
+▸ 观察者 profile <b>自动</b> 生成（SOUL.md / config.yaml / .observer）<br>
+▸ <code>route_to_member</code> 工具 + loop 终止<br>
+▸ <code>/room bind</code> / <code>/room unbind</code>（手动绑定 IM 群）<br>
+▸ 运行时路由：轻量分类 → 观察者 turn → 单成员派发 → session_webhook 回消息<br>
+▸ 跨成员摘要注入（在 <code>reason</code> 字段带上一位成员最后回复摘要）<br>
+▸ Fence 机制（Room 结构变化时触发）<br>
+▸ Dashboard REST API（<code>/api/rooms</code> 全套 CRUD）+ 极简管理页
+</td>
+<td>
+▸ 从需求自动规划成员名单（→ M2）<br>
+▸ 自动创建缺失的成员 profile（→ M2）<br>
+▸ 成员之间共享完整对话历史（→ M3）<br>
+▸ 消息乱序修复（→ M3）<br>
+▸ 并发多成员同时回复（→ M3）<br>
+▸ 观察者判定复杂任务时拆分成子任务图（→ M4）<br>
+▸ 房间成员之间用 <code>delegate_task</code> 互相调用的策略（→ M4）
+</td>
+</tr>
+</table>
+
+<h3>2.3 M2 · 自动规划 room</h3>
+
+<table>
+<tr><th>M2 明确包含</th><th>M2 明确不包含</th></tr>
+<tr>
+<td>
+▸ 新增 slash command <code>/room plan &lt;需求描述&gt;</code>（自然语言输入）<br>
+▸ Room-planner 用 aux LLM 调用（复用 <code>kanban_decompose</code> 那套模板）<br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 输入：需求 + 现有 profile 名册 + 各 profile description<br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 输出：建议成员列表 + 需新建的缺失 profile + room description<br>
+▸ 规划结果 <b>先展示给用户确认</b>，用户回复 Y/N 才落地<br>
+▸ 确认后自动串起 <code>/agent create</code>（缺失 profile）+ <code>profile_describer</code>（生成 description）+ M1 的 <code>/room create</code>（组装 room）<br>
+▸ Dashboard 侧：需求输入框 → 规划预览 → 一键确认<br>
+▸ 规划失败的兜底：aux LLM 不可用/规划荒谬时给明确错误提示，不自动降级
+</td>
+<td>
+▸ 不改变 M1 的 room 数据模型（M2 只写规划器，最终落地还是走 M1 的 Room CRUD）<br>
+▸ 不涉及运行时路由（那是 M1 的事）<br>
+▸ 不做"规划后自动 bind 群"——bind 依然是显式动作（M1 <code>/room bind</code>）<br>
+▸ 不做规划历史/版本追踪（M2 每次规划都是独立事件）
+</td>
+</tr>
+</table>
+
+<h3>2.4 M3 · 完整上下文投影 + 并发多成员</h3>
+
+<table>
+<tr><th>M3 明确包含</th><th>M3 明确不包含</th></tr>
+<tr>
+<td>
+▸ 新增 <code>gateway/agent_room_projection.py</code>：把 room 完整消息历史投影成"以某成员为中心"的对话形式<br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 别人的消息 → <code>role: user</code>，前缀 <code>[发送者名]:</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 自己的消息 → <code>role: assistant</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 工具调用/结果 → 转描述文本塞进 user 消息<br>
+▸ 消息落库时的顺序保证（<code>gc_messages</code> 类的排序修复）<br>
+▸ 观察者能一次 <code>route_to_member</code> 输出多个成员（数组），触发并发派发<br>
+▸ 并发派发时的 <b>结果聚合</b>：多个成员同时回，是全都发出去、还是选最好的、还是让观察者综合<br>
+▸ M1 的"看自己被路由过的历史"简版逻辑被 M3 <b>整体替换</b>（M1 的 stub 代码被删）<br>
+▸ 完整 room 消息历史存储表（<code>agent_room_messages</code>）——M1 是靠成员各自 session，M3 需要一份共享的
+</td>
+<td>
+▸ 不做任务拆分（"这个需求要三步依赖顺序做"是 M4）<br>
+▸ 不做远程 agent 联邦（Studio Group Chat 那种跨实例 agent 加入房间——不在四期计划）<br>
+▸ 不改 M1 的 Room CRUD 数据模型（agent_rooms 表不变，只新增 agent_room_messages 表）<br>
+▸ 不做群内 @mention 手动指定成员（M3 依然由观察者决策，只是决策粒度从单成员改成多成员）
+</td>
+</tr>
+</table>
+
+<h3>2.5 M4 · 任务拆分</h3>
+
+<table>
+<tr><th>M4 明确包含</th><th>M4 明确不包含</th></tr>
+<tr>
+<td>
+▸ 给 <code>room_observer</code> toolset 加第二个工具 <code>decompose_and_route</code><br>
+▸ 观察者判断"这是复杂任务"时不调 <code>route_to_member</code>，改调 <code>decompose_and_route</code><br>
+▸ <code>decompose_and_route</code> 内部复用 kanban 现有的 <code>decompose_triage_task</code> 逻辑<br>
+▸ 拆出的子任务丢进 kanban 队列，assignee 是 room 成员（<b>限制在 room 成员名册内</b>，不能跨 room）<br>
+▸ 子任务完成通知汇聚回观察者的一个"综合 turn"，输出最终回复到群<br>
+▸ M1 的"观察者单工具锁死"约束需要放松（现在允许两个工具，但都是路由类）
+</td>
+<td>
+▸ 不做子任务之间的实时并发（子任务图按 kanban 现有依赖顺序执行）<br>
+▸ 不做"跨 room 委托"（子任务的 assignee 必须是当前 room 成员）<br>
+▸ 不改 M1 的观察者 SOUL.md 模板（只加"复杂任务用 decompose_and_route"一段）
+</td>
+</tr>
+</table>
+
+<div class="callout callout-warn">
+<div class="callout-title">M1 → M3 的一处技术债</div>
+M1 用 <code>members_json</code>（字符串数组，最多 5 个）存成员，M3 引入并发多成员回复时可能需要给每个成员挂"优先级 / 当前是否忙 / 上次响应时长"等元数据——届时需要迁移到独立的 <code>agent_room_members</code> 表。M1 的实现要预留"未来迁移到独立表"的接口边界，避免 M3 时到处改代码。
+</div>
 
 <!-- ─────────────────── §3 决策一览 ─────────────────── -->
 <h2 id="s3">3. 用户决策一览（拍板结果）</h2>
@@ -1341,30 +1479,232 @@ M3 会完整替换掉这一层。<b>但 M1 交付时必须至少有这个</b>，
 </table>
 
 <!-- ─────────────────── §11 验收标准 ─────────────────── -->
-<h2 id="s11">11. 验收标准</h2>
+<h2 id="s11">11. 各期验收标准 + 线上测试方案</h2>
 
-<h3>11.1 单元测试</h3>
+<p class="diagram-caption">
+每期独立写"完成定义 / 单元测试 / 集成测试 / 线上真实环境测试"四档。
+线上测试<b>都要用生产 <code>.venv</code>（非测试环境）</b>并对真实 DingTalk 群产生真实消息效果。
+</p>
+
+<!-- ═════════════ M1 验收 ═════════════ -->
+<h3 id="s11m1"><span class="tag tag-m1">M1</span> · 手动创建 room + 自动路由</h3>
+
+<h4>完成定义（Definition of Done）</h4>
 <ul>
-<li><code>AgentRoomStore</code> CRUD、并发读写、损坏数据容错</li>
-<li>观察者 SOUL.md 生成正确性：成员名册注入准确、增删成员后重生成正确</li>
-<li>Fence 集合：删除/改成员时正确加入，回消息前正确检查</li>
+<li>M1 §2.2 明确包含的所有能力都实现且合并到 main 分支</li>
+<li><b>数据契约稳定</b>：<code>agent_rooms</code> 表结构、<code>fallback_extra.room_id</code> 语义、两种 session_id 命名规则被文档冻结，M2/M3/M4 都不改</li>
+<li>单元 + 集成 + 线上三档测试全过</li>
+<li>回归测试证明未 room 绑定的 IM 会话零影响（原单 profile 绑定继续正常工作）</li>
 </ul>
 
-<h3>11.2 集成测试</h3>
+<h4>单元测试</h4>
 <ul>
-<li>完整链路：建 room → 绑定（模拟 DingTalk source）→ 发消息 → 观察者路由 → 成员回复 → 回落原群</li>
-<li>沿用路由（N4）：连续 3 条消息，只有第 1 条跑完整观察者，后 2 条走轻量分类沿用</li>
-<li>兜底：观察者返回不存在的成员时走 default_member / members[0]</li>
-<li>Fence：进行中 session 被 fenced 时输出被丢弃</li>
-<li><b>多路复用 gateway 下的 Room 路由</b>：双重 scope 嵌套不出错</li>
+<li><code>AgentRoomStore</code> CRUD、并发读写、损坏 JSON 容错、SQLite WAL 模式初始化（照抄 <code>source_agent_binding.py::_execute_sqlite_init</code>）</li>
+<li>观察者 SOUL.md 生成正确性：成员名册注入准确、增删成员后 <b>重生成</b> 覆盖旧文件</li>
+<li><code>route_to_member</code> 工具单独调用 → <code>request_hard_interrupt</code> 触发 → 返回决策结构</li>
+<li>Fence 集合：结构变动时正确加入活跃 session_id，回消息前正确检查</li>
+<li>N4 轻量分类分支：<code>is_new_topic=False &amp;&amp; confidence &gt; 0.7</code> 时确实跳过完整观察者 turn</li>
+<li>兜底：观察者返回不存在的成员名 → 走 <code>default_member</code>；<code>default_member</code> 未设 → 走 <code>members[0]</code></li>
+<li><code>dataclasses.replace(source, profile=...)</code> 克隆语义正确性（观察者/成员 turn 用不同 profile）</li>
 </ul>
 
-<h3>11.3 线上真实环境测试</h3>
+<h4>集成测试</h4>
 <ul>
-<li>本机创建测试 room（成员：<code>default</code> + 一个新建的 <code>test_profile</code>）</li>
-<li>用真实 DingTalk 群发消息</li>
-<li>验证：观察者被真实调用、路由决策合理、成员真实回复、消息真回落原群</li>
+<li><b>完整链路</b>：创建 room（模拟）→ 绑定（模拟 DingTalk source）→ 发消息 → 观察者路由 → 成员回复 → 落回原群</li>
+<li><b>沿用路由</b>：连续 3 条消息，只有第 1 条跑完整观察者 turn，后 2 条 N4 沿用</li>
+<li><b>跨成员切换 + 摘要注入</b>：切换成员时 <code>reason</code> 字段带上一位摘要，成员消息前得到 context prefix</li>
+<li><b>Fence 有效性</b>：让 observer turn 跑到一半时触发 <code>/room unbind</code>，验证 observer 输出被丢弃、成员未派发、群里不出现迟到消息</li>
+<li><b>多路复用兼容性</b>：在 <code>multiplex_profiles: True</code> 的 gateway 里跑 room 路由，验证 <code>_profile_runtime_scope</code> 嵌套不冲突</li>
+<li><b>孤立数据修复</b>：手工制造孤立 profile 目录（存在 <code>.observer</code> 但无 rooms 表记录）+ 孤立 rooms 记录（无 profile 目录），gateway 启动时能识别并清理</li>
 </ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤（在本机生产 <code>.venv</code> 上执行）</h4>
+<ol>
+<li>创建两个测试成员 profile：<code>hermes profile create room_test_client --description "客服 · 处理咨询和退款"</code>、<code>hermes profile create room_test_finance --description "财务 · 处理账单和支付"</code></li>
+<li><code>/room create test_support --members room_test_client,room_test_finance --description "客户支持组"</code></li>
+<li>验证 <code>~/.hermes/profiles/room_test_support_observer/</code> 目录被创建，SOUL.md 里包含两个成员的 description</li>
+<li>在真实 DingTalk 测试群里 <code>/room bind test_support</code>（管理员执行）</li>
+<li><b>Case A（新话题）</b>：群里发"我要退款怎么办" → 立刻收到"已收到，正在选择处理人..." → 几秒后收到"转交给 room_test_client 处理..." → 收到 room_test_client 的实际回复</li>
+<li><b>Case B（话题延续）</b>：接着问"那我上次的订单还能退吗" → 直接沿用 room_test_client，跳过完整观察者 turn（可查日志确认）</li>
+<li><b>Case C（跨成员切换 + 摘要）</b>：接着问"顺便问下我这个月账单多少" → 观察者判定 new_topic → 转到 room_test_finance → 财务的消息前面有"上一位处理人 room_test_client 的回复摘要：..."</li>
+<li><b>Case D（Fence 生效）</b>：先发一条会跑久的消息，立刻在观察者 turn 期间 <code>/room unbind</code>，验证群里不再收到成员的迟到回复</li>
+<li><b>回归 · 未绑定群不受影响</b>：另找一个只绑定单 profile 的 DingTalk 群，发消息，确认走原流程不变</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>Case A/B/C/D 全部按预期表现</li>
+<li>观察者/成员日志里 profile scope 切换正确（没有跑在错的 <code>HERMES_HOME</code> 下）</li>
+<li>观察者 session 的历史条目里能看到 <code>route_to_member</code> 工具调用记录</li>
+<li>成员 session 的历史条目里能看到 turn 完整流程</li>
+<li>生产 <code>.venv</code> 335 包完好、gateway/dashboard 服务未崩溃、无 ERROR 级别日志</li>
+</ul>
+</div>
+
+<!-- ═════════════ M2 验收 ═════════════ -->
+<h3 id="s11m2"><span class="tag tag-m2">M2</span> · 自然语言需求自动规划 room</h3>
+
+<h4>完成定义（Definition of Done）</h4>
+<ul>
+<li>M2 §2.3 明确包含的所有能力都实现且合并到 main</li>
+<li>规划器 aux LLM 调用有明确的 prompt 版本 + prompt 单元测试固化输出</li>
+<li>M1 的 Room CRUD 接口未被 M2 修改（M2 只是新 caller）</li>
+<li>用户确认前不能创建任何 profile / room 记录（防止 aux LLM 幻觉产出"意外"）</li>
+</ul>
+
+<h4>单元测试</h4>
+<ul>
+<li>Prompt 输出解析：模拟 aux LLM 返回各种格式（合法 JSON / 带 markdown 码围栏的 JSON / 缺字段 / 无效 JSON），确认解析容错正确</li>
+<li>规划结果校验：产出的成员超过 N3 限制（&gt;5）时正确报错</li>
+<li>缺失 profile 创建流程：模拟规划器要求新建 3 个 profile，验证 <code>create_profile</code> + <code>profile_describer</code> 被正确串起来</li>
+<li>用户拒绝确认时的回滚：确保没有半途留下的 profile 目录</li>
+<li>规划器 aux LLM 不可用时的兜底：返回明确错误而非静默失败</li>
+</ul>
+
+<h4>集成测试</h4>
+<ul>
+<li><b>全新场景规划</b>：无任何现有可复用 profile 时，规划器要求创建全部新成员，验证从 <code>/room plan</code> → 确认 → profile 建立 → room 组装的完整链路</li>
+<li><b>混合场景</b>：已有部分匹配的 profile 时，规划器复用现有 profile + 创建缺失的（复用/新建的比例日志可查）</li>
+<li><b>拒绝场景</b>：用户回复 N，验证无任何持久化数据被写入</li>
+<li><b>并发场景</b>：同一 gateway 同时收到两个 <code>/room plan</code>，两次规划互不干扰</li>
+</ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤</h4>
+<ol>
+<li>预先创建 3 个专业 profile（<code>legal</code> / <code>ops</code> / <code>marketing</code>）+ 各自 description</li>
+<li>在 DingTalk 群里发 <code>/room plan 我要处理法务合同 + 运营数据分析 + 品牌传播</code></li>
+<li>验证 aux LLM 规划结果里复用了 <code>legal</code> / <code>ops</code> / <code>marketing</code>，不重复创建</li>
+<li>发 <code>/room plan 我要处理宠物美容和婴儿哺乳咨询</code>（现有 profile 完全不匹配）→ 规划器应建议新建 2 个 profile</li>
+<li>用户回复 <code>Y</code> 确认 → 观察 2 个新 profile 被创建 + description 通过 <code>profile_describer</code> 生成 + room 落地</li>
+<li>发同样的 <code>/room plan</code> 但用户回复 <code>N</code> → 确认无残留数据</li>
+<li><code>/room plan</code> 后直接 <code>/room bind</code> → 完整走一次 M1 路由链路，验证 M2 组装的 room 跟 M1 手动组装的 room 行为一致</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>规划器不产幻觉成员（不出现名册里没有的 profile 名）</li>
+<li>确认前后的数据一致性：确认前 SQLite 无 room 记录，确认后完整落地</li>
+<li>规划 aux LLM 调用成本可查（日志里记录 input/output token）</li>
+<li>M2 交付的 room 跟 M1 手动创建的 room 在运行时表现 <b>完全等价</b>（这是 M2 不改 M1 数据模型的验证）</li>
+</ul>
+</div>
+
+<!-- ═════════════ M3 验收 ═════════════ -->
+<h3 id="s11m3"><span class="tag tag-m3">M3</span> · 完整上下文投影 + 并发多成员</h3>
+
+<h4>完成定义（Definition of Done）</h4>
+<ul>
+<li>M3 §2.4 明确包含的所有能力都实现且合并到 main</li>
+<li>M1 的"看自己被路由过的历史"简版代码被删除，成员看 room 完整投影历史</li>
+<li>M1 的 <code>跨成员摘要注入</code> 补丁（§8）被移除（M3 有完整投影，不再需要摘要注入）</li>
+<li>新增 <code>agent_room_messages</code> 表，支持从 M1 迁移（旧成员 session 的消息按时间戳迁入）</li>
+<li>回归：M1 阶段验收过的所有 case 在 M3 里仍全部通过</li>
+</ul>
+
+<h4>单元测试</h4>
+<ul>
+<li>上下文投影算法：给定 room 历史 + 目标成员，输出的对话符合"自己是 assistant、别人是 user 带前缀"规则</li>
+<li>工具调用/结果的投影：不同成员的 <code>tool_calls</code> 被转成文本描述塞进 user 消息</li>
+<li>消息乱序修复：模拟并发写入，读取时按 canonical order 排序</li>
+<li>并发派发：观察者返回多个成员时，各自的 turn 独立执行、不共享临时变量、Fence 分别检查</li>
+<li>结果聚合策略：多成员并发回复时的顺序（时间戳）、去重、失败一个不影响其他</li>
+</ul>
+
+<h4>集成测试</h4>
+<ul>
+<li><b>跨成员话题延续 · 完整历史</b>：用户先问客服 → 客服答 → 用户切话题问财务 → 财务能读到<b>完整</b>之前的客服对话（不是摘要）</li>
+<li><b>观察者判定并发派发</b>：观察者输出 <code>route_to_member=[client, finance]</code>，两个成员各自跑 turn，两个回复都落回群</li>
+<li><b>M1 → M3 数据迁移</b>：手工模拟 M1 阶段留下的成员 session，运行 M3 后能看到消息落到 <code>agent_room_messages</code> 表，且投影结果完整</li>
+<li><b>Studio group-message-ordering 借鉴</b>：多个成员并发 turn 时的 <code>tool_call/toolresult</code> multipart 消息排序不被打乱</li>
+</ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤</h4>
+<ol>
+<li>用 M1 的 room（客服 + 财务）作为迁移前基线，跑一遍跨话题对话 → 观察 M1 阶段的行为</li>
+<li>升级到 M3 → 数据迁移脚本跑一次</li>
+<li>重发跟 M1 一样的跨话题对话 → 财务成员这次能读到完整客服对话，回复应该更贴合（不再是"上下文碎"）</li>
+<li>群里发一条同时需要客服+财务响应的问题（"我要退这单同时要看下这个月账单"）→ 观察者判定并发派发 → 两个成员各自回一条，按时间戳排序落到群</li>
+<li>连续发 5 条快速消息，观察消息落库 + 展示顺序不被打乱</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>财务成员的 turn 里能通过日志看到<b>完整</b>的客服对话历史（不是摘要）</li>
+<li>并发派发的两个成员回复的时序、内容都正确</li>
+<li>M1 阶段验收过的所有 case（含 Fence、多路复用等）在 M3 后仍全部通过</li>
+<li>M1 的旧成员 session 历史成功迁移到 <code>agent_room_messages</code>（可查数据行数一致）</li>
+</ul>
+</div>
+
+<!-- ═════════════ M4 验收 ═════════════ -->
+<h3 id="s11m4"><span class="tag tag-m4">M4</span> · 任务拆分（复杂需求）</h3>
+
+<h4>完成定义（Definition of Done）</h4>
+<ul>
+<li>M4 §2.5 明确包含的所有能力都实现且合并到 main</li>
+<li><code>room_observer</code> toolset 从 1 个工具（<code>route_to_member</code>）扩展到 2 个（<code>+ decompose_and_route</code>）</li>
+<li>M1 §5.3 的 loop 终止方案 A 对新工具同样有效</li>
+<li>回归：M1/M2/M3 的所有 case 全过</li>
+</ul>
+
+<h4>单元测试</h4>
+<ul>
+<li><code>decompose_and_route</code> 工具单独调用 → 返回子任务图结构 → <code>request_hard_interrupt</code> 触发</li>
+<li>子任务图的 assignee 必须在 room 成员名册内的校验（拒绝跨 room 委派）</li>
+<li>依赖图执行顺序：无依赖的子任务并行，有依赖的等前置完成</li>
+<li>综合回复：所有子任务完成后触发观察者的"综合 turn"，输出用户可见的最终回复</li>
+</ul>
+
+<h4>集成测试</h4>
+<ul>
+<li><b>简单任务走原路径</b>：观察者对简单问题仍调 <code>route_to_member</code>（不是每个消息都拆分）</li>
+<li><b>复杂任务拆分</b>：给一个明显需要多步的需求（"帮我起草合同 + 找财务算成本 + 发给客户"），观察者调 <code>decompose_and_route</code> → 3 个子任务按依赖顺序执行</li>
+<li><b>依赖失败传播</b>：中间某个子任务失败 → 后续依赖它的子任务不执行 → 观察者综合 turn 里能看到失败信息</li>
+<li><b>回归 M1</b>：普通对话依然走 M1 单成员路径</li>
+</ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤</h4>
+<ol>
+<li>在群里发简单问题 → 应走 M1/M3 单成员路径（可看日志确认 <code>route_to_member</code> 而非 <code>decompose_and_route</code>）</li>
+<li>发复杂问题："帮我起草这份合同，然后让财务估算成本，最后综合给客户一个方案" → 应走 <code>decompose_and_route</code> → 拆成 3 个子任务</li>
+<li>验证子任务在 kanban 里可见，assignee 正确 = room 成员</li>
+<li>依赖顺序：合同起草完成前，客户方案子任务不启动</li>
+<li>全部完成后 → 观察者综合 turn 生成最终回复发到群</li>
+<li>中间人为让某个子任务失败 → 后续依赖子任务不执行 → 综合 turn 里带上失败信息</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>观察者能自主判断"简单 vs 复杂"，且判断合理（简单问题不拆分）</li>
+<li>子任务在 kanban 里可查、可追踪</li>
+<li>综合 turn 的最终回复包含所有子任务的关键信息</li>
+<li>M1/M2/M3 的验收 case 全过</li>
+</ul>
+</div>
+
+<h3 id="s11cross">跨期回归测试原则</h3>
+
+<div class="callout callout-info">
+每期交付前都必须<b>回归运行前期的所有验收 case</b>。M4 交付时要跑 M1+M2+M3 全部 case；M3 交付时跑 M1+M2 全部 case。用 <code>scripts/run_tests.sh</code> 的 per-file 隔离模式跑（避免模块状态泄漏）。
+</div>
+
+<h3 id="s11env">线上测试环境准备（M1-M4 共用）</h3>
+
+<ol>
+<li><b>专属测试 DingTalk 群</b>：不用生产群，避免真实用户被路由错误影响</li>
+<li><b>专属测试 profile 前缀</b>：<code>room_test_*</code>，方便一键清理</li>
+<li><b>生产 <code>.venv</code></b>：用 <code>/opt/hermes-agent/.venv</code>（335 包完好），不用测试 venv—— 线上问题只在真 SDK/真 config.yaml 下才暴露</li>
+<li><b>日志级别提升到 DEBUG</b>：临时改 <code>~/.hermes/config.yaml</code> 里 <code>gateway.log_level</code>，测试完恢复</li>
+<li><b>每期结束清理</b>：<code>/room delete test_*</code> + <code>hermes profile delete room_test_*</code> + 删测试 SQLite 表数据</li>
+</ol>
 
 <div class="footer">
 文档版本 v2 · 基于 8 组代码 spike 验证 · 生成于 hermes-agent <code>449d4e711</code>
