@@ -398,14 +398,16 @@ def _current_origin_scope() -> Optional[str]:
 def _context_ref_visible(ref_id: str, scope: Optional[str]) -> bool:
     """Return True if a context_from job reference is visible in the given scope.
 
-    Stub: with scope=None all jobs are visible (upstream-compatible behaviour).
+    Uses ``resolve_job_ref`` so a NAME reference that matches multiple jobs
+    surfaces ``AmbiguousJobReference`` — the callers already catch that.
+    ``get_job`` would only match by ID and silently return None for a valid
+    ambiguous name, defeating the "Use the job ID instead" hint upstream
+    users rely on.  Call the top-level name (already imported above) so
+    tests can ``patch("tools.cronjob_tools.resolve_job_ref", ...)`` — a
+    lazy ``from cron.jobs import resolve_job_ref`` inside the function
+    would bypass that patch and break the pre-existing #41037 test.
     """
-    from cron.jobs import get_job
-    try:
-        job = get_job(ref_id)
-        return job is not None
-    except Exception:
-        return False
+    return resolve_job_ref(ref_id) is not None
 
 
 def _list_jobs_for_scope(include_disabled: bool = False, scope: Optional[str] = None):
@@ -413,17 +415,20 @@ def _list_jobs_for_scope(include_disabled: bool = False, scope: Optional[str] = 
 
     Stub: scope=None returns all jobs (upstream-compatible behaviour).
     """
-    from cron.jobs import list_jobs
     return list_jobs(include_disabled=include_disabled)
 
 
 def _resolve_job_ref_for_scope(job_id: str, scope: Optional[str]):
     """Resolve a job id/name within the given scope.
 
-    Stub: delegates to cron.jobs.get_job (scope ignored).
+    Uses ``resolve_job_ref`` (ID-first, then case-insensitive name match) so
+    an ambiguous name raises ``AmbiguousJobReference`` — the caller already
+    catches it and reports the matching IDs.  ``get_job`` would only match
+    by ID and silently miss a valid name, breaking every cron tool that lets
+    users refer to jobs by their human name.  See the ``_context_ref_visible``
+    comment for why the top-level name is used instead of a lazy import.
     """
-    from cron.jobs import get_job
-    return get_job(job_id)
+    return resolve_job_ref(job_id)
 
 
 def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
