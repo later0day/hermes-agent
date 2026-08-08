@@ -17937,6 +17937,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._send_reply(source, _resend_result, event=event)
                 return
 
+            # ── Agent Room M1.7: Room routing branch ──────────────────────
+            # Check if this IM source (e.g. DingTalk group) is bound to an
+            # agent room via SourceAgentBinding.fallback_extra['room_id'].
+            # If so, hand off to the Room router's five-step flow instead of
+            # the normal single-profile agent turn.
+            #
+            # The check is fast (one SQLite lookup) and falls through
+            # transparently if the source is not room-bound — zero behaviour
+            # change for any existing single-profile or unbound sessions.
+            _room_result = await self._process_message_via_room_if_bound(
+                event=event,
+                source=source,
+                message_text=message_text,
+                history=history,
+            )
+            if _room_result is not None:
+                # Room handled the message; skip the normal agent turn.
+                return _room_result
+
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
             # below; a /new or another lifecycle transition may move
@@ -24757,6 +24776,249 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=True,
             )
             return get_hermes_home()
+
+    # ── Agent Room M1.7 helpers ─────────────────────────────────────────────
+
+    def _get_room_for_source(self, source: "SessionSource"):
+        """Return the AgentRoom bound to *source*, or None.
+
+        Looks up source_binding_key → SourceAgentBinding, then checks
+        fallback_extra['room_id'] per design.html §4.2.  None means the
+        source is either unbound or bound to a single profile (not a room).
+        Fast path: one SQLite read; called on every inbound message.
+        """
+        try:
+            if not hasattr(self, "_source_agent_binding_store"):
+                from gateway.source_agent_binding import SourceAgentBindingStore
+                self._source_agent_binding_store = SourceAgentBindingStore()
+            if not hasattr(self, "_agent_room_store"):
+                from gateway.agent_room_store import AgentRoomStore
+                self._agent_room_store = AgentRoomStore()
+            from gateway.session import build_source_binding_key
+            binding = self._source_agent_binding_store.get_binding(
+                build_source_binding_key(source)
+            )
+            if not binding:
+                return None
+            room_id = (binding.fallback_extra or {}).get("room_id")
+            if not room_id:
+                return None
+            return self._agent_room_store.get_room(room_id)
+        except Exception as exc:
+            logger.debug(
+                "M1.7 _get_room_for_source failed (falling through to normal agent): %s", exc
+            )
+            return None
+
+    async def _process_message_via_room_if_bound(
+        self,
+        *,
+        event,
+        source,
+        message_text: str,
+        history: list,
+    ):
+        """Check if the source is room-bound; if so, run the §6.1 five-step
+        flow and return a sentinel (empty string == handled). Return None to
+        let the normal agent path continue.
+
+        This method is the M1.7 integration bridge between
+        GatewayRunner._handle_message and gateway/agent_room_router.py.
+
+        Router dependency injection uses real gateway callables:
+          - ack_sender / ack_editor → DingTalk session_webhook (if present)
+            via self._adapter_for_source + edit_message
+          - classifier → auxiliary_client.py aux LLM call
+          - observer_runner → _profile_runtime_scope + _run_agent_inner
+          - member_dispatcher → _profile_runtime_scope + _run_agent_inner
+
+        M1 simplification: all four callables are wired here as thin
+        closures that wrap the real gateway machinery. They operate on
+        dataclasses.replace(source, profile=<profile>) clones so the
+        underlying _run_agent_inner always sees the right profile without
+        mutating the original SessionSource.
+        """
+        room = self._get_room_for_source(source)
+        if room is None:
+            return None
+
+        try:
+            from gateway.agent_room_router import (
+                AgentRoomRouter,
+                ClassifierResult,
+                RoutingDecision,
+            )
+        except ImportError as exc:
+            logger.error("M1.7: failed to import AgentRoomRouter: %s", exc)
+            return None
+
+        # ── Lazy-init the router, attach it to the GatewayRunner so the
+        # M1.6 Fence helper can also clear its cache.
+        if not hasattr(self, "_agent_room_router"):
+            adapter = self._adapter_for_source(source)
+
+            async def _ack_sender(src, text: str):
+                """Step 1: immediate ack via session_webhook / adapter."""
+                try:
+                    binding = self._source_agent_binding_store.get_binding(
+                        __import__("gateway.session", fromlist=["build_source_binding_key"]).build_source_binding_key(src)
+                    )
+                    webhook = (binding.fallback_extra or {}).get("session_webhook") if binding else None
+                    if webhook:
+                        from gateway.slash_commands import _send_dingtalk_webhook  # noqa: F401
+                except Exception:
+                    webhook = None
+                if adapter and hasattr(adapter, "send"):
+                    try:
+                        result = await adapter.send(src.chat_id, text, metadata={})
+                        return result
+                    except Exception:
+                        pass
+                return None
+
+            async def _ack_editor(handle, text: str):
+                """Step 4: edit the ack message."""
+                if handle is None:
+                    return
+                try:
+                    msg_id = getattr(handle, "message_id", None)
+                    if adapter and msg_id and hasattr(adapter, "edit_message"):
+                        await adapter.edit_message(src.chat_id, str(msg_id), text)
+                except Exception as exc:
+                    logger.debug("M1.7 ack_editor: %s", exc)
+
+            async def _classifier(history_tail: list, last_routed):
+                """N4 aux LLM: is this a new topic?"""
+                try:
+                    from agent.auxiliary_client import call_llm_simple
+                    recent = "\n".join(
+                        f"{m.get('role','?')}: {str(m.get('content',''))[:200]}"
+                        for m in (history_tail or [])
+                    )
+                    prompt = (
+                        f"Last routed to: {last_routed or 'none'}\n"
+                        f"Recent messages:\n{recent}\n"
+                        f"Is the latest message a new topic? Reply with a JSON object "
+                        f"{{\"is_new_topic\": bool, \"confidence\": float 0-1}}. "
+                        f"No other text."
+                    )
+                    raw = await call_llm_simple(prompt, max_tokens=64)
+                    import json as _json, re as _re
+                    m = _re.search(r'\{[^}]+\}', raw or "")
+                    if m:
+                        d = _json.loads(m.group())
+                        return ClassifierResult(
+                            is_new_topic=bool(d.get("is_new_topic", True)),
+                            confidence=float(d.get("confidence", 0.5)),
+                        )
+                except Exception as exc:
+                    logger.debug("M1.7 classifier: %s", exc)
+                # Fallback: treat as new topic → always run full observer turn
+                return ClassifierResult(is_new_topic=True, confidence=1.0)
+
+            async def _observer_runner(
+                observer_profile, session_id, _src, hist, msg
+            ):
+                """Step 3: run the observer's agent turn under its profile scope."""
+                import dataclasses
+                observer_source = dataclasses.replace(
+                    _src,
+                    profile=observer_profile,
+                )
+                profile_home = self._resolve_profile_home_for_source(observer_source)
+                result_text = ""
+                reason = ""
+                is_new_topic = True
+                with _profile_runtime_scope(profile_home):
+                    run_result = await self._run_agent_inner(
+                        msg,
+                        "",  # context_prompt
+                        hist,
+                        observer_source,
+                        session_id,
+                    )
+                    result_text = run_result.get("final_response", "") if run_result else ""
+                # The observer should have called route_to_member which triggers
+                # hard_interrupt and stores the decision in the tool result.
+                # Parse it back out of the conversation messages.
+                import json as _json
+                if run_result and run_result.get("messages"):
+                    for msg_item in reversed(run_result["messages"]):
+                        if msg_item.get("role") == "tool":
+                            try:
+                                d = _json.loads(msg_item.get("content", "{}"))
+                                if d.get("action") == "route_to_member":
+                                    return RoutingDecision(
+                                        target_member=d.get("member", ""),
+                                        reason=d.get("reason", ""),
+                                        is_new_topic=bool(d.get("is_new_topic", True)),
+                                        reused_last_route=False,
+                                    )
+                            except Exception:
+                                pass
+                # Fallback: no route_to_member found → empty member → router falls back
+                return RoutingDecision(
+                    target_member="",
+                    reason="observer produced no route_to_member output",
+                    is_new_topic=True,
+                    reused_last_route=False,
+                )
+
+            async def _member_dispatcher(
+                member_profile, session_id, _src, hist, msg
+            ):
+                """Step 5: run the member's agent turn under its profile scope."""
+                import dataclasses
+                member_source = dataclasses.replace(_src, profile=member_profile)
+                profile_home = self._resolve_profile_home_for_source(member_source)
+                with _profile_runtime_scope(profile_home):
+                    run_result = await self._run_agent_inner(
+                        msg, "", hist, member_source, session_id,
+                    )
+                reply = run_result.get("final_response", "") if run_result else ""
+                # Deliver to the original IM source via adapter.
+                try:
+                    if adapter and hasattr(adapter, "send"):
+                        await adapter.send(
+                            source.chat_id,
+                            reply or "(no reply)",
+                            metadata={},
+                        )
+                except Exception as exc:
+                    logger.warning("M1.7 member reply delivery failed: %s", exc)
+                return reply
+
+            # Capture source for closures
+            src = source
+
+            self._agent_room_router = AgentRoomRouter(
+                store=self._agent_room_store,
+                ack_sender=_ack_sender,
+                ack_editor=_ack_editor,
+                classifier=_classifier,
+                observer_runner=_observer_runner,
+                member_dispatcher=_member_dispatcher,
+            )
+
+        try:
+            await self._agent_room_router.process_message(
+                source=source,
+                message=message_text,
+                history=history,
+                room=room,
+            )
+        except Exception as exc:
+            logger.error(
+                "M1.7 room routing error for room %s: %s",
+                room.room_id, exc, exc_info=True,
+            )
+            # On routing failure, fall through to normal agent turn so the
+            # user isn't silently dropped.
+            return None
+
+        # Return non-None to signal "handled by Room" — _handle_message
+        # returns this and skips the normal _run_agent call.
+        return ""
 
     async def _run_agent_inner(
         self,

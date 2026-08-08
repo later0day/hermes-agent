@@ -32,7 +32,7 @@
 - [x] **M1.3** 路由工具 + Loop 终止 `tools/room_router_tool.py`（~80 行）— **完成**（211 行 + 231 行测试，13/13 通过 + §9.2 硬补丁A 负控制精准命中，含 request_hard_interrupt 侧效应验证）
 - [x] **M1.4** toolsets 注册 `toolsets.py` 改（~10 行）— **完成**（toolsets.py +19 行 · tool_executor.py +25 行 dispatch 分支 · 154 行测试，10/10 通过 + 双向负控制精准命中 + 现有 41 个 tool_executor/toolsets 测试零回归，commit `4e4d6b579`）
 - [x] **M1.5** 路由主流程 `gateway/agent_room_router.py`（~350 行）— **完成**（431 行 + 567 行测试，32/32 通过 + §6.3 Fence 检查A/B/C + §8 规则B 摘要注入双重负控制精准命中）
-- [ ] **M1.7** run.py 入口分支改（~50 行）
+- [x] **M1.7** run.py 入口分支改（~50 行）— **完成**（run.py +~200 行含 _get_room_for_source + _process_message_via_room_if_bound · 282 行测试，11/11 通过，Room 分支在 _run_agent 前插入）
 - [x] **M1.6**（可与 M1.5 并行，只依赖 M1.1+M1.2）Slash Commands `slash_commands.py` 改（~300 行）— **完成**（slash_commands.py +486 行 · run.py +2 行 dispatch · 354 行测试，25/25 通过 + M1-B1/B3/B8/B9/B14 全覆盖）
 - [ ] **M1.8**（可与 M1.5 并行）REST API + Dashboard `web_server.py` 改（~250）+ 前端（~400）
 
