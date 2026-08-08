@@ -28,7 +28,7 @@
 ### 里程碑（严格依赖顺序 + 可并行段）
 
 - [x] **M1.1** 数据层 `gateway/agent_room_store.py`（~250 行）— **完成**（428 行 + 366 行测试，27/27 通过 + 负控制验证，commit `770950f03`）
-- [ ] **M1.2** 观察者构造器 `gateway/agent_room_bootstrapper.py`（~200 行）— 含 §8 规则A（SOUL.md 摘要指令）
+- [x] **M1.2** 观察者构造器 `gateway/agent_room_bootstrapper.py`（~200 行）— **完成**（369 行 + 377 行测试，22/22 通过 + §8 规则A 负控制验证，含 §8 规则A）
 - [ ] **M1.3** 路由工具 + Loop 终止 `tools/room_router_tool.py`（~80 行）← §9.2 硬补丁A
 - [ ] **M1.4** toolsets 注册 `toolsets.py` 改（~10 行）
 - [ ] **M1.5** 路由主流程 `gateway/agent_room_router.py`（~350 行）— 含 §6.1 完整 5 步 + 4.5 步（§8 规则B）
