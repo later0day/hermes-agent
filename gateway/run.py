@@ -5059,6 +5059,43 @@ class TurnRunner:
                     self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
 
+        # M1.7 Agent Room: if _toolsets_override is set on this TurnRunner,
+        # replace agent.tools with ONLY the schemas from the specified
+        # toolsets — not a filter on the existing list (route_to_member
+        # might not be in agent.tools yet because tool_search defers it),
+        # but a fresh list built from the TOOLSETS registry's schemas.
+        _ts_override = getattr(self, "_toolsets_override", None)
+        if _ts_override:
+            from tools.room_router_tool import ROUTE_TO_MEMBER_SCHEMA
+            # Wrap in the OpenAI function-calling envelope that
+            # agent.tools expects: {"type": "function", "function": {schema}}
+            _wrapped_schema = {"type": "function", "function": ROUTE_TO_MEMBER_SCHEMA}
+            _locked = [_wrapped_schema]
+            # _LockedTools rejects append/extend so tool_search inside
+            # run_conversation cannot re-add _HERMES_CORE_TOOLS.
+            class _LockedTools(list):
+                def append(self, item): pass
+                def extend(self, items): pass
+                def __iadd__(self, other): return self
+                def __setitem__(self, key, value): pass
+            agent.tools = _LockedTools(_locked)
+            # CRITICAL: update valid_tool_names too — conversation_loop
+            # checks tool calls against this set before dispatch, and it was
+            # set at agent init time (line 1441) from the FULL 30-tool list
+            # which didn't include route_to_member (it was deferred by
+            # tool_search). Without this update, conversation_loop returns
+            # "Tool 'route_to_member' does not exist" and the tool_call is
+            # rejected before reaching tool_executor's elif branch.
+            agent.valid_tool_names = {
+                t.get("function", {}).get("name", "") for t in _locked
+            }
+            logger.info(
+                "M1.7: observer tools locked to %d: %s (valid_tool_names=%s)",
+                len(_locked),
+                [t.get("function", {}).get("name") for t in _locked],
+                agent.valid_tool_names,
+            )
+
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
         # Gate on needs_progress_queue (tool_progress OR thinking_progress)
@@ -20023,6 +20060,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                # M1.7 Agent Room: if _toolsets_override was passed
+                # (observer turn), force-filter agent.tools to ONLY
+                # contain tools from the specified toolsets. tool_search's
+                # tier 1 mechanism keeps _HERMES_CORE_TOOLS alive even when
+                # enabled_toolsets is narrowed — without this filter the
+                # observer sees 57 tools and route_to_member gets buried.
+                if _toolsets_override:
+                    from toolsets import resolve_toolset as _resolve_ts
+                    _allowed = set()
+                    for _ts in _toolsets_override:
+                        _allowed.update(_resolve_ts(_ts))
+                    if hasattr(agent, "tools") and isinstance(agent.tools, list):
+                        # Keep ONLY the allowed tools' schemas. Also save
+                        # the full list so run_conversation's internal
+                        # tool_search rebuild can be intercepted.
+                        _observer_tools = [
+                            t for t in agent.tools
+                            if t.get("function", {}).get("name") in _allowed
+                        ]
+                        agent.tools = _observer_tools
+                        # Monkey-patch agent.tools setter to prevent
+                        # tool_search from re-adding core tools during
+                        # run_conversation. This is the ONLY reliable way
+                        # to lock down the observer's tool surface —
+                        # tool_search.load_config() reads from a separate
+                        # config cache (hermes_cli.config.load_config) that
+                        # ignores both _load_gateway_config() and
+                        # set_hermes_home_override, so injecting
+                        # tool_search:off into user_config has no effect.
+                        _observer_tools_ref = _observer_tools
+                        class _LockedTools(list):
+                            """A list that always returns the observer's
+                            locked tool set, ignoring appends/replacements
+                            from tool_search's internal rebuild."""
+                            def __init__(self, items):
+                                super().__init__(items)
+                            def append(self, item):
+                                pass  # silently reject
+                            def extend(self, items):
+                                pass
+                            def __setitem__(self, key, value):
+                                pass
+                        agent.tools = _LockedTools(_observer_tools_ref)
+                        logger.info(
+                            "M1.7: observer tools locked to %d schemas: %s",
+                            len(_observer_tools_ref),
+                            [t.get("function", {}).get("name") for t in _observer_tools_ref],
+                        )
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -24929,40 +25014,70 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result_text = ""
                 reason = ""
                 is_new_topic = True
-                with _profile_runtime_scope(profile_home):
+                # Switch HERMES_HOME for SOUL.md / config.yaml / toolsets,
+                # and hydrate the observer profile's .env so its API keys
+                # are available via get_secret().  This inherits the
+                # observer's own credential pool (auth.json + .env),
+                # which M1.2's bootstrapper should populate at creation
+                # time from the calling profile's credentials.
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
+                hydrate_profile_secret_sources(Path(profile_home))
+                _home_token = set_hermes_home_override(str(profile_home))
+                _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                # Override platform_toolsets so _run_agent_inner's internal
+                # _get_platform_tools() returns ONLY [room_observer] —
+                # the observer's single-toolset lockdown (Spike 3, §5.1).
+                # Without this, the gateway's global config (xcx's
+                # platform_toolsets) leaks hermes-cli's _HERMES_CORE_TOOLS
+                # into the observer, and route_to_member is never visible
+                # to the LLM — it outputs text instead of a tool call.
+                try:
                     run_result = await self._run_agent_inner(
                         msg,
                         "",  # context_prompt
                         hist,
                         observer_source,
                         session_id,
+                        _toolsets_override=["room_observer"],
                     )
                     result_text = run_result.get("final_response", "") if run_result else ""
-                # The observer should have called route_to_member which triggers
-                # hard_interrupt and stores the decision in the tool result.
-                # Parse it back out of the conversation messages.
-                import json as _json
-                if run_result and run_result.get("messages"):
-                    for msg_item in reversed(run_result["messages"]):
-                        if msg_item.get("role") == "tool":
-                            try:
-                                d = _json.loads(msg_item.get("content", "{}"))
-                                if d.get("action") == "route_to_member":
-                                    return RoutingDecision(
-                                        target_member=d.get("member", ""),
-                                        reason=d.get("reason", ""),
-                                        is_new_topic=bool(d.get("is_new_topic", True)),
-                                        reused_last_route=False,
-                                    )
-                            except Exception:
-                                pass
-                # Fallback: no route_to_member found → empty member → router falls back
-                return RoutingDecision(
-                    target_member="",
-                    reason="observer produced no route_to_member output",
-                    is_new_topic=True,
-                    reused_last_route=False,
-                )
+                    logger.info("M1.7 observer result_text: %r", result_text[:200])
+                    if run_result and run_result.get("messages"):
+                        for _m in run_result["messages"][-5:]:
+                            _role = _m.get("role", "?")
+                            _content = str(_m.get("content", ""))[:100]
+                            _tcs = _m.get("tool_calls")
+                            logger.info("M1.7 observer msg: role=%s content=%r tool_calls=%s", _role, _content, bool(_tcs))
+                    # The observer should have called route_to_member which triggers
+                    # hard_interrupt and stores the decision in the tool result.
+                    # Parse it back out of the conversation messages.
+                    import json as _json
+                    if run_result and run_result.get("messages"):
+                        for msg_item in reversed(run_result["messages"]):
+                            if msg_item.get("role") == "tool":
+                                try:
+                                    d = _json.loads(msg_item.get("content", "{}"))
+                                    if d.get("action") == "route_to_member":
+                                        return RoutingDecision(
+                                            target_member=d.get("member", ""),
+                                            reason=d.get("reason", ""),
+                                            is_new_topic=bool(d.get("is_new_topic", True)),
+                                            reused_last_route=False,
+                                        )
+                                except Exception:
+                                    pass
+                    # Fallback: no route_to_member found → empty member → router falls back
+                    return RoutingDecision(
+                        target_member="",
+                        reason="observer produced no route_to_member output",
+                        is_new_topic=True,
+                        reused_last_route=False,
+                    )
+                finally:
+                    reset_secret_scope(_secret_token)
+                    reset_hermes_home_override(_home_token)
 
             async def _member_dispatcher(
                 member_profile, session_id, _src, hist, msg
@@ -24971,11 +25086,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 import dataclasses
                 member_source = dataclasses.replace(_src, profile=member_profile)
                 profile_home = self._resolve_profile_home_for_source(member_source)
-                with _profile_runtime_scope(profile_home):
+                # Switch HERMES_HOME + hydrate the member profile's .env +
+                # install its secret_scope so API keys resolve correctly.
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
+                hydrate_profile_secret_sources(Path(profile_home))
+                _home_token = set_hermes_home_override(str(profile_home))
+                _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                try:
                     run_result = await self._run_agent_inner(
                         msg, "", hist, member_source, session_id,
                     )
+                finally:
+                    reset_secret_scope(_secret_token)
+                    reset_hermes_home_override(_home_token)
                 reply = run_result.get("final_response", "") if run_result else ""
+                # Prefix with the member profile name so the user can see
+                # which agent replied (design.html §11m1 B4: 显示身份).
+                if reply:
+                    reply = f"profile: {member_profile}\n\n{reply}"
                 # Deliver to the original IM source via adapter.
                 try:
                     if adapter and hasattr(adapter, "send"):
@@ -25036,6 +25166,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         message_type: Optional[str] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -25069,9 +25200,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if run_generation is None or not session_key:
                 return True
             return self._is_session_run_current(session_key, run_generation)
-        
+
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+
+        # M1.7 Agent Room: if the caller (observer_runner) passed a
+        # _toolsets_override via kwargs, inject it into platform_toolsets
+        # so _get_platform_tools returns only the observer's lockdown
+        # toolset (e.g. ["room_observer"]). Without this, the global
+        # gateway config's platform_toolsets leaks _HERMES_CORE_TOOLS
+        # into the observer, and route_to_member is never visible to
+        # the LLM (#M1-live-bug, found during DingTalk integration test).
+        _toolsets_override = kwargs.pop("_toolsets_override", None)
+        if _toolsets_override:
+            pt = dict(user_config.get("platform_toolsets") or {})
+            pt[platform_key] = list(_toolsets_override)
+            user_config = dict(user_config)
+            user_config["platform_toolsets"] = pt
+            # Also inject tool_search: off so tool_search doesn't
+            # re-add _HERMES_CORE_TOOLS back into agent.tools.
+            tools_cfg = dict(user_config.get("tools") or {})
+            ts_cfg = dict(tools_cfg.get("tool_search") or {})
+            ts_cfg["enabled"] = "off"
+            tools_cfg["tool_search"] = ts_cfg
+            user_config["tools"] = tools_cfg
+            logger.info(
+                "M1.7 DEBUG: _toolsets_override=%s platform_key=%s "
+                "platform_toolsets=%s tool_search=%s override=%s",
+                _toolsets_override, platform_key,
+                user_config.get("platform_toolsets"),
+                user_config.get("tools", {}).get("tool_search"),
+                get_hermes_home_override(),
+            )
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -25348,6 +25508,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_timestamp=persist_user_timestamp,
         )
         turn_runner = TurnRunner(self, turn_ctx)
+        # M1.7 Agent Room: pass toolsets_override to TurnRunner so its
+        # run_sync can force-filter agent.tools after AIAgent construction.
+        # This is the ONLY reliable interception point — run_sync lives in
+        # TurnRunner (a separate class), not a nested closure of
+        # _run_agent_inner, so local-variable closure capture does NOT work.
+        if _toolsets_override:
+            turn_runner._toolsets_override = _toolsets_override
         # Callback invoked by agent on tool lifecycle events — extracted to
         # TurnRunner.progress_callback (bound method, same signature).
         turn_ctx.progress_callback = turn_runner.progress_callback
