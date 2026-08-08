@@ -31,7 +31,7 @@
 - [x] **M1.2** 观察者构造器 `gateway/agent_room_bootstrapper.py`（~200 行）— **完成**（369 行 + 377 行测试，22/22 通过 + §8 规则A 负控制验证，含 §8 规则A）
 - [x] **M1.3** 路由工具 + Loop 终止 `tools/room_router_tool.py`（~80 行）— **完成**（211 行 + 231 行测试，13/13 通过 + §9.2 硬补丁A 负控制精准命中，含 request_hard_interrupt 侧效应验证）
 - [x] **M1.4** toolsets 注册 `toolsets.py` 改（~10 行）— **完成**（toolsets.py +19 行 · tool_executor.py +25 行 dispatch 分支 · 154 行测试，10/10 通过 + 双向负控制精准命中 + 现有 41 个 tool_executor/toolsets 测试零回归，commit `4e4d6b579`）
-- [ ] **M1.5** 路由主流程 `gateway/agent_room_router.py`（~350 行）— 含 §6.1 完整 5 步 + 4.5 步（§8 规则B）
+- [x] **M1.5** 路由主流程 `gateway/agent_room_router.py`（~350 行）— **完成**（431 行 + 567 行测试，32/32 通过 + §6.3 Fence 检查A/B/C + §8 规则B 摘要注入双重负控制精准命中）
 - [ ] **M1.7** run.py 入口分支改（~50 行）
 - [ ] **M1.6**（可与 M1.5 并行，只依赖 M1.1+M1.2）Slash Commands `slash_commands.py` 改（~300 行）
 - [ ] **M1.8**（可与 M1.5 并行）REST API + Dashboard `web_server.py` 改（~250）+ 前端（~400）
