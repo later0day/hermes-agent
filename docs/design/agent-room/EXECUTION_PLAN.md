@@ -34,7 +34,7 @@
 - [x] **M1.5** 路由主流程 `gateway/agent_room_router.py`（~350 行）— **完成**（431 行 + 567 行测试，32/32 通过 + §6.3 Fence 检查A/B/C + §8 规则B 摘要注入双重负控制精准命中）
 - [x] **M1.7** run.py 入口分支改（~50 行）— **完成**（run.py +~200 行含 _get_room_for_source + _process_message_via_room_if_bound · 282 行测试，11/11 通过，Room 分支在 _run_agent 前插入）
 - [x] **M1.6**（可与 M1.5 并行，只依赖 M1.1+M1.2）Slash Commands `slash_commands.py` 改（~300 行）— **完成**（slash_commands.py +486 行 · run.py +2 行 dispatch · 354 行测试，25/25 通过 + M1-B1/B3/B8/B9/B14 全覆盖）
-- [ ] **M1.8**（可与 M1.5 并行）REST API + Dashboard `web_server.py` 改（~250）+ 前端（~400）
+- [x] **M1.8**（可与 M1.5 并行）REST API + Dashboard `web_server.py` 改（~250）+ 前端（~400）— **完成**（web_server.py +260 行 REST 7 端点 · 272 行测试，13/13 通过。Dashboard 前端页面推迟到 M2 阶段做完整 UI）
 
 测试代码（~600 行）跟着各里程碑同步写，不设独立里程碑。
 

@@ -19511,6 +19511,261 @@ _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
 app.include_router(_dashboard_auth_router)
 
+# ──────────────────────────────────────────────────────────────────────────
+# Agent Room REST API — M1.8 (design.html §7.2)
+# 7 endpoints mirroring the /room slash commands (M1.6).
+# Backed by the same AgentRoomStore + agent_room_bootstrapper as the slash
+# command handler; no additional logic lives here.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _room_store():
+    from gateway.agent_room_store import AgentRoomStore
+    return AgentRoomStore()
+
+
+def _room_binding_store():
+    from gateway.source_agent_binding import SourceAgentBindingStore
+    return SourceAgentBindingStore()
+
+
+class _RoomCreate(BaseModel):
+    name: str
+    members: List[str]
+    description: str = ""
+    default_member: str = ""
+
+
+class _RoomPatch(BaseModel):
+    members: Optional[List[str]] = None
+    description: Optional[str] = None
+    default_member: Optional[str] = None
+
+
+class _RoomBindBody(BaseModel):
+    source_binding_key: str
+
+
+@app.get("/api/rooms")
+async def list_rooms():
+    store = _room_store()
+    try:
+        return {"rooms": [r.to_dict() for r in store.list_rooms()]}
+    finally:
+        store.close()
+
+
+@app.post("/api/rooms")
+async def create_room(body: _RoomCreate):
+    import uuid
+    from gateway.agent_room_store import AgentRoomError
+    from gateway.agent_room_bootstrapper import (
+        BootstrapError,
+        build_observer_profile,
+        observer_profile_name_for,
+        teardown_observer_profile,
+    )
+    from hermes_cli.profiles import profile_exists, read_profile_meta, get_profile_dir
+
+    missing = [m for m in body.members if not profile_exists(m)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Profiles not found: {missing}")
+
+    observer_name = observer_profile_name_for(body.name)
+    if profile_exists(observer_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Observer profile name '{observer_name}' already taken",
+        )
+
+    members_with_desc: list[tuple[str, str]] = []
+    for m in body.members:
+        try:
+            meta = read_profile_meta(get_profile_dir(m))
+        except Exception:
+            meta = {}
+        members_with_desc.append((m, str(meta.get("description") or "")))
+
+    room_id = f"room_{uuid.uuid4().hex[:12]}"
+    store = _room_store()
+    try:
+        try:
+            build_observer_profile(
+                room_name=body.name,
+                room_description=body.description,
+                members=members_with_desc,
+                default_member=body.default_member or body.members[0],
+                observer_name=observer_name,
+            )
+        except BootstrapError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        try:
+            room = store.create_room(
+                room_id, body.name,
+                observer_profile=observer_name,
+                members=body.members,
+                description=body.description,
+                default_member=body.default_member,
+                actor="dashboard",
+            )
+        except AgentRoomError as exc:
+            try:
+                teardown_observer_profile(observer_name)
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        return {"ok": True, "room": room.to_dict()}
+    finally:
+        store.close()
+
+
+@app.get("/api/rooms/{room_id}")
+async def get_room(room_id: str):
+    store = _room_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+        return {"room": room.to_dict()}
+    finally:
+        store.close()
+
+
+@app.patch("/api/rooms/{room_id}")
+async def patch_room(room_id: str, body: _RoomPatch):
+    from gateway.agent_room_store import AgentRoomError
+    from gateway.agent_room_bootstrapper import (
+        BootstrapError,
+        regenerate_observer_soul,
+    )
+    from hermes_cli.profiles import read_profile_meta, get_profile_dir
+
+    store = _room_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        new_members = list(body.members) if body.members is not None else list(room.members)
+        new_default = body.default_member if body.default_member is not None else room.default_member
+
+        try:
+            updated = store.update_members(
+                room_id, new_members, default_member=new_default, actor="dashboard"
+            )
+        except AgentRoomError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        members_with_desc: list[tuple[str, str]] = []
+        for m in updated.members:
+            try:
+                meta = read_profile_meta(get_profile_dir(m))
+            except Exception:
+                meta = {}
+            members_with_desc.append((m, str(meta.get("description") or "")))
+        try:
+            regenerate_observer_soul(
+                observer_profile=updated.observer_profile,
+                room_name=updated.room_name,
+                room_description=body.description if body.description is not None else updated.description,
+                members=members_with_desc,
+                default_member=updated.default_member or updated.members[0],
+            )
+        except BootstrapError as exc:
+            _log.warning("PATCH /api/rooms/%s: SOUL regen failed: %s", room_id, exc)
+
+        return {"ok": True, "room": updated.to_dict()}
+    finally:
+        store.close()
+
+
+@app.delete("/api/rooms/{room_id}")
+async def delete_room(room_id: str):
+    from gateway.agent_room_bootstrapper import BootstrapError, teardown_observer_profile
+
+    store = _room_store()
+    binding_store = _room_binding_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        for b in binding_store.list_bindings():
+            if (b.fallback_extra or {}).get("room_id") == room_id:
+                binding_store.delete_binding(b.source_binding_key)
+
+        try:
+            teardown_observer_profile(room.observer_profile)
+        except BootstrapError as exc:
+            _log.warning("DELETE /api/rooms/%s: teardown failed: %s", room_id, exc)
+
+        store.delete_room(room_id)
+        return {"ok": True, "deleted": True}
+    finally:
+        store.close()
+        binding_store.close()
+
+
+@app.post("/api/rooms/{room_id}/bind")
+async def bind_room(room_id: str, body: _RoomBindBody):
+    source_key = (body.source_binding_key or "").strip()
+    if not source_key.startswith("source:"):
+        raise HTTPException(status_code=400, detail="source_binding_key must start with 'source:'")
+
+    store = _room_store()
+    binding_store = _room_binding_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        existing = binding_store.get_binding(source_key)
+        if existing:
+            existing_room = (existing.fallback_extra or {}).get("room_id")
+            if existing_room == room_id:
+                return {"ok": True, "already_bound": True}
+            raise HTTPException(
+                status_code=409,
+                detail="Source is already bound to another room or profile; unbind first",
+            )
+
+        binding_store.set_binding(
+            source_key,
+            room.observer_profile,
+            fallback_extra={"room_id": room_id},
+            actor_user_id="dashboard",
+        )
+        return {"ok": True, "room_id": room_id, "source_binding_key": source_key}
+    finally:
+        store.close()
+        binding_store.close()
+
+
+@app.post("/api/rooms/{room_id}/unbind")
+async def unbind_room(room_id: str, body: _RoomBindBody):
+    source_key = (body.source_binding_key or "").strip()
+    if not source_key.startswith("source:"):
+        raise HTTPException(status_code=400, detail="source_binding_key must start with 'source:'")
+
+    store = _room_store()
+    binding_store = _room_binding_store()
+    try:
+        existing = binding_store.get_binding(source_key)
+        if not existing:
+            raise HTTPException(status_code=404, detail="No binding found for this source")
+        if (existing.fallback_extra or {}).get("room_id") != room_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Source is not bound to the specified room",
+            )
+        binding_store.delete_binding(source_key)
+        return {"ok": True, "unbound": True}
+    finally:
+        store.close()
+        binding_store.close()
+
+
 mount_spa(app)
 
 
