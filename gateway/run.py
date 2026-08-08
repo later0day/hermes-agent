@@ -14490,6 +14490,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "deny": self._handle_deny_command,
                 "agents": self._handle_agents_command,
                 "agent": self._handle_agent_command,
+                "room": self._handle_room_command,
                 "background": self._handle_background_command,
                 "kanban": self._handle_kanban_command,
                 "subgoal": self._handle_subgoal_command,
@@ -15457,6 +15458,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_agents_command(event)
         if canonical == "agent":
             return await self._handle_agent_command(event)
+        if canonical == "room":
+            return await self._handle_room_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)

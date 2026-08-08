@@ -5932,3 +5932,489 @@ class GatewaySlashCommandsMixin:
                 return f"Failed: {e}"
 
         return "Unknown action."
+
+    # =========================================================================
+    # M1.6 · /room slash commands (Agent Room)
+    # =========================================================================
+    # Design ref: docs/design/agent-room/design.html §7.1 (slash command
+    # surface) + §7 wiring notes. All 8 subcommands are handled here as a
+    # dispatcher pattern mirroring _handle_agent_command:
+    #     /room create <name> --members p1,p2,p3 [--description ...]
+    #                                            [--default-member ...]
+    #     /room list
+    #     /room info <name>
+    #     /room bind <name>          (binds the current IM group)
+    #     /room unbind               (unbinds the current IM group)
+    #     /room delete <name>
+    #     /room members <name> add|remove <profile>
+    #     /room set-default-member <name> <profile>
+    #
+    # Uses:
+    #   * AgentRoomStore     — M1.1 sqlite backend + Fence set
+    #   * agent_room_bootstrapper — M1.2 observer profile builder
+    #   * SourceAgentBindingStore.fallback_extra['room_id'] — the
+    #     binding-side room pointer (design.html §4.2). Bind = write the
+    #     room_id into fallback_extra. Unbind = clear it.
+    #
+    # NOT owned here (deliberately):
+    #   * Router / runtime routing → M1.5 (gateway/agent_room_router.py)
+    #   * Gateway entrypoint dispatch → M1.7 (gateway/run.py Room branch)
+    #   * REST equivalents / Dashboard → M1.8
+    #
+    # All structural changes (create / delete / bind / unbind / members
+    # add|remove / set-default-member) must Fence the room's active
+    # sessions BEFORE mutating so any in-flight turn's output is dropped
+    # rather than delivered to the stale configuration.
+
+    async def _handle_room_command(self, event) -> str:
+        from gateway.session import build_source_binding_key
+        from gateway.agent_room_store import (
+            AgentRoomError,
+            AgentRoomStore,
+            MAX_ROOM_MEMBERS,
+        )
+        from gateway.agent_room_bootstrapper import (
+            BootstrapError,
+            build_observer_profile,
+            observer_profile_name_for,
+            regenerate_observer_soul,
+            teardown_observer_profile,
+        )
+        from hermes_cli.profiles import profile_exists, read_profile_meta, get_profile_dir
+        import argparse
+        import shlex
+        import time
+        import uuid
+
+        # ── Lazy-init stores as attrs so repeated /room calls don't
+        # reopen sqlite connections on every message.
+        if not hasattr(self, "_agent_room_store"):
+            self._agent_room_store = AgentRoomStore()
+        if not hasattr(self, "_source_agent_binding_store"):
+            from gateway.source_agent_binding import SourceAgentBindingStore
+            self._source_agent_binding_store = SourceAgentBindingStore()
+
+        room_store = self._agent_room_store
+        binding_store = self._source_agent_binding_store
+
+        source = event.source
+        source_key = build_source_binding_key(source)
+        text = (event.text or "").strip()
+
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+
+        if len(parts) < 2:
+            return (
+                "Usage: /room <create|list|info|bind|unbind|delete|"
+                "members|set-default-member> ..."
+            )
+
+        action = parts[1].lower()
+        args = parts[2:]
+
+        # ------------------------------------------------------------------
+        # /room list
+        # ------------------------------------------------------------------
+        if action == "list":
+            rooms = room_store.list_rooms()
+            if not rooms:
+                return "No rooms defined. Use `/room create` to make one."
+            lines = ["**Rooms:**"]
+            for r in rooms:
+                members_repr = ", ".join(r.members) if r.members else "(empty)"
+                lines.append(f"- `{r.room_name}` — members: {members_repr}")
+            return "\n".join(lines)
+
+        # ------------------------------------------------------------------
+        # /room info <name>
+        # ------------------------------------------------------------------
+        if action == "info":
+            if not args:
+                return "Usage: /room info <name>"
+            name = args[0]
+            room = room_store.get_room_by_name(name)
+            if not room:
+                return f"Room `{name}` not found."
+            bindings = binding_store.list_bindings()
+            bound_sources = [
+                b.source_binding_key
+                for b in bindings
+                if (b.fallback_extra or {}).get("room_id") == room.room_id
+            ]
+            lines = [
+                f"**Room `{room.room_name}`** (id `{room.room_id}`)",
+                f"Description: {room.description or '(none)'}",
+                f"Observer profile: `{room.observer_profile}`",
+                f"Members ({len(room.members)}/{MAX_ROOM_MEMBERS}): "
+                + (", ".join(f"`{m}`" for m in room.members) or "(empty)"),
+                f"Default member: `{room.default_member}`"
+                if room.default_member
+                else "Default member: (falls back to members[0])",
+                f"Bound IM sources: {len(bound_sources)}",
+            ]
+            for bs in bound_sources[:5]:
+                lines.append(f"  - `{bs}`")
+            if len(bound_sources) > 5:
+                lines.append(f"  ... and {len(bound_sources) - 5} more")
+            return "\n".join(lines)
+
+        # ------------------------------------------------------------------
+        # /room create <name> --members p1,p2,p3 [--description ...] [--default-member ...]
+        # ------------------------------------------------------------------
+        if action == "create":
+            parser = argparse.ArgumentParser(prog="/room create", add_help=False)
+            parser.add_argument("name")
+            parser.add_argument("--members", required=True,
+                                help="Comma-separated profile names")
+            parser.add_argument("--description", default="")
+            parser.add_argument("--default-member", default="",
+                                dest="default_member")
+            try:
+                parsed = parser.parse_args(args)
+            except SystemExit:
+                return (
+                    "Usage: /room create <name> --members p1,p2,p3 "
+                    "[--description ...] [--default-member <p>]"
+                )
+
+            requested_members = [
+                m.strip() for m in parsed.members.split(",") if m.strip()
+            ]
+            if not requested_members:
+                return "At least one member profile required."
+
+            # Pre-validate every member profile exists — bootstrapping the
+            # observer without a real profile roster would just fail later
+            # with a confusing SOUL.md missing member.  Also M1-B14 territory.
+            missing = [m for m in requested_members if not profile_exists(m)]
+            if missing:
+                return (
+                    f"These profiles don't exist: {', '.join(missing)}\n"
+                    f"Create them first with `/agent create <name>`."
+                )
+
+            # Read each member's description for the SOUL.md rendering.
+            members_with_desc: list[tuple[str, str]] = []
+            for m in requested_members:
+                try:
+                    meta = read_profile_meta(get_profile_dir(m))
+                except Exception:
+                    meta = {}
+                members_with_desc.append((m, str(meta.get("description") or "")))
+
+            # Room-name uniqueness — the store's UNIQUE index catches it, but
+            # surface a friendly message first.
+            if room_store.get_room_by_name(parsed.name) is not None:
+                return f"Room `{parsed.name}` already exists."
+
+            observer_name = observer_profile_name_for(parsed.name)
+            # Observer profile MUST NOT collide with a hand-crafted profile.
+            if profile_exists(observer_name):
+                return (
+                    f"Cannot create room `{parsed.name}`: observer profile "
+                    f"name `{observer_name}` is already taken by another "
+                    f"profile. Rename the room or clean up that profile first."
+                )
+
+            room_id = f"room_{uuid.uuid4().hex[:12]}"
+
+            # Build the observer profile FIRST so a rollback of the store
+            # write can also clean up the profile dir. If the profile build
+            # fails, no store row is left dangling.
+            try:
+                build_observer_profile(
+                    room_name=parsed.name,
+                    room_description=parsed.description,
+                    members=members_with_desc,
+                    default_member=(
+                        parsed.default_member
+                        or requested_members[0]
+                    ),
+                    observer_name=observer_name,
+                )
+            except BootstrapError as exc:
+                return f"Failed to create observer profile: {exc}"
+
+            actor = getattr(source, "user_id", None) or "gateway"
+            try:
+                room_store.create_room(
+                    room_id,
+                    parsed.name,
+                    observer_profile=observer_name,
+                    members=requested_members,
+                    description=parsed.description,
+                    default_member=parsed.default_member,
+                    actor=str(actor),
+                )
+            except AgentRoomError as exc:
+                # Store rejected → tear down the observer we just built.
+                try:
+                    teardown_observer_profile(observer_name)
+                except BootstrapError:
+                    pass
+                return f"Failed to create room: {exc}"
+
+            return (
+                f"Room `{parsed.name}` created "
+                f"(id `{room_id}`, observer `{observer_name}`, "
+                f"{len(requested_members)} members). "
+                f"Bind to this chat with `/room bind {parsed.name}`."
+            )
+
+        # ------------------------------------------------------------------
+        # /room bind <name>
+        # ------------------------------------------------------------------
+        if action == "bind":
+            if not args:
+                return "Usage: /room bind <name>"
+            name = args[0]
+            room = room_store.get_room_by_name(name)
+            if not room:
+                return f"Room `{name}` not found. Use `/room list` to see available rooms."
+
+            # If this chat is already bound to something (single-profile OR
+            # another room), refuse. Explicit `/room unbind` first — this is
+            # A6 (design.html §3): 群↔Room is 1-to-1.
+            existing = binding_store.get_binding(source_key)
+            if existing:
+                current_room_id = (existing.fallback_extra or {}).get("room_id")
+                if current_room_id == room.room_id:
+                    return f"This chat is already bound to `{name}`."
+                if current_room_id:
+                    other = room_store.get_room(current_room_id)
+                    other_name = other.room_name if other else current_room_id
+                    return (
+                        f"This chat is already bound to room `{other_name}`. "
+                        f"Run `/room unbind` first."
+                    )
+                return (
+                    f"This chat is bound to profile `{existing.profile_name}`. "
+                    f"Run `/agent clear` first, then `/room bind {name}`."
+                )
+
+            # Preserve any DingTalk session_webhook fallback fields already
+            # captured for this source.
+            fallback_extra: dict = {}
+            if hasattr(event, "raw_message") and event.raw_message:
+                if hasattr(event.raw_message, "session_webhook"):
+                    fallback_extra["session_webhook"] = event.raw_message.session_webhook
+                if hasattr(event.raw_message, "session_webhook_expired_time"):
+                    fallback_extra["session_webhook_expired_time"] = (
+                        event.raw_message.session_webhook_expired_time
+                    )
+            fallback_extra["room_id"] = room.room_id
+
+            binding_store.set_binding(
+                source_key,
+                room.observer_profile,  # profile_name column: doubles as the fallback profile if the room resolution ever fails
+                agent_id=room.observer_profile,
+                fallback_target=source.to_dict() if hasattr(source, "to_dict") else None,
+                fallback_extra=fallback_extra,
+            )
+            return f"Bound this chat to room `{name}`."
+
+        # ------------------------------------------------------------------
+        # /room unbind
+        # ------------------------------------------------------------------
+        if action == "unbind":
+            existing = binding_store.get_binding(source_key)
+            if not existing:
+                return "This chat is not bound to anything."
+            room_id = (existing.fallback_extra or {}).get("room_id")
+            if not room_id:
+                return (
+                    "This chat is bound to a single profile, not a room. "
+                    "Use `/agent clear` to unbind."
+                )
+            # Fence all this room's active sessions BEFORE removing the
+            # binding — any in-flight observer/member turn's output is now
+            # discarded rather than delivered to an unbound chat.
+            room = room_store.get_room(room_id)
+            if room:
+                self._fence_room_active_sessions(room)
+            binding_store.delete_binding(source_key)
+            return "Unbound this chat from its room."
+
+        # ------------------------------------------------------------------
+        # /room delete <name>
+        # ------------------------------------------------------------------
+        if action == "delete":
+            if not args:
+                return "Usage: /room delete <name>"
+            name = args[0]
+            room = room_store.get_room_by_name(name)
+            if not room:
+                return f"Room `{name}` not found."
+            # Fence everything first so any in-flight turn is dropped.
+            self._fence_room_active_sessions(room)
+            # Clear every SourceAgentBinding pointing at this room.
+            for b in binding_store.list_bindings():
+                if (b.fallback_extra or {}).get("room_id") == room.room_id:
+                    binding_store.delete_binding(b.source_binding_key)
+            # Delete the observer profile directory. Idempotent (M1-B9).
+            try:
+                teardown_observer_profile(room.observer_profile)
+            except BootstrapError as exc:
+                # A hand-crafted profile with a colliding name; log but keep
+                # going — the store row deletion below still succeeds.
+                logger.warning(
+                    "/room delete %s: could not teardown observer %s: %s",
+                    name, room.observer_profile, exc,
+                )
+            # Finally drop the room row.
+            room_store.delete_room(room.room_id)
+            return f"Deleted room `{name}`."
+
+        # ------------------------------------------------------------------
+        # /room members <name> add|remove <profile>
+        # ------------------------------------------------------------------
+        if action == "members":
+            if len(args) < 3:
+                return "Usage: /room members <name> add|remove <profile>"
+            name, subaction, member = args[0], args[1].lower(), args[2]
+            if subaction not in {"add", "remove"}:
+                return f"Unknown members action `{subaction}` (expected add|remove)"
+            room = room_store.get_room_by_name(name)
+            if not room:
+                return f"Room `{name}` not found."
+            current = list(room.members)
+            if subaction == "add":
+                if member in current:
+                    return f"`{member}` is already a member of `{name}`."
+                if not profile_exists(member):
+                    return (
+                        f"Profile `{member}` does not exist. "
+                        f"Create it with `/agent create {member}` first."
+                    )
+                new_members = current + [member]
+            else:  # remove
+                if member not in current:
+                    return f"`{member}` is not a member of `{name}`."
+                if len(current) == 1:
+                    return (
+                        f"Cannot remove the last member. Delete the room instead: "
+                        f"`/room delete {name}`."
+                    )
+                new_members = [m for m in current if m != member]
+
+            # Fence in-flight sessions BEFORE mutating.
+            self._fence_room_active_sessions(room)
+
+            actor = getattr(source, "user_id", None) or "gateway"
+            try:
+                updated = room_store.update_members(
+                    room.room_id, new_members, actor=str(actor),
+                )
+            except AgentRoomError as exc:
+                return f"Failed to update members: {exc}"
+
+            # Regenerate SOUL.md with the new roster.
+            members_with_desc: list[tuple[str, str]] = []
+            for m in updated.members:
+                try:
+                    meta = read_profile_meta(get_profile_dir(m))
+                except Exception:
+                    meta = {}
+                members_with_desc.append((m, str(meta.get("description") or "")))
+            try:
+                regenerate_observer_soul(
+                    observer_profile=updated.observer_profile,
+                    room_name=updated.room_name,
+                    room_description=updated.description,
+                    members=members_with_desc,
+                    default_member=(
+                        updated.default_member or updated.members[0]
+                    ),
+                )
+            except BootstrapError as exc:
+                logger.warning(
+                    "/room members: SOUL.md regen failed for %s: %s",
+                    updated.room_name, exc,
+                )
+
+            return (
+                f"{'Added' if subaction == 'add' else 'Removed'} `{member}`. "
+                f"Room `{name}` now has {len(updated.members)} members."
+            )
+
+        # ------------------------------------------------------------------
+        # /room set-default-member <name> <profile>
+        # ------------------------------------------------------------------
+        if action in {"set-default-member", "set_default_member"}:
+            if len(args) < 2:
+                return "Usage: /room set-default-member <name> <profile>"
+            name, member = args[0], args[1]
+            room = room_store.get_room_by_name(name)
+            if not room:
+                return f"Room `{name}` not found."
+            if member not in room.members:
+                return (
+                    f"`{member}` is not a member of `{name}` "
+                    f"(current members: {', '.join(room.members)})."
+                )
+            # No Fence needed — this doesn't change SOUL.md's members list
+            # (SOUL.md's fallback member line references the new default,
+            # so we still regenerate it, but no active session becomes
+            # invalidated by the change).
+            actor = getattr(source, "user_id", None) or "gateway"
+            try:
+                updated = room_store.update_members(
+                    room.room_id, list(room.members),
+                    default_member=member, actor=str(actor),
+                )
+            except AgentRoomError as exc:
+                return f"Failed to set default member: {exc}"
+
+            members_with_desc: list[tuple[str, str]] = []
+            for m in updated.members:
+                try:
+                    meta = read_profile_meta(get_profile_dir(m))
+                except Exception:
+                    meta = {}
+                members_with_desc.append((m, str(meta.get("description") or "")))
+            try:
+                regenerate_observer_soul(
+                    observer_profile=updated.observer_profile,
+                    room_name=updated.room_name,
+                    room_description=updated.description,
+                    members=members_with_desc,
+                    default_member=updated.default_member or updated.members[0],
+                )
+            except BootstrapError as exc:
+                logger.warning(
+                    "/room set-default-member: SOUL.md regen failed: %s", exc,
+                )
+            return f"Default member of `{name}` set to `{member}`."
+
+        return f"Unknown /room action `{action}`."
+
+    def _fence_room_active_sessions(self, room) -> None:
+        """Fence every active session for a room prior to a structural
+        change. Called from /room delete, /room unbind, /room members
+        add|remove. Wraps M1.1's AgentRoomStore.fence_room with the
+        canonical session_id list a room owns.
+
+        Also clears the router's last_routed_member cache for the room
+        so the next message after the change triggers a fresh observer
+        turn instead of reusing a now-invalid target.
+        """
+        session_ids = [f"room_observer:{room.room_id}"] + [
+            f"room_member:{room.room_id}:{m}" for m in room.members
+        ]
+        self._agent_room_store.fence_room(room.room_id, session_ids)
+        # Best-effort: if a router instance is attached to self, clear its
+        # last_routed cache too. M1.7 wires the router up; earlier
+        # milestones don't have it yet.
+        router = getattr(self, "_agent_room_router", None)
+        if router is not None:
+            try:
+                # clear_last_routed is async; schedule if there's a loop.
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop and loop.is_running():
+                    loop.create_task(router.clear_last_routed(room.room_id))
+            except Exception:
+                pass
