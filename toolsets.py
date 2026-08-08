@@ -296,6 +296,26 @@ TOOLSETS = {
         "includes": []
     },
 
+    "room_observer": {
+        # Agent Room M1.4 (docs/design/agent-room/design.html §5.3 + §9.2):
+        # the observer profile's ONLY toolset — grants exactly one tool,
+        # ``route_to_member``. Combined with the observer's config.yaml
+        # ``toolsets: [room_observer]``, this yields the single-tool
+        # behavioral lockdown Spike 3 confirmed: _HERMES_CORE_TOOLS is
+        # packaged only into other named toolsets (hermes-cli /
+        # hermes-cron / hermes-telegram / …), so an observer that lists
+        # only room_observer cannot terminal / read_file / delegate /
+        # anything else — its only expressible action is a routing
+        # decision. See tools/room_router_tool.py for the tool.
+        "description": (
+            "Agent Room routing — the observer profile's single tool. "
+            "Emits a route_to_member decision that terminates the "
+            "observer's turn via request_hard_interrupt (§9.2 patch A)."
+        ),
+        "tools": ["route_to_member"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
