@@ -229,3 +229,152 @@ def test_schema_description_documents_soul_md_summary_convention():
     text = ROUTE_TO_MEMBER_SCHEMA["description"]
     assert "上一位处理人" in text
     assert "reason" in text
+
+
+# ---------------------------------------------------------------------------
+# Live-testing regression guards: bugs found during real DingTalk integration
+# ---------------------------------------------------------------------------
+
+
+def test_route_to_member_is_registered_in_tool_registry():
+    """Live bug #1: route_to_member was declared in TOOLSETS but never
+    registered via registry.register(). _compute_tool_definitions found
+    the tool name via resolve_toolset() but registry.get_definitions()
+    returned 0 schemas because there was no registry entry.
+
+    Without this, the LLM never sees the tool's schema and cannot call
+    it — it outputs text instead of a tool_call.
+    """
+    from tools.registry import registry as _reg_singleton
+    import tools.room_router_tool  # triggers module-level registry.register()
+
+    reg = _reg_singleton
+    from toolsets import resolve_toolset
+    tools_to_include = set(resolve_toolset("room_observer"))
+    filtered = reg.get_definitions(tools_to_include, quiet=True)
+
+    assert len(filtered) > 0, (
+        "route_to_member not found in ToolRegistry — "
+        "registry.register() may have been removed"
+    )
+    names = {t.get("function", {}).get("name") for t in filtered}
+    assert "route_to_member" in names, (
+        f"route_to_member not in registry output: {names}"
+    )
+
+
+def test_route_to_member_schema_has_correct_openai_envelope():
+    """The schema returned by the registry must be wrapped in
+    {"type": "function", "function": {...}} — the OpenAI function-calling
+    format that agent.tools expects. A bare schema dict (without the
+    envelope) causes the LLM to emit tool_calls with empty function.name.
+    """
+    from tools.registry import registry as _reg_singleton
+    import tools.room_router_tool
+
+    reg = _reg_singleton
+    from toolsets import resolve_toolset
+    tools_to_include = set(resolve_toolset("room_observer"))
+    filtered = reg.get_definitions(tools_to_include, quiet=True)
+
+    assert len(filtered) > 0
+    tool = filtered[0]
+    assert "type" in tool, "schema missing 'type' key (OpenAI envelope)"
+    assert tool["type"] == "function"
+    assert "function" in tool
+    fn = tool["function"]
+    assert fn.get("name") == "route_to_member"
+    assert "parameters" in fn
+    assert "member" in fn.get("parameters", {}).get("properties", {})
+
+
+def test_toolsets_override_locks_agent_tools_to_only_route_to_member():
+    """Live bug #2: tool_search's tier-1 mechanism keeps
+    _HERMES_CORE_TOOLS alive even when enabled_toolsets is narrowed.
+    Without _LockedTools + valid_tool_names sync, the LLM sees 30+ tools
+    and route_to_member gets buried — it outputs text instead of a
+    tool_call.
+
+    This test verifies the TurnRunner-level lock code exists and
+    correctly sets valid_tool_names alongside _LockedTools.
+    """
+    import inspect
+    import gateway.run as run_module
+
+    src = inspect.getsource(run_module.TurnRunner.run_sync)
+
+    # _LockedTools class definition inside run_sync
+    assert "_LockedTools" in src, (
+        "TurnRunner.run_sync missing _LockedTools — tool_search will "
+        "re-add _HERMES_CORE_TOOLS and route_to_member gets buried"
+    )
+
+    # valid_tool_names sync after _LockedTools assignment
+    assert "valid_tool_names" in src, (
+        "TurnRunner.run_sync missing valid_tool_names sync — "
+        "conversation_loop will reject route_to_member with "
+        "'Tool does not exist'"
+    )
+
+    # ROUTE_TO_MEMBER_SCHEMA wrapped in OpenAI envelope
+    assert 'ROUTE_TO_MEMBER_SCHEMA' in src or 'route_to_member' in src, (
+        "TurnRunner.run_sync doesn't reference ROUTE_TO_MEMBER_SCHEMA"
+    )
+
+
+def test_observer_config_has_tool_search_off():
+    """Live bug #3: tool_search.load_config() reads from a separate
+    config cache (hermes_cli.config.load_config) that ignores
+    _load_gateway_config() and set_hermes_home_override. Writing
+    tool_search:off into the observer's config.yaml is a
+    belt-and-suspenders guard alongside _LockedTools.
+
+    This test verifies _observer_config_yaml() includes the off flag.
+    """
+    from gateway.agent_room_bootstrapper import _observer_config_yaml
+
+    config = _observer_config_yaml()
+
+    assert config.get("tools", {}).get("tool_search", {}).get("enabled") == "off", (
+        "_observer_config_yaml() missing tool_search.enabled=off — "
+        "tool_search will re-add core tools at runtime"
+    )
+
+
+def test_observer_config_inherits_model_from_default_profile(monkeypatch, tmp_path):
+    """Live bug #4: observer profile created with blank config (no model
+    section) → agent falls back to auth.json's hardcoded intl base_url
+    → 401 AuthenticationError.
+
+    _observer_config_yaml() must inherit the model section from
+    the default profile's config.yaml so the observer uses the same
+    domestic dashscope URL as the gateway.
+    """
+    # Create a fake default profile config.yaml with a model section
+    fake_home = tmp_path / "fake_hermes"
+    fake_home.mkdir()
+    import yaml as _yaml
+    (fake_home / "config.yaml").write_text(_yaml.dump({
+        "model": {
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "default": "qwen-plus",
+            "provider": "alibaba",
+        },
+    }))
+
+    # Monkeypatch get_hermes_home to point at the fake home
+    from hermes_constants import get_hermes_home as _orig_get
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: fake_home)
+
+    # _observer_config_yaml reads get_hermes_home() at call time
+    from gateway.agent_room_bootstrapper import _observer_config_yaml
+    config = _observer_config_yaml()
+
+    assert "model" in config, (
+        "_observer_config_yaml() missing 'model' section — "
+        "observer will use auth.json's intl base_url → 401"
+    )
+    model = config["model"]
+    assert model["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert model["provider"] == "alibaba"
+    assert model["default"] == "qwen-plus"
