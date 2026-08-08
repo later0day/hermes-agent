@@ -161,6 +161,36 @@ Your only output is the `route_to_member` tool call.
 """
 
 
+def _inherit_credentials(profile_dir: Path) -> None:
+    """Copy .env and auth.json from the default profile (~/.hermes) into
+    the observer profile so its LLM calls have the same API key.
+
+    Without this, the observer profile has no credentials → the alibaba
+    provider defaults to dashscope-intl (auth.json's hardcoded base_url)
+    while the key is for dashscope (domestic) → 401 AuthenticationError.
+
+    This is a deliberate exception to the "blank profile" design: the
+    observer MUST call the LLM to emit route_to_member, so it needs
+    credentials. Skills and toolsets remain locked down — only .env
+    and auth.json (credential files) are inherited.
+    """
+    import shutil
+    from hermes_constants import get_hermes_home
+
+    default_home = get_hermes_home()
+    for filename in (".env", "auth.json"):
+        src = default_home / filename
+        dst = profile_dir / filename
+        if src.is_file():
+            try:
+                shutil.copy2(src, dst)
+                if filename == ".env":
+                    import os
+                    os.chmod(dst, 0o600)
+            except Exception:
+                pass  # best-effort — observer still works if gateway has global key
+
+
 # ---------------------------------------------------------------------------
 # Profile directory construction / regeneration / teardown
 # ---------------------------------------------------------------------------
@@ -174,11 +204,40 @@ def _observer_config_yaml() -> dict[str, Any]:
     * ``memory.memory_enabled: false`` — anchoring documentation. Field
       defaults to False anyway per Spike 2 (§9.1), but writing it makes
       the intent explicit to a human reader.
+    * ``tools.tool_search.enabled: off`` — tool_search's tier-1 mechanism
+      re-adds _HERMES_CORE_TOOLS regardless of enabled_toolsets (live bug
+      found during DingTalk testing). Disabling it here is belt-and-
+      suspenders alongside the _LockedTools runtime guard in
+      TurnRunner.run_sync.
+    * ``model`` section inherited from the default profile's config.yaml
+      so the observer's LLM calls use the same provider/base_url/model
+      as the rest of the gateway (e.g. alibaba → domestic dashscope URL,
+      not the intl default in auth.json that causes 401).
     """
-    return {
+    import yaml as _yaml
+    from hermes_constants import get_hermes_home
+
+    config: dict[str, Any] = {
         "toolsets": ["room_observer"],
         "memory": {"memory_enabled": False},
+        "tools": {"tool_search": {"enabled": "off"}},
     }
+
+    # Inherit model config from the default profile (~/.hermes/config.yaml)
+    # so the observer uses the same provider/base_url/model. Without this
+    # the agent falls back to auth.json's base_url (dashscope-intl) which
+    # may not match the API key → 401.
+    try:
+        default_config_path = get_hermes_home() / "config.yaml"
+        if default_config_path.is_file():
+            with open(default_config_path, "r", encoding="utf-8") as f:
+                default_cfg = _yaml.safe_load(f) or {}
+            if isinstance(default_cfg.get("model"), dict):
+                config["model"] = default_cfg["model"]
+    except Exception:
+        pass  # best-effort — observer still works if gateway has global key
+
+    return config
 
 
 def _write_config_yaml(profile_dir: Path) -> None:
@@ -273,6 +332,15 @@ def build_observer_profile(
             except Exception:
                 pass
         raise BootstrapError(f"failed to create observer profile: {exc}") from exc
+
+    # Inherit credentials from the default profile (~/.hermes) so the
+    # observer's LLM calls succeed. create_profile with clone_env=False
+    # intentionally leaves the new profile with no .env — but the observer
+    # MUST call the LLM (to emit route_to_member), so it needs the same
+    # API key the gateway uses. Copy .env and auth.json from the default
+    # profile; config.yaml's model section is inherited via
+    # _observer_config_yaml() below.
+    _inherit_credentials(profile_dir)
 
     # Write config.yaml (overwriting default), SOUL.md (overwriting the
     # DEFAULT_SOUL_MD that create_profile seeds), profile.yaml metadata,
