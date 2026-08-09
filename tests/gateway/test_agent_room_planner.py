@@ -286,3 +286,95 @@ def test_plan_room_new_and_existing_split():
     assert plan.existing_profiles[0].name == "E"
     assert len(plan.new_profiles) == 1
     assert plan.new_profiles[0].name == "new"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Live bug regression: profile name sanitization
+# ═════════════════════════════════════════════════════════════════════════════
+# During M2 live DingTalk test, LLM generated Chinese profile names like
+# '客服专员' which the create_profile validator rejected (must match
+# [a-z0-9][a-z0-9_-]{0,63}). Fix: server-side sanitizer + SYSTEM_PROMPT rule.
+
+def test_sanitize_valid_name_unchanged():
+    from gateway.agent_room_planner import _sanitize_profile_name
+    assert _sanitize_profile_name("client_service") == "client_service"
+    assert _sanitize_profile_name("finance-1") == "finance-1"
+    assert _sanitize_profile_name("a") == "a"
+
+
+def test_sanitize_chinese_falls_back():
+    from gateway.agent_room_planner import _sanitize_profile_name
+    # Pure Chinese cannot map to ASCII → fallback
+    assert _sanitize_profile_name("客服专员") == "member"
+
+
+def test_sanitize_mixed_ascii_and_chinese():
+    from gateway.agent_room_planner import _sanitize_profile_name
+    # ASCII portion is extracted, Chinese dropped
+    assert _sanitize_profile_name("财务-finance") == "finance"
+
+
+def test_sanitize_spaces_and_case():
+    from gateway.agent_room_planner import _sanitize_profile_name
+    assert _sanitize_profile_name("Client Service") == "client_service"
+    assert _sanitize_profile_name("   Sales  Lead  ") == "sales_lead"
+
+
+def test_sanitize_empty_falls_back():
+    from gateway.agent_room_planner import _sanitize_profile_name
+    assert _sanitize_profile_name("") == "member"
+    assert _sanitize_profile_name("   ") == "member"
+
+
+def test_sanitize_custom_fallback():
+    from gateway.agent_room_planner import _sanitize_profile_name
+    assert _sanitize_profile_name("!!!", fallback="bot") == "bot"
+
+
+def test_plan_room_sanitizes_new_member_names():
+    """M2 live bug: LLM output Chinese names → sanitized to ASCII."""
+    hallucinated = json.dumps({
+        "rationale": "test with Chinese names",
+        "members": [
+            {"profile": None, "is_new": True, "name": "客服专员",
+             "description": "客服支持"},
+            {"profile": None, "is_new": True, "name": "财务-finance",
+             "description": "财务"},
+        ],
+        "room_description": "test",
+    })
+    with patch("agent.auxiliary_client.call_llm",
+               return_value=_mock_response(hallucinated)):
+        plan = plan_room("test", [])
+
+    # 1st member: pure Chinese → "member" fallback
+    # 2nd member: has "finance" → sanitized to "finance"
+    assert len(plan.members) == 2
+    assert plan.members[0].name == "member"
+    assert plan.members[1].name == "finance"
+    # Neither should be Chinese
+    import re
+    for m in plan.members:
+        assert re.match(r"^[a-z0-9][a-z0-9_-]*$", m.name), f"invalid: {m.name}"
+
+
+def test_plan_room_dedupes_collided_sanitized_names():
+    """Two Chinese names both fall back to 'member' → second gets 'member_1'."""
+    all_chinese = json.dumps({
+        "rationale": "test",
+        "members": [
+            {"profile": None, "is_new": True, "name": "客服", "description": "d1"},
+            {"profile": None, "is_new": True, "name": "财务", "description": "d2"},
+            {"profile": None, "is_new": True, "name": "技术", "description": "d3"},
+        ],
+        "room_description": "test",
+    })
+    with patch("agent.auxiliary_client.call_llm",
+               return_value=_mock_response(all_chinese)):
+        plan = plan_room("test", [])
+
+    names = [m.name for m in plan.members]
+    # All different
+    assert len(names) == len(set(names))
+    # All start with "member"
+    assert all(n.startswith("member") for n in names)

@@ -24937,6 +24937,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("M1.7: failed to import AgentRoomRouter: %s", exc)
             return None
 
+        # ── M3.2: shared messages store (lazy-init) ────────────────────
+        # Under M3 the authoritative history for a room is the shared
+        # agent_room_messages table, not each member's per-session
+        # history. The observer sees projected multi-party history and
+        # the members each see history projected from their own POV.
+        if not hasattr(self, "_agent_room_messages_store"):
+            from gateway.agent_room_messages_store import AgentRoomMessagesStore
+            self._agent_room_messages_store = AgentRoomMessagesStore()
+        messages_store = self._agent_room_messages_store
+
+        # Persist the inbound user message BEFORE running observer/members.
+        # This way even if the observer/members crash, the user's message
+        # is already recorded and the next turn sees it in history.
+        try:
+            _user_sender = getattr(source, "user_id", None) or getattr(source, "user_name", None) or "user"
+            messages_store.append(
+                room.room_id,
+                sender_kind="user",
+                sender_name=str(_user_sender),
+                content=message_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "M3: failed to persist user message to room %s: %s",
+                room.room_id, exc,
+            )
+
         # ── Lazy-init the router, attach it to the GatewayRunner so the
         # M1.6 Fence helper can also clear its cache.
         if not hasattr(self, "_agent_room_router"):
@@ -25004,13 +25031,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             async def _observer_runner(
                 observer_profile, session_id, _src, hist, msg
             ):
-                """Step 3: run the observer's agent turn under its profile scope."""
+                """Step 3: run the observer's agent turn under its profile scope.
+
+                M3.3 integration: rebuild the observer's history from the
+                shared agent_room_messages table via project_for_observer,
+                so the observer sees the full multi-party stream (not just
+                its own past routing turns). The `hist` argument from the
+                caller is ignored under M3.
+                """
                 import dataclasses
                 observer_source = dataclasses.replace(
                     _src,
                     profile=observer_profile,
                 )
                 profile_home = self._resolve_profile_home_for_source(observer_source)
+
+                # M3.3: build observer's history from the shared store
+                try:
+                    from gateway.agent_room_projection import project_for_observer
+                    room_msgs = messages_store.list_messages(room.room_id)
+                    # The user's current message is already appended before
+                    # observer_runner is called; skip the last row (it IS
+                    # the current message) so it doesn't appear twice.
+                    projected = project_for_observer(room_msgs[:-1] if room_msgs else [])
+                    projected_hist = [p.to_openai() for p in projected]
+                    logger.info(
+                        "M3: observer sees %d projected history rows (from %d room messages)",
+                        len(projected_hist), len(room_msgs),
+                    )
+                except Exception as exc:
+                    logger.warning("M3: observer projection failed, using empty hist: %s", exc)
+                    projected_hist = []
                 result_text = ""
                 reason = ""
                 is_new_topic = True
@@ -25037,7 +25088,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_result = await self._run_agent_inner(
                         msg,
                         "",  # context_prompt
-                        hist,
+                        projected_hist,  # M3.3: projected history
                         observer_source,
                         session_id,
                         _toolsets_override=["room_observer"],
@@ -25060,6 +25111,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 try:
                                     d = _json.loads(msg_item.get("content", "{}"))
                                     if d.get("action") == "route_to_member":
+                                        # M3: persist the observer's routing decision
+                                        try:
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="observer",
+                                                sender_name=observer_profile,
+                                                content="",
+                                                tool_calls=[{
+                                                    "id": msg_item.get("tool_call_id", "call_obs"),
+                                                    "function": {
+                                                        "name": "route_to_member",
+                                                        "arguments": _json.dumps({
+                                                            "member": d.get("member", ""),
+                                                            "reason": d.get("reason", ""),
+                                                            "is_new_topic": d.get("is_new_topic", False),
+                                                        }, ensure_ascii=False),
+                                                    },
+                                                }],
+                                            )
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="tool_result",
+                                                sender_name="route_to_member",
+                                                content=msg_item.get("content", ""),
+                                                tool_call_id=msg_item.get("tool_call_id"),
+                                            )
+                                        except Exception as _e:
+                                            logger.warning("M3: observer decision persist failed: %s", _e)
                                         return RoutingDecision(
                                             target_member=d.get("member", ""),
                                             reason=d.get("reason", ""),
@@ -25068,6 +25147,101 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         )
                                 except Exception:
                                     pass
+
+                    # M3 fallback: some models (e.g. qwen3.7-max via
+                    # dashscope OpenAI-compat, when tools list has only
+                    # 1 item) emit a text-form tool call in the assistant
+                    # content instead of a real tool_call structure.
+                    # Recognize that shape and treat it as a valid route.
+                    #
+                    # Expected formats (checked ONLY against the LAST
+                    # assistant message emitted in THIS turn — not earlier
+                    # projected history rows which may contain stale
+                    # routing JSON from previous turns):
+                    #   {"name": "route_to_member", "arguments": {...}}
+                    #   {"action": "route_to_member", "member": ..., ...}
+                    #   {"member": ..., "reason": ...}
+                    #
+                    # We look at ONLY the last assistant row; if that row
+                    # doesn't parse as a valid route (e.g. content is '*'
+                    # or empty after thinking-only), we return the empty
+                    # fallback rather than scanning further back into
+                    # history and false-matching a prior turn.
+                    _last_assistant = None
+                    for msg_item in reversed(run_result.get("messages", [])):
+                        if msg_item.get("role") == "assistant":
+                            _last_assistant = msg_item
+                            break
+
+                    parsed_route = None
+                    if _last_assistant is not None:
+                        content = (_last_assistant.get("content") or "").strip()
+                        if content and len(content) >= 3:  # skip '*', '', etc.
+                            import re as _re
+                            blob = _re.search(r"\{.*\}", content, _re.DOTALL)
+                            if blob:
+                                try:
+                                    parsed = _json.loads(blob.group())
+                                except Exception:
+                                    parsed = None
+                                if isinstance(parsed, dict):
+                                    parsed_route = parsed
+
+                    if parsed_route is not None:
+                        # Unwrap {"name": "route_to_member", "arguments": {...}}
+                        if parsed_route.get("name") == "route_to_member":
+                            args = parsed_route.get("arguments", {}) or {}
+                            if isinstance(args, str):
+                                try:
+                                    args = _json.loads(args)
+                                except Exception:
+                                    args = {}
+                            member = args.get("member", "")
+                            reason = args.get("reason", "")
+                            is_new = bool(args.get("is_new_topic", False))
+                        elif "member" in parsed_route:
+                            member = parsed_route.get("member", "")
+                            reason = parsed_route.get("reason", "")
+                            is_new = bool(parsed_route.get("is_new_topic", False))
+                        else:
+                            member = ""
+                            reason = ""
+                            is_new = False
+
+                        if member:  # only accept if parse yielded a real target
+                            logger.info(
+                                "M3 fallback: parsed text-form route_to_member "
+                                "from assistant content (member=%r)",
+                                member,
+                            )
+                            # Persist decision to messages store for projection
+                            try:
+                                messages_store.append(
+                                    room.room_id,
+                                    sender_kind="observer",
+                                    sender_name=observer_profile,
+                                    content="",
+                                    tool_calls=[{
+                                        "id": "call_obs_textform",
+                                        "function": {
+                                            "name": "route_to_member",
+                                            "arguments": _json.dumps({
+                                                "member": member,
+                                                "reason": reason,
+                                                "is_new_topic": is_new,
+                                            }, ensure_ascii=False),
+                                        },
+                                    }],
+                                )
+                            except Exception as _e:
+                                logger.warning("M3: text-form decision persist failed: %s", _e)
+                            return RoutingDecision(
+                                target_member=member,
+                                reason=reason,
+                                is_new_topic=is_new,
+                                reused_last_route=False,
+                            )
+
                     # Fallback: no route_to_member found → empty member → router falls back
                     return RoutingDecision(
                         target_member="",
@@ -25082,10 +25256,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             async def _member_dispatcher(
                 member_profile, session_id, _src, hist, msg
             ):
-                """Step 5: run the member's agent turn under its profile scope."""
+                """Step 5: run the member's agent turn under its profile scope.
+
+                M3.3 integration: build the member's history from the
+                shared agent_room_messages table via project_for_member.
+                Persist the member's reply back to the store so other
+                members see it in future turns.
+                """
                 import dataclasses
                 member_source = dataclasses.replace(_src, profile=member_profile)
                 profile_home = self._resolve_profile_home_for_source(member_source)
+
+                # M3.3: build history from shared store, projected for this member
+                try:
+                    from gateway.agent_room_projection import project_for_member
+                    room_msgs = messages_store.list_messages(room.room_id)
+                    # Skip the last message (== current user turn we're
+                    # about to feed as `msg`) so it doesn't appear twice.
+                    projected = project_for_member(
+                        room_msgs[:-1] if room_msgs else [],
+                        target_member=member_profile,
+                    )
+                    projected_hist = [p.to_openai() for p in projected]
+                    logger.info(
+                        "M3: member %s sees %d projected history rows",
+                        member_profile, len(projected_hist),
+                    )
+                except Exception as exc:
+                    logger.warning("M3: member projection failed, using empty hist: %s", exc)
+                    projected_hist = []
+
                 # Switch HERMES_HOME + hydrate the member profile's .env +
                 # install its secret_scope so API keys resolve correctly.
                 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
@@ -25096,12 +25296,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 try:
                     run_result = await self._run_agent_inner(
-                        msg, "", hist, member_source, session_id,
+                        msg, "", projected_hist, member_source, session_id,
                     )
                 finally:
                     reset_secret_scope(_secret_token)
                     reset_hermes_home_override(_home_token)
                 reply = run_result.get("final_response", "") if run_result else ""
+
+                # M3: persist member's reply back to the shared store so
+                # other members' future turns see it via projection.
+                if reply:
+                    try:
+                        messages_store.append(
+                            room.room_id,
+                            sender_kind="member",
+                            sender_name=member_profile,
+                            content=reply,
+                        )
+                    except Exception as _e:
+                        logger.warning(
+                            "M3: failed to persist member %s reply: %s",
+                            member_profile, _e,
+                        )
+
                 # Prefix with the member profile name so the user can see
                 # which agent replied (design.html §11m1 B4: 显示身份).
                 if reply:

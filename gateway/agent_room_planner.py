@@ -84,6 +84,35 @@ class RoomPlan:
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE | re.MULTILINE)
 
+# Profile-name validity regex — MUST mirror hermes_cli.profiles's rule:
+#   [a-z0-9][a-z0-9_-]{0,63}
+# Belt-and-suspenders: even though the SYSTEM_PROMPT tells the LLM to
+# emit ASCII names, we sanitize server-side to prevent /room confirm
+# from crashing when the LLM slips (e.g. emits Chinese "客服专员").
+_VALID_PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _sanitize_profile_name(raw: str, fallback: str = "member") -> str:
+    """Convert an LLM-proposed name into a valid profile name.
+
+    Returns the raw name unchanged if it already matches the regex;
+    otherwise transliterates Chinese/other non-ASCII to a slug of
+    lowercased ASCII letters/digits/underscores, dropping anything
+    that can't be represented. Falls back to ``fallback`` if the result
+    would be empty.
+    """
+    raw = (raw or "").strip()
+    if _VALID_PROFILE_NAME_RE.match(raw):
+        return raw
+    # Lower + strip non-[a-z0-9] -> underscore
+    slug = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+    slug = slug[:64]
+    if slug and slug[0].isdigit():
+        slug = "m_" + slug  # ensure starts with letter
+    if not slug or not _VALID_PROFILE_NAME_RE.match(slug):
+        return fallback
+    return slug
+
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
     """Lenient JSON extraction — tolerates fenced code blocks and
@@ -136,6 +165,21 @@ def _validate_member(
     if not name:
         return None
 
+    # Sanitize the name for both new and existing profiles — the name
+    # will eventually be used as a profile identifier by /room confirm's
+    # create_profile call, which enforces the same regex. For existing
+    # profiles, the LLM should have quoted the roster's name verbatim
+    # (already ASCII), so the sanitizer is a no-op there.
+    if is_new:
+        original_name = name
+        name = _sanitize_profile_name(name)
+        if name != original_name:
+            logger.info(
+                "room planner: sanitized new profile name %r → %r "
+                "(profile IDs must be [a-z0-9_-])",
+                original_name, name,
+            )
+
     # Hallucination guard: LLM says "existing" but name not in roster
     if not is_new and profile and profile not in existing_names:
         logger.warning(
@@ -144,7 +188,15 @@ def _validate_member(
             profile,
         )
         is_new = True
-        # keep the name as the profile-to-create
+        # keep the name as the profile-to-create — but sanitize since
+        # the LLM's original was clearly wrong
+        original_name = name
+        name = _sanitize_profile_name(name)
+        if name != original_name:
+            logger.info(
+                "room planner: sanitized hallucinated existing name %r → %r",
+                original_name, name,
+            )
 
     if is_new:
         profile = None  # no existing profile to reference
@@ -239,10 +291,32 @@ def plan_room(
 
     # Parse + validate each member
     members: list[PlannedMember] = []
-    for raw_member in raw_members:
+    seen_names: set[str] = set()
+    for idx, raw_member in enumerate(raw_members):
         member = _validate_member(raw_member, existing_names)
-        if member is not None:
-            members.append(member)
+        if member is None:
+            continue
+        # Deduplicate profile names after sanitization — e.g. two Chinese
+        # names both fell back to "member", give them member_1 / member_2.
+        if member.name in seen_names or member.name in existing_names:
+            base = member.name
+            n = 1
+            while f"{base}_{n}" in seen_names or f"{base}_{n}" in existing_names:
+                n += 1
+            new_name = f"{base}_{n}"
+            logger.info(
+                "room planner: renamed duplicated %r → %r (index %d)",
+                member.name, new_name, idx,
+            )
+            member = PlannedMember(
+                profile=member.profile,
+                is_new=member.is_new,
+                name=new_name,
+                description=member.description,
+                reason=member.reason,
+            )
+        seen_names.add(member.name)
+        members.append(member)
 
     # Enforce max_members cap
     if len(members) > max_members:

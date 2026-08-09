@@ -44,6 +44,13 @@ Rules:
   - Each member description should be specific enough that an observer
     agent can route messages to it based on topic matching.
   - Never invent existing profile names that aren't in the roster.
+  - **Profile names MUST match the regex `[a-z0-9][a-z0-9_-]{0,63}`** —
+    lowercase ASCII letters, digits, underscore, hyphen only, starting
+    with a letter/digit, max 64 chars. NEVER use Chinese, spaces, or
+    special characters. Use underscored English (e.g. `client_service`,
+    `finance`, `tech_support`, `sales_lead`), not Chinese labels.
+    The `description` field can be Chinese for readability, but the
+    `name` MUST be ASCII-only.
   - If the requirement is too vague to plan, return:
     {"rationale": "requirement too vague", "members": [], "room_description": ""}
   - No preamble, no closing remarks, no code fences. Output only the JSON.
