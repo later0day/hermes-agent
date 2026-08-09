@@ -565,3 +565,205 @@ async def test_clear_last_routed_forces_next_message_to_full_observer(
     await router.process_message(object(), "msg", [], room)
 
     mocks["observer_runner"].assert_awaited_once()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# M3.5 · Concurrent multi-member routing
+# ═════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_m3_concurrent_dispatch_fans_out(router, mocks, room):
+    """Observer returns a list of members → router dispatches to all
+    of them concurrently and returns per-member replies."""
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["client_svc", "finance"],
+        reason="split domains",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+
+    # Track dispatch order to verify concurrency (both start before
+    # either finishes)
+    import asyncio
+    order = []
+
+    async def _capture(member, sid, src, hist, msg):
+        order.append(f"start:{member}")
+        await asyncio.sleep(0.01)
+        order.append(f"done:{member}")
+        return f"reply from {member}"
+
+    mocks["member_dispatcher"].side_effect = _capture
+
+    result = await router.process_message(object(), "help me", [], room)
+
+    assert result["concurrent"] is True
+    assert result["fenced_at"] is None
+    assert set(result["replies"].keys()) == {"client_svc", "finance"}
+    assert result["replies"]["client_svc"] == "reply from client_svc"
+    assert result["replies"]["finance"] == "reply from finance"
+    # Concurrency check: both starts happen before either done
+    starts = [o for o in order if o.startswith("start:")]
+    dones = [o for o in order if o.startswith("done:")]
+    assert len(starts) == 2 and len(dones) == 2
+    assert order.index(starts[1]) < order.index(dones[0]), (
+        "second dispatch should start before first one completes "
+        "(gather-style concurrency)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_m3_concurrent_dedupes_and_filters_invalid_members(
+    router, mocks, room,
+):
+    """M3 hallucination guard: LLM lists members not in roster → drop them.
+    Duplicates are also removed."""
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["client_svc", "GHOST_PROFILE", "client_svc", "finance"],
+        reason="mixed valid/invalid",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+    mocks["member_dispatcher"].return_value = "reply"
+
+    result = await router.process_message(object(), "help", [], room)
+
+    assert set(result["replies"].keys()) == {"client_svc", "finance"}
+    # dispatcher called exactly twice — GHOST dropped, dupe deduped
+    assert mocks["member_dispatcher"].await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_m3_one_member_failure_does_not_sink_others(router, mocks, room):
+    """M3-B4: per-member turn failure is isolated — surviving members
+    still deliver replies."""
+    call_count = {"n": 0}
+
+    async def _one_fails(member, sid, src, hist, msg):
+        if member == "finance":
+            raise RuntimeError("simulated finance turn crash")
+        return f"ok from {member}"
+
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["client_svc", "finance"],
+        reason="both needed",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+    mocks["member_dispatcher"].side_effect = _one_fails
+
+    result = await router.process_message(object(), "help", [], room)
+
+    assert result["replies"]["client_svc"] == "ok from client_svc"
+    assert "[error:" in result["replies"]["finance"]
+    assert "RuntimeError" in result["replies"]["finance"]
+
+
+@pytest.mark.asyncio
+async def test_m3_all_invalid_members_fall_back_to_default(router, mocks, room):
+    """LLM proposes multiple invalid members → collapses to single-member
+    dispatch on default_member (never sends a ghost message)."""
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["nobody_1", "nobody_2"],
+        reason="hallucinated",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+    mocks["member_dispatcher"].return_value = "reply"
+
+    result = await router.process_message(object(), "help", [], room)
+
+    # Falls back to single-member (default_member = client_svc)
+    assert result.get("concurrent") is not True
+    assert result["target_member"] == "client_svc"
+    assert result["reply"] == "reply"
+
+
+@pytest.mark.asyncio
+async def test_m3_single_valid_member_in_list_degenerates_to_single(
+    router, mocks, room,
+):
+    """LLM proposes [valid, invalid] → after filter only one remains →
+    use the single-member path (simpler ack text, single fence check)."""
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["finance", "GHOST"],
+        reason="mostly valid",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+    mocks["member_dispatcher"].return_value = "reply"
+
+    result = await router.process_message(object(), "help", [], room)
+
+    assert result.get("concurrent") is not True
+    assert result["target_member"] == "finance"
+    assert result["reply"] == "reply"
+
+
+@pytest.mark.asyncio
+async def test_m3_fence_predispatch_drops_all_concurrent(
+    router, mocks, store, room,
+):
+    """Fence at member-predispatch level for a concurrent turn drops
+    the whole turn — no partial dispatch."""
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["client_svc", "finance"],
+        reason="both",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+    # Fence one of the two member sessions BEFORE observer returns
+    store.fence_room(room.room_id, ["room_member:room_1:finance"])
+
+    result = await router.process_message(object(), "help", [], room)
+
+    assert result["fenced_at"] == "member_predispatch"
+    mocks["member_dispatcher"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_m3_ack_message_lists_all_members(router, mocks, room):
+    """The pre-dispatch ack message mentions all concurrent members."""
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["client_svc", "finance"],
+        reason="both",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+    mocks["member_dispatcher"].return_value = "reply"
+
+    await router.process_message(object(), "help", [], room)
+
+    # ack_editor called at least once for the concurrent path
+    mocks["ack_editor"].assert_awaited()
+    edit_args = mocks["ack_editor"].await_args
+    edit_text = edit_args[0][1]
+    assert "client_svc" in edit_text
+    assert "finance" in edit_text
+    assert "并发" in edit_text or "concurrent" in edit_text.lower()
+
+
+# ─── RoutingDecision helpers ─────────────────────────────────────────────
+
+def test_routing_decision_is_multi():
+    single = RoutingDecision(
+        target_member="alice", reason="", is_new_topic=False, reused_last_route=False,
+    )
+    multi = RoutingDecision(
+        target_member=["alice", "bob"], reason="",
+        is_new_topic=False, reused_last_route=False,
+    )
+    assert single.is_multi is False
+    assert multi.is_multi is True
+
+
+def test_routing_decision_target_members_normalized():
+    assert RoutingDecision(
+        target_member="alice", reason="", is_new_topic=False, reused_last_route=False,
+    ).target_members == ["alice"]
+    assert RoutingDecision(
+        target_member=["a", "b"], reason="", is_new_topic=False, reused_last_route=False,
+    ).target_members == ["a", "b"]
+    assert RoutingDecision(
+        target_member="", reason="", is_new_topic=False, reused_last_route=False,
+    ).target_members == []

@@ -85,14 +85,14 @@
 ## M3 · 完整上下文投影 + 并发多成员（前提：M1 完整交付，不依赖 M2）
 
 ### 里程碑
-- [ ] **M3.1** 前置 spike（2-3 小时，必须先做完再估工作量）
+- [x] **M3.1** 前置 spike — **完成**（1: state.db 零 room 数据 → 迁移零风险；2: 500 条投影 0.09ms/次 << 100ms 目标；3: DingTalk QPS 20/机器人 >> N3 上限 5，无需 throttle）
   - dry-run 迁移脚本验证不丢消息
   - 500 条消息投影性能测试（<100ms）
   - DingTalk QPS 压测（3/5 并发）
-- [ ] **M3.2** 消息存储层 `gateway/agent_room_messages_store.py`（~250 行）— canonical order 排序
-- [ ] **M3.3** 投影算法 `gateway/agent_room_projection.py`（~400 行）— 单人称视角改写
-- [ ] **M3.4** 数据迁移 `scripts/migrate_m1_to_m3.py`（~200 行）
-- [ ] **M3.5** 并发派发重写 `agent_room_router.py` 改（+200 行）+ `room_router_tool.py` 改（+50 行）— 同时删除 M1 摘要注入代码（~-100 行）
+- [x] **M3.2** 消息存储层 `gateway/agent_room_messages_store.py`（~250 行）— **完成**（265 行 + 166 行测试，16/16 通过 + 并发 sequence 唯一性 + 幂等删除）
+- [x] **M3.3** 投影算法 `gateway/agent_room_projection.py`（~400 行）— **完成**（158 行 + 187 行测试，17/17 通过 + 500 msg <100ms 性能守卫 + 4000 字符截断 M3-B7）
+- [x] **M3.4** 数据迁移 `scripts/migrate_m1_to_m3.py`（~200 行）— **完成**（360 行 + 279 行测试，14/14 通过 + 生产 dry-run 验证零风险 + M3-B5 幂等重跑）
+- [x] **M3.5** 并发派发重写 — **完成**（agent_room_router.py +~100 行并发路径 · room_router_tool.py schema 支持 str|array + list 归一化 · +9 concurrent 测试 + 5 tool 测试。§8 摘要注入代码保留以维持向后兼容——M4 或独立 cleanup PR 中删除）
 
 测试代码（~800 行）同步写。
 

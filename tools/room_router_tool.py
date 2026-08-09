@@ -51,7 +51,7 @@ ROUTE_ACTION = "route_to_member"
 
 
 def route_to_member(
-    member: str,
+    member,  # str or list[str] — see M3 multi-member routing
     reason: str,
     is_new_topic: bool = False,
 ) -> str:
@@ -59,12 +59,12 @@ def route_to_member(
 
     Parameters
     ----------
-    member : str
-        Profile name from the room's member roster. The router (M1.5)
-        validates this against the actual roster; here we only trim +
-        pass through. An empty or all-whitespace value is returned as
-        an empty string and the router falls back to default_member
-        (M1-B4).
+    member : str | list[str]
+        Either a single profile name (M1 single-routing) or a list of
+        profile names (M3 concurrent multi-member dispatch). The router
+        validates each against the actual roster; here we only normalize
+        + pass through. An empty value → empty string → router falls
+        back to default_member (M1-B4).
     reason : str
         1-sentence rationale. When the observer is switching to a
         different member than last time on a continuing topic, the
@@ -72,7 +72,8 @@ def route_to_member(
         summary of the previous member's last reply prefixed with
         "上一位处理人 <name> 的回复摘要:". M1.5's router (STEP 4.5)
         parses that prefix out and forwards the summary to the new
-        member's message as a context prefix.
+        member's message as a context prefix. (Under M3, the projection
+        layer replaces the summary mechanism.)
     is_new_topic : bool
         Observer's assessment of whether this message starts a new
         topic. Used to update ``last_routed_member`` cache invalidation
@@ -98,6 +99,23 @@ def route_to_member(
     resolved_member = str(member or "").strip()
     resolved_reason = str(reason or "").strip()
     resolved_is_new_topic = bool(is_new_topic)
+
+    # M3: normalize member into either a single str (M1 legacy) OR a
+    # list[str] (M3 concurrent multi-member). The router looks at the
+    # returned "member" field's TYPE to choose single vs concurrent
+    # dispatch — so we preserve the LLM's original shape here.
+    if isinstance(member, list):
+        resolved_members = [str(m).strip() for m in member if str(m).strip()]
+        # De-dupe preserving order
+        seen: set = set()
+        deduped: list[str] = []
+        for m in resolved_members:
+            if m not in seen:
+                seen.add(m)
+                deduped.append(m)
+        resolved_member = deduped  # keep as list for router
+    else:
+        resolved_member = str(member or "").strip()
 
     # Attempt to terminate the observer's agent loop immediately. Wrapped
     # in a broad try/except because a failure to interrupt must NEVER
@@ -179,11 +197,34 @@ ROUTE_TO_MEMBER_SCHEMA = {
         "type": "object",
         "properties": {
             "member": {
-                "type": "string",
+                "oneOf": [
+                    {
+                        "type": "string",
+                        "description": (
+                            "A single profile name from the room's member roster. "
+                            "Must match a name shown in the '## Members' section of "
+                            "this observer's SOUL.md exactly (case-sensitive). "
+                            "Use this form for single-member routing (M1 legacy)."
+                        ),
+                    },
+                    {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 5,
+                        "description": (
+                            "An array of profile names for CONCURRENT multi-member "
+                            "dispatch (M3+). Use this when the message spans multiple "
+                            "expertise domains (e.g. '我要退款并咨询发票问题' → "
+                            "['client_svc', 'finance']). All listed members will run "
+                            "their turns in parallel with the shared room context, "
+                            "and their replies will all be delivered to the group."
+                        ),
+                    },
+                ],
                 "description": (
-                    "Profile name from the room's member roster. Must "
-                    "match a name shown in the '## Members' section of "
-                    "this observer's SOUL.md exactly (case-sensitive). "
+                    "Either a single profile name (str) for single-member routing, "
+                    "or an array of profile names for concurrent multi-member dispatch. "
                     "If none fit, use the room's default_member."
                 ),
             },
@@ -193,7 +234,8 @@ ROUTE_TO_MEMBER_SCHEMA = {
                     "1-sentence rationale for the routing choice. On "
                     "member-switch continuations, prefix with "
                     "'上一位处理人 <previous_member> 的回复摘要: <summary>' "
-                    "so the router can forward context to the new member."
+                    "so the router can forward context to the new member. "
+                    "For multi-member routing, briefly explain why each member is needed."
                 ),
             },
             "is_new_topic": {

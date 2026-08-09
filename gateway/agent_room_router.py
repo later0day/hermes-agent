@@ -74,14 +74,33 @@ class ClassifierResult:
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    """The result of Step 3 — who the message goes to and why."""
-    target_member: str
+    """The result of Step 3 — who the message goes to and why.
+
+    M3: target_member can be either a str (single-member dispatch,
+    M1 legacy) or a list[str] (concurrent multi-member dispatch).
+    Router callers should check ``.is_multi`` before iterating.
+    """
+    target_member: Any  # str or list[str]
     reason: str
     is_new_topic: bool
     # True if we reused last_routed_member instead of running a full
     # observer turn (§5.4 N4 fast path). Useful for A/B metric
     # "N4 沿用率 ≥40%".
     reused_last_route: bool
+
+    @property
+    def is_multi(self) -> bool:
+        """True when the observer chose multiple members for concurrent dispatch."""
+        return isinstance(self.target_member, list)
+
+    @property
+    def target_members(self) -> list[str]:
+        """Always returns a list — single-member decisions become [name]."""
+        if isinstance(self.target_member, list):
+            return list(self.target_member)
+        if isinstance(self.target_member, str) and self.target_member:
+            return [self.target_member]
+        return []
 
 
 @dataclass(frozen=True)
@@ -337,15 +356,51 @@ class AgentRoomRouter:
             # M1-B4: empty / whitespace / unknown members all fall back
             # to the room's default_member (or members[0] via
             # AgentRoom.resolve_default_member).
-            target = (observer_decision.target_member or "").strip()
-            if target not in room.members:
-                fallback = room.resolve_default_member()
-                logger.warning(
-                    "room %s: observer chose %r (not in roster %s); "
-                    "falling back to %r",
-                    room_id, target, room.members, fallback,
-                )
-                target = fallback
+            #
+            # M3.5: target_member can be a list[str] for concurrent
+            # multi-member dispatch. Validate each element independently;
+            # any invalid names are dropped. If all are invalid, fall
+            # back to a single-member decision on default_member.
+            raw_target = observer_decision.target_member
+            if isinstance(raw_target, list):
+                cleaned = [str(m).strip() for m in raw_target if str(m).strip()]
+                valid = [m for m in cleaned if m in room.members]
+                if not valid:
+                    fallback = room.resolve_default_member()
+                    logger.warning(
+                        "room %s: observer proposed %r (none in roster %s); "
+                        "falling back to single %r",
+                        room_id, raw_target, room.members, fallback,
+                    )
+                    target = fallback
+                elif len(valid) == 1:
+                    # Single-valid degenerates to single-member dispatch
+                    target = valid[0]
+                else:
+                    # De-dupe preserving order for concurrent list
+                    seen: set = set()
+                    deduped: list[str] = []
+                    for m in valid:
+                        if m not in seen:
+                            seen.add(m)
+                            deduped.append(m)
+                    target = deduped  # keep as list → is_multi=True
+                    if len(cleaned) != len(valid):
+                        logger.info(
+                            "room %s: dropped invalid members from concurrent "
+                            "route (kept %s, dropped %s)",
+                            room_id, valid, set(cleaned) - set(valid),
+                        )
+            else:
+                target = (raw_target or "").strip()
+                if target not in room.members:
+                    fallback = room.resolve_default_member()
+                    logger.warning(
+                        "room %s: observer chose %r (not in roster %s); "
+                        "falling back to %r",
+                        room_id, target, room.members, fallback,
+                    )
+                    target = fallback
 
             decision = RoutingDecision(
                 target_member=target,
@@ -356,15 +411,22 @@ class AgentRoomRouter:
 
         # Update the cache regardless of which path we took — successful
         # reuse also refreshes the "last route" so a subsequent classifier
-        # call has a valid anchor.
-        await self._set_last_routed(room_id, decision.target_member)
+        # call has a valid anchor. For multi-member decisions we cache
+        # the first member (arbitrary but deterministic) so N4 continuation
+        # detection still works.
+        _cache_target = (
+            decision.target_member[0] if decision.is_multi
+            else decision.target_member
+        )
+        await self._set_last_routed(room_id, _cache_target)
 
         # ── Step 4: edit the ack message ──────────────────────────────
         try:
-            await self._ack_editor(
-                ack_handle,
-                f"已转交给 {decision.target_member} 处理...",
-            )
+            if decision.is_multi:
+                _ack_text = f"已并发转交给 {', '.join(decision.target_members)} 处理..."
+            else:
+                _ack_text = f"已转交给 {decision.target_member} 处理..."
+            await self._ack_editor(ack_handle, _ack_text)
         except Exception as exc:  # noqa: BLE001
             # Ack edit failures shouldn't derail the routing. Log and
             # continue — the member's actual reply will still land.
@@ -374,10 +436,90 @@ class AgentRoomRouter:
             )
 
         # ── Step 4.5: §8 Rule B cross-member summary injection ────────
+        # (M3: the projection layer replaces this in-band summary
+        # mechanism, but the parser still runs to preserve M1 behavior
+        # when projection isn't wired.)
         cross_context = self._extract_cross_member_context(decision.reason)
         member_input = self._apply_cross_member_prefix(message, cross_context)
 
-        # ── Step 5: dispatch member turn ──────────────────────────────
+        # ── Step 5: dispatch member turn(s) ───────────────────────────
+        if decision.is_multi:
+            # M3.5 concurrent multi-member dispatch: fan out to all
+            # members in parallel via asyncio.gather. Fence check is
+            # per-member; a room-wide fence discards all replies.
+            member_ids = decision.target_members
+            member_sids = {
+                m: self.member_session_id(room_id, m) for m in member_ids
+            }
+
+            # Pre-dispatch fence gate (§6.3 checkpoint B for each member).
+            # If ANY member session is fenced pre-dispatch, drop the
+            # entire concurrent turn — a mid-flight structural change
+            # invalidates all of it.
+            for m, sid in member_sids.items():
+                if self._store.is_fenced(room_id, sid):
+                    logger.info(
+                        "room %s: member %s fenced pre-dispatch; dropping concurrent turn",
+                        room_id, m,
+                    )
+                    return {
+                        "fenced_at": "member_predispatch",
+                        "target_member": decision.target_member,
+                        "reason": decision.reason,
+                        "reused_last_route": decision.reused_last_route,
+                        "reply": None,
+                    }
+
+            # Fan out concurrently. Any single member exception is
+            # captured as a string reply for that member — one failure
+            # does not sink the others (M3-B4).
+            import asyncio as _asyncio
+
+            async def _run_one(m: str) -> tuple[str, str]:
+                sid = member_sids[m]
+                try:
+                    r = await self._member_dispatcher(
+                        m, sid, source, history, member_input,
+                    )
+                    return (m, r or "")
+                except Exception as exc:  # noqa: BLE001 — per-member isolation
+                    logger.warning(
+                        "room %s: member %s turn failed: %s", room_id, m, exc,
+                    )
+                    return (m, f"[error: {type(exc).__name__}: {exc}]")
+
+            results = await _asyncio.gather(*[_run_one(m) for m in member_ids])
+            replies: dict[str, str] = dict(results)
+
+            # Post-dispatch fence (§6.3 checkpoint C): drop replies
+            # if the room was fenced during any of the concurrent turns.
+            for m, sid in member_sids.items():
+                if self._store.is_fenced(room_id, sid):
+                    logger.info(
+                        "room %s: member %s fenced during concurrent dispatch; dropping",
+                        room_id, m,
+                    )
+                    return {
+                        "fenced_at": "member_postdispatch",
+                        "target_member": decision.target_member,
+                        "reason": decision.reason,
+                        "reused_last_route": decision.reused_last_route,
+                        "reply": None,
+                    }
+
+            return {
+                "fenced_at": None,
+                "target_member": decision.target_member,
+                "reason": decision.reason,
+                "reused_last_route": decision.reused_last_route,
+                "cross_member_summary_applied": cross_context.has_summary(),
+                "cross_member_previous": cross_context.previous_member,
+                "reply": None,          # per-member replies live in .replies
+                "replies": replies,     # M3 addition: per-member reply map
+                "concurrent": True,
+            }
+
+        # ── Single-member dispatch (M1 legacy path, unchanged) ────────
         member_sid = self.member_session_id(room_id, decision.target_member)
         # §6.3 Fence check B: check the member's session BEFORE running
         # its turn — a structural change between observer completion

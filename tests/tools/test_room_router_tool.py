@@ -209,7 +209,11 @@ def test_schema_top_level_fields():
 
 def test_schema_required_matches_function_signature():
     """Function signature has member + reason as positional-required,
-    is_new_topic as keyword-with-default. Schema should reflect that."""
+    is_new_topic as keyword-with-default. Schema should reflect that.
+
+    M3: member accepts str OR list[str] via oneOf — see
+    test_schema_member_supports_str_or_list below.
+    """
     params = ROUTE_TO_MEMBER_SCHEMA["parameters"]
     assert params["type"] == "object"
     assert set(params["required"]) == {"member", "reason"}
@@ -217,9 +221,24 @@ def test_schema_required_matches_function_signature():
 
     props = params["properties"]
     assert set(props.keys()) == {"member", "reason", "is_new_topic"}
-    assert props["member"]["type"] == "string"
+    # M3: member uses oneOf(str, array) — see dedicated test
+    assert "oneOf" in props["member"] or props["member"].get("type") == "string"
     assert props["reason"]["type"] == "string"
     assert props["is_new_topic"]["type"] == "boolean"
+
+
+def test_schema_member_supports_str_or_list():
+    """M3.5: route_to_member accepts either a str or list[str] for
+    concurrent multi-member dispatch. The oneOf variants must be
+    present in the schema."""
+    props = ROUTE_TO_MEMBER_SCHEMA["parameters"]["properties"]
+    variants = props["member"].get("oneOf", [])
+    assert len(variants) == 2, "member must accept two variants: str + array"
+    types = {v.get("type") for v in variants}
+    assert types == {"string", "array"}
+    # array cap must match N3 (MAX_ROOM_MEMBERS=5)
+    array_variant = next(v for v in variants if v.get("type") == "array")
+    assert array_variant.get("maxItems") == 5
 
 
 def test_schema_description_documents_soul_md_summary_convention():
@@ -378,3 +397,59 @@ def test_observer_config_inherits_model_from_default_profile(monkeypatch, tmp_pa
     assert model["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert model["provider"] == "alibaba"
     assert model["default"] == "qwen-plus"
+
+
+# ---------------------------------------------------------------------------
+# M3.5: concurrent multi-member routing
+# ---------------------------------------------------------------------------
+
+def test_route_to_member_accepts_list():
+    """M3: LLM can pass an array of members for concurrent dispatch."""
+    result = route_to_member(
+        member=["client_svc", "finance"],
+        reason="user asked about both refund and billing",
+        is_new_topic=True,
+    )
+    parsed = json.loads(result)
+    assert parsed["action"] == "route_to_member"
+    assert parsed["member"] == ["client_svc", "finance"]
+    assert parsed["is_new_topic"] is True
+
+
+def test_route_to_member_list_dedupes():
+    """Duplicate names in the LLM's array are silently deduped."""
+    result = route_to_member(
+        member=["client_svc", "finance", "client_svc"],
+        reason="test",
+    )
+    parsed = json.loads(result)
+    assert parsed["member"] == ["client_svc", "finance"]  # order preserved, dupes gone
+
+
+def test_route_to_member_list_strips_whitespace():
+    result = route_to_member(
+        member=["  client_svc  ", "\tfinance\n"],
+        reason="test",
+    )
+    parsed = json.loads(result)
+    assert parsed["member"] == ["client_svc", "finance"]
+
+
+def test_route_to_member_list_filters_empty():
+    result = route_to_member(
+        member=["client_svc", "", "  ", "finance"],
+        reason="test",
+    )
+    parsed = json.loads(result)
+    assert parsed["member"] == ["client_svc", "finance"]
+
+
+def test_route_to_member_single_string_still_works():
+    """Backward compat: M1 single-string form must still work."""
+    result = route_to_member(
+        member="client_svc",
+        reason="single member routing",
+    )
+    parsed = json.loads(result)
+    assert parsed["member"] == "client_svc"  # str, not list
+    assert isinstance(parsed["member"], str)
