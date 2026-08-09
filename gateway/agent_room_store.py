@@ -318,9 +318,12 @@ class AgentRoomStore:
         members: list[str] | tuple[str, ...],
         *,
         default_member: str | None = None,
+        description: str | None = None,
         actor: str = "",
     ) -> AgentRoom:
-        """Replace the member roster. Callers must re-render SOUL.md after this
+        """Replace the member roster (and optionally description).
+
+        Callers must re-render SOUL.md after this
         (agent_room_bootstrapper.regenerate_soul) and fence the room's active
         sessions BEFORE calling this (see fence_room) — this method only
         touches the SQL row, it does not fence or regenerate anything itself,
@@ -340,16 +343,20 @@ class AgentRoomStore:
             )
             if resolved_default and resolved_default not in normalized_members:
                 resolved_default = ""
+            resolved_description = (
+                str(description) if description is not None else existing.description
+            )
             self._conn.execute(
                 """
                 UPDATE agent_rooms
-                SET members_json = ?, default_member = ?,
+                SET members_json = ?, default_member = ?, description = ?,
                     updated_at = ?, updated_by = ?
                 WHERE room_id = ?
                 """,
                 (
                     self._members_dumps(normalized_members),
                     resolved_default,
+                    resolved_description,
                     int(time.time()),
                     str(actor or ""),
                     key,

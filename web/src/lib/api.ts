@@ -1433,12 +1433,13 @@ export const api = {
   createRoom: (body: RoomCreateRequest) =>
     fetchJSON<{ ok: boolean; room: RoomRecord }>("/api/rooms", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
   patchRoom: (roomId: string, body: RoomPatchRequest) =>
     fetchJSON<{ ok: boolean; room: RoomRecord }>(
       `/api/rooms/${encodeURIComponent(roomId)}`,
-      { method: "PATCH", body: JSON.stringify(body) },
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     ),
   deleteRoom: (roomId: string) =>
     fetchJSON<{ ok: boolean; deleted: boolean }>(
@@ -1450,6 +1451,7 @@ export const api = {
       `/api/rooms/${encodeURIComponent(roomId)}/bind`,
       {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source_binding_key }),
       },
     ),
@@ -1458,18 +1460,20 @@ export const api = {
       `/api/rooms/${encodeURIComponent(roomId)}/unbind`,
       {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source_binding_key }),
       },
     ),
   planRoom: (body: RoomPlanRequest) =>
     fetchJSON<{ plan: RoomPlan }>("/api/rooms/plan", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
   confirmRoomPlan: (body: RoomPlanConfirmRequest = {}) =>
     fetchJSON<{ ok: boolean; room: RoomRecord; new_profiles: string[] }>(
       "/api/rooms/plan/confirm",
-      { method: "POST", body: JSON.stringify(body) },
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     ),
 };
 

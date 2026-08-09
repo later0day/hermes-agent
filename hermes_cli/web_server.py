@@ -19652,7 +19652,10 @@ async def patch_room(room_id: str, body: _RoomPatch):
 
         try:
             updated = store.update_members(
-                room_id, new_members, default_member=new_default, actor="dashboard"
+                room_id, new_members,
+                default_member=new_default,
+                description=body.description,
+                actor="dashboard",
             )
         except AgentRoomError as exc:
             raise HTTPException(status_code=400, detail=str(exc))

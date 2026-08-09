@@ -579,8 +579,9 @@ export default function RoomsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label>Name</Label>
+              <Label htmlFor="create-room-name">Name</Label>
               <Input
+                id="create-room-name"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
                 placeholder="support_team"
@@ -590,8 +591,9 @@ export default function RoomsPage() {
               </p>
             </div>
             <div>
-              <Label>Description</Label>
+              <Label htmlFor="create-room-desc">Description</Label>
               <textarea
+                id="create-room-desc"
                 className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 rows={2}
                 value={createDescription}
@@ -668,8 +670,9 @@ export default function RoomsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label>What do you need this room to do?</Label>
+              <Label htmlFor="plan-requirement">What do you need this room to do?</Label>
               <textarea
+                id="plan-requirement"
                 className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 rows={4}
                 value={planRequirement}
@@ -679,8 +682,9 @@ export default function RoomsPage() {
               />
             </div>
             <div>
-              <Label>Max members</Label>
+              <Label htmlFor="plan-max-members">Max members</Label>
               <Input
+                id="plan-max-members"
                 type="number"
                 min={2}
                 max={5}

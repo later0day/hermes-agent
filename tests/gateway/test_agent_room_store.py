@@ -364,3 +364,46 @@ def test_room_to_dict_round_trips_members_as_list(tmp_path):
 
     assert d["members"] == ["a", "b"]
     assert isinstance(d["members"], list)
+
+
+def test_update_members_persists_description():
+    """Live E2E bug regression: PATCH /api/rooms/{id} with description
+    was silently dropping the description field because update_members
+    ignored it. Verify description flows through to DB now."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        store = AgentRoomStore(Path(td) / "rooms.sqlite")
+        try:
+            room = store.create_room(
+                "r1", "Test", observer_profile="obs",
+                members=["a"], description="original",
+            )
+            updated = store.update_members(
+                "r1", ["a"], description="updated", actor="test",
+            )
+            assert updated.description == "updated"
+            # Re-fetch to be sure it's persisted, not just in-memory
+            got = store.get_room("r1")
+            assert got.description == "updated"
+        finally:
+            store.close()
+
+
+def test_update_members_preserves_description_when_not_passed():
+    """When PATCH only changes members, description must NOT be reset."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        store = AgentRoomStore(Path(td) / "rooms.sqlite")
+        try:
+            store.create_room(
+                "r1", "Test", observer_profile="obs",
+                members=["a"], description="keep me",
+            )
+            updated = store.update_members(
+                "r1", ["a", "b"], actor="test",  # no description arg
+            )
+            assert updated.description == "keep me"
+        finally:
+            store.close()
