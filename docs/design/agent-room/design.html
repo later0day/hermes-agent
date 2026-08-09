@@ -718,18 +718,16 @@ a:hover { text-decoration: underline; }
   <text x="880" y="280" fill="#c9d1d9" font-size="10">▸ 删除时检查是否被</text>
   <text x="880" y="295" fill="#c9d1d9" font-size="10">   room 引用</text>
 
-  <rect x="60" y="330" width="1010" height="110" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
-  <text x="565" y="356" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">工具锁死机制（Spike 已验证）</text>
+  <rect x="60" y="330" width="1010" height="110" rx="8" fill="#0f2537" stroke="#e3b341" stroke-width="1.5"/>
+  <text x="565" y="356" text-anchor="middle" fill="#e3b341" font-size="13" font-weight="600">工具锁死机制（三层锁定，线上 DingTalk 测试修正）</text>
   <text x="80" y="382" fill="#c9d1d9" font-size="11.5">
-    观察者的 <tspan fill="#79c0ff" font-family="monospace">config.yaml</tspan> 只声明 <tspan fill="#d2a8ff" font-family="monospace">toolsets: [room_observer]</tspan>，
-    整个 <tspan fill="#e3b341" font-family="monospace">_HERMES_CORE_TOOLS</tspan>（terminal / read_file / write_file / delegate_task / cronjob / ...）都不会进来。
+    第一层：观察者的 config.yaml 声明 <tspan fill="#d2a8ff" font-family="monospace">toolsets: [room_observer]</tspan> + <tspan fill="#d2a8ff" font-family="monospace">tool_search: off</tspan>
   </text>
   <text x="80" y="402" fill="#c9d1d9" font-size="11.5">
-    这是通过 <tspan fill="#79c0ff" font-family="monospace">toolsets.py</tspan> 里 <tspan font-weight="600">命名 toolset 显式打包</tspan> 的设计实现的——核心工具不是"自动注入"，
-    而是被打包成 <tspan fill="#c9d1d9" font-family="monospace">hermes-cli / hermes-cron / hermes-telegram / ...</tspan>
+    第二层：<tspan fill="#79c0ff" font-family="monospace">registry.register()</tspan> 注册 route_to_member schema，否则 _compute_tool_definitions 返回 0 个 schema
   </text>
   <text x="80" y="422" fill="#c9d1d9" font-size="11.5">
-    等命名 toolsets，只在 <tspan fill="#d2a8ff" font-family="monospace">enabled_toolsets</tspan> 明确列出时才装载。观察者只列 <tspan fill="#d2a8ff" font-family="monospace">room_observer</tspan>，就只能调 <tspan fill="#79c0ff" font-family="monospace">route_to_member</tspan> 一个工具。
+    第三层：TurnRunner.run_sync 里用 <tspan fill="#e3b341" font-family="monospace">_LockedTools</tspan> 替换 agent.tools + 同步 <tspan fill="#e3b341" font-family="monospace">valid_tool_names</tspan>，阻止 tool_search 重新加核心工具
   </text>
 </svg>
 </div>
@@ -1217,17 +1215,33 @@ if binding:
 <table>
 <tr><th>文件</th><th>M1 内容</th></tr>
 <tr><td><code>SOUL.md</code></td><td>代码自动生成（模板见 §5.2），成员变动时重写</td></tr>
-<tr><td><code>config.yaml</code></td><td><code>toolsets: [room_observer]</code>——只装载新增的观察者 toolset</td></tr>
+<tr><td><code>config.yaml</code></td><td><code>toolsets: [room_observer]</code> + <code>tools.tool_search.enabled: off</code> + <code>model</code> 段（从默认 profile 继承）——见下方凭据继承说明</td></tr>
 <tr><td><code>profile.yaml</code></td><td><code>description: "Room observer for &lt;room_name&gt;"</code>，<code>description_auto: true</code></td></tr>
 <tr><td><code>.observer</code></td><td>空标记文件，标识"自动生成的观察者"，用于 CRUD 时区别对待</td></tr>
+<tr><td><code>.env</code></td><td>从默认 profile (<code>~/.hermes/.env</code>) 自动拷贝——观察者必须调 LLM 才能产出 <code>route_to_member</code> 决策，所以需要 API key</td></tr>
+<tr><td><code>auth.json</code></td><td>从默认 profile 自动拷贝——credential pool 定义（含 provider/base_url/source 引用）</td></tr>
 </table>
+
+<div class="callout callout-info">
+<div class="callout-title">凭据继承（线上 DingTalk 测试发现）</div>
+M1.2 的 bootstrapper 创建空白 profile 后，自动从 <code>~/.hermes/</code> 拷贝 <code>.env</code> 和 <code>auth.json</code>，并从 <code>~/.hermes/config.yaml</code> 继承 <code>model</code> 段（provider/base_url/default model）。
+<br><br>
+原因：<code>auth.json</code> 里 alibaba provider 的 <code>base_url</code> 默认是国际版（<code>dashscope-intl.aliyuncs.com</code>），但 API key 可能只对国内版（<code>dashscope.aliyuncs.com</code>）有效 → 401。继承 <code>config.yaml</code> 的 <code>model.base_url</code> 覆盖 auth.json 的默认值。
+</div>
 
 <div class="callout callout-good">
 <span class="spike-good"></span><b>Spike 结论：memory 什么都不用配</b>——<code>memory.memory_enabled</code> 字段（<code>agent/agent_init.py:1691</code>）默认 <code>False</code>，观察者 profile 不写就自动无长期记忆。
 </div>
 
-<div class="callout callout-good">
-<span class="spike-good"></span><b>Spike 结论：单 toolset 能真正锁死行为</b>——<code>_HERMES_CORE_TOOLS</code>（<code>toolsets.py:31</code>）是打包进 <code>hermes-cli/hermes-cron/…</code> 等命名 toolset 的，不是自动注入。<code>toolsets: [room_observer]</code> 意味着观察者只能调用 <code>route_to_member</code> 这一个工具。
+<div class="callout callout-warn">
+<span class="spike-warn"></span><b>Spike 3 修正（线上 DingTalk 测试证伪）</b>：原结论"单 toolset 能真正锁死行为"<b>不完全正确</b>。<code>toolsets: [room_observer]</code> 确实让 <code>enabled_toolsets</code> 只含 <code>route_to_member</code>，但 <code>tool_search</code> 的 tier-1 机制仍会保留 <code>_HERMES_CORE_TOOLS</code>（30 个核心工具），且 <code>agent.valid_tool_names</code> 在 agent 初始化时从全量工具提取（不含 <code>route_to_member</code>）。
+<br><br>
+实际需要的<b>三层锁定</b>：
+<ol style="margin:6px 0;">
+<li><code>registry.register()</code>——把 <code>route_to_member</code> 注册进 <code>ToolRegistry</code>，否则 <code>_compute_tool_definitions</code> 返回 0 个 schema</li>
+<li><code>_LockedTools</code>——在 <code>TurnRunner.run_sync</code> 里 AIAgent 构造后替换 <code>agent.tools</code>，阻止 <code>tool_search</code> 重新加核心工具</li>
+<li><code>agent.valid_tool_names</code> 同步——否则 <code>conversation_loop</code> 会以"Tool does not exist"拒绝 LLM 的 tool_call</li>
+</ol>
 </div>
 
 <h3>5.2 SOUL.md 模板</h3>

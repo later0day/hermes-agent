@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | 1 | `_profile_runtime_scope` 通用性 | 假设是无条件通用的原语 | **只在 multiplex_profiles=True 时被现有代码调用**，但机制本身无条件工作 | Room 场景要**主动**在非多路复用模式下也调它，代码模式是新增的但机制成熟 |
 | 2 | `memory.enabled` config 字段 | 假设需要新加此字段 | **不需要**——`memory.memory_enabled` 已存在且默认 `False` | 观察者 profile 什么都不写就自动无 memory，M1 spec §2.1 需修正 |
-| 3 | 默认工具注入 | 担心 `toolsets: [room_observer]` 锁不住 | **能锁住**——`_HERMES_CORE_TOOLS` 是按 toolset 名打包的，不是自动注入的 | Room 观察者行为边界确实能被单一 toolset 锁死 |
+| 3 | 默认工具注入 | 担心 `toolsets: [room_observer]` 锁不住 | ~~**能锁住**~~ **线上证伪**：`tool_search` tier-1 绕过 toolsets 保留核心工具 + `valid_tool_names` 在 init 时不含 `route_to_member`。实际需要三层锁定：`registry.register()` + `_LockedTools` 运行时替换 + `valid_tool_names` 同步 | Room 观察者行为边界需要三层锁定（已在 M1 代码中实现） |
 | 4 | 观察者 loop 终止 | 三方案备选 | **方案 A 有清晰实现路径**：`agent/interrupt_compat.py::request_hard_interrupt(agent)` + `agent/subagent_lifecycle.py::get_active_subagent_parent()` 已提供 agent 引用注入 | 不需要改 agent runtime，`route_to_member` 工具内部就能触发中断 |
 | 5 | `SessionSource` 克隆 | 猜是 `dataclasses.replace` 能干 | **确认可以**——纯 dataclass，无隐藏可变状态 | 直接 `replace(source, profile="...")` 即可 |
 | 6 | `_active_profile_name` 全仓审计 | 担心 93 处调用点会返回 gateway 默认 profile | **绝大多数是 scope-aware 的**——通过 `get_hermes_home()` 读 ContextVar，跟随 scope 自动切换 | v1 §2.1 的担忧**基本推翻**，唯一例外是 `_kanban_notifier_profile` 在 gateway __init__ 里固化，跟 Room 无关 |
@@ -127,7 +127,7 @@ turn 内会跑在正确的 scope 下，自然拿到正确的 profile 名。
 **不再需要做**（v2 已消解）：
 - ~~`_active_profile_name` 全仓审计~~（scope-aware，不需要）
 - ~~`memory.enabled` 字段确认~~（已存在为 `memory.memory_enabled`）
-- ~~默认工具注入路径确认~~（`_HERMES_CORE_TOOLS` 是显式打包，不自动注入）
+- ~~默认工具注入路径确认~~（`_HERMES_CORE_TOOLS` 是显式打包不自动注入 — 但 `tool_search` tier-1 仍会保留核心工具，需额外 `_LockedTools` + `registry.register` + `valid_tool_names` 三层锁定，已在 M1 线上验证中修复）
 - ~~观察者 loop 终止机制选型 + POC~~（方案 A 落地路径明确）
 - ~~`SessionSource` 克隆语义确认~~（纯 dataclass，`dataclasses.replace` 可用）
 
