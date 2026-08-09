@@ -119,7 +119,7 @@
   - 确认 assignee 校验可扩展成"必须是 room 成员"
   - 敲定综合 turn 用观察者 session（不新起）
 - [x] **M4.2** 拆分工具 `tools/room_decompose_tool.py`（~150 行）+ `toolsets.py` 改（~5 行）— **完成**（253 行工具 + 253 行测试, 18/18 通过 + toolset 注册 + tool_executor dispatch 分支 + observer 从单工具锁死升级到 2 工具锁死）
-- [ ] **M4.3** 任务编排器 `gateway/agent_room_task_orchestrator.py`（~400 行）
+- [x] **M4.3** 任务编排器 `gateway/agent_room_task_orchestrator.py`（~400 行）— **完成**（474 行编排器 + 500 行测试, 25/25 通过 · 拓扑分层 + 并发执行 + 依赖失败传播 + Fence + 循环拒绝 + M4-B2/B3/B4/B5 边界覆盖）
 - [ ] **M4.4** 综合turn分支 `agent_room_router.py` 改（+150 行）
 - [ ] **M4.5** SOUL.md扩展 `agent_room_bootstrapper.py` 改（+50 行）— 只加"复杂任务用 decompose_and_route"段
 
