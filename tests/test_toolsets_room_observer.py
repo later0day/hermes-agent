@@ -34,11 +34,14 @@ def test_room_observer_toolset_is_registered():
 
 
 def test_room_observer_grants_only_route_to_member():
-    """The whole point of the M1.4 lockdown: observer profile listing
-    only this toolset must NOT get terminal / read_file / delegate_task
-    / anything else. Just route_to_member."""
+    """M1.4 + M4.2: observer profile listing this toolset must NOT get
+    terminal / read_file / delegate_task / anything else. Only the two
+    routing tools (route_to_member from M1, decompose_and_route from M4).
+    """
     entry = TOOLSETS["room_observer"]
-    assert entry["tools"] == ["route_to_member"]
+    # M4 extended the observer's toolset from 1 → 2 tools. Both are
+    # routing/decomposition primitives (§9.2 patch A applies to both).
+    assert set(entry["tools"]) == {"route_to_member", "decompose_and_route"}
 
 
 def test_room_observer_has_no_includes():
