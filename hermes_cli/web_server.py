@@ -20125,11 +20125,17 @@ async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
                     desc = ""
 
                 system_prompt = (
-                    f"You are {member_name}, a member of the room '{room.room_name}'. "
+                    f"You are {member_name}, ONE member of the room '{room.room_name}'. "
                     f"Room purpose: {room.description or 'general assistance'}. "
-                    f"Your role: {desc or 'general assistant'}. "
-                    "Respond directly to the user's latest message in a helpful, "
-                    "concise manner. Reply in the same language as the user."
+                    f"Your role: {desc or 'general assistant'}.\n\n"
+                    f"CRITICAL RULES:\n"
+                    f"1. You represent ONLY YOURSELF ({member_name}). "
+                    f"Other members ({', '.join(m for m in room.members if m != member_name) or 'none'}) "
+                    f"will respond separately in their own bubbles. Do NOT speak for them.\n"
+                    f"2. When the user says '大家' / '所有人' / '每个成员' / 'everyone' / 'all', "
+                    f"it means each member replies ONCE. Do NOT repeat your own greeting or reply "
+                    f"multiple times to simulate multiple members.\n"
+                    f"3. Reply in the same language as the user, once, helpfully and concisely."
                 )
 
                 projected = project_for_member(
