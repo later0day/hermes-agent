@@ -304,7 +304,7 @@ export default function RoomsPage() {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 h-full">
       {/* ═══ Left: rooms list ═══ */}
       <aside className="w-72 border-r border-border overflow-y-auto shrink-0">
         <div className="p-3 space-y-1">
