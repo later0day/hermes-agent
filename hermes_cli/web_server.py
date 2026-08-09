@@ -19766,6 +19766,233 @@ async def unbind_room(room_id: str, body: _RoomBindBody):
         binding_store.close()
 
 
+# ── M2.4 · Room planner REST API ─────────────────────────────────────────
+# Pending plans are stored in a module-level dict keyed by session token
+# so the same authenticated user can get a plan from POST /api/rooms/plan
+# and confirm it with POST /api/rooms/plan/confirm in a subsequent request.
+# The dict is process-local (not persisted) — a restart clears all pending
+# plans, which is acceptable (the user just re-runs /room plan).
+
+_pending_room_plans: dict[str, "object"] = {}  # token → RoomPlan
+
+
+class _RoomPlanRequest(BaseModel):
+    requirement: str
+    max_members: int = 5
+
+
+class _RoomPlanConfirmRequest(BaseModel):
+    room_name: Optional[str] = None  # user-supplied override; auto-derived if absent
+
+
+def _current_session_token(request: Request) -> Optional[str]:
+    """Return the dashboard session token from this request (for plan keying)."""
+    from hermes_cli.web_server import _SESSION_HEADER_NAME
+    return request.headers.get(_SESSION_HEADER_NAME, "anonymous")
+
+
+@app.post("/api/rooms/plan")
+async def post_rooms_plan(request: Request, body: _RoomPlanRequest):
+    """M2.4 §7.2: Accept a natural-language requirement, call the aux LLM
+    room planner, and return a preview of the proposed composition.
+
+    The plan is stored server-side so POST /api/rooms/plan/confirm can
+    look it up without re-running the LLM.
+
+    Returns {"plan": {...plan dict...}} or {"error": "..."} on failure.
+    """
+    from hermes_cli.profiles import list_profiles, read_profile_meta, get_profile_dir
+    from gateway.agent_room_planner import plan_room
+
+    try:
+        all_profiles = list_profiles()
+    except Exception:
+        all_profiles = []
+
+    roster: list[tuple[str, str]] = []
+    for p in all_profiles:
+        if p.name == "default":
+            continue
+        try:
+            meta = read_profile_meta(get_profile_dir(p.name))
+            desc = str(meta.get("description") or "")
+        except Exception:
+            desc = ""
+        roster.append((p.name, desc))
+
+    plan = plan_room(
+        body.requirement,
+        roster,
+        max_members=min(body.max_members, 5),
+    )
+
+    if not plan.is_actionable:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Planning failed: {plan.rationale}",
+        )
+
+    token = _current_session_token(request)
+    _pending_room_plans[token] = plan
+
+    return {"plan": plan.to_dict()}
+
+
+@app.post("/api/rooms/plan/confirm")
+async def post_rooms_plan_confirm(request: Request, body: _RoomPlanConfirmRequest):
+    """M2.4 §7.2: Confirm and execute the pending room plan for this session.
+
+    Creates any new profiles, builds the observer, and creates the room.
+    Full rollback on any failure — no partial state is left.
+
+    Returns {"ok": True, "room": {...}} on success.
+    """
+    import uuid
+    import re as _re
+    from hermes_cli.profiles import (
+        create_profile as _create_profile,
+        delete_profile as _delete_profile,
+        write_profile_meta,
+        get_profile_dir as _get_dir,
+        profile_exists as _pexists,
+    )
+    from gateway.agent_room_bootstrapper import (
+        build_observer_profile,
+        observer_profile_name_for,
+        teardown_observer_profile,
+        BootstrapError,
+    )
+    from gateway.agent_room_store import AgentRoomStore, AgentRoomError
+
+    token = _current_session_token(request)
+    plan = _pending_room_plans.pop(token, None)
+
+    if plan is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No pending room plan. Call POST /api/rooms/plan first.",
+        )
+
+    from gateway.agent_room_planner import RoomPlan
+    assert isinstance(plan, RoomPlan)
+
+    if not plan.is_actionable:
+        raise HTTPException(status_code=422, detail="Pending plan is not actionable.")
+
+    created_profiles: list[str] = []
+
+    # Step 1: create new profiles
+    for m in plan.new_profiles:
+        try:
+            _create_profile(
+                m.name,
+                clone_from=None,
+                clone_all=False,
+                clone_config=False,
+                clone_env=False,
+                clone_skills=False,
+                no_alias=True,
+                no_skills=True,
+            )
+            write_profile_meta(
+                _get_dir(m.name),
+                description=m.description,
+                description_auto=True,
+            )
+            created_profiles.append(m.name)
+        except Exception as exc:
+            _log.warning("M2.4 confirm: create profile %s failed: %s", m.name, exc)
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create profile '{m.name}': {exc}",
+            )
+
+    # Step 2: derive room name
+    room_name = body.room_name or ""
+    if not room_name:
+        room_name = plan.room_description[:30].replace(" ", "_").lower()
+        room_name = _re.sub(r"[^a-z0-9_-]", "", room_name) or "planned_room"
+
+    store = AgentRoomStore()
+    try:
+        if store.get_room_by_name(room_name) is not None:
+            room_name = f"{room_name}_{uuid.uuid4().hex[:6]}"
+
+        member_names = [
+            m.profile if not m.is_new else m.name for m in plan.members
+        ]
+        members_with_desc = [
+            (m.profile if not m.is_new else m.name, m.description)
+            for m in plan.members
+        ]
+
+        obs_name = observer_profile_name_for(room_name)
+        if _pexists(obs_name):
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=409,
+                detail=f"Observer profile '{obs_name}' already exists.",
+            )
+
+        # Step 3: build observer
+        try:
+            build_observer_profile(
+                room_name=room_name,
+                room_description=plan.room_description,
+                members=members_with_desc,
+                default_member=member_names[0],
+                observer_name=obs_name,
+            )
+        except BootstrapError as exc:
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        # Step 4: create room row
+        room_id = f"room_{uuid.uuid4().hex[:12]}"
+        try:
+            room = store.create_room(
+                room_id,
+                room_name,
+                observer_profile=obs_name,
+                members=member_names,
+                description=plan.room_description,
+                default_member=member_names[0],
+                actor="dashboard",
+            )
+        except AgentRoomError as exc:
+            try:
+                teardown_observer_profile(obs_name)
+            except Exception:
+                pass
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        return {
+            "ok": True,
+            "room": room.to_dict(),
+            "new_profiles": created_profiles,
+        }
+    finally:
+        store.close()
+
+
 mount_spa(app)
 
 

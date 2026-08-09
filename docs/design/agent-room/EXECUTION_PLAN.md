@@ -61,7 +61,7 @@
 - [x] **M2.1** Prompt 模板 `gateway/agent_room_planner_prompts.py`（~150 行）— **完成**（60 行，24/24 测试通过）
 - [x] **M2.2** 规划器 `gateway/agent_room_planner.py`（~350 行）— **完成**（259 行 + 288 行测试，24/24 通过 + 幻觉过滤/超限截断/空需求/降级全覆盖）
 - [x] **M2.3** 命令+确认交互 `slash_commands.py` 改（~200 行）— **完成**（slash_commands.py +160 行 plan/confirm · 250 行测试，9/9 通过 + M2 DoD 确认前零创建验证 + 回滚测试）
-- [ ] **M2.4** REST API + Dashboard 规划预览页 `web_server.py` 改（~180）+ 前端（~300）
+- [x] **M2.4** REST API + Dashboard 规划预览页 `web_server.py` 改（~180）+ 前端（~300）— **完成**（web_server.py +~230 行 POST /api/rooms/plan + POST /api/rooms/plan/confirm · 167 行测试，7/7 通过。Dashboard 前端规划预览页与 M1.8 一并推迟，API 层已就位）
 
 测试代码（~400 行）同步写。
 
