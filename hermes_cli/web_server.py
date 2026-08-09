@@ -19788,6 +19788,17 @@ class _RoomPlanConfirmRequest(BaseModel):
     room_name: Optional[str] = None  # user-supplied override; auto-derived if absent
 
 
+class _RoomDispatchRequest(BaseModel):
+    """Send a test message to a room from the dashboard.
+
+    Simulates a user message arriving on an IM channel and drives the
+    Room router synchronously so the dashboard can display the
+    resulting reply/replies inline. Used for /rooms chat panel.
+    """
+    message: str
+    broadcast: bool = False  # True → skip observer, dispatch to all members
+
+
 def _current_session_token(request: Request) -> Optional[str]:
     """Return the dashboard session token from this request (for plan keying)."""
     from hermes_cli.web_server import _SESSION_HEADER_NAME
@@ -19994,6 +20005,143 @@ async def post_rooms_plan_confirm(request: Request, body: _RoomPlanConfirmReques
         }
     finally:
         store.close()
+
+
+@app.post("/api/rooms/{room_id}/dispatch")
+async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
+    """Dashboard-side chat: send `message` to a room and return every
+    member's reply inline. Runs the same router pipeline as an IM-inbound
+    message would, but synchronously and with results collected into the
+    HTTP response instead of sent back through a webhook.
+
+    On success:
+      {"ok": true, "target_members": [...], "replies": {member: reply, ...}}
+
+    ``broadcast=true`` skips the observer's routing decision and fans
+    out to every room member concurrently — the escape hatch for
+    "greet everyone" / "each of you introduce yourselves" cases where
+    LLM observers reliably pick a single member.
+    """
+    from gateway.agent_room_store import AgentRoomStore
+    from gateway.agent_room_messages_store import AgentRoomMessagesStore
+    from gateway.agent_room_planner import _sanitize_profile_name  # noqa: F401
+
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="message is empty")
+
+    store = AgentRoomStore()
+    msgs_store = AgentRoomMessagesStore()
+    try:
+        room = store.get_room(room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail=f"Room {room_id} not found")
+        if not room.members:
+            raise HTTPException(status_code=400, detail="Room has no members")
+
+        # Persist the user's message once
+        try:
+            msgs_store.append(
+                room_id,
+                sender_kind="user",
+                sender_name="dashboard",
+                content=body.message,
+            )
+        except Exception as exc:
+            _log.warning("dispatch: failed to persist user msg: %s", exc)
+
+        # Determine target members: broadcast → all; else pick default_member
+        # as a simple heuristic (we don't have a live observer here — a
+        # full observer turn requires the gateway process, not the dashboard
+        # process). For dashboard chat, users can toggle broadcast=true to
+        # get every member's reply.
+        if body.broadcast:
+            target_members = list(room.members)
+        else:
+            target_members = [room.default_member or room.members[0]]
+
+        # Dispatch each member via a lightweight in-process agent call.
+        # We reuse the auxiliary_client pattern: build a plain LLM chat
+        # request against the member's profile SOUL + description, without
+        # spinning up a full AIAgent turn (which would need the gateway).
+        import asyncio
+        from gateway.agent_room_projection import project_for_member
+
+        room_msgs = msgs_store.list_messages(room_id)
+
+        async def _run_member_dispatch(member_name: str) -> tuple[str, str]:
+            """Run one member's reply via auxiliary LLM, using projected history."""
+            try:
+                from hermes_cli.profiles import read_profile_meta, get_profile_dir
+                from agent.auxiliary_client import call_llm as _call_llm
+
+                # Build a lightweight system prompt from member's description
+                try:
+                    meta = read_profile_meta(get_profile_dir(member_name))
+                    desc = str(meta.get("description") or "")
+                except Exception:
+                    desc = ""
+
+                system_prompt = (
+                    f"You are {member_name}, a member of the room '{room.room_name}'. "
+                    f"Room purpose: {room.description or 'general assistance'}. "
+                    f"Your role: {desc or 'general assistant'}. "
+                    "Respond directly to the user's latest message in a helpful, "
+                    "concise manner. Reply in the same language as the user."
+                )
+
+                projected = project_for_member(
+                    room_msgs[:-1] if room_msgs else [],
+                    target_member=member_name,
+                )
+                messages = [{"role": "system", "content": system_prompt}]
+                for p in projected:
+                    messages.append(p.to_openai())
+                messages.append({"role": "user", "content": body.message})
+
+                loop = asyncio.get_running_loop()
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda: _call_llm(
+                        task="room_member_dispatch",
+                        messages=messages,
+                        temperature=0.5,
+                        max_tokens=800,
+                        timeout=60,
+                    ),
+                )
+                reply = resp.choices[0].message.content or "(no reply)"
+
+                # Persist member reply back to shared store
+                try:
+                    msgs_store.append(
+                        room_id,
+                        sender_kind="member",
+                        sender_name=member_name,
+                        content=reply,
+                    )
+                except Exception as exc:
+                    _log.warning("dispatch: persist member reply failed: %s", exc)
+
+                return (member_name, reply)
+            except Exception as exc:
+                _log.warning("dispatch: member %s failed: %s", member_name, exc)
+                return (member_name, f"[error: {type(exc).__name__}: {exc}]")
+
+        # Run all target members concurrently
+        results = await asyncio.gather(*[
+            _run_member_dispatch(m) for m in target_members
+        ])
+        replies = dict(results)
+
+        return {
+            "ok": True,
+            "target_members": target_members,
+            "broadcast": body.broadcast,
+            "replies": replies,
+        }
+    finally:
+        store.close()
+        msgs_store.close()
 
 
 mount_spa(app)

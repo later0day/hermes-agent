@@ -5,7 +5,7 @@ import {
   Bot,
   Check,
   Edit3,
-  Info,
+
   Link2,
   Loader2,
   MessageSquare,
@@ -79,6 +79,19 @@ export default function RoomsPage() {
   // Bind
   const [bindKey, setBindKey] = useState("");
   const [binding, setBinding] = useState(false);
+
+  // Chat panel (dashboard-side messaging)
+  interface ChatMessage {
+    id: number;
+    kind: "user" | "member";
+    sender: string;
+    content: string;
+  }
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBroadcast, setChatBroadcast] = useState(false);
+  const [chatSending, setChatSending] = useState(false);
+  const chatSeqRef = useRef(0);
 
   const selectedRoom = useMemo(
     () => rooms.find((r) => r.room_id === selectedRoomId) ?? null,
@@ -283,6 +296,69 @@ export default function RoomsPage() {
       setBinding(false);
     }
   }, [selectedRoom, bindKey, showToast]);
+
+  // ─── Reset chat when selecting a different room ─────────────────────────
+  useEffect(() => {
+    if (selectedRoom) {
+      setChatHistory([]);
+      setChatInput("");
+      chatSeqRef.current = 0;
+    }
+  }, [selectedRoomId, selectedRoom]);
+
+  // ─── Send message from dashboard chat panel ─────────────────────────────
+  const handleSendChat = useCallback(async () => {
+    if (!selectedRoom || !chatInput.trim()) return;
+    const messageText = chatInput.trim();
+
+    // Optimistically show the user's message
+    chatSeqRef.current += 1;
+    setChatHistory((prev) => [
+      ...prev,
+      {
+        id: chatSeqRef.current,
+        kind: "user",
+        sender: "You",
+        content: messageText,
+      },
+    ]);
+    setChatInput("");
+    setChatSending(true);
+
+    try {
+      const resp = await api.dispatchRoomMessage(
+        selectedRoom.room_id,
+        messageText,
+        chatBroadcast,
+      );
+      for (const m of resp.target_members) {
+        const reply = resp.replies[m] || "(no reply)";
+        chatSeqRef.current += 1;
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            id: chatSeqRef.current,
+            kind: "member",
+            sender: m,
+            content: reply,
+          },
+        ]);
+      }
+    } catch (err) {
+      chatSeqRef.current += 1;
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          id: chatSeqRef.current,
+          kind: "member",
+          sender: "system",
+          content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ]);
+    } finally {
+      setChatSending(false);
+    }
+  }, [selectedRoom, chatInput, chatBroadcast]);
 
   // ─── Available profiles (not in the roster) ─────────────────────────────
   const availableForCreate = useMemo(
@@ -531,43 +607,101 @@ export default function RoomsPage() {
         )}
       </main>
 
-      {/* ═══ Right: chat preview ═══ */}
+      {/* ═══ Right: chat panel — dashboard-side messaging ═══ */}
       {selectedRoom && (
-        <aside className="w-96 border-l border-border overflow-y-auto p-4 shrink-0">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <MessageSquare className="h-4 w-4" />
-                Chat with this room
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div className="flex items-start gap-2 rounded-md bg-blue-50 dark:bg-blue-950/30 p-3 border border-blue-200 dark:border-blue-900">
-                <Info className="h-4 w-4 mt-0.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                <div className="text-xs">
-                  <p className="font-medium mb-1">Live chat coming in M4</p>
-                  <p className="text-muted-foreground">
-                    Rooms currently receive messages through bound IM channels (DingTalk, Slack, etc.). Bind this room to a channel and test from the messenger.
-                  </p>
-                </div>
+        <aside className="w-96 border-l border-border flex flex-col shrink-0">
+          <div className="p-3 border-b border-border">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <MessageSquare className="h-4 w-4" />
+              Chat with {selectedRoom.room_name}
+            </div>
+            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={chatBroadcast}
+                  onChange={(e) => setChatBroadcast(e.target.checked)}
+                  className="h-3 w-3"
+                />
+                Broadcast to all {selectedRoom.members.length} members
+              </label>
+            </div>
+          </div>
+
+          {/* Message list */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {chatHistory.length === 0 ? (
+              <div className="text-center text-sm text-muted-foreground py-8">
+                <MessageSquare className="mx-auto h-8 w-8 opacity-30 mb-2" />
+                <p>Send a test message below.</p>
+                <p className="text-xs mt-1">
+                  Bind this room to an IM channel for live routing.
+                </p>
               </div>
-              <div>
-                <Label className="text-xs">Rooms API</Label>
-                <div className="mt-1 space-y-1 font-mono text-xs text-muted-foreground">
-                  <div>GET /api/rooms/{selectedRoom.room_id}</div>
-                  <div>POST /api/rooms/{selectedRoom.room_id}/bind</div>
-                  <div>POST /api/rooms/plan</div>
+            ) : (
+              chatHistory.map((m) => (
+                <div
+                  key={m.id}
+                  className={cn(
+                    "flex flex-col",
+                    m.kind === "user" ? "items-end" : "items-start",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "rounded-lg px-3 py-2 max-w-[85%] break-words text-sm whitespace-pre-wrap",
+                      m.kind === "user"
+                        ? "bg-blue-600 text-white"
+                        : "bg-muted",
+                    )}
+                  >
+                    {m.content}
+                  </div>
+                  <div className="mt-1 text-[10px] text-muted-foreground font-mono px-1">
+                    {m.sender}
+                  </div>
                 </div>
+              ))
+            )}
+            {chatSending && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>Members are thinking…</span>
               </div>
-              <div>
-                <Label className="text-xs">Slash commands</Label>
-                <div className="mt-1 space-y-1 font-mono text-xs text-muted-foreground">
-                  <div>/room bind {selectedRoom.room_name}</div>
-                  <div>/room plan &lt;requirement&gt;</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+            )}
+          </div>
+
+          {/* Input */}
+          <div className="p-3 border-t border-border">
+            <div className="flex gap-2">
+              <textarea
+                rows={2}
+                className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
+                placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleSendChat();
+                  }
+                }}
+                disabled={chatSending}
+              />
+              <Button
+                onClick={handleSendChat}
+                disabled={chatSending || !chatInput.trim()}
+                size="sm"
+                className="self-end"
+              >
+                {chatSending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Send"
+                )}
+              </Button>
+            </div>
+          </div>
         </aside>
       )}
 

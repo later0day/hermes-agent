@@ -1475,6 +1475,17 @@ export const api = {
       "/api/rooms/plan/confirm",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     ),
+  dispatchRoomMessage: (roomId: string, message: string, broadcast: boolean = false) =>
+    fetchJSON<{
+      ok: boolean;
+      target_members: string[];
+      broadcast: boolean;
+      replies: Record<string, string>;
+    }>(`/api/rooms/${encodeURIComponent(roomId)}/dispatch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, broadcast }),
+    }),
 };
 
 // ── Agent Room types ─────────────────────────────────────────────────────
