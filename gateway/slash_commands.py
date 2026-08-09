@@ -6389,6 +6389,214 @@ class GatewaySlashCommandsMixin:
                 )
             return f"Default member of `{name}` set to `{member}`."
 
+        # ------------------------------------------------------------------
+        # /room plan <requirement>  (M2.3)
+        # ------------------------------------------------------------------
+        if action == "plan":
+            if not args:
+                return "Usage: /room plan <requirement description>"
+
+            requirement = " ".join(args)
+            if not requirement.strip():
+                return "Usage: /room plan <requirement description>"
+
+            # Gather existing profile roster
+            from hermes_cli.profiles import list_profiles, read_profile_meta, get_profile_dir
+            try:
+                all_profiles = list_profiles()
+            except Exception:
+                all_profiles = []
+
+            roster: list[tuple[str, str]] = []
+            for p in all_profiles:
+                if p.name == "default":
+                    continue
+                try:
+                    meta = read_profile_meta(get_profile_dir(p.name))
+                    desc = str(meta.get("description") or "")
+                except Exception:
+                    desc = ""
+                roster.append((p.name, desc))
+
+            # Call the planner
+            from gateway.agent_room_planner import plan_room
+            plan = plan_room(requirement, roster)
+
+            if not plan.is_actionable:
+                return (
+                    f"⚠️ Room planning failed: {plan.rationale}\n"
+                    f"Try describing your needs more specifically, e.g.:\n"
+                    f"  /room plan 我需要客服+财务+技术的协作"
+                )
+
+            # Store the pending plan for Y/N confirmation
+            if not hasattr(self, "_pending_room_plans"):
+                self._pending_room_plans = {}
+            plan_key = str(source.chat_id or "default")
+            self._pending_room_plans[plan_key] = plan
+
+            # Format the plan for the user
+            lines = ["📋 **Room Plan**", ""]
+            lines.append(f"**Purpose:** {plan.room_description}")
+            lines.append(f"**Rationale:** {plan.rationale}")
+            lines.append("")
+            lines.append("**Members:**")
+            for m in plan.members:
+                tag = "🆕 new" if m.is_new else f"✅ existing: `{m.profile}`"
+                lines.append(f"- **{m.name}** ({tag}) — {m.description}")
+                if m.reason:
+                    lines.append(f"  _Reason: {m.reason}_")
+            lines.append("")
+            lines.append("**To confirm:** reply `Y`")
+            lines.append("**To cancel:** reply `N` or just send a different message")
+            return "\n".join(lines)
+
+        # ------------------------------------------------------------------
+        # /room confirm  (M2.3 — Y/N confirmation)
+        # ------------------------------------------------------------------
+        if action == "confirm":
+            # This is the "Y" path after a plan
+            if not hasattr(self, "_pending_room_plans"):
+                return "No pending room plan. Use `/room plan <requirement>` first."
+
+            plan_key = str(source.chat_id or "default")
+            plan = self._pending_room_plans.get(plan_key)
+            if plan is None:
+                return "No pending room plan. Use `/room plan <requirement>` first."
+
+            # Clear the pending plan before doing anything (so a crash
+            # doesn't leave a stale plan that gets confirmed twice).
+            del self._pending_room_plans[plan_key]
+
+            if not plan.is_actionable:
+                return "Pending plan is no longer actionable."
+
+            import uuid
+            from hermes_cli.profiles import (
+                create_profile as _create_profile,
+                read_profile_meta as _read_meta,
+                get_profile_dir as _get_dir,
+            )
+            from gateway.agent_room_bootstrapper import (
+                build_observer_profile as _build_observer,
+                observer_profile_name_for as _obs_name,
+            )
+
+            # Step 1: Create new profiles
+            created_profiles: list[str] = []
+            for m in plan.new_profiles:
+                try:
+                    _create_profile(
+                        m.name,
+                        clone_from=None,
+                        clone_all=False,
+                        clone_config=False,
+                        clone_env=False,
+                        clone_skills=False,
+                        no_alias=True,
+                        no_skills=True,
+                    )
+                    # Write description
+                    from hermes_cli.profiles import write_profile_meta
+                    write_profile_meta(
+                        _get_dir(m.name),
+                        description=m.description,
+                        description_auto=True,
+                    )
+                    created_profiles.append(m.name)
+                except Exception as exc:
+                    logger.warning(
+                        "/room confirm: failed to create profile %s: %s",
+                        m.name, exc,
+                    )
+                    # Rollback: delete any profiles we already created
+                    for cp in created_profiles:
+                        try:
+                            from hermes_cli.profiles import delete_profile
+                            delete_profile(cp, yes=True)
+                        except Exception:
+                            pass
+                    return f"❌ Failed to create profile `{m.name}`: {exc}\nPlan cancelled. No changes made."
+
+            # Step 2: Build the member list for /room create
+            member_names: list[str] = []
+            members_with_desc: list[tuple[str, str]] = []
+            for m in plan.members:
+                name = m.profile if not m.is_new else m.name
+                member_names.append(name)
+                members_with_desc.append((name, m.description))
+
+            # Step 3: Derive room name from the plan
+            room_name = plan.room_description[:30].replace(" ", "_").lower()
+            # Clean up for profile name rules
+            import re as _re
+            room_name = _re.sub(r"[^a-z0-9_-]", "", room_name) or "planned_room"
+
+            # Check name collision
+            if room_store.get_room_by_name(room_name) is not None:
+                room_name = f"{room_name}_{uuid.uuid4().hex[:6]}"
+
+            # Step 4: Build observer profile
+            obs_name = _obs_name(room_name)
+            from hermes_cli.profiles import profile_exists as _profile_exists
+            if _profile_exists(obs_name):
+                return f"❌ Observer profile `{obs_name}` already exists. Choose a different room name."
+
+            room_id = f"room_{uuid.uuid4().hex[:12]}"
+
+            try:
+                _build_observer(
+                    room_name=room_name,
+                    room_description=plan.room_description,
+                    members=members_with_desc,
+                    default_member=member_names[0],
+                    observer_name=obs_name,
+                )
+            except Exception as exc:
+                # Rollback created profiles
+                for cp in created_profiles:
+                    try:
+                        from hermes_cli.profiles import delete_profile
+                        delete_profile(cp, yes=True)
+                    except Exception:
+                        pass
+                return f"❌ Failed to create observer profile: {exc}"
+
+            # Step 5: Create room in store
+            actor = getattr(source, "user_id", None) or "gateway"
+            try:
+                room_store.create_room(
+                    room_id,
+                    room_name,
+                    observer_profile=obs_name,
+                    members=member_names,
+                    description=plan.room_description,
+                    default_member=member_names[0],
+                    actor=str(actor),
+                )
+            except Exception as exc:
+                # Rollback observer + created profiles
+                try:
+                    from gateway.agent_room_bootstrapper import teardown_observer_profile
+                    teardown_observer_profile(obs_name)
+                except Exception:
+                    pass
+                for cp in created_profiles:
+                    try:
+                        from hermes_cli.profiles import delete_profile
+                        delete_profile(cp, yes=True)
+                    except Exception:
+                        pass
+                return f"❌ Failed to create room: {exc}"
+
+            summary = f"✅ Room `{room_name}` created!\n"
+            summary += f"  Observer: `{obs_name}`\n"
+            summary += f"  Members: {', '.join(member_names)}\n"
+            if created_profiles:
+                summary += f"  New profiles created: {', '.join(created_profiles)}\n"
+            summary += f"\nBind this chat with: `/room bind {room_name}`"
+            return summary
+
         return f"Unknown /room action `{action}`."
 
     def _fence_room_active_sessions(self, room) -> None:
