@@ -1475,6 +1475,12 @@ export const api = {
       "/api/rooms/plan/confirm",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     ),
+  listRoomMessages: (roomId: string, limit: number = 100) =>
+    fetchJSON<{
+      room_id: string;
+      count: number;
+      messages: RoomMessageRow[];
+    }>(`/api/rooms/${encodeURIComponent(roomId)}/messages?limit=${limit}`),
   dispatchRoomMessage: (roomId: string, message: string, broadcast: boolean = false) =>
     fetchJSON<{
       ok: boolean;
@@ -1500,6 +1506,17 @@ export interface RoomRecord {
   created_at: number;
   updated_at: number;
   actor: string;
+}
+
+export interface RoomMessageRow {
+  room_id: string;
+  sequence: number;
+  sender_kind: "user" | "observer" | "member" | "tool_result";
+  sender_name: string;
+  content: string;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+  timestamp: number;
 }
 
 export interface RoomCreateRequest {

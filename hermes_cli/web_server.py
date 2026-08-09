@@ -20007,6 +20007,27 @@ async def post_rooms_plan_confirm(request: Request, body: _RoomPlanConfirmReques
         store.close()
 
 
+@app.get("/api/rooms/{room_id}/messages")
+async def list_room_messages(room_id: str, limit: int = 100):
+    """Return the room's shared message history (M3 store), newest-last
+    in canonical order. Used by the Rooms dashboard chat panel to
+    display prior conversation on room-select."""
+    from gateway.agent_room_messages_store import AgentRoomMessagesStore
+    store = AgentRoomMessagesStore()
+    try:
+        msgs = store.list_messages(room_id)
+        # Trim to newest `limit` entries (list is already in sequence order)
+        if limit and len(msgs) > limit:
+            msgs = msgs[-limit:]
+        return {
+            "room_id": room_id,
+            "count": len(msgs),
+            "messages": [m.to_dict() for m in msgs],
+        }
+    finally:
+        store.close()
+
+
 @app.post("/api/rooms/{room_id}/dispatch")
 async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
     """Dashboard-side chat: send `message` to a room and return every

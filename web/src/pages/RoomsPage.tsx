@@ -297,13 +297,53 @@ export default function RoomsPage() {
     }
   }, [selectedRoom, bindKey, showToast]);
 
-  // ─── Reset chat when selecting a different room ─────────────────────────
+  // ─── Load room history when selecting a room ────────────────────────────
   useEffect(() => {
-    if (selectedRoom) {
+    if (!selectedRoom) {
       setChatHistory([]);
       setChatInput("");
       chatSeqRef.current = 0;
+      return;
     }
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await api.listRoomMessages(selectedRoom.room_id, 100);
+        if (cancelled) return;
+        // Convert store rows → chat bubbles. Skip observer rows and
+        // tool_result rows (those are routing metadata, not user-visible chat).
+        const bubbles: ChatMessage[] = [];
+        for (const m of resp.messages) {
+          if (m.sender_kind === "user") {
+            chatSeqRef.current += 1;
+            bubbles.push({
+              id: chatSeqRef.current,
+              kind: "user",
+              sender: m.sender_name === "dashboard" ? "You" : m.sender_name,
+              content: m.content,
+            });
+          } else if (m.sender_kind === "member") {
+            chatSeqRef.current += 1;
+            bubbles.push({
+              id: chatSeqRef.current,
+              kind: "member",
+              sender: m.sender_name,
+              content: m.content,
+            });
+          }
+          // observer + tool_result rows are omitted from the visible chat
+        }
+        setChatHistory(bubbles);
+        setChatInput("");
+      } catch (err) {
+        // Non-fatal — just start with an empty chat if fetch fails
+        setChatHistory([]);
+        setChatInput("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedRoomId, selectedRoom]);
 
   // ─── Send message from dashboard chat panel ─────────────────────────────
@@ -442,7 +482,7 @@ export default function RoomsPage() {
       </aside>
 
       {/* ═══ Center: room detail ═══ */}
-      <main className="flex-1 overflow-y-auto p-6">
+      <main className="w-[440px] shrink-0 overflow-y-auto p-4 border-l border-border order-3">
         {!selectedRoom ? (
           <div className="flex h-full items-center justify-center text-center text-muted-foreground">
             <div>
@@ -609,7 +649,7 @@ export default function RoomsPage() {
 
       {/* ═══ Right: chat panel — dashboard-side messaging ═══ */}
       {selectedRoom && (
-        <aside className="w-96 border-l border-border flex flex-col shrink-0">
+        <aside className="flex-1 min-w-[400px] flex flex-col order-2">
           <div className="p-3 border-b border-border">
             <div className="flex items-center gap-2 text-sm font-medium">
               <MessageSquare className="h-4 w-4" />
