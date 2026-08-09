@@ -20069,6 +20069,15 @@ async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
     from gateway.agent_room_messages_store import AgentRoomMessagesStore
     from gateway.agent_room_planner import _sanitize_profile_name  # noqa: F401
 
+    def _read_member_desc(name: str) -> str:
+        """Look up a member profile's description, empty on failure."""
+        try:
+            from hermes_cli.profiles import read_profile_meta, get_profile_dir
+            meta = read_profile_meta(get_profile_dir(name))
+            return str(meta.get("description") or "")
+        except Exception:
+            return ""
+
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message is empty")
 
@@ -20114,28 +20123,51 @@ async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
         async def _run_member_dispatch(member_name: str) -> tuple[str, str]:
             """Run one member's reply via auxiliary LLM, using projected history."""
             try:
-                from hermes_cli.profiles import read_profile_meta, get_profile_dir
                 from agent.auxiliary_client import call_llm as _call_llm
 
-                # Build a lightweight system prompt from member's description
-                try:
-                    meta = read_profile_meta(get_profile_dir(member_name))
-                    desc = str(meta.get("description") or "")
-                except Exception:
-                    desc = ""
+                # Fetch own description via shared helper
+                desc = _read_member_desc(member_name)
+
+                # Build system prompt in Studio's style — see hermes-studio's
+                # packages/server/src/services/hermes/context-engine/prompt.ts
+                # (buildAgentInstructions). Key rules that fix the "each
+                # member replies for the whole group" bug:
+                #   1. Tell the agent the system has ALREADY decided it
+                #      should reply — no self-deciding to skip.
+                #   2. Only respond to messages that mention it.
+                #   3. Never mimic the "[sender]: ..." projection format
+                #      in own output.
+                #   4. Don't @-mention others unnecessarily to avoid loops.
+                other_members_lines = [
+                    f"- {m_name}: {m_desc or '专业助手'}"
+                    for m_name, m_desc in [
+                        (other, _read_member_desc(other))
+                        for other in room.members if other != member_name
+                    ]
+                ]
+                other_members_section = (
+                    "\n".join(other_members_lines) if other_members_lines else "- 无"
+                )
 
                 system_prompt = (
-                    f"You are {member_name}, ONE member of the room '{room.room_name}'. "
-                    f"Room purpose: {room.description or 'general assistance'}. "
-                    f"Your role: {desc or 'general assistant'}.\n\n"
-                    f"CRITICAL RULES:\n"
-                    f"1. You represent ONLY YOURSELF ({member_name}). "
-                    f"Other members ({', '.join(m for m in room.members if m != member_name) or 'none'}) "
-                    f"will respond separately in their own bubbles. Do NOT speak for them.\n"
-                    f"2. When the user says '大家' / '所有人' / '每个成员' / 'everyone' / 'all', "
-                    f"it means each member replies ONCE. Do NOT repeat your own greeting or reply "
-                    f"multiple times to simulate multiple members.\n"
-                    f"3. Reply in the same language as the user, once, helpfully and concisely."
+                    f"你是\"{member_name}\"，群聊房间\"{room.room_name}\"中的 AI 助手。\n\n"
+                    f"你的角色：{desc or '专业的 AI 助手，随时准备协助解决问题。'}\n\n"
+                    f"房间描述：{room.description or '通用协作团队'}\n\n"
+                    f"当前房间其他参与者（每个成员会在自己独立的对话气泡里回复）：\n"
+                    f"{other_members_section}\n\n"
+                    "规则：\n"
+                    "- 当你收到群聊任务时，说明系统已经判断你需要回复；请直接回应当前消息，不要因为消息里同时提及其他成员而拒绝回复或输出空回复。\n"
+                    "- 你只代表你自己一个人回答；其他成员会分别在他们自己的气泡里回复，不需要你替他们说话或模拟他们的口吻。\n"
+                    "- 不要因为用户说\"大家/都/所有/everyone/all\"就把自己的回复重复多次，或替其他成员回答——那是系统层做的分发，你只需要以自己一个人的身份说一次。\n"
+                    "- 回答简洁、对群聊有帮助。\n"
+                    "- 不要假装是人类，需要时明确表明自己是 AI。\n"
+                    "- 对话历史中包含多个人的消息，每条消息前标有发送者名字。\n"
+                    f"- 历史消息里的\"[发送者]: ...\"只是系统添加的归属标记，用来帮助你理解谁说了这句话；不要在你的回复中复述或模仿这种方括号前缀。\n"
+                    f"- 回复时使用自然语言即可；如果需要点名某人，只使用 @名字，不要输出\"[{member_name}]:\"这类格式。\n"
+                    "- 回复最新一条来自用户的消息，使用与用户相同的语言。\n"
+                    "- 不要主动 @ 任何人，除非最新消息明确要求你转交、邀请、询问某个具体成员。\n"
+                    "- 如果只是回答提问，直接回答，不要在结尾 @ 其他成员继续接力。\n"
+                    "- 不要为了活跃气氛、征求补充、让别人也看看而 @ 其他成员或用户。\n"
                 )
 
                 projected = project_for_member(
