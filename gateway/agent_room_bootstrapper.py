@@ -159,25 +159,22 @@ multi-party stream, formatted for context. You will see entries like:
    in the `reason` field, prefixed with "上一位处理人 <name> 的回复摘要:".
    The router will forward this summary to the new member so they don't
    lose context. (§8 cross-member summary — M1 UX-cliff mitigation.)
-4. **Multi-member routing (M3)** — when the user's LATEST message needs
-   input from MULTIPLE members, pass an ARRAY of profile names to
-   `member`, e.g. `member: ["client_svc", "finance"]`. Use this when:
-   - The message spans distinct expertise domains (e.g. "我要退款并咨询发票"
-     → both client_svc and finance)
-   - The message is a **broadcast/greeting** addressed to the whole room
-     (e.g. "大家好", "所有人介绍一下自己", "everyone please respond",
-     "hi all", "@all", "请各位分别介绍") — in that case route to ALL
-     members with the full roster list.
-   - The user explicitly asks for multiple opinions or a group answer.
-   Single-member routing (member as a string) is the default; only use
-   the array form when concurrency is genuinely warranted.
+4. **Multi-member routing (M3)** — the `member` field is ALWAYS an
+   ARRAY of profile names (even for single-member routing). Use:
+   - **Single member** (default): `member=["one_name"]` — a one-element array.
+   - **Multiple domains**: `member=["a", "b"]` (e.g. "我要退款并咨询发票"
+     → `["client_svc", "finance"]`)
+   - **Broadcast/greeting to whole room** (e.g. "大家好",
+     "所有人介绍一下自己", "everyone please respond", "hi all", "@all",
+     "请各位分别介绍") → route to ALL members with the full roster.
+   - **Ambiguous / doesn't fit anyone** → route to the default member
+     as a one-element array `member=["{default_member}"]`.
 
-   **CRITICAL — for broadcast messages, emit ONE tool call with an
-   array, NOT multiple sequential single-member calls.** Members will
-   run concurrently in parallel — you don't need to route them one by
-   one across turns.
+   All listed members will run their turns concurrently in parallel;
+   you don't need to route them one-by-one across turns. Members will
+   each reply in their own bubble.
 
-## Examples of correct multi-member routing
+## Examples of correct routing (member field is ALWAYS an array)
 
 Example A (broadcast to all):
   User: "大家好，请每位成员分别做一下自我介绍"
@@ -188,26 +185,36 @@ Example A (broadcast to all):
       is_new_topic=true
     )
 
-Example B (cross-domain single question):
+Example B (cross-domain question):
   User: "我要退款并咨询发票"
   Correct tool call:
     route_to_member(
       member=["client_svc", "finance"],
-      reason="refund goes to client_svc, invoice question to finance — parallel",
+      reason="refund + invoice split across client_svc and finance in parallel",
       is_new_topic=true
     )
 
-Example C (single-domain question — DEFAULT):
+Example C (single-domain question):
   User: "怎么退款"
   Correct tool call:
     route_to_member(
-      member="client_svc",
+      member=["client_svc"],
       reason="refund query, single-member",
       is_new_topic=true
     )
+
+Example D (ambiguous fallback):
+  User: "在吗"
+  Correct tool call:
+    route_to_member(
+      member=["{default_member}"],
+      reason="fallback — ambiguous message",
+      is_new_topic=true
+    )
+
 5. Emit your routing decision by CALLING THE `route_to_member` TOOL with:
-   - `member`: profile name (str) OR array of profile names (list[str])
-     for concurrent multi-member dispatch
+   - `member`: ARRAY of profile names (list[str]), always. Single member
+     is still a one-element list.
    - `reason`: 1-sentence explanation (+ optional summary per step 3)
    - `is_new_topic`: true if you consider this a new topic
 

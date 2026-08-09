@@ -211,8 +211,10 @@ def test_schema_required_matches_function_signature():
     """Function signature has member + reason as positional-required,
     is_new_topic as keyword-with-default. Schema should reflect that.
 
-    M3: member accepts str OR list[str] via oneOf — see
-    test_schema_member_supports_str_or_list below.
+    Post-live-fix: member is ALWAYS a list of profile names (even for
+    single-member routing) — qwen3.7-max via dashscope OpenAI-compat
+    can't reliably handle oneOf(string, array), so we simplified to
+    a plain array type. Single-member routing → one-element list.
     """
     params = ROUTE_TO_MEMBER_SCHEMA["parameters"]
     assert params["type"] == "object"
@@ -221,24 +223,25 @@ def test_schema_required_matches_function_signature():
 
     props = params["properties"]
     assert set(props.keys()) == {"member", "reason", "is_new_topic"}
-    # M3: member uses oneOf(str, array) — see dedicated test
-    assert "oneOf" in props["member"] or props["member"].get("type") == "string"
+    assert props["member"]["type"] == "array"
     assert props["reason"]["type"] == "string"
     assert props["is_new_topic"]["type"] == "boolean"
 
 
-def test_schema_member_supports_str_or_list():
-    """M3.5: route_to_member accepts either a str or list[str] for
-    concurrent multi-member dispatch. The oneOf variants must be
-    present in the schema."""
+def test_schema_member_is_always_array():
+    """After the live-DingTalk fix, `member` is a plain array-of-string
+    (no oneOf). The array cap must match N3 (MAX_ROOM_MEMBERS=5)."""
     props = ROUTE_TO_MEMBER_SCHEMA["parameters"]["properties"]
-    variants = props["member"].get("oneOf", [])
-    assert len(variants) == 2, "member must accept two variants: str + array"
-    types = {v.get("type") for v in variants}
-    assert types == {"string", "array"}
-    # array cap must match N3 (MAX_ROOM_MEMBERS=5)
-    array_variant = next(v for v in variants if v.get("type") == "array")
-    assert array_variant.get("maxItems") == 5
+    member_prop = props["member"]
+    assert member_prop["type"] == "array"
+    assert "oneOf" not in member_prop, (
+        "oneOf caused qwen3.7-max to emit malformed tool calls "
+        "(observed: '<tool>{\"name\":\"route_to_member\"}</tool>' repeated). "
+        "Schema was simplified to a plain array."
+    )
+    assert member_prop.get("items", {}).get("type") == "string"
+    assert member_prop.get("minItems") == 1
+    assert member_prop.get("maxItems") == 5
 
 
 def test_schema_description_documents_soul_md_summary_convention():

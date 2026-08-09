@@ -197,35 +197,26 @@ ROUTE_TO_MEMBER_SCHEMA = {
         "type": "object",
         "properties": {
             "member": {
-                "oneOf": [
-                    {
-                        "type": "string",
-                        "description": (
-                            "A single profile name from the room's member roster. "
-                            "Must match a name shown in the '## Members' section of "
-                            "this observer's SOUL.md exactly (case-sensitive). "
-                            "Use this form for single-member routing (M1 legacy)."
-                        ),
-                    },
-                    {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 5,
-                        "description": (
-                            "An array of profile names for CONCURRENT multi-member "
-                            "dispatch (M3+). Use this when the message spans multiple "
-                            "expertise domains (e.g. '我要退款并咨询发票问题' → "
-                            "['client_svc', 'finance']). All listed members will run "
-                            "their turns in parallel with the shared room context, "
-                            "and their replies will all be delivered to the group."
-                        ),
-                    },
-                ],
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 5,
                 "description": (
-                    "Either a single profile name (str) for single-member routing, "
-                    "or an array of profile names for concurrent multi-member dispatch. "
-                    "If none fit, use the room's default_member."
+                    "Array of profile names to route this message to. "
+                    "MUST always be an array, even for single-member routing. "
+                    "\n\n"
+                    "Rules for the LLM:\n"
+                    "- Single member: ['profile_name']  (one-element array)\n"
+                    "- Multi-domain question: ['a', 'b']  "
+                    "(e.g. '我要退款并咨询发票' → ['client_svc', 'finance'])\n"
+                    "- Broadcast/greeting to whole room: full roster\n"
+                    "  (e.g. '大家好' / '所有人介绍' / '@all' → ['a', 'b', 'c'])\n"
+                    "- If no member fits, use the room's default_member as "
+                    "a single-element array.\n\n"
+                    "Each name MUST match a profile from the '## Members' "
+                    "section of the observer's SOUL.md exactly (case-sensitive). "
+                    "All listed members will process the message in parallel "
+                    "and reply into the shared room history."
                 ),
             },
             "reason": {

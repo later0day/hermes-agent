@@ -420,20 +420,20 @@ class AgentRoomRouter:
         )
         await self._set_last_routed(room_id, _cache_target)
 
-        # ── Step 4: edit the ack message ──────────────────────────────
-        try:
-            if decision.is_multi:
-                _ack_text = f"已并发转交给 {', '.join(decision.target_members)} 处理..."
-            else:
-                _ack_text = f"已转交给 {decision.target_member} 处理..."
-            await self._ack_editor(ack_handle, _ack_text)
-        except Exception as exc:  # noqa: BLE001
-            # Ack edit failures shouldn't derail the routing. Log and
-            # continue — the member's actual reply will still land.
-            logger.warning(
-                "room %s: failed to edit ack message: %s",
-                room_id, exc,
-            )
+        # ── Step 4: edit the ack message (skipped for cleaner UX) ─────
+        # The ack message ('已收到，正在为你选择处理人...') was originally
+        # edited to '已转交给 X 处理...' as a UX hint that routing had
+        # progressed. Live testing showed this becomes noise: (a) the
+        # member's actual reply arrives seconds later and IS the useful
+        # signal, (b) for concurrent multi-member routing the member
+        # labels are already carried by each reply bubble, and (c) the
+        # ack card and the reply are separate IM messages, so the edit
+        # doesn't visibly replace anything for the user.
+        #
+        # We keep the initial ack (sent in Step 1) so the user knows
+        # the message was received during LLM latency, but skip the
+        # 'transferred to X' edit.
+        _ = ack_handle  # kept for future re-enable if needed
 
         # ── Step 4.5: §8 Rule B cross-member summary injection ────────
         # (M3: the projection layer replaces this in-band summary

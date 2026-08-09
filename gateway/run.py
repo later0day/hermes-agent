@@ -25040,6 +25040,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 caller is ignored under M3.
                 """
                 import dataclasses
+
+
                 observer_source = dataclasses.replace(
                     _src,
                     profile=observer_profile,
@@ -25178,14 +25180,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         content = (_last_assistant.get("content") or "").strip()
                         if content and len(content) >= 3:  # skip '*', '', etc.
                             import re as _re
+
+                            # ── Format A: JSON blob {...} ─────────────────
                             blob = _re.search(r"\{.*\}", content, _re.DOTALL)
                             if blob:
                                 try:
                                     parsed = _json.loads(blob.group())
+                                    if isinstance(parsed, dict):
+                                        parsed_route = parsed
                                 except Exception:
-                                    parsed = None
-                                if isinstance(parsed, dict):
-                                    parsed_route = parsed
+                                    pass
+
+                            # ── Format B: Python call form
+                            #   `route_to_member(member=[...], reason='...', is_new_topic=True)`
+                            # qwen3.7-max sometimes emits this when it interprets the
+                            # schema description as pseudo-code rather than an OpenAI
+                            # tool-call structure.
+                            if parsed_route is None:
+                                py_call = _re.search(
+                                    r"route_to_member\s*\((.*?)\)",
+                                    content,
+                                    _re.DOTALL,
+                                )
+                                if py_call:
+                                    try:
+                                        import ast as _ast
+                                        call_src = f"route_to_member({py_call.group(1)})"
+                                        node = _ast.parse(call_src, mode="eval").body
+                                        if isinstance(node, _ast.Call):
+                                            kw_dict: dict = {}
+                                            for kw in node.keywords:
+                                                if kw.arg:
+                                                    kw_dict[kw.arg] = _ast.literal_eval(kw.value)
+                                            if kw_dict:
+                                                parsed_route = kw_dict
+                                    except Exception:
+                                        pass
+
+                            # ── Format C: <tool>{...}</tool> XML-ish wrapper ──
+                            # Some qwen variants emit
+                            #   <tool>{"name":"route_to_member","arguments":{...}}</tool>
+                            # (sometimes with empty arguments — those are unusable).
+                            if parsed_route is None:
+                                xml_calls = _re.findall(
+                                    r"<tool>\s*(\{.*?\})\s*</tool>",
+                                    content,
+                                    _re.DOTALL,
+                                )
+                                for candidate in xml_calls:
+                                    try:
+                                        parsed = _json.loads(candidate)
+                                    except Exception:
+                                        continue
+                                    if isinstance(parsed, dict) and (
+                                        parsed.get("member")
+                                        or (parsed.get("arguments") or {}).get("member")
+                                    ):
+                                        parsed_route = parsed
+                                        break
 
                     if parsed_route is not None:
                         # Unwrap {"name": "route_to_member", "arguments": {...}}
@@ -25294,9 +25346,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 hydrate_profile_secret_sources(Path(profile_home))
                 _home_token = set_hermes_home_override(str(profile_home))
                 _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+
+                # Studio-style room-aware context prompt injected via
+                # _run_agent_inner's context_prompt arg. Ports the rules
+                # from hermes-studio's buildAgentInstructions (see
+                # packages/server/src/services/hermes/context-engine/prompt.ts)
+                # to fix the "each member echoes everyone else's answer"
+                # bug: without this, the member's default SOUL doesn't
+                # know it's in a room, doesn't know the roster, and
+                # naturally tries to answer for the whole group when
+                # given a broadcast message.
+                _member_desc_lookup: dict[str, str] = {}
+                for _m in room.members:
+                    try:
+                        from hermes_cli.profiles import read_profile_meta, get_profile_dir
+                        _meta = read_profile_meta(get_profile_dir(_m))
+                        _member_desc_lookup[_m] = str(_meta.get("description") or "")
+                    except Exception:
+                        _member_desc_lookup[_m] = ""
+                _other_members_lines = [
+                    f"- {_n}: {_member_desc_lookup.get(_n, '') or '专业助手'}"
+                    for _n in room.members if _n != member_profile
+                ]
+                _other_members_section = (
+                    "\n".join(_other_members_lines) if _other_members_lines else "- 无"
+                )
+                _own_desc = _member_desc_lookup.get(member_profile, "") or "专业的 AI 助手"
+
+                room_context_prompt = (
+                    f"你是 \"{member_profile}\"，群聊房间 \"{room.room_name}\" 中的 AI 成员之一。\n\n"
+                    f"你的角色：{_own_desc}\n\n"
+                    f"房间描述：{room.description or '通用协作团队'}\n\n"
+                    f"当前房间其他 AI 成员（每个成员在自己独立的对话气泡里回复）：\n"
+                    f"{_other_members_section}\n\n"
+                    "群聊路由规则（重要）：\n"
+                    "- 系统已经判断你需要回复本条消息；请直接回应，不要输出空回复或说\"没什么可说的\"。\n"
+                    "- 你只代表你自己一个人回答；其他成员会分别在他们自己的气泡里回复，不需要你替他们说话或模拟他们的口吻。\n"
+                    "- 不要因为用户说\"大家 / 都 / 所有 / everyone / all\"就把自己的回复重复多次或替其他成员回答——那是系统层做的分发，你只需要以自己一个人的身份说一次。\n"
+                    "- 回答简洁、对群聊有帮助；使用与用户相同的语言。\n"
+                    "- 不要假装是人类；需要时明确表明自己是 AI。\n"
+                    f"- 对话历史里的\"[发送者]: ...\"只是系统添加的归属标记，用来帮你理解谁说了这句话；不要在你的回复中复述或模仿这种方括号前缀。也不要输出\"[{member_profile}]:\"这类格式，直接以自然语言回复即可。\n"
+                    "- 不要主动 @ 任何人；只有在明确需要另一位成员协助时才 @ 名字，且要说清楚请对方做什么。\n"
+                    "- 如果只是回答提问，直接回答，不要在结尾 @ 其他成员继续接力。\n"
+                )
+
                 try:
                     run_result = await self._run_agent_inner(
-                        msg, "", projected_hist, member_source, session_id,
+                        msg, room_context_prompt, projected_hist, member_source, session_id,
                     )
                 finally:
                     reset_secret_scope(_secret_token)

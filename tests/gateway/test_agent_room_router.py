@@ -352,13 +352,24 @@ async def test_m1_b4_falls_back_to_members_zero_when_no_explicit_default(
 
 
 @pytest.mark.asyncio
-async def test_m1_b5_ack_editor_failure_does_not_derail_dispatch(
+async def test_m1_b5_ack_editor_is_no_longer_called(
     router, mocks, room,
 ):
-    mocks["ack_editor"].side_effect = RuntimeError("session_webhook expired")
+    """Post-live-fix: ack editor is no longer invoked (Step 4 was
+    removed for cleaner UX). The initial ack (Step 1) is kept, but
+    the '已转交给 X 处理...' edit was pure noise since the member's
+    real reply arrives on its own separate IM message.
+
+    Verify:
+      1. ack_editor is NOT called
+      2. Dispatch still reaches the member
+      3. Member reply still lands
+    """
+    mocks["ack_editor"].side_effect = RuntimeError("would raise if called")
 
     result = await router.process_message(object(), "msg", [], room)
 
+    mocks["ack_editor"].assert_not_awaited()  # Step 4 removed
     mocks["member_dispatcher"].assert_awaited_once()
     assert result["target_member"] == "client_svc"
     assert result["reply"] == "member reply text"
@@ -722,8 +733,12 @@ async def test_m3_fence_predispatch_drops_all_concurrent(
 
 
 @pytest.mark.asyncio
-async def test_m3_ack_message_lists_all_members(router, mocks, room):
-    """The pre-dispatch ack message mentions all concurrent members."""
+async def test_m3_ack_message_edit_removed(router, mocks, room):
+    """Post-live-fix: Step 4 (edit ack to '已并发转交给 X, Y 处理...')
+    was removed as UX noise. The concurrent-path replies flow through
+    each member's dispatcher call and land as separate messages; the
+    ack card doesn't need mid-flight editing. Verify ack_editor is
+    NOT called even for the concurrent path."""
     mocks["observer_runner"].return_value = RoutingDecision(
         target_member=["client_svc", "finance"],
         reason="both",
@@ -734,13 +749,7 @@ async def test_m3_ack_message_lists_all_members(router, mocks, room):
 
     await router.process_message(object(), "help", [], room)
 
-    # ack_editor called at least once for the concurrent path
-    mocks["ack_editor"].assert_awaited()
-    edit_args = mocks["ack_editor"].await_args
-    edit_text = edit_args[0][1]
-    assert "client_svc" in edit_text
-    assert "finance" in edit_text
-    assert "并发" in edit_text or "concurrent" in edit_text.lower()
+    mocks["ack_editor"].assert_not_awaited()
 
 
 # ─── RoutingDecision helpers ─────────────────────────────────────────────
