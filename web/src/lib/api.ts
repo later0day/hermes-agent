@@ -1481,6 +1481,11 @@ export const api = {
       count: number;
       messages: RoomMessageRow[];
     }>(`/api/rooms/${encodeURIComponent(roomId)}/messages?limit=${limit}`),
+  deleteRoomMessage: (roomId: string, sequence: number) =>
+    fetchJSON<{ ok: boolean; deleted: boolean }>(
+      `/api/rooms/${encodeURIComponent(roomId)}/messages/${sequence}`,
+      { method: "DELETE" },
+    ),
   dispatchRoomMessage: (roomId: string, message: string, broadcast: boolean = false) =>
     fetchJSON<{
       ok: boolean;

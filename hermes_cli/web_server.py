@@ -20028,6 +20028,28 @@ async def list_room_messages(room_id: str, limit: int = 100):
         store.close()
 
 
+@app.delete("/api/rooms/{room_id}/messages/{sequence}")
+async def delete_room_message(room_id: str, sequence: int):
+    """Delete a single message from a room's shared history.
+
+    Used by the Rooms dashboard chat panel to remove a specific bubble.
+    Does NOT re-number surrounding messages — sequence is a monotonic
+    ID, not an index; gaps are fine and don't affect projection or
+    canonical ordering.
+
+    Returns:
+      {"ok": True, "deleted": True} on success
+      {"ok": True, "deleted": False} if the message didn't exist (idempotent)
+    """
+    from gateway.agent_room_messages_store import AgentRoomMessagesStore
+    store = AgentRoomMessagesStore()
+    try:
+        deleted = store.delete_message(room_id, sequence)
+        return {"ok": True, "deleted": deleted}
+    finally:
+        store.close()
+
+
 @app.post("/api/rooms/{room_id}/dispatch")
 async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
     """Dashboard-side chat: send `message` to a room and return every

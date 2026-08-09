@@ -164,3 +164,29 @@ def test_to_dict_shape(store):
     assert d["sequence"] == 1
     assert d["sender_kind"] == "user"
     assert "timestamp" in d
+
+
+def test_delete_message_removes_single_row(store):
+    for i in range(5):
+        store.append("r1", sender_kind="user", sender_name="a", content=f"m{i}")
+    # Delete the middle one (seq=3)
+    assert store.delete_message("r1", 3) is True
+    msgs = store.list_messages("r1")
+    assert len(msgs) == 4
+    assert [m.sequence for m in msgs] == [1, 2, 4, 5]
+
+
+def test_delete_message_idempotent(store):
+    store.append("r1", sender_kind="user", sender_name="a", content="x")
+    assert store.delete_message("r1", 1) is True
+    assert store.delete_message("r1", 1) is False  # already gone
+    assert store.delete_message("r1", 999) is False  # never existed
+
+
+def test_delete_message_does_not_affect_sequence_counter(store):
+    store.append("r1", sender_kind="user", sender_name="a", content="1")
+    store.append("r1", sender_kind="user", sender_name="a", content="2")
+    store.delete_message("r1", 1)
+    # Next append must still get seq=3, not seq=1
+    m = store.append("r1", sender_kind="user", sender_name="a", content="3")
+    assert m.sequence == 3

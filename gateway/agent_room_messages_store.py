@@ -244,6 +244,19 @@ class AgentRoomMessagesStore:
             ).fetchone()
         return int(row[0]) if row else 0
 
+    def delete_message(self, room_id: str, sequence: int) -> bool:
+        """Delete a single message by (room_id, sequence). Idempotent —
+        returns True if a row was removed, False if it didn't exist.
+        The sequence counter is NOT rewound (gaps are fine — sequence
+        is a monotonic ID, not an index).
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM agent_room_messages WHERE room_id = ? AND sequence = ?",
+                (room_id, sequence),
+            )
+            return (cur.rowcount or 0) > 0
+
     def delete_room(self, room_id: str) -> int:
         """Delete every message + seq counter for a room. Returns rows deleted.
         Idempotent — called from M1's AgentRoomStore.delete_room to keep

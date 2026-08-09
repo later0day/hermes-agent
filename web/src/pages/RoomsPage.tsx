@@ -1,5 +1,5 @@
 import { useI18n } from "@/i18n/context";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   Bot,
@@ -34,6 +34,154 @@ import { cn } from "@/lib/utils";
 
 // Regex matching the backend's profile-name validation.
 const ROOM_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Chat rendering helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+function formatChatTime(unixSec: number): string {
+  if (!unixSec || unixSec <= 0) return "";
+  const d = new Date(unixSec * 1000);
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const hh = d.getHours().toString().padStart(2, "0");
+  const mm = d.getMinutes().toString().padStart(2, "0");
+  if (sameDay) return `${hh}:${mm}`;
+  const mo = (d.getMonth() + 1).toString().padStart(2, "0");
+  const day = d.getDate().toString().padStart(2, "0");
+  return `${mo}/${day} ${hh}:${mm}`;
+}
+
+// Deterministic pastel-ish color for a member name → avatar background.
+function avatarColorFor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) {
+    h = (h * 31 + name.charCodeAt(i)) & 0xffffff;
+  }
+  const hue = h % 360;
+  return `hsl(${hue}, 65%, 55%)`;
+}
+
+function avatarInitials(name: string): string {
+  if (!name) return "?";
+  if (name === "You") return "Y";
+  // Take first char of each underscore-separated part, up to 2 chars
+  const parts = name.split(/[_\-\s]+/).filter(Boolean);
+  if (parts.length === 0) return name[0].toUpperCase();
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+// Minimal markdown → JSX renderer supporting fenced code blocks,
+// inline code, bold, italic, and preserved newlines. Deliberately
+// small — no external dep. Only what's needed for chat bubbles.
+function renderChatContent(text: string): React.ReactNode {
+  if (!text) return null;
+
+  // Split on fenced code blocks: ```lang\n...\n```
+  const parts: React.ReactNode[] = [];
+  const re = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let key = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      parts.push(renderInline(text.slice(last, m.index), key++));
+    }
+    const lang = m[1] || "";
+    const code = m[2];
+    parts.push(
+      <pre
+        key={key++}
+        className="my-2 overflow-x-auto rounded-md bg-slate-900 dark:bg-slate-950 text-slate-100 p-3 text-xs font-mono"
+      >
+        {lang && (
+          <div className="text-[10px] text-slate-400 mb-1 uppercase">{lang}</div>
+        )}
+        <code>{code}</code>
+      </pre>,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    parts.push(renderInline(text.slice(last), key++));
+  }
+  return <>{parts}</>;
+}
+
+function renderInline(text: string, k: number): React.ReactNode {
+  // Split on inline code `...`, bold **...**, italic *...*, preserving order.
+  // Simple approach: walk char by char.
+  const nodes: React.ReactNode[] = [];
+  let buf = "";
+  let i = 0;
+  let subkey = 0;
+  const flush = () => {
+    if (buf) {
+      // Preserve newlines within a text run.
+      nodes.push(
+        <span key={`${k}-t-${subkey++}`} className="whitespace-pre-wrap">
+          {buf}
+        </span>,
+      );
+      buf = "";
+    }
+  };
+  while (i < text.length) {
+    // Inline code
+    if (text[i] === "`") {
+      const end = text.indexOf("`", i + 1);
+      if (end > i) {
+        flush();
+        nodes.push(
+          <code
+            key={`${k}-c-${subkey++}`}
+            className="rounded bg-slate-200 dark:bg-slate-800 px-1 py-0.5 text-xs font-mono"
+          >
+            {text.slice(i + 1, end)}
+          </code>,
+        );
+        i = end + 1;
+        continue;
+      }
+    }
+    // Bold **
+    if (text[i] === "*" && text[i + 1] === "*") {
+      const end = text.indexOf("**", i + 2);
+      if (end > i + 2) {
+        flush();
+        nodes.push(
+          <strong key={`${k}-b-${subkey++}`}>{text.slice(i + 2, end)}</strong>,
+        );
+        i = end + 2;
+        continue;
+      }
+    }
+    // Italic *  (avoid matching bold)
+    if (text[i] === "*" && text[i + 1] !== "*") {
+      const end = text.indexOf("*", i + 1);
+      if (end > i + 1 && text[end + 1] !== "*") {
+        flush();
+        nodes.push(
+          <em key={`${k}-i-${subkey++}`}>{text.slice(i + 1, end)}</em>,
+        );
+        i = end + 1;
+        continue;
+      }
+    }
+    buf += text[i];
+    i++;
+  }
+  flush();
+  return <React.Fragment key={`inl-${k}`}>{nodes}</React.Fragment>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────────────────────────────────
 
 export default function RoomsPage() {
   const { t: _t } = useI18n();
@@ -83,15 +231,18 @@ export default function RoomsPage() {
   // Chat panel (dashboard-side messaging)
   interface ChatMessage {
     id: number;
+    seq: number | null;   // store sequence (null for optimistic local messages)
     kind: "user" | "member";
     sender: string;
     content: string;
+    timestamp: number;    // unix seconds
   }
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatBroadcast, setChatBroadcast] = useState(false);
   const [chatSending, setChatSending] = useState(false);
   const chatSeqRef = useRef(0);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const selectedRoom = useMemo(
     () => rooms.find((r) => r.room_id === selectedRoomId) ?? null,
@@ -318,17 +469,21 @@ export default function RoomsPage() {
             chatSeqRef.current += 1;
             bubbles.push({
               id: chatSeqRef.current,
+              seq: m.sequence,
               kind: "user",
               sender: m.sender_name === "dashboard" ? "You" : m.sender_name,
               content: m.content,
+              timestamp: m.timestamp,
             });
           } else if (m.sender_kind === "member") {
             chatSeqRef.current += 1;
             bubbles.push({
               id: chatSeqRef.current,
+              seq: m.sequence,
               kind: "member",
               sender: m.sender_name,
               content: m.content,
+              timestamp: m.timestamp,
             });
           }
           // observer + tool_result rows are omitted from the visible chat
@@ -353,13 +508,16 @@ export default function RoomsPage() {
 
     // Optimistically show the user's message
     chatSeqRef.current += 1;
+    const nowSec = Math.floor(Date.now() / 1000);
     setChatHistory((prev) => [
       ...prev,
       {
         id: chatSeqRef.current,
+        seq: null,
         kind: "user",
         sender: "You",
         content: messageText,
+        timestamp: nowSec,
       },
     ]);
     setChatInput("");
@@ -378,27 +536,79 @@ export default function RoomsPage() {
           ...prev,
           {
             id: chatSeqRef.current,
+            seq: null,
             kind: "member",
             sender: m,
             content: reply,
+            timestamp: Math.floor(Date.now() / 1000),
           },
         ]);
       }
+      // After dispatch, reload history so we get real seq numbers
+      // (enables delete). Non-blocking, best-effort.
+      try {
+        const fresh = await api.listRoomMessages(selectedRoom.room_id, 100);
+        const bubbles: ChatMessage[] = [];
+        chatSeqRef.current = 0;
+        for (const m of fresh.messages) {
+          if (m.sender_kind === "user") {
+            chatSeqRef.current += 1;
+            bubbles.push({
+              id: chatSeqRef.current,
+              seq: m.sequence,
+              kind: "user",
+              sender: m.sender_name === "dashboard" ? "You" : m.sender_name,
+              content: m.content,
+              timestamp: m.timestamp,
+            });
+          } else if (m.sender_kind === "member") {
+            chatSeqRef.current += 1;
+            bubbles.push({
+              id: chatSeqRef.current,
+              seq: m.sequence,
+              kind: "member",
+              sender: m.sender_name,
+              content: m.content,
+              timestamp: m.timestamp,
+            });
+          }
+        }
+        setChatHistory(bubbles);
+      } catch { /* silent */ }
     } catch (err) {
       chatSeqRef.current += 1;
       setChatHistory((prev) => [
         ...prev,
         {
           id: chatSeqRef.current,
+          seq: null,
           kind: "member",
           sender: "system",
           content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Math.floor(Date.now() / 1000),
         },
       ]);
     } finally {
       setChatSending(false);
     }
   }, [selectedRoom, chatInput, chatBroadcast]);
+
+  // Auto-scroll to bottom when history changes
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [chatHistory.length]);
+
+  // Delete a message
+  const handleDeleteMessage = useCallback(async (msg: ChatMessage) => {
+    if (!selectedRoom || msg.seq == null) return;
+    try {
+      await api.deleteRoomMessage(selectedRoom.room_id, msg.seq);
+      setChatHistory((prev) => prev.filter((m) => m.id !== msg.id));
+      showToast("Message deleted", "success");
+    } catch (err) {
+      showToast(`Delete failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+    }
+  }, [selectedRoom, showToast]);
 
   // ─── Available profiles (not in the roster) ─────────────────────────────
   const availableForCreate = useMemo(
@@ -679,36 +889,72 @@ export default function RoomsPage() {
                 </p>
               </div>
             ) : (
-              chatHistory.map((m) => (
-                <div
-                  key={m.id}
-                  className={cn(
-                    "flex flex-col",
-                    m.kind === "user" ? "items-end" : "items-start",
-                  )}
-                >
+              chatHistory.map((m) => {
+                const isUser = m.kind === "user";
+                const avatarBg = isUser ? "#3b82f6" : avatarColorFor(m.sender);
+                return (
                   <div
+                    key={m.id}
                     className={cn(
-                      "rounded-lg px-3 py-2 max-w-[85%] break-words text-sm whitespace-pre-wrap",
-                      m.kind === "user"
-                        ? "bg-blue-600 text-white"
-                        : "bg-muted",
+                      "group flex gap-2",
+                      isUser ? "flex-row-reverse" : "flex-row",
                     )}
                   >
-                    {m.content}
+                    {/* Avatar */}
+                    <div
+                      className="shrink-0 flex items-center justify-center w-8 h-8 rounded-full text-white text-xs font-semibold"
+                      style={{ backgroundColor: avatarBg }}
+                      title={m.sender}
+                    >
+                      {avatarInitials(m.sender)}
+                    </div>
+
+                    {/* Bubble + meta */}
+                    <div
+                      className={cn(
+                        "flex flex-col min-w-0 max-w-[85%]",
+                        isUser ? "items-end" : "items-start",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "rounded-lg px-3 py-2 break-words text-sm",
+                          isUser
+                            ? "bg-blue-600 text-white"
+                            : "bg-muted",
+                        )}
+                      >
+                        {renderChatContent(m.content)}
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground px-1">
+                        <span className="font-mono">{m.sender}</span>
+                        {m.timestamp > 0 && (
+                          <span>{formatChatTime(m.timestamp)}</span>
+                        )}
+                        {m.seq != null && (
+                          <button
+                            type="button"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
+                            onClick={() => handleDeleteMessage(m)}
+                            aria-label="Delete message"
+                            title="Delete message"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div className="mt-1 text-[10px] text-muted-foreground font-mono px-1">
-                    {m.sender}
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
             {chatSending && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground pl-10">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 <span>Members are thinking…</span>
               </div>
             )}
+            <div ref={chatEndRef} />
           </div>
 
           {/* Input */}
