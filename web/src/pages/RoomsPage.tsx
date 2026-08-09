@@ -529,21 +529,25 @@ export default function RoomsPage() {
         messageText,
         chatBroadcast,
       );
+      const newBubbles: ChatMessage[] = [];
       for (const m of resp.target_members) {
         const reply = resp.replies[m] || "(no reply)";
         chatSeqRef.current += 1;
-        setChatHistory((prev) => [
-          ...prev,
-          {
-            id: chatSeqRef.current,
-            seq: null,
-            kind: "member",
-            sender: m,
-            content: reply,
-            timestamp: Math.floor(Date.now() / 1000),
-          },
-        ]);
+        newBubbles.push({
+          id: chatSeqRef.current,
+          seq: null,
+          kind: "member",
+          sender: m,
+          content: reply,
+          timestamp: Math.floor(Date.now() / 1000),
+        });
       }
+      // Single setState call so React batches all replies into the
+      // same render. Previously we called setChatHistory((prev)=>[...])
+      // inside the loop, but React batches multiple setState calls
+      // and each closure captured the SAME `prev`, causing only the
+      // last member's reply to actually land in state.
+      setChatHistory((prev) => [...prev, ...newBubbles]);
       // After dispatch, reload history so we get real seq numbers
       // (enables delete). Non-blocking, best-effort.
       try {
