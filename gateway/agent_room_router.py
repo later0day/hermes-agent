@@ -79,6 +79,12 @@ class RoutingDecision:
     M3: target_member can be either a str (single-member dispatch,
     M1 legacy) or a list[str] (concurrent multi-member dispatch).
     Router callers should check ``.is_multi`` before iterating.
+
+    M4: when the observer decides the request is a multi-step task it
+    calls ``decompose_and_route`` instead of ``route_to_member``. That
+    yields a decision with ``action == "decompose_and_route"`` and a
+    populated ``decompose_tasks`` DAG. ``target_member`` is unused on
+    that path (the orchestrator resolves per-subtask assignees).
     """
     target_member: Any  # str or list[str]
     reason: str
@@ -87,6 +93,18 @@ class RoutingDecision:
     # observer turn (§5.4 N4 fast path). Useful for A/B metric
     # "N4 沿用率 ≥40%".
     reused_last_route: bool
+    # M4: "route" (default, single/multi member) or "decompose_and_route"
+    # (the observer emitted a subtask DAG to be orchestrated).
+    action: str = "route"
+    # M4: the raw subtask list from decompose_and_route, only set when
+    # action == "decompose_and_route". Each entry:
+    #   {"title", "body", "assignee", "parents"}.
+    decompose_tasks: Optional[list[dict]] = None
+
+    @property
+    def is_decompose(self) -> bool:
+        """True when the observer requested task decomposition (M4)."""
+        return self.action == "decompose_and_route"
 
     @property
     def is_multi(self) -> bool:
@@ -153,6 +171,17 @@ MemberDispatcher = Callable[
 ]
 
 
+# M4.4: runs the observer's SYNTHESIS turn — a second observer turn,
+# reusing the same observer session, fed the rendered subtask results.
+# Returns the final user-facing reply text the observer composed. Kept
+# optional (constructor defaults to None) so M1-M3 routers that never
+# see a decompose decision don't need to provide it.
+SynthesisRunner = Callable[
+    [str, str, Any, str],  # observer_profile, session_id, source, rendered_results
+    Awaitable[str],
+]
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -177,6 +206,7 @@ class AgentRoomRouter:
         classifier: Classifier,
         observer_runner: ObserverRunner,
         member_dispatcher: MemberDispatcher,
+        synthesis_runner: Optional["SynthesisRunner"] = None,
     ) -> None:
         self._store = store
         self._ack_sender = ack_sender
@@ -184,6 +214,10 @@ class AgentRoomRouter:
         self._classifier = classifier
         self._observer_runner = observer_runner
         self._member_dispatcher = member_dispatcher
+        # M4.4: only needed on the decompose_and_route path. When absent,
+        # a decompose decision falls back to concatenating raw subtask
+        # replies (still correct, just not LLM-synthesized).
+        self._synthesis_runner = synthesis_runner
 
         # §5.4: last_routed_member cache. Keyed by room_id; process-local,
         # not persisted. A restart forces the first message to run a full
@@ -261,6 +295,171 @@ class AgentRoomRouter:
             f"> ---\n"
             f"> 用户消息：{original_message}"
         )
+
+    # ------------------------------------------------------------------
+    # M4.4: decompose_and_route orchestration + synthesis
+    # ------------------------------------------------------------------
+
+    async def _run_decompose(
+        self,
+        *,
+        source: Any,
+        room: AgentRoom,
+        observer_sid: str,
+        decision: "RoutingDecision",
+    ) -> dict[str, Any]:
+        """M4.4 · run the subtask DAG the observer emitted, then a
+        synthesis turn that composes the final user-facing reply.
+
+        Flow:
+          1. build_subtasks(raw, roster) — validate/normalize/reject cycles
+          2. orchestrate(...) — level-by-level, concurrent within level,
+             per-subtask member dispatch via self._member_dispatcher
+          3. render_subtask_results_for_synthesis(result)
+          4. synthesis observer turn (reuses observer_sid per M4.1 spike)
+             → final reply. If no synthesis_runner is wired, fall back to
+             a plaintext concatenation of successful subtask replies.
+
+        Returns the same diagnostic bundle shape as process_message,
+        with ``decompose == True`` and an ``orchestration`` sub-dict.
+        """
+        from gateway.agent_room_task_orchestrator import (
+            OrchestratorError,
+            build_subtasks,
+            orchestrate,
+            render_subtask_results_for_synthesis,
+        )
+
+        room_id = room.room_id
+        raw_tasks = decision.decompose_tasks or []
+
+        # Step 1: validate the DAG against the current roster.
+        try:
+            subtasks = build_subtasks(
+                raw_tasks,
+                room.members,
+                default_member=room.resolve_default_member(),
+            )
+        except OrchestratorError as exc:
+            # Cyclic / structurally-broken DAG. Fall back to a single
+            # default-member dispatch of the observer's stated reason so
+            # the user still gets *an* answer rather than silence.
+            logger.warning(
+                "room %s: decompose DAG rejected (%s); falling back to default member",
+                room_id, exc,
+            )
+            fallback_member = room.resolve_default_member()
+            member_sid = self.member_session_id(room_id, fallback_member)
+            reply = await self._member_dispatcher(
+                fallback_member, member_sid, source, [], decision.reason or "",
+            )
+            return {
+                "fenced_at": None,
+                "decompose": True,
+                "decompose_error": str(exc),
+                "target_member": fallback_member,
+                "reason": decision.reason,
+                "reused_last_route": False,
+                "reply": reply,
+            }
+
+        if not subtasks:
+            logger.info(
+                "room %s: decompose produced no valid subtasks; nothing to run",
+                room_id,
+            )
+            return {
+                "fenced_at": None,
+                "decompose": True,
+                "target_member": None,
+                "reason": decision.reason,
+                "reused_last_route": False,
+                "reply": None,
+                "orchestration": {"total_subtasks": 0, "results": []},
+            }
+
+        # Step 2: orchestrate. The dispatcher adapts the orchestrator's
+        # 4-arg signature (member, session_id, message, projected_hist)
+        # to self._member_dispatcher's 5-arg one (adds the source).
+        async def _subtask_dispatcher(
+            member: str, session_id: str, message_text: str, projected_hist: list[dict],
+        ) -> str:
+            return await self._member_dispatcher(
+                member, session_id, source, projected_hist, message_text,
+            )
+
+        def _fence_gate(member_session_id: str) -> bool:
+            return self._store.is_fenced(room_id, member_session_id)
+
+        orch_result = await orchestrate(
+            subtasks,
+            room_id=room_id,
+            dispatcher=_subtask_dispatcher,
+            fence_gate=_fence_gate,
+        )
+        logger.info(
+            "room %s: orchestration done — %d/%d ok, %d failed, %d skipped%s",
+            room_id, orch_result.completed, orch_result.total_subtasks,
+            orch_result.failed, orch_result.skipped,
+            " (fenced mid-flight)" if orch_result.fenced_mid_flight else "",
+        )
+
+        # §6.3 Fence check: if the room was structurally changed during
+        # orchestration, drop the whole thing before synthesizing.
+        if self._store.is_fenced(room_id, observer_sid):
+            logger.info(
+                "room %s: observer fenced post-orchestration; discarding synthesis",
+                room_id,
+            )
+            return {
+                "fenced_at": "observer_postorchestration",
+                "decompose": True,
+                "target_member": None,
+                "reason": decision.reason,
+                "reused_last_route": False,
+                "reply": None,
+                "orchestration": orch_result.to_dict(),
+            }
+
+        # Step 3 + 4: synthesis turn (reuse observer session per M4.1).
+        rendered = render_subtask_results_for_synthesis(orch_result)
+        final_reply: str
+        if self._synthesis_runner is not None:
+            try:
+                final_reply = await self._synthesis_runner(
+                    room.observer_profile, observer_sid, source, rendered,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "room %s: synthesis turn failed (%s); using raw concatenation",
+                    room_id, exc,
+                )
+                final_reply = self._concat_subtask_replies(orch_result)
+        else:
+            final_reply = self._concat_subtask_replies(orch_result)
+
+        return {
+            "fenced_at": None,
+            "decompose": True,
+            "target_member": None,
+            "reason": decision.reason,
+            "reused_last_route": False,
+            "reply": final_reply,
+            "orchestration": orch_result.to_dict(),
+        }
+
+    @staticmethod
+    def _concat_subtask_replies(orch_result: Any) -> str:
+        """Fallback synthesis: plain concatenation of successful subtask
+        replies, each labeled by assignee. Used when no synthesis_runner
+        is wired or the synthesis turn errored."""
+        parts: list[str] = []
+        for r in orch_result.results:
+            if r.status == "success" and r.reply:
+                parts.append(f"【{r.assignee}】{r.title}\n{r.reply.strip()}")
+            elif r.status == "failed":
+                parts.append(f"【{r.assignee}】{r.title}\n(处理失败：{r.error})")
+        return "\n\n".join(parts) if parts else "(所有子任务均未产出结果)"
 
     # ------------------------------------------------------------------
     # §6.1 five-step flow
@@ -351,6 +550,18 @@ class AgentRoomRouter:
                     "reused_last_route": False,
                     "reply": None,
                 }
+
+            # ── M4.4: decompose_and_route branch ──────────────────────
+            # If the observer decided this is a multi-step task, it
+            # emitted a subtask DAG instead of a single/multi member
+            # route. Run the orchestrator, then a synthesis turn.
+            if getattr(observer_decision, "is_decompose", False):
+                return await self._run_decompose(
+                    source=source,
+                    room=room,
+                    observer_sid=observer_sid,
+                    decision=observer_decision,
+                )
 
             # Validate the observer's target against the current roster.
             # M1-B4: empty / whitespace / unknown members all fall back

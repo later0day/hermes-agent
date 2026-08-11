@@ -776,3 +776,173 @@ def test_routing_decision_target_members_normalized():
     assert RoutingDecision(
         target_member="", reason="", is_new_topic=False, reused_last_route=False,
     ).target_members == []
+
+
+# ---------------------------------------------------------------------------
+# M4.4 — decompose_and_route orchestration + synthesis
+# ---------------------------------------------------------------------------
+
+
+def _decompose_decision(tasks, reason="multi-step", is_new_topic=True):
+    return RoutingDecision(
+        target_member="",
+        reason=reason,
+        is_new_topic=is_new_topic,
+        reused_last_route=False,
+        action="decompose_and_route",
+        decompose_tasks=tasks,
+    )
+
+
+def test_routing_decision_is_decompose_flag():
+    d = _decompose_decision([{"title": "x", "assignee": "client_svc"}])
+    assert d.is_decompose is True
+    plain = RoutingDecision(
+        target_member="client_svc", reason="", is_new_topic=False, reused_last_route=False,
+    )
+    assert plain.is_decompose is False
+
+
+@pytest.mark.asyncio
+async def test_m4_decompose_runs_orchestrator_and_synthesis(store, mocks, room):
+    """Observer emits a 2-node DAG; both members dispatched, synthesis
+    runner composes the final reply."""
+    mocks["observer_runner"].return_value = _decompose_decision([
+        {"title": "起草合同", "assignee": "client_svc", "parents": []},
+        {"title": "算成本", "assignee": "finance", "parents": [0]},
+    ])
+    synthesis = AsyncMock(return_value="最终综合回复")
+    router = AgentRoomRouter(store=store, synthesis_runner=synthesis, **mocks)
+
+    result = await router.process_message(
+        source=object(), message="帮我起草合同并算成本", history=[], room=room,
+    )
+
+    assert result["decompose"] is True
+    assert result["reply"] == "最终综合回复"
+    # Both subtasks dispatched (member_dispatcher called twice).
+    assert mocks["member_dispatcher"].await_count == 2
+    # Synthesis called once with the observer session id.
+    synthesis.assert_awaited_once()
+    assert synthesis.await_args.args[1] == AgentRoomRouter.observer_session_id(room.room_id)
+    orch = result["orchestration"]
+    assert orch["total_subtasks"] == 2
+    assert orch["completed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_m4_decompose_without_synthesis_runner_concatenates(store, mocks, room):
+    """No synthesis_runner wired → falls back to plaintext concatenation."""
+    mocks["member_dispatcher"] = AsyncMock(side_effect=["合同草稿", "成本 100 元"])
+    mocks["observer_runner"].return_value = _decompose_decision([
+        {"title": "起草合同", "assignee": "client_svc"},
+        {"title": "算成本", "assignee": "finance"},
+    ])
+    router = AgentRoomRouter(store=store, synthesis_runner=None, **mocks)
+
+    result = await router.process_message(
+        source=object(), message="x", history=[], room=room,
+    )
+    assert result["decompose"] is True
+    assert "合同草稿" in result["reply"]
+    assert "成本 100 元" in result["reply"]
+
+
+@pytest.mark.asyncio
+async def test_m4_decompose_dependent_skipped_when_parent_fails(store, mocks, room):
+    """Parent subtask fails → dependent child skipped, surfaced in synthesis."""
+    async def _dispatch(member, sid, source, hist, msg):
+        if member == "client_svc":
+            raise RuntimeError("boom")
+        return "ok"
+    mocks["member_dispatcher"] = AsyncMock(side_effect=_dispatch)
+    mocks["observer_runner"].return_value = _decompose_decision([
+        {"title": "parent", "assignee": "client_svc"},
+        {"title": "child", "assignee": "finance", "parents": [0]},
+    ])
+    captured = {}
+    async def _synth(profile, sid, source, rendered):
+        captured["rendered"] = rendered
+        return "done"
+    router = AgentRoomRouter(store=store, synthesis_runner=_synth, **mocks)
+
+    result = await router.process_message(
+        source=object(), message="x", history=[], room=room,
+    )
+    orch = result["orchestration"]
+    assert orch["failed"] == 1
+    assert orch["skipped"] == 1
+    # child never dispatched (only the parent attempt happened).
+    assert mocks["member_dispatcher"].await_count == 1
+    assert "skipped" in captured["rendered"]
+
+
+@pytest.mark.asyncio
+async def test_m4_decompose_unknown_assignee_rewritten_to_default(store, mocks, room):
+    """Assignee not in roster → build_subtasks rewrites to default_member."""
+    dispatched = []
+    async def _dispatch(member, sid, source, hist, msg):
+        dispatched.append(member)
+        return "ok"
+    mocks["member_dispatcher"] = AsyncMock(side_effect=_dispatch)
+    mocks["observer_runner"].return_value = _decompose_decision([
+        {"title": "t", "assignee": "nonexistent_member"},
+    ])
+    router = AgentRoomRouter(
+        store=store, synthesis_runner=AsyncMock(return_value="ok"), **mocks
+    )
+    await router.process_message(source=object(), message="x", history=[], room=room)
+    # default_member is client_svc
+    assert dispatched == ["client_svc"]
+
+
+@pytest.mark.asyncio
+async def test_m4_decompose_empty_tasks_returns_no_reply(store, mocks, room):
+    mocks["observer_runner"].return_value = _decompose_decision([])
+    router = AgentRoomRouter(
+        store=store, synthesis_runner=AsyncMock(return_value="x"), **mocks
+    )
+    result = await router.process_message(
+        source=object(), message="x", history=[], room=room,
+    )
+    assert result["decompose"] is True
+    assert result["reply"] is None
+    mocks["member_dispatcher"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_m4_decompose_synthesis_failure_falls_back_to_concat(store, mocks, room):
+    mocks["member_dispatcher"] = AsyncMock(return_value="子任务结果")
+    mocks["observer_runner"].return_value = _decompose_decision([
+        {"title": "t", "assignee": "client_svc"},
+    ])
+    synthesis = AsyncMock(side_effect=RuntimeError("synth boom"))
+    router = AgentRoomRouter(store=store, synthesis_runner=synthesis, **mocks)
+    result = await router.process_message(
+        source=object(), message="x", history=[], room=room,
+    )
+    # Synthesis raised → concat fallback used.
+    assert "子任务结果" in result["reply"]
+
+
+@pytest.mark.asyncio
+async def test_m4_decompose_fence_post_orchestration_drops_synthesis(store, mocks, room):
+    mocks["observer_runner"].return_value = _decompose_decision([
+        {"title": "t", "assignee": "client_svc"},
+    ])
+    observer_sid = AgentRoomRouter.observer_session_id(room.room_id)
+
+    # Fence the observer session AFTER orchestration (during member dispatch).
+    async def _dispatch(member, sid, source, hist, msg):
+        store.fence_room(room.room_id, [observer_sid])
+        return "ok"
+    mocks["member_dispatcher"] = AsyncMock(side_effect=_dispatch)
+    synthesis = AsyncMock(return_value="should not appear")
+    router = AgentRoomRouter(store=store, synthesis_runner=synthesis, **mocks)
+
+    result = await router.process_message(
+        source=object(), message="x", history=[], room=room,
+    )
+    assert result["fenced_at"] == "observer_postorchestration"
+    assert result["reply"] is None
+    synthesis.assert_not_awaited()

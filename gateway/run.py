@@ -25112,6 +25112,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if msg_item.get("role") == "tool":
                                 try:
                                     d = _json.loads(msg_item.get("content", "{}"))
+                                    if d.get("action") == "decompose_and_route":
+                                        # M4: observer emitted a subtask DAG.
+                                        _tasks = d.get("tasks") or []
+                                        try:
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="observer",
+                                                sender_name=observer_profile,
+                                                content="",
+                                                tool_calls=[{
+                                                    "id": msg_item.get("tool_call_id", "call_obs_decompose"),
+                                                    "function": {
+                                                        "name": "decompose_and_route",
+                                                        "arguments": _json.dumps({
+                                                            "tasks": _tasks,
+                                                            "reason": d.get("reason", ""),
+                                                            "is_new_topic": d.get("is_new_topic", False),
+                                                        }, ensure_ascii=False),
+                                                    },
+                                                }],
+                                            )
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="tool_result",
+                                                sender_name="decompose_and_route",
+                                                content=msg_item.get("content", ""),
+                                                tool_call_id=msg_item.get("tool_call_id"),
+                                            )
+                                        except Exception as _e:
+                                            logger.warning("M4: decompose decision persist failed: %s", _e)
+                                        logger.info(
+                                            "M4: observer decomposed into %d subtasks", len(_tasks),
+                                        )
+                                        return RoutingDecision(
+                                            target_member="",
+                                            reason=d.get("reason", ""),
+                                            is_new_topic=bool(d.get("is_new_topic", True)),
+                                            reused_last_route=False,
+                                            action="decompose_and_route",
+                                            decompose_tasks=_tasks,
+                                        )
                                     if d.get("action") == "route_to_member":
                                         # M3: persist the observer's routing decision
                                         try:
@@ -25240,6 +25281,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         break
 
                     if parsed_route is not None:
+                        # M4: text-form decompose_and_route (qwen quirk).
+                        # Shapes:
+                        #   {"action":"decompose_and_route","tasks":[...],...}
+                        #   {"name":"decompose_and_route","arguments":{...}}
+                        _decompose_args = None
+                        if parsed_route.get("action") == "decompose_and_route":
+                            _decompose_args = parsed_route
+                        elif parsed_route.get("name") == "decompose_and_route":
+                            _da = parsed_route.get("arguments", {}) or {}
+                            if isinstance(_da, str):
+                                try:
+                                    _da = _json.loads(_da)
+                                except Exception:
+                                    _da = {}
+                            _decompose_args = _da
+                        elif isinstance(parsed_route.get("tasks"), list):
+                            _decompose_args = parsed_route
+                        if _decompose_args is not None and _decompose_args.get("tasks"):
+                            _tasks = _decompose_args.get("tasks") or []
+                            logger.info(
+                                "M4 fallback: parsed text-form decompose_and_route "
+                                "(%d subtasks)", len(_tasks),
+                            )
+                            try:
+                                messages_store.append(
+                                    room.room_id,
+                                    sender_kind="observer",
+                                    sender_name=observer_profile,
+                                    content="",
+                                    tool_calls=[{
+                                        "id": "call_obs_decompose_textform",
+                                        "function": {
+                                            "name": "decompose_and_route",
+                                            "arguments": _json.dumps({
+                                                "tasks": _tasks,
+                                                "reason": _decompose_args.get("reason", ""),
+                                                "is_new_topic": _decompose_args.get("is_new_topic", False),
+                                            }, ensure_ascii=False),
+                                        },
+                                    }],
+                                )
+                            except Exception as _e:
+                                logger.warning("M4: text-form decompose persist failed: %s", _e)
+                            return RoutingDecision(
+                                target_member="",
+                                reason=_decompose_args.get("reason", ""),
+                                is_new_topic=bool(_decompose_args.get("is_new_topic", False)),
+                                reused_last_route=False,
+                                action="decompose_and_route",
+                                decompose_tasks=_tasks,
+                            )
+
                         # Unwrap {"name": "route_to_member", "arguments": {...}}
                         if parsed_route.get("name") == "route_to_member":
                             args = parsed_route.get("arguments", {}) or {}
@@ -25434,6 +25527,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Capture source for closures
             src = source
 
+            async def _synthesis_runner(
+                observer_profile, session_id, _src, rendered_results,
+            ):
+                """M4.4: second observer turn that composes the final
+                user-facing reply from the orchestrated subtask results.
+
+                Reuses the observer session (per M4.1 spike decision) so
+                the observer sees its own decompose decision in history.
+                Runs UNDER the observer's toolset lockdown but we do NOT
+                want it to route/decompose again — the SOUL.md synthesis
+                instructions tell it to just summarize. If it emits no
+                tool call the plain assistant text IS the synthesis, which
+                is exactly what we want here.
+                """
+                import dataclasses
+                observer_source = dataclasses.replace(_src, profile=observer_profile)
+                profile_home = self._resolve_profile_home_for_source(observer_source)
+
+                synthesis_prompt = (
+                    "以下是你刚才拆分的子任务由各成员执行后的结果。"
+                    "请你综合这些结果，为用户写一条最终的、完整连贯的中文回复。"
+                    "不要再调用任何工具，不要再拆分或转交；直接输出面向用户的最终答复文本。"
+                    "如果有子任务失败或被跳过，也请在回复中如实、简洁地说明。\n\n"
+                    f"{rendered_results}"
+                )
+
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
+                hydrate_profile_secret_sources(Path(profile_home))
+                _home_token = set_hermes_home_override(str(profile_home))
+                _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                try:
+                    run_result = await self._run_agent_inner(
+                        synthesis_prompt,
+                        "",  # context_prompt
+                        [],  # history: the observer session already carries the decompose turn
+                        observer_source,
+                        session_id,
+                        _toolsets_override=["room_observer"],
+                    )
+                finally:
+                    reset_secret_scope(_secret_token)
+                    reset_hermes_home_override(_home_token)
+                final = run_result.get("final_response", "") if run_result else ""
+                logger.info("M4.4 synthesis result: %r", (final or "")[:200])
+
+                # Persist synthesis as an observer message so future turns
+                # see the conclusion in projected history.
+                if final:
+                    try:
+                        messages_store.append(
+                            room.room_id,
+                            sender_kind="observer",
+                            sender_name=observer_profile,
+                            content=final,
+                        )
+                    except Exception as _e:
+                        logger.warning("M4.4: synthesis persist failed: %s", _e)
+
+                # Deliver to the IM source.
+                if final:
+                    try:
+                        if adapter and hasattr(adapter, "send"):
+                            await adapter.send(source.chat_id, final, metadata={})
+                    except Exception as exc:
+                        logger.warning("M4.4 synthesis delivery failed: %s", exc)
+                return final
+
             self._agent_room_router = AgentRoomRouter(
                 store=self._agent_room_store,
                 ack_sender=_ack_sender,
@@ -25441,6 +25603,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 classifier=_classifier,
                 observer_runner=_observer_runner,
                 member_dispatcher=_member_dispatcher,
+                synthesis_runner=_synthesis_runner,
             )
 
         try:

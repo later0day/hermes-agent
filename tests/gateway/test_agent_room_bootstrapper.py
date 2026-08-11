@@ -146,6 +146,28 @@ def test_soul_md_includes_cross_member_summary_rule_from_section_8():
     assert "When switching to a DIFFERENT member" in soul
 
 
+def test_soul_md_includes_decompose_and_route_instructions_m4():
+    """M4.5: SOUL.md must teach the observer to use decompose_and_route
+    for complex multi-step tasks, including the tasks/parents DAG shape
+    and the guard that simple questions should still use route_to_member.
+    """
+    soul = render_observer_soul_md(
+        room_name="R",
+        room_description="",
+        members=[("client_svc", "客服"), ("finance", "财务")],
+        default_member="client_svc",
+    )
+    assert "decompose_and_route" in soul
+    # DAG shape fields must be documented.
+    assert "parents" in soul
+    assert "assignee" in soul
+    # Must explicitly steer simple questions away from decompose.
+    assert "NOT `decompose_and_route`" in soul
+    # The synthesis-turn behavior must be described so the observer knows
+    # NOT to write prose on the decompose turn itself.
+    assert "synthesize" in soul or "synthesis" in soul
+
+
 def test_soul_md_handles_empty_description_for_member():
     soul = render_observer_soul_md(
         room_name="R",

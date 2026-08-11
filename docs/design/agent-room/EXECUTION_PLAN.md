@@ -120,8 +120,8 @@
   - 敲定综合 turn 用观察者 session（不新起）
 - [x] **M4.2** 拆分工具 `tools/room_decompose_tool.py`（~150 行）+ `toolsets.py` 改（~5 行）— **完成**（253 行工具 + 253 行测试, 18/18 通过 + toolset 注册 + tool_executor dispatch 分支 + observer 从单工具锁死升级到 2 工具锁死）
 - [x] **M4.3** 任务编排器 `gateway/agent_room_task_orchestrator.py`（~400 行）— **完成**（474 行编排器 + 500 行测试, 25/25 通过 · 拓扑分层 + 并发执行 + 依赖失败传播 + Fence + 循环拒绝 + M4-B2/B3/B4/B5 边界覆盖）
-- [ ] **M4.4** 综合turn分支 `agent_room_router.py` 改（+150 行）
-- [ ] **M4.5** SOUL.md扩展 `agent_room_bootstrapper.py` 改（+50 行）— 只加"复杂任务用 decompose_and_route"段
+- [x] **M4.4** 综合turn分支 `agent_room_router.py` 改（+150 行）— **完成**（`RoutingDecision` 加 `action`/`decompose_tasks` + `is_decompose`；`_run_decompose` 编排+综合turn；observer_runner 解析 `decompose_and_route`（tool_result + qwen 文本回退）；`_synthesis_runner` 复用 `room_observer:{room_id}` session；8 个新路由测试）
+- [x] **M4.5** SOUL.md扩展 `agent_room_bootstrapper.py` 改（+50 行）— 只加"复杂任务用 decompose_and_route"段 — **完成**（Example E 多步 DAG + parents/assignee 字段说明 + 简单问题仍走 route_to_member 的护栏 + synthesis-turn 行为说明；1 个新 SOUL 测试）
 
 测试代码（~500 行）同步写，前端任务图可视化（~250 行）可并行开发。
 
