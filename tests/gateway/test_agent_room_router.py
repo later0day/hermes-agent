@@ -533,10 +533,76 @@ async def test_m1_b7_three_concurrent_messages_route_independently(
     assert mocks["member_dispatcher"].await_count == 3
 
 
+@pytest.mark.asyncio
+async def test_m4_b7_new_message_not_blocked_by_inflight_synthesis(
+    store, mocks, room,
+):
+    """M4-B7: while a decompose task is still running its (slow) synthesis
+    turn, a NEW simple message that arrives concurrently must route and
+    finish independently — it is not queued behind the synthesis. The
+    router holds no per-message state on ``self``, so the two flows don't
+    serialize."""
+    synthesis_started = asyncio.Event()
+    release_synthesis = asyncio.Event()
+
+    async def slow_synthesis(observer_profile, session_id, src, rendered):
+        # Signal that synthesis is in flight, then block until released.
+        synthesis_started.set()
+        await release_synthesis.wait()
+        return "final synthesized reply"
+
+    async def observer_router(observer_profile, sid, src, hist, msg):
+        if "complex" in msg:
+            return RoutingDecision(
+                target_member="",
+                reason="multi-step",
+                is_new_topic=True,
+                reused_last_route=False,
+                action="decompose_and_route",
+                decompose_tasks=[
+                    {"title": "step1", "body": "", "assignee": "finance", "parents": []},
+                ],
+            )
+        return RoutingDecision(
+            target_member="client_svc",
+            reason="simple",
+            is_new_topic=True,
+            reused_last_route=False,
+        )
+
+    m = dict(mocks)
+    m["observer_runner"] = AsyncMock(side_effect=observer_router)
+    m["member_dispatcher"] = AsyncMock(return_value="member reply")
+    router = AgentRoomRouter(
+        store=store, synthesis_runner=slow_synthesis, **m,
+    )
+
+    # Start the decompose flow; it will block inside synthesis.
+    decompose_task = asyncio.create_task(
+        router.process_message(object(), "complex multi-step request", [], room)
+    )
+    # Wait until synthesis is actually in flight (decompose is mid-run).
+    await asyncio.wait_for(synthesis_started.wait(), timeout=2.0)
+
+    # Now fire a simple message concurrently — it must complete WITHOUT
+    # waiting for the blocked synthesis to be released.
+    simple_result = await asyncio.wait_for(
+        router.process_message(object(), "simple question", [], room),
+        timeout=2.0,
+    )
+    assert simple_result["target_member"] == "client_svc"
+    assert simple_result.get("decompose") is not True
+
+    # The decompose flow is still parked in synthesis until we release it.
+    assert not decompose_task.done()
+    release_synthesis.set()
+    decompose_result = await asyncio.wait_for(decompose_task, timeout=2.0)
+    assert decompose_result["decompose"] is True
+
+
 # ---------------------------------------------------------------------------
 # M1-B12: aux LLM unavailable → classifier raises → observer path taken
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_m1_b12_classifier_exception_propagates(router, mocks, room):

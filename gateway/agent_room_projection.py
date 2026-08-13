@@ -68,14 +68,21 @@ def _render_content(msg: RoomMessage, target_member: str) -> str:
         # The end user (human) — always prefixed [user]
         return f"[user]: {body}" if body else "[user]:"
     if kind == "observer":
-        # Observer's route_to_member decision — surface reason as context
+        # Observer's routing decision — surface it as context. Both tool
+        # forms carry empty content (the decision lives in tool_calls), so
+        # without this the observer's own history would show a blank
+        # [observer] row and lose track of what it decided (M4-B8: route
+        # and decompose calls interleave in the SAME observer session).
         if msg.tool_calls:
             for tc in msg.tool_calls:
                 if isinstance(tc, dict):
                     fn = tc.get("function") or {}
-                    if fn.get("name") == "route_to_member":
-                        args = fn.get("arguments") or "{}"
+                    fn_name = fn.get("name")
+                    args = fn.get("arguments") or "{}"
+                    if fn_name == "route_to_member":
                         return f"[observer]: routed to member (args: {_truncate(args, 200)})"
+                    if fn_name == "decompose_and_route":
+                        return f"[observer]: decomposed into subtasks (args: {_truncate(args, 200)})"
         return f"[observer]: {body}" if body else "[observer]"
     if kind == "member":
         if name == target_member:

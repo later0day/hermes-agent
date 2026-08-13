@@ -20101,24 +20101,42 @@ async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
         except Exception as exc:
             _log.warning("dispatch: failed to persist user msg: %s", exc)
 
-        # Determine target members: broadcast → all; else pick default_member
-        # as a simple heuristic (we don't have a live observer here — a
-        # full observer turn requires the gateway process, not the dashboard
-        # process). For dashboard chat, users can toggle broadcast=true to
-        # get every member's reply.
-        if body.broadcast:
-            target_members = list(room.members)
-        else:
-            target_members = [room.default_member or room.members[0]]
-
-        # Dispatch each member via a lightweight in-process agent call.
-        # We reuse the auxiliary_client pattern: build a plain LLM chat
-        # request against the member's profile SOUL + description, without
-        # spinning up a full AIAgent turn (which would need the gateway).
+        # Non-broadcast: run the REAL room pipeline in-process — observer
+        # decides route vs. decompose, member turns run under their own
+        # profile scope, and (for a decompose) a synthesis turn composes the
+        # final reply. Every step persists to the shared messages store, so
+        # the dashboard Rooms panel shows the full closed-loop history.
+        # broadcast=true keeps the lightweight aux-LLM fan-out below as an
+        # escape hatch for "everyone introduce yourselves" cases.
         import asyncio
         from gateway.agent_room_projection import project_for_member
 
         room_msgs = msgs_store.list_messages(room_id)
+
+        if not body.broadcast:
+            from gateway.agent_room_inprocess_runner import InProcessRoomRunner
+
+            runner = InProcessRoomRunner(store, msgs_store)
+            result = await runner.dispatch(room, body.message)
+            routing = result.get("routing") or {}
+            replies = dict(result.get("replies") or {})
+            synthesis = result.get("synthesis")
+            return {
+                "ok": True,
+                "target_members": list(replies.keys()),
+                "broadcast": False,
+                "decompose": bool(routing.get("decompose")),
+                "replies": replies,
+                "synthesis": synthesis,
+                "routing": {
+                    "reason": routing.get("reason"),
+                    "decompose": bool(routing.get("decompose")),
+                    "orchestration": routing.get("orchestration"),
+                },
+            }
+
+        # broadcast=true → fan out to every member concurrently.
+        target_members = list(room.members)
 
         async def _run_member_dispatch(member_name: str) -> tuple[str, str]:
             """Run one member's reply via auxiliary LLM, using projected history."""

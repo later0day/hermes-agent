@@ -120,6 +120,43 @@ def test_observer_route_to_member_toolcall_surfaced():
     assert "finance" in out[0].content
 
 
+def test_observer_decompose_toolcall_surfaced():
+    """M4-B8: the observer's decompose_and_route decision must render as
+    meaningful text (not a blank [observer] row) so the observer's own
+    session history shows what it decomposed. route and decompose calls
+    interleave in the SAME observer session."""
+    tc = [{"id": "1", "function": {"name": "decompose_and_route",
+                                    "arguments": '{"tasks":[{"title":"draft","assignee":"legal"}]}'}}]
+    msgs = [_mk(1, "observer", "obs", "", tool_calls=tc)]
+    out = project_for_member(msgs, "legal")
+    assert out[0].role == "user"
+    assert "decomposed into subtasks" in out[0].content
+    assert "draft" in out[0].content
+
+
+def test_observer_route_and_decompose_interleave_in_observer_view():
+    """M4-B8: an observer session that alternated between route_to_member
+    and decompose_and_route must project BOTH as non-empty assistant rows,
+    so neither mode's history is lost when the other runs later."""
+    route_tc = [{"id": "1", "function": {"name": "route_to_member",
+                                         "arguments": '{"member":"finance"}'}}]
+    decomp_tc = [{"id": "2", "function": {"name": "decompose_and_route",
+                                          "arguments": '{"tasks":[{"title":"step1","assignee":"legal"}]}'}}]
+    msgs = [
+        _mk(1, "user", "alice", "simple question"),
+        _mk(2, "observer", "obs", "", tool_calls=route_tc),
+        _mk(3, "user", "alice", "complex multi-step request"),
+        _mk(4, "observer", "obs", "", tool_calls=decomp_tc),
+    ]
+    out = project_for_observer(msgs)
+    assert out[1].role == "assistant"
+    assert "routed to member" in out[1].content
+    assert "finance" in out[1].content
+    assert out[3].role == "assistant"
+    assert "decomposed into subtasks" in out[3].content
+    assert "step1" in out[3].content
+
+
 def test_empty_content_handled():
     msgs = [_mk(1, "user", "alice", "")]
     out = project_for_member(msgs, "me")

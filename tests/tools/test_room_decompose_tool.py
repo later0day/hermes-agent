@@ -14,6 +14,7 @@ import pytest
 from tools.room_decompose_tool import (
     DECOMPOSE_ACTION,
     DECOMPOSE_AND_ROUTE_SCHEMA,
+    MAX_SUBTASKS,
     decompose_and_route,
 )
 
@@ -116,6 +117,41 @@ def test_empty_tasks_list_yields_empty_output():
         result = decompose_and_route(tasks=[], reason="not actually complex")
     parsed = json.loads(result)
     assert parsed["tasks"] == []
+
+
+def test_m4_b6_over_cap_subtasks_auto_narrowed():
+    """M4-B6: a decomposition beyond MAX_SUBTASKS auto-narrows to the cap
+    instead of spawning an unbounded DAG. The schema's maxItems is only
+    advisory to the model, so the tool enforces the cap itself."""
+    over = [
+        {"title": f"T{i}", "assignee": "a", "parents": []}
+        for i in range(MAX_SUBTASKS + 5)
+    ]
+    with patch("agent.subagent_lifecycle.get_active_subagent_parent", return_value=None):
+        result = decompose_and_route(tasks=over, reason="too many steps")
+    parsed = json.loads(result)
+    assert len(parsed["tasks"]) == MAX_SUBTASKS
+    # The kept prefix is the first MAX_SUBTASKS in order.
+    assert [t["title"] for t in parsed["tasks"]] == [f"T{i}" for i in range(MAX_SUBTASKS)]
+
+
+def test_m4_b6_parents_pointing_past_cap_are_dropped():
+    """When narrowing drops tail subtasks, any parent edge that referenced
+    a removed index must be pruned so the surviving DAG stays valid."""
+    tasks = [{"title": f"T{i}", "assignee": "a", "parents": []} for i in range(MAX_SUBTASKS)]
+    # The last kept task depends on a subtask that will be cut off.
+    tasks[-1]["parents"] = [0, MAX_SUBTASKS + 2]
+    tasks += [
+        {"title": "TAIL1", "assignee": "a", "parents": []},
+        {"title": "TAIL2", "assignee": "a", "parents": []},
+        {"title": "TAIL3", "assignee": "a", "parents": []},
+    ]
+    with patch("agent.subagent_lifecycle.get_active_subagent_parent", return_value=None):
+        result = decompose_and_route(tasks=tasks, reason="over cap with dangling parent")
+    parsed = json.loads(result)
+    assert len(parsed["tasks"]) == MAX_SUBTASKS
+    # The dangling parent (index past the cap) is gone; the in-range one stays.
+    assert parsed["tasks"][-1]["parents"] == [0]
 
 
 def test_non_list_tasks_coerced_to_empty():

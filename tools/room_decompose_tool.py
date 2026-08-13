@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 DECOMPOSE_ACTION = "decompose_and_route"
 
+# M4-B6: hard cap on subtasks per decomposition. The schema declares
+# maxItems, but that's only advisory to the model — enforce it here so a
+# runaway decomposition auto-narrows instead of spawning an unbounded DAG.
+# Matches the schema's maxItems below.
+MAX_SUBTASKS = 10
+
 
 def decompose_and_route(
     tasks: list,
@@ -107,6 +113,19 @@ def decompose_and_route(
 
     resolved_reason = str(reason or "").strip()
     resolved_is_new_topic = bool(is_new_topic)
+
+    # M4-B6: auto-narrow an over-long decomposition. Keep the first
+    # MAX_SUBTASKS in order (parents reference earlier indices, so the
+    # prefix stays internally consistent) and drop any parent edge that
+    # pointed at a now-removed tail subtask.
+    if len(resolved_tasks) > MAX_SUBTASKS:
+        logger.info(
+            "decompose_and_route: %d subtasks exceeds cap %d; narrowing to "
+            "the first %d", len(resolved_tasks), MAX_SUBTASKS, MAX_SUBTASKS,
+        )
+        resolved_tasks = resolved_tasks[:MAX_SUBTASKS]
+        for t in resolved_tasks:
+            t["parents"] = [p for p in t["parents"] if p < MAX_SUBTASKS]
 
     # Fire hard_interrupt on the observer's agent loop (Spike 4 pattern).
     # Broad try/except — failure to interrupt must never lose the
