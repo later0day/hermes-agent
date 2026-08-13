@@ -459,11 +459,11 @@ class TestTickProfilePartition:
         parallel_job = {"id": "b", "name": "B", "profile": None}
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [profile_job, parallel_job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: None)
 
         calls: list[tuple[str, str]] = []
 
-        def fake_run_job(job, *, defer_agent_teardown=None):
+        def fake_run_job(job, *, defer_agent_teardown=None, extra_prompt=None):
             calls.append((job["id"], threading.current_thread().name))
             return True, "output", "response", None
 
