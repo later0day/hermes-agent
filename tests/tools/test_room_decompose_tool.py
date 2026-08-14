@@ -259,18 +259,27 @@ def test_schema_task_item_has_correct_fields():
 
 
 def test_registered_in_tool_registry():
-    """decompose_and_route MUST be registered so _compute_tool_definitions
-    finds it when observer's toolsets=[room_observer]."""
+    """decompose_and_route is intentionally NOT registered with the tool
+    registry at all (see tools/room_decompose_tool.py's "M4 DISABLED"
+    comment) — M4's central decompose DAG was disabled in favor of the
+    deterministic @mention handoff chain (agent_room_mentions.py +
+    agent_room_handoff.py, driven by agent_room_router._run_handoff_chain).
+    The function/schema/orchestrator are kept intact and directly
+    importable/callable (test_full_dag_roundtrip below calls
+    ``decompose_and_route`` directly) so re-enabling is a one-line
+    ``registry.register(...)`` uncomment, but until then it must not
+    show up in the observer's tool definitions at all."""
     from tools.registry import registry as _reg_singleton
     from toolsets import resolve_toolset
-    import tools.room_decompose_tool  # noqa: F401 — triggers registry.register
+    import tools.room_decompose_tool  # noqa: F401 — module import only; registration is commented out
     import tools.room_router_tool  # noqa: F401 — sibling tool in the same toolset
 
     tool_names = set(resolve_toolset("room_observer"))
     defs = _reg_singleton.get_definitions(tool_names, quiet=True)
     schema_names = {d.get("function", {}).get("name") for d in defs}
-    assert "decompose_and_route" in schema_names
     assert "route_to_member" in schema_names
+    assert "decompose_and_route" not in schema_names
+    assert "decompose_and_route" not in _reg_singleton._tools
 
 
 # ─── LLM output shapes ──────────────────────────────────────────────────
@@ -296,9 +305,13 @@ def test_full_dag_roundtrip():
 
 
 def test_toolset_registration():
-    """room_observer toolset must include both route_to_member AND
-    decompose_and_route (M4.2)."""
+    """room_observer toolset only exposes route_to_member — M4's central
+    decompose_and_route DAG was disabled in favor of the deterministic
+    @mention handoff chain (see toolsets.py's room_observer entry).
+    decompose_and_route remains a standalone, directly-callable tool
+    (test_full_dag_roundtrip above) but is no longer part of the
+    observer's toolset."""
     from toolsets import resolve_toolset
     tool_names = resolve_toolset("room_observer")
     assert "route_to_member" in tool_names
-    assert "decompose_and_route" in tool_names
+    assert "decompose_and_route" not in tool_names

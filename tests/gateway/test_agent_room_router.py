@@ -27,6 +27,7 @@ from gateway.agent_room_router import (
     CrossMemberContext,
     RoutingDecision,
 )
+from gateway.agent_room_firsthop import FirstHopResult
 from gateway.agent_room_store import AgentRoomStore
 
 
@@ -1012,3 +1013,352 @@ async def test_m4_decompose_fence_post_orchestration_drops_synthesis(store, mock
     assert result["fenced_at"] == "observer_postorchestration"
     assert result["reply"] is None
     synthesis.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Hybrid: member-to-member @mention handoff chain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handoff_chain_follows_single_mention(store, room):
+    """First member's reply @mentions another member → that member is
+    dispatched a second time as a handoff hop."""
+    replies = {
+        "client_svc": "我先看下，剩下的 @finance 帮忙核算",
+        "finance": "成本是 500 元",
+    }
+
+    async def _dispatch(member, sid, src, hist, msg):
+        return replies[member]
+
+    router = AgentRoomRouter(
+        store=store,
+        ack_sender=AsyncMock(return_value="h"),
+        ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        observer_runner=AsyncMock(
+            return_value=RoutingDecision(
+                target_member="client_svc", reason="start",
+                is_new_topic=True, reused_last_route=False,
+            )
+        ),
+        member_dispatcher=AsyncMock(side_effect=_dispatch),
+    )
+    result = await router.process_message(object(), "帮我算成本", [], room)
+
+    assert result["target_member"] == "client_svc"
+    hops = result["handoffs"]
+    assert len(hops) == 1
+    assert hops[0]["member"] == "finance"
+    assert hops[0]["from"] == "client_svc"
+    assert hops[0]["depth"] == 1
+    assert "500" in hops[0]["reply"]
+
+
+@pytest.mark.asyncio
+async def test_handoff_chain_stops_when_no_mention(store, room):
+    async def _dispatch(member, sid, src, hist, msg):
+        return "直接回答，没有 @ 任何人"
+
+    router = AgentRoomRouter(
+        store=store,
+        ack_sender=AsyncMock(return_value="h"),
+        ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        observer_runner=AsyncMock(
+            return_value=RoutingDecision(
+                target_member="client_svc", reason="start",
+                is_new_topic=True, reused_last_route=False,
+            )
+        ),
+        member_dispatcher=AsyncMock(side_effect=_dispatch),
+    )
+    result = await router.process_message(object(), "简单问题", [], room)
+    assert result["handoffs"] == []
+
+
+@pytest.mark.asyncio
+async def test_handoff_chain_bounded_by_depth(store):
+    """A ping-pong between two members is capped by the handoff policy so
+    it cannot loop forever."""
+    room = store.create_room(
+        "room_pp", "PingPong",
+        observer_profile="obs",
+        members=["a", "b"],
+        default_member="a",
+    )
+    # a always @b, b always @a → infinite without the depth cap.
+    def _reply(member):
+        other = "b" if member == "a" else "a"
+        return f"继续 @{other}"
+
+    async def _dispatch(member, sid, src, hist, msg):
+        return _reply(member)
+
+    from gateway.agent_room_handoff import resolve_handoff_policy
+    router = AgentRoomRouter(
+        store=store,
+        ack_sender=AsyncMock(return_value="h"),
+        ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        observer_runner=AsyncMock(
+            return_value=RoutingDecision(
+                target_member="a", reason="start",
+                is_new_topic=True, reused_last_route=False,
+            )
+        ),
+        member_dispatcher=AsyncMock(side_effect=_dispatch),
+        handoff_policy=resolve_handoff_policy(max_depth=3),
+    )
+    result = await router.process_message(object(), "start", [], room)
+    # depth cap 3 → hops at depth 1,2,3 then stop = 3 hops.
+    hops = result["handoffs"]
+    assert [h["depth"] for h in hops] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_handoff_skips_fenced_target(store, room):
+    async def _dispatch(member, sid, src, hist, msg):
+        return "让 @finance 接手" if member == "client_svc" else "不该被调用"
+
+    router = AgentRoomRouter(
+        store=store,
+        ack_sender=AsyncMock(return_value="h"),
+        ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        observer_runner=AsyncMock(
+            return_value=RoutingDecision(
+                target_member="client_svc", reason="start",
+                is_new_topic=True, reused_last_route=False,
+            )
+        ),
+        member_dispatcher=AsyncMock(side_effect=_dispatch),
+    )
+    # Fence the finance member session so its handoff hop is skipped.
+    store.fence_room(room.room_id, [AgentRoomRouter.member_session_id(room.room_id, "finance")])
+    result = await router.process_message(object(), "帮我算成本", [], room)
+    assert result["handoffs"] == []
+
+
+# ---------------------------------------------------------------------------
+# First-hop classifier path (replaces the observer agent turn)
+# ---------------------------------------------------------------------------
+
+
+def _base_mocks_no_observer():
+    return {
+        "ack_sender": AsyncMock(return_value="h"),
+        "ack_editor": AsyncMock(),
+        "classifier": AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        "member_dispatcher": AsyncMock(return_value="member reply"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_first_hop_classifier_single_member(store, room):
+    """When no @mention, the injected first_hop_runner decides the target
+    and the observer_runner is never called."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(members=["finance"], matched=True, reason="账单")
+    )
+    observer = AsyncMock()
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop, observer_runner=observer,
+        **_base_mocks_no_observer(),
+    )
+    result = await router.process_message(object(), "账单不对", [], room)
+    assert result["target_member"] == "finance"
+    first_hop.assert_awaited_once()
+    observer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_hop_classifier_multi_member(store, room):
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(members=["client_svc", "finance"], matched=True)
+    )
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop, **_base_mocks_no_observer(),
+    )
+    result = await router.process_message(object(), "退款+投诉", [], room)
+    assert result.get("concurrent") is True
+    assert set(result["target_member"]) == {"client_svc", "finance"}
+
+
+@pytest.mark.asyncio
+async def test_first_hop_deterministic_mention_takes_priority(store, room):
+    """An explicit @mention bypasses the classifier entirely."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(members=["client_svc"], matched=True)
+    )
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop, **_base_mocks_no_observer(),
+    )
+    result = await router.process_message(object(), "@finance 帮我看看", [], room)
+    assert result["target_member"] == "finance"
+    # classifier must NOT run when the user @mentioned someone.
+    first_hop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_hop_invalid_member_falls_back_to_default(store, room):
+    """If the classifier returns a name not in the roster, the router
+    falls back to the room default — and this is also a no-match
+    (a hallucinated/non-roster name carries no real domain judgment)."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(members=["nonexistent"], matched=True)
+    )
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop, **_base_mocks_no_observer(),
+    )
+    result = await router.process_message(object(), "随便说点啥", [], room)
+    assert result["target_member"] == "client_svc"  # room default
+
+
+@pytest.mark.asyncio
+async def test_first_hop_fenced_mid_classify_drops(store, room):
+    async def _fence_then_return(msg, room_arg):
+        store.fence_room(
+            room.room_id,
+            [AgentRoomRouter.observer_session_id(room.room_id)],
+        )
+        return FirstHopResult(members=["finance"], matched=True)
+
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=AsyncMock(side_effect=_fence_then_return),
+        **_base_mocks_no_observer(),
+    )
+    result = await router.process_message(object(), "账单", [], room)
+    assert result["fenced_at"] == "observer"
+    assert result["reply"] is None
+
+
+@pytest.mark.asyncio
+async def test_observer_still_used_when_no_first_hop_runner(store, room):
+    """Back-compat: callers that inject only observer_runner keep the
+    legacy observer path."""
+    observer = AsyncMock(return_value=RoutingDecision(
+        target_member="finance", reason="legacy",
+        is_new_topic=True, reused_last_route=False,
+    ))
+    router = AgentRoomRouter(
+        store=store, observer_runner=observer, **_base_mocks_no_observer(),
+    )
+    result = await router.process_message(object(), "账单不对", [], room)
+    assert result["target_member"] == "finance"
+    observer.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-14 no-match escalation ("不合理吧" research thread)
+#
+# Design: hermes-studio has no auto-routing AI layer at all (deterministic
+# @mention only, empty match → nobody replies); AutoGen separates a Group
+# Chat Manager role from participant agents; the OpenAI Agents SDK's
+# Triage Agent can own the answer itself instead of always handing off.
+# None of them silently force a roster member to answer as if it were a
+# real domain match. This room design still must always produce *some*
+# reply (no coordinator role exists to hand off to — that would be a
+# bigger, unrequested data-model change) but the forced fallback member
+# must be told explicitly that it's a fallback, not a real match, so it
+# can use its own judgment instead of reflexively deflecting. See
+# scratchpad/coordinator_demo2.py for the empirical A/B validation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_first_hop_explicit_no_match_flags_decision_and_prefixes_message(store, room):
+    """A real "this belongs to nobody" verdict (matched=False, non-empty
+    fallback members) must set RoutingDecision.is_no_match=True and the
+    member actually dispatched must receive the no-match framing prefix,
+    not the user's raw message unchanged."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(
+            members=["client_svc"], matched=False,
+            reason="这是决策问题，不属于任何成员职责范围",
+        )
+    )
+    dispatcher = AsyncMock(return_value="ok")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop,
+        ack_sender=AsyncMock(return_value="h"),
+        ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        member_dispatcher=dispatcher,
+    )
+    result = await router.process_message(object(), "该先上线前端还是先修后端bug？", [], room)
+    assert result["target_member"] == "client_svc"
+    assert result["is_no_match"] is True
+    # dispatcher must have received a prefixed message, not the raw text.
+    dispatched_input = dispatcher.await_args.args[-1]
+    assert "兜底" in dispatched_input
+    assert "该先上线前端还是先修后端bug？" in dispatched_input
+
+
+@pytest.mark.asyncio
+async def test_first_hop_real_match_does_not_get_no_match_prefix(store, room):
+    """A real domain match must NOT be prefixed with the no-match framing
+    — that framing is only for forced fallbacks."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(members=["finance"], matched=True, reason="账单")
+    )
+    dispatcher = AsyncMock(return_value="ok")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop,
+        **{**_base_mocks_no_observer(), "member_dispatcher": dispatcher},
+    )
+    result = await router.process_message(object(), "账单不对", [], room)
+    assert result["is_no_match"] is False
+    dispatched_input = dispatcher.await_args.args[-1]
+    assert dispatched_input == "账单不对"
+
+
+@pytest.mark.asyncio
+async def test_first_hop_hallucinated_names_treated_as_no_match(store, room):
+    """Even if ``matched=True`` was somehow set incorrectly upstream, the
+    router's own is_no_match determination is defense-in-depth: if
+    nothing survives roster validation, it's a no-match regardless of
+    what the classifier claimed."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(members=["totally_not_a_member"], matched=True)
+    )
+    dispatcher = AsyncMock(return_value="ok")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop,
+        **{**_base_mocks_no_observer(), "member_dispatcher": dispatcher},
+    )
+    result = await router.process_message(object(), "随便说点啥", [], room)
+    assert result["target_member"] == "client_svc"
+    dispatched_input = dispatcher.await_args.args[-1]
+    assert "兜底" in dispatched_input
+
+
+@pytest.mark.asyncio
+async def test_first_hop_plain_list_return_still_works_back_compat(store, room):
+    """If a caller's first_hop_runner still returns a bare list[str]
+    (pre-FirstHopResult contract), the router must not crash — it treats
+    that as a real match (no ``matched`` attribute to introspect) so
+    existing integrations degrade gracefully rather than exploding."""
+    first_hop = AsyncMock(return_value=["finance"])
+    dispatcher = AsyncMock(return_value="ok")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop,
+        **{**_base_mocks_no_observer(), "member_dispatcher": dispatcher},
+    )
+    result = await router.process_message(object(), "账单不对", [], room)
+    assert result["target_member"] == "finance"
+    dispatched_input = dispatcher.await_args.args[-1]
+    assert dispatched_input == "账单不对"

@@ -256,17 +256,26 @@ DECOMPOSE_AND_ROUTE_SCHEMA = {
 }
 
 
-# Register into the tool registry so _compute_tool_definitions can find it.
-# Same pattern as route_to_member.
-from tools.registry import registry as _registry
-
-_registry.register(
-    name="decompose_and_route",
-    toolset="room_observer",
-    schema=DECOMPOSE_AND_ROUTE_SCHEMA,
-    handler=decompose_and_route,
-    check_fn=None,
-    is_async=False,
-    description="Decompose a complex user request into a DAG of subtasks (observer-only).",
-    emoji="🧩",
-)
+# M4 DISABLED: decompose_and_route is intentionally NOT registered into the
+# room_observer toolset. Multi-member coordination now happens via the
+# deterministic @mention handoff chain (gateway/agent_room_mentions.py +
+# agent_room_handoff.py, driven by agent_room_router._run_handoff_chain)
+# instead of a central observer-emitted subtask DAG. The tool implementation,
+# schema, and orchestrator (gateway/agent_room_task_orchestrator.py) are kept
+# intact so this can be re-enabled by restoring the registry.register(...)
+# call below, but as long as it is unregistered the observer's room_observer
+# toolset resolves to route_to_member ONLY, and the parser/router decompose
+# branches remain dead code.
+#
+# from tools.registry import registry as _registry
+#
+# _registry.register(
+#     name="decompose_and_route",
+#     toolset="room_observer",
+#     schema=DECOMPOSE_AND_ROUTE_SCHEMA,
+#     handler=decompose_and_route,
+#     check_fn=None,
+#     is_async=False,
+#     description="Decompose a complex user request into a DAG of subtasks (observer-only).",
+#     emoji="🧩",
+# )

@@ -5272,9 +5272,17 @@ class TurnRunner:
         if _ts_override:
             from tools.room_router_tool import ROUTE_TO_MEMBER_SCHEMA
             # Wrap in the OpenAI function-calling envelope that
-            # agent.tools expects: {"type": "function", "function": {schema}}
-            _wrapped_schema = {"type": "function", "function": ROUTE_TO_MEMBER_SCHEMA}
-            _locked = [_wrapped_schema]
+            # agent.tools expects: {"type": "function", "function": {schema}}.
+            # route_to_member is built fresh here (not filtered from
+            # agent.tools) because tool_search defers it, so it may not be
+            # present yet. It handles single/multi-member first-hop dispatch;
+            # member-to-member coordination is handled downstream by the
+            # deterministic @mention handoff chain (agent_room_mentions +
+            # agent_room_handoff), not by a central decompose DAG (M4
+            # disabled — see agent_room_router hybrid handoff).
+            _locked = [
+                {"type": "function", "function": ROUTE_TO_MEMBER_SCHEMA},
+            ]
             # _LockedTools rejects append/extend so tool_search inside
             # run_conversation cannot re-add _HERMES_CORE_TOOLS.
             class _LockedTools(list):
@@ -26356,21 +26364,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("M1.7 ack_editor: %s", exc)
 
             async def _classifier(history_tail: list, last_routed):
-                """N4 aux LLM: is this a new topic?"""
+                """N4 aux LLM: is the latest message a continuation of the
+                same topic (→ reuse last_routed member) or a new topic
+                (→ run the first-hop classifier)?"""
+                if not last_routed:
+                    # Nothing to reuse — always run first-hop.
+                    return ClassifierResult(is_new_topic=True, confidence=1.0)
                 try:
-                    from agent.auxiliary_client import call_llm_simple
+                    from agent.auxiliary_client import async_call_llm
                     recent = "\n".join(
                         f"{m.get('role','?')}: {str(m.get('content',''))[:200]}"
                         for m in (history_tail or [])
                     )
                     prompt = (
-                        f"Last routed to: {last_routed or 'none'}\n"
-                        f"Recent messages:\n{recent}\n"
-                        f"Is the latest message a new topic? Reply with a JSON object "
-                        f"{{\"is_new_topic\": bool, \"confidence\": float 0-1}}. "
-                        f"No other text."
+                        f"当前对话最近由成员 `{last_routed}` 处理。\n"
+                        f"最近的消息：\n{recent}\n\n"
+                        f"最新一条消息是否延续同一话题（应继续由 `{last_routed}` 处理）？"
+                        f"只输出 JSON：{{\"is_new_topic\": bool, \"confidence\": 0到1的小数}}。"
+                        f"不要输出其他文字。"
                     )
-                    raw = await call_llm_simple(prompt, max_tokens=64)
+                    resp = await async_call_llm(
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.0,
+                        max_tokens=64,
+                        timeout=20,
+                        extra_body={"response_format": {"type": "json_object"}},
+                    )
+                    raw = ""
+                    try:
+                        raw = resp.choices[0].message.content or ""
+                    except Exception:
+                        raw = ""
                     import json as _json, re as _re
                     m = _re.search(r'\{[^}]+\}', raw or "")
                     if m:
@@ -26381,8 +26405,90 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception as exc:
                     logger.debug("M1.7 classifier: %s", exc)
-                # Fallback: treat as new topic → always run full observer turn
+                # Fallback: treat as new topic → run the first-hop classifier.
                 return ClassifierResult(is_new_topic=True, confidence=1.0)
+
+            async def _first_hop_runner(msg, room_arg):
+                """Step 3 (stateless first-hop classifier).
+
+                Replaces the observer agent turn: a single structured-output
+                LLM call with NO room history and NO tool_calls. Returns a
+                FirstHopResult — a roster-validated list of member names
+                plus a ``matched`` flag distinguishing a real domain match
+                from a forced no-match fallback (2026-08-14 redesign; see
+                agent_room_firsthop.py's module docstring). The dirty-history
+                projection + fragile tool_call that made the observer fall
+                back to prose in production are both gone — this reads only
+                the current message + the roster descriptions.
+
+                Runs under the observer profile's model config + secret
+                scope (reusing the room's routing credentials/model), but it
+                does NOT run an agent loop and never touches SOUL/toolsets.
+                """
+                from gateway.agent_room_firsthop import classify_first_hop
+                from agent.auxiliary_client import async_call_llm
+
+                observer_profile = room_arg.observer_profile
+                # Build the (name, description) roster from member profiles.
+                members_desc: list[tuple[str, str]] = []
+                for _m in room_arg.members:
+                    _desc = ""
+                    try:
+                        from hermes_cli.profiles import read_profile_meta, get_profile_dir
+                        _desc = str(read_profile_meta(get_profile_dir(_m)).get("description") or "")
+                    except Exception:
+                        _desc = ""
+                    members_desc.append((_m, _desc))
+                default_member = room_arg.resolve_default_member()
+
+                # Resolve the router model/provider from the observer
+                # profile's config.yaml (same model the observer used).
+                _model = _provider = _base_url = None
+                try:
+                    import dataclasses
+                    _obs_source = dataclasses.replace(source, profile=observer_profile)
+                    _profile_home = self._resolve_profile_home_for_source(_obs_source)
+                    from hermes_cli.profiles import _read_config_model
+                    _model, _provider = _read_config_model(Path(_profile_home))
+                except Exception as _e:
+                    logger.debug("first-hop: could not read observer model cfg: %s", _e)
+
+                async def _call_raw(messages):
+                    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                    from hermes_cli.env_loader import hydrate_profile_secret_sources
+                    from agent.secret_scope import (
+                        build_profile_secret_scope, set_secret_scope, reset_secret_scope,
+                    )
+                    import dataclasses
+                    _obs_source = dataclasses.replace(source, profile=observer_profile)
+                    _phome = self._resolve_profile_home_for_source(_obs_source)
+                    hydrate_profile_secret_sources(Path(_phome))
+                    _ht = set_hermes_home_override(str(_phome))
+                    _st = set_secret_scope(build_profile_secret_scope(Path(_phome)))
+                    try:
+                        resp = await async_call_llm(
+                            provider=_provider,
+                            model=_model,
+                            messages=messages,
+                            temperature=0.0,
+                            max_tokens=256,
+                            timeout=30,
+                            extra_body={"response_format": {"type": "json_object"}},
+                        )
+                        try:
+                            return resp.choices[0].message.content or ""
+                        except Exception:
+                            return ""
+                    finally:
+                        reset_secret_scope(_st)
+                        reset_hermes_home_override(_ht)
+
+                return await classify_first_hop(
+                    message=msg,
+                    members=members_desc,
+                    default_member=default_member,
+                    call_raw=_call_raw,
+                )
 
             async def _observer_runner(
                 observer_profile, session_id, _src, hist, msg
@@ -26835,8 +26941,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "- 回答简洁、对群聊有帮助；使用与用户相同的语言。\n"
                     "- 不要假装是人类；需要时明确表明自己是 AI。\n"
                     f"- 对话历史里的\"[发送者]: ...\"只是系统添加的归属标记，用来帮你理解谁说了这句话；不要在你的回复中复述或模仿这种方括号前缀。也不要输出\"[{member_profile}]:\"这类格式，直接以自然语言回复即可。\n"
-                    "- 不要主动 @ 任何人；只有在明确需要另一位成员协助时才 @ 名字，且要说清楚请对方做什么。\n"
-                    "- 如果只是回答提问，直接回答，不要在结尾 @ 其他成员继续接力。\n"
+                    "- 如果这个问题需要另一位成员接手或补充，在回复中 @ 对方的名字（例如 @finance），系统会自动把你的回复转交给对方；@ 时请说清楚请对方做什么。\n"
+                    "- 如果你已经能完整回答，直接回答即可，不要在结尾无意义地 @ 其他成员接力。\n"
                 )
 
                 try:
@@ -26865,15 +26971,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
 
                 # Prefix with the member profile name so the user can see
-                # which agent replied (design.html §11m1 B4: 显示身份).
-                if reply:
-                    reply = f"profile: {member_profile}\n\n{reply}"
+                # which agent replied (design.html §11m1 B4: 显示身份). This
+                # display prefix is for DELIVERY only — the clean reply is
+                # what we persist (above) and return (below) so the @mention
+                # handoff chain scans the member's real words, not the
+                # "profile: X" plumbing line.
+                delivered = f"profile: {member_profile}\n\n{reply}" if reply else reply
                 # Deliver to the original IM source via adapter.
                 try:
                     if adapter and hasattr(adapter, "send"):
                         await adapter.send(
                             source.chat_id,
-                            reply or "(no reply)",
+                            delivered or "(no reply)",
                             metadata={},
                         )
                 except Exception as exc:
@@ -26957,9 +27066,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ack_sender=_ack_sender,
                 ack_editor=_ack_editor,
                 classifier=_classifier,
-                observer_runner=_observer_runner,
+                # First-hop routing is now a stateless classifier (no room
+                # history, no tool_calls) — it replaces the observer agent
+                # turn that fell back to prose under production dirty
+                # history. observer_runner is left defined above but no
+                # longer wired; first_hop_runner takes precedence.
+                first_hop_runner=_first_hop_runner,
                 member_dispatcher=_member_dispatcher,
-                synthesis_runner=_synthesis_runner,
+                # M4 decompose/synthesis disabled: member coordination is
+                # handled by the @mention handoff chain
+                # (agent_room_router._run_handoff_chain).
+                synthesis_runner=None,
             )
 
         try:

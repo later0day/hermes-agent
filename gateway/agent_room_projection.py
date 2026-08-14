@@ -152,13 +152,26 @@ def project_for_observer(
     doesn't have "its own turns" in the same sense as a member.
 
     All messages become role="user" with speaker prefix, except the
-    observer's own past routes (kind=="observer") which are surfaced as
-    role="assistant" so the observer can see its own routing history.
+    observer's own past synthesis replies (kind=="observer" with no
+    tool_calls) which are surfaced as role="assistant".
+
+    The observer's past *routing decisions* (kind=="observer" carrying a
+    route_to_member / decompose_and_route tool_call) are DROPPED from its
+    self-view. Those rows have empty content and render to the flattened
+    prose ``[observer]: routed to member (args: ...)``; fed back as
+    role="assistant" they act as few-shot examples that teach the model to
+    emit its next decision as prose instead of a structured tool call,
+    which the bridge cannot parse (empty route -> fallback member). The
+    fresh per-turn classifier + last_routed already carry routing
+    continuity, so the observer loses nothing actionable by not seeing its
+    own past tool calls.
     """
     if not messages:
         return []
     projected: list[ProjectedMessage] = []
     for msg in messages:
+        if msg.sender_kind == "observer" and msg.tool_calls:
+            continue
         content = _render_content(msg, target_member="")  # no target
         role = "assistant" if msg.sender_kind == "observer" else "user"
         projected.append(ProjectedMessage(role=role, content=content))

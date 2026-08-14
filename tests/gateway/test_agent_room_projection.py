@@ -134,10 +134,14 @@ def test_observer_decompose_toolcall_surfaced():
     assert "draft" in out[0].content
 
 
-def test_observer_route_and_decompose_interleave_in_observer_view():
-    """M4-B8: an observer session that alternated between route_to_member
-    and decompose_and_route must project BOTH as non-empty assistant rows,
-    so neither mode's history is lost when the other runs later."""
+def test_observer_route_and_decompose_toolcalls_dropped_from_observer_view():
+    """The observer's own past routing tool-calls (route_to_member /
+    decompose_and_route) are DROPPED from its self-view. Fed back as
+    role="assistant" prose rows they act as few-shot examples that teach
+    the model to answer with prose instead of a structured tool call
+    (which the bridge can't parse -> empty route -> fallback member). The
+    per-turn classifier + last_routed carry routing continuity instead.
+    User / member rows around them are preserved and keep their order."""
     route_tc = [{"id": "1", "function": {"name": "route_to_member",
                                          "arguments": '{"member":"finance"}'}}]
     decomp_tc = [{"id": "2", "function": {"name": "decompose_and_route",
@@ -149,12 +153,13 @@ def test_observer_route_and_decompose_interleave_in_observer_view():
         _mk(4, "observer", "obs", "", tool_calls=decomp_tc),
     ]
     out = project_for_observer(msgs)
-    assert out[1].role == "assistant"
-    assert "routed to member" in out[1].content
-    assert "finance" in out[1].content
-    assert out[3].role == "assistant"
-    assert "decomposed into subtasks" in out[3].content
-    assert "step1" in out[3].content
+    # Only the two user rows survive; both observer tool-call rows dropped.
+    assert len(out) == 2
+    assert all(p.role == "user" for p in out)
+    assert "simple question" in out[0].content
+    assert "complex multi-step request" in out[1].content
+    assert not any("routed to member" in p.content for p in out)
+    assert not any("decomposed into subtasks" in p.content for p in out)
 
 
 def test_empty_content_handled():

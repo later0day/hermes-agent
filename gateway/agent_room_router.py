@@ -43,6 +43,14 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from gateway.agent_room_store import AgentRoom, AgentRoomStore
+from gateway.agent_room_mentions import resolve_mention_targets, strip_mention_tokens
+from gateway.agent_room_firsthop import FirstHopResult
+from gateway.agent_room_handoff import (
+    HandoffPolicy,
+    next_mention_depth,
+    resolve_handoff_policy,
+    should_route_handoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +108,19 @@ class RoutingDecision:
     # action == "decompose_and_route". Each entry:
     #   {"title", "body", "assignee", "parents"}.
     decompose_tasks: Optional[list[dict]] = None
+    # 2026-08-14 no-match escalation: True when this decision is a FORCED
+    # fallback to the default member — the first-hop classifier itself
+    # judged the message out-of-scope for every roster member (or the
+    # classifier call/parse failed), NOT a real domain match. Never set
+    # for @mention (deterministic, user-chosen) or N4-reuse decisions.
+    # The router uses this to prefix the member's input with an explicit
+    # "you're being asked as a fallback, use your own judgment" note
+    # (see ``_apply_no_match_prefix``) instead of silently pretending a
+    # forced fallback is the same as a real match — see
+    # gateway/agent_room_firsthop.py's module docstring for the research
+    # behind this (hermes-studio / AutoGen / OpenAI Agents SDK all treat
+    # "no match" as a distinct outcome, never a silent forced match).
+    is_no_match: bool = False
 
     @property
     def is_decompose(self) -> bool:
@@ -154,9 +175,33 @@ Classifier = Callable[[list[dict], Optional[str]], Awaitable[ClassifierResult]]
 # room_observer) and returns the routing decision the observer emitted.
 # Under M1.7 this is wired to gateway/run.py's _run_agent_inner wrapped
 # in _profile_runtime_scope; under tests it's a MagicMock.
+#
+# DEPRECATED (first-hop-classifier migration): the fragile observer agent
+# turn is replaced by ``FirstHopRunner`` below — a single stateless
+# structured-output classify call with NO room history and NO tool_calls.
+# ``observer_runner`` is kept OPTIONAL for backward-compat with existing
+# tests/callers, but when ``first_hop_runner`` is provided it takes
+# precedence and the observer is never invoked.
 ObserverRunner = Callable[
     [str, str, Any, list[dict], str],  # observer_profile, session_id, source, history, message
     Awaitable[RoutingDecision],
+]
+
+# Stateless first-hop classifier: given the raw user message + the room
+# roster, returns a ``FirstHopResult`` — ``members`` is an ordered,
+# roster-validated list to dispatch (never empty unless the room has no
+# members) and ``matched`` distinguishes a real domain judgment from a
+# forced fallback (2026-08-14: see agent_room_firsthop.py's docstring for
+# why this distinction exists — a room must always answer, but "who
+# answers because they were CHOSEN" and "who answers because nobody
+# else was" are not the same thing and the router must not conflate
+# them).
+# Wired in gateway/run.py to gateway/agent_room_firsthop.classify_first_hop
+# over async_call_llm; injected as an AsyncMock in tests. Runs ONLY when
+# the deterministic @mention pass finds no explicit target.
+FirstHopRunner = Callable[
+    [str, "AgentRoom"],  # message, room
+    Awaitable["FirstHopResult"],
 ]
 
 # Dispatches to a member profile's turn with the pre-processed message
@@ -204,20 +249,29 @@ class AgentRoomRouter:
         ack_sender: AckSender,
         ack_editor: AckEditor,
         classifier: Classifier,
-        observer_runner: ObserverRunner,
+        observer_runner: Optional[ObserverRunner] = None,
+        first_hop_runner: Optional["FirstHopRunner"] = None,
         member_dispatcher: MemberDispatcher,
         synthesis_runner: Optional["SynthesisRunner"] = None,
+        handoff_policy: Optional[HandoffPolicy] = None,
     ) -> None:
         self._store = store
         self._ack_sender = ack_sender
         self._ack_editor = ack_editor
         self._classifier = classifier
         self._observer_runner = observer_runner
+        # First-hop classifier (stateless). When present it fully replaces
+        # the observer agent turn for the miss path in _decide_target.
+        self._first_hop_runner = first_hop_runner
         self._member_dispatcher = member_dispatcher
         # M4.4: only needed on the decompose_and_route path. When absent,
         # a decompose decision falls back to concatenating raw subtask
         # replies (still correct, just not LLM-synthesized).
         self._synthesis_runner = synthesis_runner
+        # Hybrid handoff: after a member replies, its ``@member`` mentions
+        # re-dispatch the named members (bounded by this policy's depth).
+        # Replaces the central decompose DAG for multi-member coordination.
+        self._handoff_policy = handoff_policy or resolve_handoff_policy()
 
         # §5.4: last_routed_member cache. Keyed by room_id; process-local,
         # not persisted. A restart forces the first message to run a full
@@ -294,6 +348,37 @@ class AgentRoomRouter:
             f"> 上一位处理人 {context.previous_member} 的回复摘要：{context.summary}\n"
             f"> ---\n"
             f"> 用户消息：{original_message}"
+        )
+
+    @staticmethod
+    def _apply_no_match_prefix(message: str, decision: "RoutingDecision") -> str:
+        """2026-08-14 no-match escalation: when ``decision.is_no_match`` is
+        True, the first-hop classifier judged this message out-of-scope
+        for every roster member — ``decision.target_member`` is a FORCED
+        fallback, not a real domain match. Reusing the §8 Rule B
+        blockquote-prefix pattern (rather than inventing a new mechanism
+        or a new "coordinator" role/data-model the user hasn't asked
+        for), we tell the dispatched member explicitly that it's being
+        asked as a fallback so it can use its own judgment — answer if
+        it reasonably can, or say so plainly if it genuinely can't —
+        instead of silently pretending this is the same as being
+        selected as a real domain match.
+
+        Validated in scratchpad/coordinator_demo2.py: a member forced to
+        answer with NO such framing produces either an unhelpful
+        checklist or a bare "this isn't my job"; a member told it's
+        being asked as a fallback (with permission to use judgment)
+        gives a real, owned answer instead."""
+        if not decision.is_no_match:
+            return message
+        return (
+            "> 路由提示：这条消息没有明确匹配到群里任何一位成员的职责范围，"
+            "现在把它转给你作为兜底处理。请用你的判断给出实质性的回应——"
+            "如果你能给出合理的建议或决策就直接给，不要因为\"不属于我的职责\""
+            "而只回复一句让用户去找别人；如果确实完全无法处理，也请给出"
+            "具体该找谁/怎么办的建议，而不是简单拒绝。\n"
+            f"> ---\n"
+            f"> 用户消息：{message}"
         )
 
     # ------------------------------------------------------------------
@@ -462,6 +547,176 @@ class AgentRoomRouter:
         return "\n\n".join(parts) if parts else "(所有子任务均未产出结果)"
 
     # ------------------------------------------------------------------
+    # Legacy observer decision path (retained for back-compat)
+    # ------------------------------------------------------------------
+
+    async def _decide_via_observer(
+        self,
+        *,
+        source: Any,
+        room: AgentRoom,
+        observer_sid: str,
+        history: list[dict],
+        message: str,
+    ) -> Any:
+        """Run the legacy observer agent turn and normalize its decision.
+
+        Returns:
+          * ``RoutingDecision`` — a validated single/multi member route,
+          * ``None``            — the observer was fenced mid-turn (caller
+                                  should emit the fenced bundle),
+          * ``dict``            — a fully-handled decompose bundle (legacy
+                                  M4 path) the caller should return as-is.
+
+        This is only reached when no ``first_hop_runner`` is injected. New
+        deployments use the stateless first-hop classifier instead and
+        never call this.
+        """
+        room_id = room.room_id
+        observer_decision = await self._observer_runner(
+            room.observer_profile,
+            observer_sid,
+            source,
+            history,
+            message,
+        )
+        if self._store.is_fenced(room_id, observer_sid):
+            logger.info(
+                "room %s: observer session %s fenced mid-turn; discarding decision",
+                room_id, observer_sid,
+            )
+            return None
+
+        if getattr(observer_decision, "is_decompose", False):
+            return await self._run_decompose(
+                source=source,
+                room=room,
+                observer_sid=observer_sid,
+                decision=observer_decision,
+            )
+
+        raw_target = observer_decision.target_member
+        if isinstance(raw_target, list):
+            cleaned = [str(m).strip() for m in raw_target if str(m).strip()]
+            valid = [m for m in cleaned if m in room.members]
+            if not valid:
+                target: Any = room.resolve_default_member()
+                logger.warning(
+                    "room %s: observer proposed %r (none in roster %s); "
+                    "falling back to single %r",
+                    room_id, raw_target, room.members, target,
+                )
+            elif len(valid) == 1:
+                target = valid[0]
+            else:
+                seen: set = set()
+                deduped: list[str] = []
+                for m in valid:
+                    if m not in seen:
+                        seen.add(m)
+                        deduped.append(m)
+                target = deduped
+                if len(cleaned) != len(valid):
+                    logger.info(
+                        "room %s: dropped invalid members from concurrent "
+                        "route (kept %s, dropped %s)",
+                        room_id, valid, set(cleaned) - set(valid),
+                    )
+        else:
+            target = (raw_target or "").strip()
+            if target not in room.members:
+                fallback = room.resolve_default_member()
+                logger.warning(
+                    "room %s: observer chose %r (not in roster %s); "
+                    "falling back to %r",
+                    room_id, target, room.members, fallback,
+                )
+                target = fallback
+
+        return RoutingDecision(
+            target_member=target,
+            reason=observer_decision.reason,
+            is_new_topic=observer_decision.is_new_topic,
+            reused_last_route=False,
+        )
+
+    # ------------------------------------------------------------------
+    # Hybrid: member-to-member @mention handoff chain
+    # ------------------------------------------------------------------
+
+    async def _run_handoff_chain(
+        self,
+        *,
+        source: Any,
+        room: AgentRoom,
+        history: list[dict],
+        from_member: str,
+        reply_text: str,
+        depth: int,
+    ) -> list[dict[str, Any]]:
+        """Follow ``@member`` handoffs out of ``from_member``'s reply.
+
+        Ported behavior from hermes-studio: a member reply that mentions
+        another member re-dispatches that member with the reply as its
+        inbound message, bounded by ``self._handoff_policy`` depth so a
+        chain cannot loop forever. Runs breadth-first, one depth level at
+        a time; each hop's own reply is scanned again for further hops.
+
+        Returns a flat list of hop records
+        ``[{"member", "reply", "depth", "from"}]`` in dispatch order.
+        The caller merges these into its result bundle; per-member reply
+        persistence/delivery is the injected ``member_dispatcher``'s job
+        (same as the first hop), so hop replies reach the user too.
+        """
+        hops: list[dict[str, Any]] = []
+        # Frontier holds (author_member, author_reply, author_depth).
+        frontier: list[tuple[str, str, int]] = [(from_member, reply_text, depth)]
+
+        while frontier:
+            next_frontier: list[tuple[str, str, int]] = []
+            for author, text, author_depth in frontier:
+                if not should_route_handoff(author_depth, self._handoff_policy):
+                    continue
+                targets = resolve_mention_targets(room.members, text or "", author)
+                if not targets:
+                    continue
+                hop_depth = next_mention_depth(author_depth)
+                for target in targets:
+                    member_sid = self.member_session_id(room.room_id, target)
+                    if self._store.is_fenced(room.room_id, member_sid):
+                        logger.info(
+                            "room %s: handoff target %s fenced; skipping",
+                            room.room_id, target,
+                        )
+                        continue
+                    inbound = strip_mention_tokens(text or "", target)
+                    handoff_msg = (
+                        f"> {author} 在群里 @了你：{inbound}"
+                        if inbound else f"> {author} 在群里 @了你"
+                    )
+                    try:
+                        hop_reply = await self._member_dispatcher(
+                            target, member_sid, source, history, handoff_msg,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — isolate one hop
+                        logger.warning(
+                            "room %s: handoff hop %s->%s failed: %s",
+                            room.room_id, author, target, exc,
+                        )
+                        continue
+                    hop_reply = hop_reply or ""
+                    hops.append({
+                        "member": target,
+                        "reply": hop_reply,
+                        "depth": hop_depth,
+                        "from": author,
+                    })
+                    next_frontier.append((target, hop_reply, hop_depth))
+            frontier = next_frontier
+
+        return hops
+
+    # ------------------------------------------------------------------
     # §6.1 five-step flow
     # ------------------------------------------------------------------
 
@@ -526,99 +781,87 @@ class AgentRoomRouter:
                 reused_last_route=True,
             )
         else:
-            # Slow path: full observer turn.
-            observer_decision = await self._observer_runner(
-                room.observer_profile,
-                observer_sid,
-                source,
-                history,
-                message,
-            )
-            # §6.3 Fence check A: if the room was structurally changed
-            # while the observer turn was in flight, its decision is
-            # discarded here — no member is dispatched, no group
-            # message is sent.
-            if self._store.is_fenced(room_id, observer_sid):
-                logger.info(
-                    "room %s: observer session %s fenced mid-turn; discarding decision",
-                    room_id, observer_sid,
+            # Slow path: decide the first hop.
+            #
+            # (1) Deterministic @mention — if the user explicitly @'d one
+            #     or more members, honor that with ZERO LLM involvement
+            #     (mirrors hermes-studio's first-hop routing). ``sender``
+            #     is empty so no member is excluded.
+            mention_targets = resolve_mention_targets(room.members, message or "", "")
+            if mention_targets:
+                target: Any = mention_targets[0] if len(mention_targets) == 1 else mention_targets
+                decision = RoutingDecision(
+                    target_member=target,
+                    reason="user @mention",
+                    is_new_topic=True,
+                    reused_last_route=False,
                 )
-                return {
-                    "fenced_at": "observer",
-                    "target_member": None,
-                    "reason": None,
-                    "reused_last_route": False,
-                    "reply": None,
-                }
-
-            # ── M4.4: decompose_and_route branch ──────────────────────
-            # If the observer decided this is a multi-step task, it
-            # emitted a subtask DAG instead of a single/multi member
-            # route. Run the orchestrator, then a synthesis turn.
-            if getattr(observer_decision, "is_decompose", False):
-                return await self._run_decompose(
+            elif self._first_hop_runner is not None:
+                # (2) Stateless first-hop classifier — NO history, NO
+                #     tool_calls. Returns a FirstHopResult whose
+                #     ``members`` is roster-validated (never empty unless
+                #     the room has no members) and whose ``matched`` flag
+                #     distinguishes a real domain judgment from a forced
+                #     fallback (2026-08-14 no-match redesign — see
+                #     agent_room_firsthop.py's docstring).
+                hop_result = await self._first_hop_runner(message, room)
+                if self._store.is_fenced(room_id, observer_sid):
+                    logger.info(
+                        "room %s: fenced during first-hop classify; discarding",
+                        room_id,
+                    )
+                    return {
+                        "fenced_at": "observer",
+                        "target_member": None,
+                        "reason": None,
+                        "reused_last_route": False,
+                        "reply": None,
+                    }
+                hop_members = getattr(hop_result, "members", hop_result)
+                hop_matched = getattr(hop_result, "matched", True)
+                hop_reason = getattr(hop_result, "reason", "") or ""
+                cleaned = [m for m in (hop_members or []) if m in room.members]
+                is_no_match = not hop_matched or not cleaned
+                if not cleaned:
+                    target = room.resolve_default_member()
+                elif len(cleaned) == 1:
+                    target = cleaned[0]
+                else:
+                    target = cleaned  # list → is_multi
+                decision = RoutingDecision(
+                    target_member=target,
+                    reason=(
+                        f"first-hop classifier (no match: {hop_reason})"
+                        if is_no_match and hop_reason
+                        else "first-hop classifier (no match)" if is_no_match
+                        else "first-hop classifier"
+                    ),
+                    is_new_topic=True,
+                    reused_last_route=False,
+                    is_no_match=is_no_match,
+                )
+            else:
+                # (3) Legacy fallback: observer agent turn. Retained only
+                #     for callers/tests that still inject observer_runner
+                #     without a first_hop_runner.
+                decision = await self._decide_via_observer(
                     source=source,
                     room=room,
                     observer_sid=observer_sid,
-                    decision=observer_decision,
+                    history=history,
+                    message=message,
                 )
-
-            # Validate the observer's target against the current roster.
-            # M1-B4: empty / whitespace / unknown members all fall back
-            # to the room's default_member (or members[0] via
-            # AgentRoom.resolve_default_member).
-            #
-            # M3.5: target_member can be a list[str] for concurrent
-            # multi-member dispatch. Validate each element independently;
-            # any invalid names are dropped. If all are invalid, fall
-            # back to a single-member decision on default_member.
-            raw_target = observer_decision.target_member
-            if isinstance(raw_target, list):
-                cleaned = [str(m).strip() for m in raw_target if str(m).strip()]
-                valid = [m for m in cleaned if m in room.members]
-                if not valid:
-                    fallback = room.resolve_default_member()
-                    logger.warning(
-                        "room %s: observer proposed %r (none in roster %s); "
-                        "falling back to single %r",
-                        room_id, raw_target, room.members, fallback,
-                    )
-                    target = fallback
-                elif len(valid) == 1:
-                    # Single-valid degenerates to single-member dispatch
-                    target = valid[0]
-                else:
-                    # De-dupe preserving order for concurrent list
-                    seen: set = set()
-                    deduped: list[str] = []
-                    for m in valid:
-                        if m not in seen:
-                            seen.add(m)
-                            deduped.append(m)
-                    target = deduped  # keep as list → is_multi=True
-                    if len(cleaned) != len(valid):
-                        logger.info(
-                            "room %s: dropped invalid members from concurrent "
-                            "route (kept %s, dropped %s)",
-                            room_id, valid, set(cleaned) - set(valid),
-                        )
-            else:
-                target = (raw_target or "").strip()
-                if target not in room.members:
-                    fallback = room.resolve_default_member()
-                    logger.warning(
-                        "room %s: observer chose %r (not in roster %s); "
-                        "falling back to %r",
-                        room_id, target, room.members, fallback,
-                    )
-                    target = fallback
-
-            decision = RoutingDecision(
-                target_member=target,
-                reason=observer_decision.reason,
-                is_new_topic=observer_decision.is_new_topic,
-                reused_last_route=False,
-            )
+                if decision is None:
+                    return {
+                        "fenced_at": "observer",
+                        "target_member": None,
+                        "reason": None,
+                        "reused_last_route": False,
+                        "reply": None,
+                    }
+                if isinstance(decision, dict):
+                    # decompose bundle (legacy M4 path) already fully handled
+                    return decision
 
         # Update the cache regardless of which path we took — successful
         # reuse also refreshes the "last route" so a subsequent classifier
@@ -652,6 +895,10 @@ class AgentRoomRouter:
         # when projection isn't wired.)
         cross_context = self._extract_cross_member_context(decision.reason)
         member_input = self._apply_cross_member_prefix(message, cross_context)
+        # 2026-08-14 no-match escalation: layer the fallback-framing note
+        # on top of (not instead of) the §8 prefix — both are additive
+        # blockquote prefixes on the same underlying message.
+        member_input = self._apply_no_match_prefix(member_input, decision)
 
         # ── Step 5: dispatch member turn(s) ───────────────────────────
         if decision.is_multi:
@@ -723,11 +970,24 @@ class AgentRoomRouter:
                 "target_member": decision.target_member,
                 "reason": decision.reason,
                 "reused_last_route": decision.reused_last_route,
+                "is_no_match": decision.is_no_match,
                 "cross_member_summary_applied": cross_context.has_summary(),
                 "cross_member_previous": cross_context.previous_member,
                 "reply": None,          # per-member replies live in .replies
                 "replies": replies,     # M3 addition: per-member reply map
                 "concurrent": True,
+                "handoffs": [
+                    hop
+                    for m, r in replies.items()
+                    for hop in await self._run_handoff_chain(
+                        source=source,
+                        room=room,
+                        history=history,
+                        from_member=m,
+                        reply_text=r or "",
+                        depth=0,
+                    )
+                ],
             }
 
         # ── Single-member dispatch (M1 legacy path, unchanged) ────────
@@ -778,7 +1038,16 @@ class AgentRoomRouter:
             "target_member": decision.target_member,
             "reason": decision.reason,
             "reused_last_route": decision.reused_last_route,
+            "is_no_match": decision.is_no_match,
             "cross_member_summary_applied": cross_context.has_summary(),
             "cross_member_previous": cross_context.previous_member,
             "reply": reply_text,
+            "handoffs": await self._run_handoff_chain(
+                source=source,
+                room=room,
+                history=history,
+                from_member=decision.target_member,
+                reply_text=reply_text or "",
+                depth=0,
+            ),
         }

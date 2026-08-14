@@ -29,9 +29,9 @@ def test_locked_tools_survive_deepcopy():
     agent = _FakeAgent()
     _lock_agent_tools(agent, ["room_observer"])
 
-    # Lockdown resolved the two room tools.
+    # Lockdown resolved the observer's single routing tool.
     names = {t["function"]["name"] for t in agent.tools}
-    assert names == {"route_to_member", "decompose_and_route"}
+    assert names == {"route_to_member"}
 
     # The prompt-cache plan deep-copies tools before every request; the copy
     # must retain all tools (this is the actual bug that emptied the wire).
@@ -55,5 +55,5 @@ def test_locked_tools_reject_readd():
     agent.tools.extend([{"function": {"name": "write_file"}}])
     assert len(agent.tools) == before
     assert {t["function"]["name"] for t in agent.tools} == {
-        "route_to_member", "decompose_and_route",
+        "route_to_member",
     }

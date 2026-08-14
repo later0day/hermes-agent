@@ -90,8 +90,9 @@ def _lock_agent_tools(agent: Any, toolsets: list[str]) -> None:
        So we bypass assembly and fetch the RAW schemas directly via
        ``skip_tool_search_assembly=True``.
     2. tool_search's tier-1 mechanism otherwise keeps _HERMES_CORE_TOOLS
-       alive; the observer must see EXACTLY route_to_member +
-       decompose_and_route and nothing else.
+       alive; the observer must see EXACTLY route_to_member and nothing
+       else (M4 decompose_and_route is disabled — member coordination is
+       handled by the @mention handoff chain in agent_room_router).
 
     We install a list subclass that rejects re-adds during
     run_conversation's internal tool_search rebuild — same technique as
@@ -428,14 +429,59 @@ class InProcessRoomRunner:
                 self._synth_reply = final
             return final
 
+        async def _first_hop_runner(msg, room_arg):
+            """Stateless first-hop classifier (dashboard). NO history, NO
+            tool_calls — replaces the observer agent turn. Reads only the
+            current message + roster descriptions and returns a
+            FirstHopResult (roster-validated member list + a ``matched``
+            flag distinguishing a real domain match from a forced
+            no-match fallback; see agent_room_firsthop.py)."""
+            from gateway.agent_room_firsthop import classify_first_hop
+            from agent.auxiliary_client import async_call_llm
+            from hermes_cli.profiles import _read_config_model
+
+            members_desc = [(m, _read_member_desc(m)) for m in room_arg.members]
+            default_member = room_arg.resolve_default_member()
+            observer_profile = room_arg.observer_profile
+            try:
+                _model, _provider = _read_config_model(_profile_home(observer_profile))
+            except Exception:
+                _model, _provider = None, None
+
+            async def _call_raw(messages):
+                resp = await async_call_llm(
+                    provider=_provider,
+                    model=_model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=256,
+                    timeout=30,
+                    extra_body={"response_format": {"type": "json_object"}},
+                )
+                try:
+                    return resp.choices[0].message.content or ""
+                except Exception:
+                    return ""
+
+            return await classify_first_hop(
+                message=msg,
+                members=members_desc,
+                default_member=default_member,
+                call_raw=_call_raw,
+            )
+
         return AgentRoomRouter(
             store=store,
             ack_sender=_ack_sender,
             ack_editor=_ack_editor,
             classifier=_classifier,
-            observer_runner=_observer_runner,
+            first_hop_runner=_first_hop_runner,
             member_dispatcher=_member_dispatcher,
-            synthesis_runner=_synthesis_runner,
+            # M4 decompose/synthesis disabled; member coordination via
+            # @mention handoff chain. observer_runner/_synthesis_runner
+            # left defined above but no longer wired (first_hop replaces
+            # the observer agent turn).
+            synthesis_runner=None,
         )
 
     # ── persistence helpers (mirror gateway/run.py) ─────────────────
@@ -502,7 +548,8 @@ class InProcessRoomRunner:
             "- 回答简洁、对群聊有帮助；使用与用户相同的语言。\n"
             "- 不要假装是人类；需要时明确表明自己是 AI。\n"
             f"- 历史里的\"[发送者]: ...\"是系统归属标记，不要复述或模仿；也不要输出\"[{member_profile}]:\"前缀。\n"
-            "- 不要主动 @ 任何人，除非明确需要另一位成员协助。\n"
+            "- 如果需要另一位成员接手或补充，在回复中 @ 对方名字（如 @finance），系统会自动转交；@ 时说清楚请对方做什么。\n"
+            "- 如果你已能完整回答，直接回答，不要在结尾无意义地 @ 其他成员接力。\n"
         )
 
     # ── public entry ────────────────────────────────────────────────
