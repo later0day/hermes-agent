@@ -460,6 +460,7 @@ class TestTickProfilePartition:
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [profile_job, parallel_job])
         monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
 
         calls: list[tuple[str, str]] = []
 
