@@ -12,7 +12,29 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gateway_restart_phase(monkeypatch):
+    """Keep the (surfaced — #78574) gateway auto-restart phase away from
+    this machine's real gateways: discovery returns nothing, systemd is
+    unsupported, so the phase is a clean no-op regardless of what real
+    gateway processes happen to be running on the test host. Same pattern
+    as test_update_head_moved_gate.py."""
+    import hermes_cli.gateway as hermes_gateway
+
+    monkeypatch.setattr(
+        hermes_gateway, "find_gateway_pids", lambda **_kwargs: []
+    )
+    monkeypatch.setattr(
+        hermes_gateway, "supports_systemd_services", lambda: False
+    )
+    monkeypatch.setattr(
+        hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
 
 
 def _make_run_side_effect(
