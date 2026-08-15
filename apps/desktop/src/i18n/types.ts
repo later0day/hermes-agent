@@ -170,6 +170,7 @@ export interface Translations {
     updateHermes: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
+    updateReadyMessageUnknown: string
     seeWhatsNew: string
     errors: {
       elevenLabsNeedsKey: string
@@ -450,6 +451,7 @@ export interface Translations {
       cantReach: string
       tapCheck: string
       updateReady: (count: number) => string
+      updateReadyUnknown: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -1403,6 +1405,13 @@ export interface Translations {
     close: string
     title: string
     count: (count: number) => string
+    modelImpact: {
+      title: string
+      message: (count: number) => string
+      detailMore: (names: string, remaining: number) => string
+      review: string
+      saveFailed: string
+    }
     search: string
     loading: string
     states: Record<string, string>
@@ -1792,6 +1801,28 @@ export interface Translations {
       addedTip: string
       connectFailed: (server: string) => string
     }
+    skillSuggestions: {
+      label: (skill: string) => string
+      tip: (skill: string) => string
+      done: (skill: string) => string
+      doneTip: string
+    }
+    repairSuggestions: {
+      label: (server: string) => string
+      tip: (server: string) => string
+      working: (server: string) => string
+      workingTip: string
+      done: (server: string) => string
+      doneTip: string
+      failed: (server: string) => string
+    }
+    cronSuggestions: {
+      label: string
+      tip: (phrase: string) => string
+      prefix: string
+      done: string
+      doneTip: string
+    }
   }
 
   statusStack: {
@@ -2124,6 +2155,7 @@ export interface Translations {
       gatewayTitle: string
       customizeTitle: string
       hideStatusbar: string
+      resetStatusbar: string
       toggleApprovalMode: string
       toggleBackendVersion: string
       toggleCommandCenter: string

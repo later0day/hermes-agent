@@ -125,6 +125,7 @@ export const zh: Translations = {
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 项新更改可用。`,
+    updateReadyMessageUnknown: '有新更新可用。',
     seeWhatsNew: '查看更新内容',
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -762,6 +763,7 @@ export const zh: Translations = {
       cantReach: '无法连接更新服务器。',
       tapCheck: '点击"立即检查"以查找更新。',
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
+      updateReadyUnknown: '新更新已就绪。',
       lastChecked: age => `上次检查:${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
@@ -1858,6 +1860,13 @@ export const zh: Translations = {
     close: '关闭定时任务',
     title: '定时任务',
     count: count => `${count} 个任务`,
+    modelImpact: {
+      title: '定时任务需要检查',
+      message: count => `在您检查模型设置之前，${count} 个定时任务将被跳过。`,
+      detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
+      review: '检查定时任务',
+      saveFailed: 'Hermes 未保存该模型更改。'
+    },
     search: '搜索定时任务…',
     loading: '正在加载定时任务…',
     states: {
@@ -2049,7 +2058,8 @@ export const zh: Translations = {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
-      artifacts: '产物'
+      artifacts: '产物',
+      cron: '定时任务'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
@@ -2324,6 +2334,28 @@ export const zh: Translations = {
       added: server => `已添加 ${server}`,
       addedTip: '已连接 — 其工具已在此对话中可用',
       connectFailed: server => `无法连接 ${server}`
+    },
+    skillSuggestions: {
+      label: skill => `使用技能: ${skill}`,
+      tip: skill => `你提到了“${skill}” — 点击以该技能开头`,
+      done: skill => `已添加 /${skill}`,
+      doneTip: '发送时将加载该技能'
+    },
+    repairSuggestions: {
+      label: server => `重新连接 ${server}`,
+      tip: server => `${server} 调用刚因连接错误失败`,
+      working: server => `正在重新连接 ${server}…`,
+      workingTip: '点击取消',
+      done: server => `已重新连接 ${server}`,
+      doneTip: '新凭据已在此对话中生效',
+      failed: server => `无法重新连接 ${server}`
+    },
+    cronSuggestions: {
+      label: '定时执行',
+      tip: phrase => `“${phrase}”听起来是周期性任务 — 可以按计划运行`,
+      prefix: '将此设置为定时任务:',
+      done: '已标记为定时任务',
+      doneTip: '发送后由智能体创建任务'
     },
     snippets: {
       codeReview: {
@@ -2709,6 +2741,7 @@ export const zh: Translations = {
       gatewayTitle: '网关',
       customizeTitle: '在状态栏中显示',
       hideStatusbar: '隐藏状态栏',
+      resetStatusbar: '恢复默认设置',
       toggleApprovalMode: '审批',
       toggleBackendVersion: '后端版本',
       toggleCommandCenter: '命令中心',
