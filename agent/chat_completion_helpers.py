@@ -71,6 +71,35 @@ def _context_thread_target(callback):
     return lambda: context.run(callback)
 
 
+def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
+    """Bounded worker join before raising InterruptedError (#81521).
+
+    Raising immediately lets turn teardown (finish_logical_calls /
+    end_turn / close_session) race a still-open Relay physical LLM scope
+    and corrupt the LIFO stack — "scope handle is not at the top of the
+    stack" → CLI EIO / redraw storm.  Only joins when Relay managed
+    execution is actually live: when no Relay consumers are registered
+    there is no scope to unwind, and the join would just delay interrupt
+    detection (tests/run_agent/test_interrupt_propagation.py).
+    """
+    try:
+        from agent import relay_runtime
+
+        runtime = relay_runtime.get_runtime(create=False)
+        if runtime is None or not runtime.managed_execution_enabled():
+            return
+    except Exception:
+        return
+    worker.join(timeout=2.0)
+    if worker.is_alive():
+        logger.warning(
+            "%s worker still alive after interrupt abort (2.0s join "
+            "timeout); Relay teardown will best-effort drain orphaned "
+            "scopes (#81521).",
+            label,
+        )
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -547,6 +576,24 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     if agent.provider_data_collection:
         preferences["data_collection"] = agent.provider_data_collection
     return preferences
+
+
+def _prompt_cache_scope_for_agent(agent) -> "str | None":
+    """Rotation-stable logical cache scope for *agent*, or None.
+
+    Guarded-import wrapper over the never-raising
+    ``agent.prompt_cache_scope.resolve_prompt_cache_scope_safe`` — the
+    transports treat a None/empty value as "fall back to the physical
+    session_id", so any resolution failure degrades to pre-#79017 behavior
+    instead of blocking the request build.
+    """
+    try:
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+
+        return resolve_prompt_cache_scope_safe(agent)
+    except Exception:
+        logger.debug("prompt-cache scope resolution failed", exc_info=True)
+        return None
 
 
 def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
@@ -1721,6 +1768,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _close_request_client_once("interrupt_abort")
             except Exception:
                 pass
+            # #81521 (sibling of the streaming-path fix): wait for the worker
+            # to unwind Relay-managed scopes before surfacing
+            # InterruptedError, so turn teardown cannot race a still-open
+            # physical scope and corrupt the LIFO stack. No-op when Relay
+            # managed execution is not live.
+            _join_worker_for_relay_teardown(t, label="Non-streaming")
             raise InterruptedError("Agent interrupted during API call")
     if result["error"] is not None:
         raise result["error"]
@@ -1779,6 +1832,12 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             region=region,
             guardrail_config=guardrail,
         )
+
+    # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
+    # below (codex + both chat_completions paths). Memoized on the agent —
+    # cheap after the first call. Resolved after the anthropic/bedrock early
+    # returns above, which don't use prompt_cache_key.
+    _cache_scope_id = _prompt_cache_scope_for_agent(agent)
 
     if agent.api_mode == "codex_responses":
         _ct = agent._get_transport()
@@ -1845,6 +1904,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
             session_id=getattr(agent, "session_id", None),
+            cache_scope_id=_cache_scope_id,
             base_url=agent.base_url,
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
@@ -1954,6 +2014,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
+            cache_scope_id=_cache_scope_id,
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
@@ -1986,6 +2047,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),
+        cache_scope_id=_cache_scope_id,
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
         is_nous=_is_nous,
@@ -3411,6 +3473,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             while t.is_alive():
                 t.join(timeout=0.3)
                 if agent._interrupt_requested:
+                    # #81521 (sibling of the main streaming-path fix): give
+                    # the Bedrock worker a bounded window to unwind its
+                    # Relay-managed stream scopes before surfacing
+                    # InterruptedError. No-op when Relay managed execution
+                    # is not live.
+                    _join_worker_for_relay_teardown(t, label="Bedrock streaming")
                     raise InterruptedError("Agent interrupted during Bedrock API call")
                 # Liveness watchdog: no Bedrock event for longer than the stale
                 # timeout means the stream has wedged (open socket, keep-alives but
@@ -5067,6 +5135,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _close_request_client_once("stream_interrupt_abort")
             except Exception:
                 pass
+            # Wait for the worker to unwind Relay-managed stream scopes
+            # (physical LLM + deferred logical) before surfacing
+            # InterruptedError. Raising immediately lets turn teardown
+            # (finish_logical_calls / end_turn / close_session) race a
+            # still-open physical scope and corrupt the LIFO stack —
+            # "scope handle is not at the top of the stack" → CLI EIO /
+            # redraw storm (#81521). No-op when Relay managed execution
+            # is not live.
+            _join_worker_for_relay_teardown(t, label="Streaming")
             raise InterruptedError("Agent interrupted during streaming API call")
     # Worker thread exited before the main thread's poll loop could check
     # the interrupt flag.  If the worker returned early due to an interrupt
