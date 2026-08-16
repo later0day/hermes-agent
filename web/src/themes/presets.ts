@@ -313,6 +313,67 @@ export const pureInkDarkTheme: DashboardTheme = {
   },
 };
 
+/**
+ * Light theme modelled on the google.com homepage: a pure-white canvas,
+ * Google's interactive blue (`#1a73e8`), Material surfaces with the
+ * signature `#dadce0` hairline borders and pill radius, Roboto/Product-Sans
+ * typography, and the four-color logo palette wired into the swatch + data
+ * series (Google Blue / Red / Yellow / Green).
+ */
+export const googleTheme: DashboardTheme = {
+  name: "google",
+  label: "Google",
+  description: "Light mode — google.com homepage: white canvas, Google blue accents",
+  palette: {
+    background: { hex: "#ffffff", alpha: 1 },
+    midground: { hex: "#202124", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(66, 133, 244, 0.12)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Roboto", "Arial", ${SYSTEM_SANS}`,
+    fontMono: `"Roboto Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap",
+    baseSize: "14px",
+    lineHeight: "1.5",
+  },
+  layout: {
+    radius: "1.5rem",
+    density: "comfortable",
+  },
+  colorOverrides: {
+    card: "#ffffff",
+    cardForeground: "#202124",
+    popover: "#ffffff",
+    popoverForeground: "#202124",
+    primary: "#1a73e8",
+    primaryForeground: "#ffffff",
+    secondary: "#f1f3f4",
+    secondaryForeground: "#202124",
+    muted: "#f8f9fa",
+    mutedForeground: "#5f6368",
+    accent: "#e8f0fe",
+    accentForeground: "#1a73e8",
+    destructive: "#d93025",
+    destructiveForeground: "#ffffff",
+    success: "#188038",
+    warning: "#f9ab00",
+    border: "#dadce0",
+    input: "#dadce0",
+    ring: "#1a73e8",
+  },
+  seriesColors: {
+    inputTokenAccent: "#4285F4",
+    outputTokenAccent: "#34A853",
+  },
+  swatchColors: ["#4285F4", "#EA4335", "#FBBC05"],
+  terminalBackground: "#ffffff",
+  terminalForeground: "#202124",
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
@@ -324,4 +385,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   rose: roseTheme,
   "pure-ink-light": pureInkLightTheme,
   "pure-ink-dark": pureInkDarkTheme,
+  google: googleTheme,
 };
