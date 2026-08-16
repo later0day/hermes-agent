@@ -164,11 +164,11 @@ async def test_tool_lifecycle_updates_one_card_and_finalizes():
     assert "✅ 1 工具" in final_content
     assert "答案见下方" in final_content
     assert "Answer ready." not in final_content
-    # New Option A style: ✓ glyph, per-tool emoji subclassified by
-    # the preview text (a .py path → 🐍 instead of the generic 📖),
-    # "·" separator. Glyph stays as the leading column for status
-    # alignment; emoji sits between glyph and tool name.
-    assert "✓ 🐍 `read_file` · gateway/run.py · 0.3s" in final_content
+    # Local "lively card" style: ✅ completed glyph, per-tool emoji
+    # subclassified by the preview text (a .py path → 🐍 instead of the
+    # generic 📖), "·" separator. Glyph stays as the leading column for
+    # status alignment; emoji sits between glyph and tool name.
+    assert "✅ 🐍 `read_file` · gateway/run.py · 0.3s" in final_content
     assert "**🛠 工具**" in final_content
     assert adapter.sends[0]["metadata"]["expect_edits"] is True
 
@@ -222,7 +222,7 @@ async def test_duplicate_tool_names_are_tracked_by_call_id():
 
     content = adapter.edits[-1]["content"]
     # `pytest` previews subclassify ``terminal`` to 🧪 (test runner).
-    assert content.count("✓ 🧪 `terminal`") == 2
+    assert content.count("✅ 🧪 `terminal`") == 2
     assert "pytest a · 2.0s" in content
     assert "pytest b · 1.0s" in content
 
@@ -327,7 +327,9 @@ async def test_tool_event_after_delta_activation_drops_streaming_only_flag():
 
     latest = adapter.edits[-1]["content"]
     assert "正在生成回答" not in latest
-    assert "▶ 🐍 `read_file`" in latest
+    # Running rows use the animated spinner glyph (· → • → ● → ⬤), not a
+    # static ▶, so assert on the stable emoji + tool-name suffix.
+    assert "🐍 `read_file`" in latest
 
     card.finish()
     await task
@@ -361,12 +363,14 @@ async def test_finish_is_idempotent():
 
 
 @pytest.mark.asyncio
-async def test_running_tool_glyph_and_no_inline_elapsed():
-    """Running tools render with ▶ and NO inline elapsed time.
+async def test_running_tool_glyph_and_inline_elapsed():
+    """Running tools render with the animated spinner glyph and an
+    inline elapsed timer.
 
-    Per the 2026-06-20 design decision (option A + running_elapsed=no),
-    the running row stays static at ``▶ name · preview`` so we don't
-    push a status edit every second just for the timer.
+    Per the local "lively card" redesign, the running row shows
+    ``<spinner> <emoji> `name` · preview · 0.0s…`` where the spinner
+    animates · → • → ● → ⬤ and the elapsed timer updates while the
+    tool runs (the trailing … marks it as still in-flight).
     """
     adapter = FakeStatusAdapter()
     card = make_card(adapter)
@@ -385,11 +389,11 @@ async def test_running_tool_glyph_and_no_inline_elapsed():
     initial = adapter.sends[0]["content"]
     # "long running" preview doesn't match any command pattern, so we
     # keep the generic 💻 glyph for an unrecognized terminal command.
-    assert "▶ 💻 `terminal` · long running" in initial
-    # The running row must NOT include duration parts — that lands only
-    # on completion.
-    assert "0.0s" not in initial
-    assert "s)" not in initial.split("**🛠")[1]
+    # Assert on the stable emoji + name + preview (the leading spinner
+    # glyph animates, so it is not asserted here).
+    assert "💻 `terminal` · long running" in initial
+    # The running row carries an in-flight elapsed timer suffixed with …
+    assert "0.0s…" in initial
 
     card.finish()
     await task
@@ -397,10 +401,10 @@ async def test_running_tool_glyph_and_no_inline_elapsed():
 
 @pytest.mark.asyncio
 async def test_failed_tool_renders_error_summary_after_arrow():
-    """Failed tools show ✗ + inline error summary (first 100 chars).
+    """Failed tools show ❌ + inline error summary (first 100 chars).
 
     The failure row format is:
-        - ✗ `name` · preview · 0.5s  ← error summary
+        - ❌ `name` · preview · 0.5s  ← error summary
     """
     adapter = FakeStatusAdapter()
     card = make_card(adapter)
@@ -434,7 +438,7 @@ async def test_failed_tool_renders_error_summary_after_arrow():
 
     final = adapter.edits[-1]["content"]
     # `ls` matches the file-listing pattern → 🗂️ subclassification.
-    assert "✗ 🗂️ `terminal` · ls /missing/path/here · 0.5s" in final
+    assert "❌ 🗂️ `terminal` · ls /missing/path/here · 0.5s" in final
     # The error summary lands inline after ← and is extracted from the
     # JSON "error" field, not the raw JSON envelope.
     assert "← ls: /missing/path/here: No such file or directory" in final
@@ -534,7 +538,8 @@ async def test_registered_tool_emoji_is_rendered_between_glyph_and_name():
     )
     await wait_until(lambda: len(adapter.sends) == 1)
     running = adapter.sends[0]["content"]
-    assert "▶ 🔍 `web_search` · kanban roadmap" in running
+    # Running row: animated spinner glyph + emoji + name + preview.
+    assert "🔍 `web_search` · kanban roadmap" in running
 
     card.on_tool_progress(
         "tool.completed", "web_search", None, None,
@@ -545,7 +550,7 @@ async def test_registered_tool_emoji_is_rendered_between_glyph_and_name():
     await task
 
     final = adapter.edits[-1]["content"]
-    assert "✓ 🔍 `web_search` · kanban roadmap · 0.4s" in final
+    assert "✅ 🔍 `web_search` · kanban roadmap · 0.4s" in final
 
 
 @pytest.mark.asyncio
@@ -587,7 +592,7 @@ async def test_terminal_command_subclassification():
         card.finish()
         await task
         final = adapter.edits[-1]["content"]
-        assert f"✓ {expected_emoji} `terminal`" in final, (
+        assert f"✅ {expected_emoji} `terminal`" in final, (
             f"command {cmd!r} expected {expected_emoji}, got line: {final!r}"
         )
 
@@ -597,15 +602,15 @@ async def test_read_file_extension_subclassification():
     """``read_file`` rows pick an extension/basename-aware emoji."""
     cases = [
         ("agent/run_agent.py", "🐍"),
-        ("web/src/app.tsx", "📘"),
-        ("scripts/lib.js", "📙"),
-        ("README.md", "📝"),
+        ("web/src/app.tsx", "🔷"),
+        ("scripts/lib.js", "🟡"),
+        ("README.md", "📖"),
         ("config.yaml", "⚙️"),
-        ("data.json", "📄"),
+        ("data.json", "🗂️"),
         ("styles/main.css", "🎨"),
         ("main.go", "🐹"),
         ("src/lib.rs", "🦀"),
-        ("scripts/run.sh", "📜"),
+        ("scripts/run.sh", "🐚"),
         ("Dockerfile", "🐳"),
         ("Makefile", "🔨"),
         (".gitignore", "🌳"),
@@ -628,7 +633,7 @@ async def test_read_file_extension_subclassification():
         card.finish()
         await task
         final = adapter.edits[-1]["content"]
-        assert f"✓ {expected_emoji} `read_file`" in final, (
+        assert f"✅ {expected_emoji} `read_file`" in final, (
             f"path {path!r} expected {expected_emoji}, got line: {final!r}"
         )
 
@@ -656,7 +661,7 @@ async def test_unregistered_tool_falls_back_to_default_emoji():
     await task
 
     final = adapter.edits[-1]["content"]
-    assert "✓ ⚡ `unregistered_plugin_tool` · some args · 0.2s" in final
+    assert "✅ ⚡ `unregistered_plugin_tool` · some args · 0.2s" in final
 
 
 @pytest.mark.asyncio
@@ -687,7 +692,7 @@ async def test_skin_override_wins_over_registry_emoji(monkeypatch):
     await task
 
     final = adapter.edits[-1]["content"]
-    assert "✓ 🦄 `terminal`" in final
+    assert "✅ 🦄 `terminal`" in final
     assert "💻" not in final
 
 
@@ -921,8 +926,8 @@ async def test_run_agent_uses_turn_status_card_instead_of_progress_bubbles(monke
     assert "1.6s" in final_edit["content"]
     assert "答案见下方" in final_edit["content"]
     assert "Answer ready." not in final_edit["content"]
-    assert "✓ 🐍 `read_file` · gateway/run.py · 0.4s" in final_edit["content"]
-    assert "✓ 🧪 `terminal` · pytest tests/gateway/test_turn_status... · 1.2s" in final_edit["content"]
+    assert "✅ 🐍 `read_file` · gateway/run.py · 0.4s" in final_edit["content"]
+    assert "✅ 🧪 `terminal` · pytest tests/gateway/test_turn_status... · 1.2s" in final_edit["content"]
 
 
 @pytest.mark.asyncio
@@ -950,7 +955,7 @@ async def test_run_agent_maps_subagent_tools_into_turn_status_card(monkeypatch, 
     assert "答案见下方" in final_edit["content"]
     assert "Answer ready." not in final_edit["content"]
     # `curl` subclassifies terminal to 🌐 (network fetch).
-    assert "✓ 🌐 `terminal` · curl ifconfig.me · 0.6s" in final_edit["content"]
+    assert "✅ 🌐 `terminal` · curl ifconfig.me · 0.6s" in final_edit["content"]
 
 
 @pytest.mark.asyncio

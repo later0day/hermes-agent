@@ -15606,16 +15606,24 @@ def _profile_audit_events(name: str, limit: int = 5) -> List[Dict[str, Any]]:
 
 
 def _delete_cron_jobs_for_profile(profile_name: str) -> int:
-    """Remove centralized cron jobs owned by a profile that is being deleted."""
+    """Remove the deleted profile's cron jobs from its own cron store.
+
+    Cron storage is partitioned per profile (``profiles/<name>/cron/jobs.json``),
+    so this must route through the same per-profile helpers used by the
+    single-job delete endpoint. Reading the centralized default-home store
+    here would find zero jobs for a non-default profile, silently skipping
+    scheduler unregistration and undercounting the deletion audit before the
+    profile directory is removed.
+    """
     removed = 0
-    for job in list(_call_cron_store("list_jobs", True)):
+    for job in list(_call_cron_for_profile(profile_name, "list_jobs", True)):
         if _cron_job_owner(job) != profile_name:
             continue
         job_ref = str(job.get("id") or job.get("name") or "")
         if not job_ref:
             continue
         try:
-            if _call_cron_store("remove_job", job_ref):
+            if _mutate_cron_for_profile(profile_name, "remove_job", job_ref):
                 removed += 1
         except Exception:
             _log.debug(
