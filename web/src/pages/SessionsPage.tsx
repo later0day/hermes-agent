@@ -1499,10 +1499,11 @@ export default function SessionsPage() {
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
-      showToast(
-        `${t.dashboard?.sessionsToastPruned || "Pruned"} ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
-        "success",
-      );
+      const prunedMsg = `${t.dashboard?.sessionsToastPruned || "Pruned"} ${resp.removed} session${resp.removed === 1 ? "" : "s"}`;
+      const skippedMsg = resp.skipped_open
+        ? `. Skipped ${resp.skipped_open} open session${resp.skipped_open === 1 ? "" : "s"}; prune only removes ended sessions.`
+        : "";
+      showToast(`${prunedMsg}${skippedMsg}`, "success");
       setPruneOpen(false);
       loadSessions(0);
       setPage(0);
