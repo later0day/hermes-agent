@@ -18,7 +18,12 @@ def mock_runner():
     """Create a minimal mock GatewayRunner with the methods we need."""
     runner = MagicMock(spec=GatewayRunner)
     runner.config = MagicMock(profile_routes=[])
+    # These tests exercise profile_routes, not the source→agent binding store.
+    # Leave the store unset so the shared binding helper is a clean no-op
+    # (otherwise the spec mock returns a truthy MagicMock binding).
+    runner._source_agent_binding_store = None
     # Bind the actual methods to the mock
+    runner._binding_profile_for_source = GatewayRunner._binding_profile_for_source.__get__(runner)
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
     return runner

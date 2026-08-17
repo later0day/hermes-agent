@@ -27766,6 +27766,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=message_type,
             )
 
+    def _binding_profile_for_source(self, source: SessionSource) -> Optional[str]:
+        """Return the profile a source→agent binding maps this source to, or None.
+
+        Single source of truth for binding-store profile resolution, shared by
+        the ingress stamping path (``_profile_name_for_source``) and the turn
+        home resolver (``_resolve_profile_home_for_source``) so both agree on
+        which profile owns a bound conversation. Best-effort: any lookup error
+        (missing store, malformed key) returns None so routing falls through to
+        profile_routes / the active profile rather than dropping the message.
+
+        Lookup order:
+          1. Per-user key  (group_sessions_per_user=True) — exact user match.
+          2. Chat-level key (group_sessions_per_user=False) — fallback for
+             group members who didn't run ``/agent use`` themselves.
+        """
+        try:
+            store = getattr(self, "_source_agent_binding_store", None)
+            if store is None:
+                return None
+            from gateway.session import build_source_binding_key
+            # 1) per-user lookup (default)
+            binding = store.get_binding(build_source_binding_key(source))
+            if binding and binding.profile_name:
+                return binding.profile_name
+            # 2) chat-level fallback (no user_id in key)
+            chat_type = str(getattr(source, "chat_type", None) or "group")
+            if chat_type != "dm":
+                chat_key = build_source_binding_key(
+                    source, group_sessions_per_user=False,
+                )
+                binding = store.get_binding(chat_key)
+                if binding and binding.profile_name:
+                    return binding.profile_name
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "binding store lookup failed for source %s: %s",
+                getattr(source, "chat_id", "?"), exc,
+            )
+        return None
+
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.
 
@@ -27786,6 +27826,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
+        # Our fork: the source→agent binding store (e.g. a DingTalk group bound
+        # to a profile via `/room bind` or the dashboard) takes precedence over
+        # static profile_routes. This is the SINGLE stamping path: whatever we
+        # return here is stamped onto ``source.profile`` at ingress (see the
+        # multiplex ingress gate), which in turn selects BOTH the session-key
+        # namespace (``agent:<profile>``) AND the profile the turn runs under
+        # (``_resolve_profile_home_for_source``). Resolving the binding here —
+        # not only in the home resolver — is what keeps those two in agreement:
+        # without it a bound group's turn runs under the right profile home but
+        # its session history lands in the active profile's namespace.
+        bound = self._binding_profile_for_source(source)
+        if bound:
+            return bound
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
@@ -27858,14 +27911,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not name:
                 # Our fork: resolve profile from the source→agent binding store
                 # (e.g. DingTalk session_webhook bindings) before route matching.
-                try:
-                    from gateway.session import build_source_binding_key
-                    binding = self._source_agent_binding_store.get_binding(build_source_binding_key(source))
-                    if binding and binding.profile_name:
-                        name = binding.profile_name
-                        explicit_profile = name  # Binding explicitly set this profile
-                except Exception as _bs_exc:
-                    logger.debug("binding store lookup failed for source %s: %s", getattr(source, "chat_id", "?"), _bs_exc)
+                # Shared with the ingress stamping path so the session-key
+                # namespace and the turn's profile home stay in agreement.
+                bound = self._binding_profile_for_source(source)
+                if bound:
+                    name = bound
+                    explicit_profile = name  # Binding explicitly set this profile
             if not name:
                 name = self._profile_name_for_source(source)
                 if name:

@@ -6029,6 +6029,23 @@ class GatewaySlashCommandsMixin:
                 fallback_target=source.to_dict(),
                 fallback_extra=fb_extra
             )
+            # Also create a chat-level binding (without user_id) so ALL
+            # users in this group are routed to the same profile, not just
+            # the person who ran /agent use.  DMs already omit user_id so
+            # this only matters for group chats.
+            chat_type = str(getattr(source, "chat_type", None) or "group")
+            if chat_type != "dm":
+                chat_level_key = build_source_binding_key(
+                    source, group_sessions_per_user=False,
+                )
+                if chat_level_key != source_key:
+                    store.set_binding(
+                        chat_level_key,
+                        target,
+                        agent_id=target,
+                        fallback_target=source.to_dict(),
+                        fallback_extra=fb_extra,
+                    )
             self._append_agent_audit("agent.use", source_key=source_key, profile=target)
             wh_status = "present" if fb_extra.get("session_webhook") else "missing"
             return f"Bound this chat to agent `{target}`.\nDingTalk fallback webhook is {wh_status}."
