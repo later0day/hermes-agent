@@ -44,6 +44,7 @@ import uuid
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -2142,13 +2143,25 @@ class DingTalkAdapter(BasePlatformAdapter):
                 )
 
         if not session_webhook:
+            # Defect #2 fix: a session_webhook is only valid for a short
+            # window after the user's inbound message. Long agent turns and
+            # gateway restarts routinely outlive it, and the old code simply
+            # dropped the reply here ("Reply must follow an incoming
+            # message"). We instead fall back to the robot-native proactive
+            # message path (_send_robot_native_message → OrgGroupSend /
+            # PrivateChatSend), which authenticates with the app access
+            # token instead of the ephemeral webhook and can deliver at any
+            # time. This is the same capability already used for native
+            # media messages; here we wire it for plain markdown replies.
             logger.warning(
-                "[%s] No valid session_webhook for chat_id=%s",
+                "[%s] No valid session_webhook for chat_id=%s — falling back "
+                "to robot-native proactive send",
                 self.name, chat_id,
             )
-            return SendResult(
-                success=False,
-                error="No valid session_webhook available. Reply must follow an incoming message.",
+            return await self._send_markdown_proactive(
+                chat_id, content, at_payload, metadata,
+                emotion_names=emotion_names,
+                fire_final_reaction=fire_final_reaction,
             )
 
         if not self._http_client:
@@ -2181,6 +2194,26 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.warning(
                 "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
             )
+            # Defect #2 fix (continued): a webhook that DingTalk rejects
+            # (expired mid-flight → 400 "expired", robot removed from group,
+            # etc.) is just as dead as a missing one. Fall back to the
+            # proactive path rather than losing the reply. We only retry on
+            # 4xx (the webhook itself is bad); 5xx is a transient DingTalk
+            # server issue where a retry against the SAME dead webhook is
+            # pointless and the proactive path may hit the same outage.
+            if 400 <= resp.status_code < 500:
+                logger.warning(
+                    "[%s] webhook rejected (HTTP %d) — falling back to "
+                    "robot-native proactive send for chat_id=%s",
+                    self.name, resp.status_code, chat_id,
+                )
+                fallback = await self._send_markdown_proactive(
+                    chat_id, content, at_payload, metadata,
+                    emotion_names=emotion_names,
+                    fire_final_reaction=fire_final_reaction,
+                )
+                if fallback.success:
+                    return fallback
             return SendResult(
                 success=False, error=f"HTTP {resp.status_code}: {body[:200]}"
             )
@@ -2191,6 +2224,98 @@ class DingTalkAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Send error: %s", self.name, e)
             return SendResult(success=False, error=str(e))
+
+    async def _send_markdown_proactive(
+        self,
+        chat_id: str,
+        content: str,
+        at_payload: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        emotion_names: Optional[list] = None,
+        fire_final_reaction: bool = False,
+    ) -> SendResult:
+        """Deliver a markdown reply without a session_webhook (Defect #2).
+
+        A session_webhook is only valid for a short window after the user's
+        inbound message; long agent turns and gateway restarts outlive it.
+        Two webhook-independent transports exist for a Stream app, tried in
+        order of reliability:
+
+          1. **AI Card** (``_create_and_stream_card``) — the SDK-proven
+             transport. It authenticates with the app access token and
+             targets a group by ``dtv1.card//IM_GROUP.{conversation_id}``
+             (or a DM robot open-space), so it works with no live webhook.
+             This is the SAME path ``send()`` already prefers when an
+             inbound message context exists; here we drive it explicitly
+             for the resume case where that context was lost on restart, by
+             synthesizing a minimal message carrying ``conversation_id`` =
+             ``chat_id``.
+          2. **Robot-native ``sampleMarkdown``** (OrgGroupSend /
+             PrivateChatSend) — only works for a *published org-internal
+             robot*; a plain Stream app is rejected with ``robot 不存在``.
+             Kept as a best-effort last resort for deployments that DO have
+             one configured.
+
+        @mentions are best-effort on both paths: the proactive template
+        carries no structured ``at`` payload the way the webhook does, so
+        mention tokens are prepended inline instead.
+        """
+        normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
+        normalized = self._prepend_mention_tokens(normalized, at_payload or {})
+        if not normalized.strip():
+            return SendResult(success=False, error="Empty content; nothing to send")
+
+        # Transport 1: AI Card. Reuse a live inbound context if we still
+        # have one; otherwise synthesize a group-targeted message from
+        # chat_id (a DingTalk cid... conversationId).
+        card_result: Optional[SendResult] = None
+        if self._card_template_id and self._card_sdk:
+            current_message = self._message_contexts.get(chat_id)
+            if current_message is None:
+                current_message = SimpleNamespace(
+                    conversation_id=chat_id,
+                    # cid-group conversations use conversation_type "2"; a
+                    # cid... id that is actually a DM still delivers via the
+                    # group open-space fallback inside the card path, so
+                    # defaulting to group is the safer guess post-restart.
+                    conversation_type="2",
+                    sender_staff_id="",
+                    robot_code=self._robot_code,
+                )
+            card_result = await self._create_and_stream_card(
+                chat_id, current_message, normalized,
+                finalize=True,
+                at_users=None,
+            )
+            if card_result and card_result.success:
+                self._fire_custom_reactions(chat_id, emotion_names or [])
+                if fire_final_reaction:
+                    self._fire_done_reaction(chat_id)
+                return card_result
+
+        # Transport 2: robot-native sampleMarkdown (last resort).
+        result = await self._send_robot_native_message(
+            chat_id,
+            msg_key="sampleMarkdown",
+            msg_param={"title": "Hermes", "text": normalized},
+            metadata=metadata,
+        )
+        if result.success:
+            self._fire_custom_reactions(chat_id, emotion_names or [])
+            if fire_final_reaction:
+                self._fire_done_reaction(chat_id)
+            return result
+        # Neither transport worked — surface the more informative error.
+        if card_result is not None and not card_result.success:
+            return SendResult(
+                success=False,
+                error=(
+                    f"proactive AI Card failed ({card_result.error}); "
+                    f"robot-native fallback failed ({result.error})"
+                ),
+            )
+        return result
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
@@ -2284,6 +2409,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         open_conversation_id = (
             metadata.get("dingtalk_open_conversation_id")
             or metadata.get("open_conversation_id")
+            # Match the dingtalk_stream SDK's own proactive path, which uses
+            # incoming_message.conversation_id as openConversationId. chat_id
+            # is normally the cid conversationId already, but fall through to
+            # the cached inbound message's conversation_id when it isn't.
+            or getattr(current_message, "conversation_id", None)
             or chat_id
         )
         if not open_conversation_id:

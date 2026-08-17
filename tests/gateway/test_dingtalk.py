@@ -241,6 +241,125 @@ class TestSend:
 
 
     @pytest.mark.asyncio
+    async def test_send_no_webhook_falls_back_to_proactive_card(self):
+        """Defect #2: with no valid session_webhook, send() must NOT drop
+        the reply. When an AI Card template is configured it delivers via
+        the webhook-independent AI Card path (the SDK-proven transport),
+        synthesizing a group-targeted message when the inbound context was
+        lost on restart."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import SendResult
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._card_template_id = "tpl-1"
+        adapter._card_sdk = object()
+        adapter._get_access_token = AsyncMock(return_value="tok")
+        adapter._create_and_stream_card = AsyncMock(
+            return_value=SendResult(success=True, message_id="card-1")
+        )
+        adapter._send_robot_native_message = AsyncMock()
+
+        result = await adapter.send("cidABCDEF", "delayed reply")
+
+        assert result.success is True
+        assert result.message_id == "card-1"
+        adapter._create_and_stream_card.assert_awaited_once()
+        # Robot-native (OrgGroupSend) NOT used when the card path succeeds.
+        adapter._send_robot_native_message.assert_not_called()
+        # Synthesized message targets the conversation by chat_id.
+        synth_msg = adapter._create_and_stream_card.await_args.args[1]
+        assert getattr(synth_msg, "conversation_id") == "cidABCDEF"
+
+    @pytest.mark.asyncio
+    async def test_send_no_webhook_no_card_uses_robot_native(self):
+        """With no webhook AND no AI Card template, send() falls back to the
+        robot-native sampleMarkdown transport (last resort)."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import SendResult
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        # No _card_template_id → card path skipped.
+        adapter._send_robot_native_message = AsyncMock(
+            return_value=SendResult(success=True, message_id="native-1")
+        )
+
+        result = await adapter.send("chat-xyz", "delayed reply")
+
+        assert result.success is True
+        assert result.message_id == "native-1"
+        call = adapter._send_robot_native_message.await_args
+        assert call.kwargs["msg_key"] == "sampleMarkdown"
+        assert call.kwargs["msg_param"]["text"] == "delayed reply"
+
+    @pytest.mark.asyncio
+    async def test_send_webhook_4xx_falls_back_to_proactive(self):
+        """A webhook that DingTalk rejects with 4xx (expired mid-flight,
+        robot removed, etc.) is dead — send() retries via the proactive
+        path rather than losing the reply."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import SendResult
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.text = "expired session webhook"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._send_robot_native_message = AsyncMock(
+            return_value=SendResult(success=True, message_id="proactive-2")
+        )
+
+        result = await adapter.send(
+            "chat-xyz", "hi",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "proactive-2"
+        adapter._send_robot_native_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_webhook_5xx_does_not_fall_back(self):
+        """A 5xx is a transient DingTalk server error — retrying the SAME
+        dead webhook is pointless and the proactive path likely hits the
+        same outage. send() returns the failure without falling back."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "internal error"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._send_robot_native_message = AsyncMock()
+
+        result = await adapter.send(
+            "chat-xyz", "hi",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is False
+        assert "500" in (result.error or "")
+        adapter._send_robot_native_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_proactive_fallback_failure_is_reported(self):
+        """When the proactive fallback itself fails (e.g. no robot_code /
+        token, and no card template), send() surfaces that failure rather
+        than a false success."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import SendResult
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._send_robot_native_message = AsyncMock(
+            return_value=SendResult(success=False, error="DingTalk robotCode is unavailable")
+        )
+
+        result = await adapter.send("chat-xyz", "reply")
+
+        assert result.success is False
+        assert "robotCode" in (result.error or "")
+
+    @pytest.mark.asyncio
     async def test_send_image_renders_markdown_image(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
