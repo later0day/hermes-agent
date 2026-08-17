@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router";
 import {
   Bot,
   Check,
+  Copy,
   Edit3,
 
   Link2,
@@ -75,6 +76,57 @@ function avatarInitials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+// A fenced code block with a header bar (language label + copy button),
+// horizontal scroll, and readable monospace typography. Rendered inside
+// chat bubbles for member/observer replies that paste code.
+function CodeBlock({ lang, code }: { lang: string; code: string }): React.ReactNode {
+  const [copied, setCopied] = React.useState(false);
+  const onCopy = React.useCallback(() => {
+    const text = code;
+    const done = () => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        /* clipboard blocked — ignore */
+      });
+    } else {
+      done();
+    }
+  }, [code]);
+
+  return (
+    <div className="my-2 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900 dark:bg-slate-950 text-left">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-700/60 bg-slate-800/60 px-3 py-1.5">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+          {lang || "code"}
+        </span>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-400 transition-colors hover:bg-slate-700/60 hover:text-slate-200"
+          aria-label="Copy code"
+          title="Copy code"
+        >
+          {copied ? (
+            <>
+              <Check className="h-3 w-3" /> Copied
+            </>
+          ) : (
+            <>
+              <Copy className="h-3 w-3" /> Copy
+            </>
+          )}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-3 text-[13px] leading-relaxed text-slate-100">
+        <code className="font-mono">{code}</code>
+      </pre>
+    </div>
+  );
+}
+
 // Minimal markdown → JSX renderer supporting fenced code blocks,
 // inline code, bold, italic, and preserved newlines. Deliberately
 // small — no external dep. Only what's needed for chat bubbles.
@@ -92,18 +144,10 @@ function renderChatContent(text: string): React.ReactNode {
       parts.push(renderInline(text.slice(last, m.index), key++));
     }
     const lang = m[1] || "";
-    const code = m[2];
-    parts.push(
-      <pre
-        key={key++}
-        className="my-2 overflow-x-auto rounded-md bg-slate-900 dark:bg-slate-950 text-slate-100 p-3 text-xs font-mono"
-      >
-        {lang && (
-          <div className="text-[10px] text-slate-400 mb-1 uppercase">{lang}</div>
-        )}
-        <code>{code}</code>
-      </pre>,
-    );
+    // Trim the trailing newline the closing fence leaves behind so the
+    // block doesn't render an empty last line.
+    const code = m[2].replace(/\n$/, "");
+    parts.push(<CodeBlock key={key++} lang={lang} code={code} />);
     last = m.index + m[0].length;
   }
   if (last < text.length) {
