@@ -10,7 +10,9 @@ from gateway.agent_room_messages_store import RoomMessage
 from gateway.agent_room_projection import (
     ProjectedMessage,
     project_for_member,
+    project_for_member_windowed,
     project_for_observer,
+    _DEFAULT_RECENT_N,
     _MAX_CONTENT_CHARS,
 )
 
@@ -208,6 +210,87 @@ def test_deterministic_output():
     b = project_for_member(msgs, "m1")
     assert [x.role for x in a] == [x.role for x in b]
     assert [x.content for x in a] == [x.content for x in b]
+
+
+# ---------------------------------------------------------------------------
+# Raft AX 改造 3 · project_for_member_windowed (agent inbox: summary + recent N)
+# ---------------------------------------------------------------------------
+
+def test_windowed_empty_input_yields_empty():
+    assert project_for_member_windowed([], "any") == []
+
+
+def test_windowed_small_room_identical_to_full_projection():
+    """<= recent_n rows → byte-identical to the legacy full projection."""
+    msgs = [
+        _mk(1, "user", "a", "hi"),
+        _mk(2, "member", "m1", "hello"),
+        _mk(3, "member", "m2", "hey"),
+    ]
+    full = project_for_member(msgs, "m1")
+    win = project_for_member_windowed(msgs, "m1", recent_n=12)
+    assert [ (p.role, p.content) for p in win ] == [ (p.role, p.content) for p in full ]
+
+
+def test_windowed_at_exactly_recent_n_no_digest():
+    msgs = [_mk(i, "user", "a", f"m{i}") for i in range(1, 6)]
+    win = project_for_member_windowed(msgs, "m1", recent_n=5)
+    # No digest header prepended — same length as input.
+    assert len(win) == 5
+    assert not win[0].content.startswith("[room digest")
+
+
+def test_windowed_large_room_prepends_single_digest():
+    msgs = [_mk(i, "user", "alice", f"msg{i}") for i in range(1, 21)]  # 20 rows
+    win = project_for_member_windowed(msgs, "m1", recent_n=5)
+    # 1 digest message + last 5 verbatim = 6 entries.
+    assert len(win) == 6
+    assert win[0].role == "user"
+    assert win[0].content.startswith("[room digest")
+    # Digest indexes the 15 older rows, oldest first, addressable by #seq.
+    assert "15 earlier message" in win[0].content
+    assert "#1 [user] msg1" in win[0].content
+    assert "#15 [user] msg15" in win[0].content
+    # Older rows must NOT appear verbatim as their own entries.
+    assert all("msg1" != p.content for p in win[1:])
+    # The last 5 rows are projected verbatim.
+    assert "msg20" in win[-1].content
+
+
+def test_windowed_recent_rows_use_normal_per_member_rules():
+    msgs = [_mk(i, "user", "alice", f"m{i}") for i in range(1, 16)]
+    msgs.append(_mk(16, "member", "m1", "my own recent turn"))
+    win = project_for_member_windowed(msgs, "m1", recent_n=3)
+    # Own recent turn → assistant role, no prefix (normal projection rule).
+    own = [p for p in win if p.content == "my own recent turn"]
+    assert len(own) == 1
+    assert own[0].role == "assistant"
+
+
+def test_windowed_digest_attributes_own_rows_as_me():
+    msgs = [_mk(1, "member", "m1", "old own line")]
+    msgs += [_mk(i, "user", "a", f"m{i}") for i in range(2, 8)]
+    win = project_for_member_windowed(msgs, "m1", recent_n=3)
+    assert win[0].content.startswith("[room digest")
+    assert "#1 [me] old own line" in win[0].content
+
+
+def test_windowed_recent_n_zero_disables_windowing():
+    msgs = [_mk(i, "user", "a", f"m{i}") for i in range(1, 21)]
+    win = project_for_member_windowed(msgs, "m1", recent_n=0)
+    full = project_for_member(msgs, "m1")
+    assert len(win) == len(full) == 20
+
+
+def test_windowed_default_recent_n_is_reasonable():
+    assert _DEFAULT_RECENT_N > 0
+
+
+def test_windowed_deterministic():
+    msgs = [_mk(i, "user", "a", f"m{i}") for i in range(1, 30)]
+    a = project_for_member_windowed(msgs, "m1", recent_n=8)
+    b = project_for_member_windowed(msgs, "m1", recent_n=8)
+    assert [(x.role, x.content) for x in a] == [(x.role, x.content) for x in b]
 
 
 # ---------------------------------------------------------------------------

@@ -6518,6 +6518,26 @@ class GatewaySlashCommandsMixin:
                 )
             # Finally drop the room row.
             room_store.delete_room(room.room_id)
+            # Cascade to the M3 shared message history + Raft AX held-draft
+            # store so a deleted room leaves no orphaned rows behind. Both
+            # are best-effort + idempotent — a failure here must not turn a
+            # successful room deletion into an error.
+            try:
+                from gateway.agent_room_messages_store import AgentRoomMessagesStore
+                AgentRoomMessagesStore().delete_room(room.room_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "/room delete %s: message history cleanup failed: %s",
+                    name, exc,
+                )
+            try:
+                from gateway.agent_room_held_store import AgentRoomHeldStore
+                AgentRoomHeldStore().delete_room(room.room_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "/room delete %s: held-draft cleanup failed: %s",
+                    name, exc,
+                )
             return f"Deleted room `{name}`."
 
         # ------------------------------------------------------------------

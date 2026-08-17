@@ -27956,6 +27956,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._agent_room_messages_store = AgentRoomMessagesStore()
         messages_store = self._agent_room_messages_store
 
+        # ── Raft AX 改造 1: held-draft store (lazy-init) ────────────────
+        # Durable backing for member replies the §6.3 fence would otherwise
+        # SILENTLY DROP. Instead of the historical black hole, a fenced
+        # reply is persisted here so it survives even a gateway restart and
+        # can later be Revised / Sent-as-is / consciously Stay-silent'd /
+        # Sent-anyway (docs/design/agent-room/ax-alignment.md §3 改造 1).
+        if not hasattr(self, "_agent_room_held_store"):
+            from gateway.agent_room_held_store import AgentRoomHeldStore
+            self._agent_room_held_store = AgentRoomHeldStore()
+        held_store = self._agent_room_held_store
+
         # Persist the inbound user message BEFORE running observer/members.
         # This way even if the observer/members crash, the user's message
         # is already recorded and the next turn sees it in history.
@@ -28519,13 +28530,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 member_source = dataclasses.replace(_src, profile=member_profile)
                 profile_home = self._resolve_profile_home_for_source(member_source)
 
+                # Raft AX 改造 1 (version-based hold): snapshot the room
+                # version this member is about to reason against. If a NEW
+                # user turn lands before we deliver, this reply is stale —
+                # it reasoned about a conversation that already moved on
+                # (the article's turn-based "gap" / counting-game case).
+                try:
+                    _snapshot_version = messages_store.max_sequence(room.room_id)
+                except Exception:
+                    _snapshot_version = 0
+
                 # M3.3: build history from shared store, projected for this member
                 try:
-                    from gateway.agent_room_projection import project_for_member
+                    from gateway.agent_room_projection import (
+                        project_for_member_windowed,
+                    )
                     room_msgs = messages_store.list_messages(room.room_id)
                     # Skip the last message (== current user turn we're
                     # about to feed as `msg`) so it doesn't appear twice.
-                    projected = project_for_member(
+                    # Raft AX 改造 3 (agent inbox): "summary + recent N"
+                    # instead of full-push + hard-truncation. Collapses the
+                    # older tail into a scannable digest and pushes only the
+                    # last N verbatim, so the room stops flooding the
+                    # member's context. Backward-compatible: small rooms
+                    # (<= recent_n) project identically to before.
+                    projected = project_for_member_windowed(
                         room_msgs[:-1] if room_msgs else [],
                         target_member=member_profile,
                     )
@@ -28588,16 +28617,95 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"- 对话历史里的\"[发送者]: ...\"只是系统添加的归属标记，用来帮你理解谁说了这句话；不要在你的回复中复述或模仿这种方括号前缀。也不要输出\"[{member_profile}]:\"这类格式，直接以自然语言回复即可。\n"
                     "- 如果这个问题需要另一位成员接手或补充，在回复中 @ 对方的名字（例如 @finance），系统会自动把你的回复转交给对方；@ 时请说清楚请对方做什么。\n"
                     "- 如果你已经能完整回答，直接回答即可，不要在结尾无意义地 @ 其他成员接力。\n"
+                    "- 你的对话历史开头可能是一段【room digest】摘要，只给出较早消息的简短预览（每条带 #序号）。如果需要看某条较早消息的完整内容（比如另一位成员早前说了什么、或用户早前的请求），调用 room_fetch_context（按 query 关键词或 start_seq/end_seq 区间拉取）；只在确有需要时拉取，摘要已给出大意。\n"
                 )
 
+                # 改造 3 (agent inbox): bind this room+member so the
+                # room_fetch_context pull tool serves reads scoped to THIS
+                # room only (the LLM cannot forge a different room_id).
+                from tools.room_fetch_context_tool import bind_room_context
+                _room_ctx_token = bind_room_context(
+                    messages_store, room.room_id, member_profile,
+                )
                 try:
                     run_result = await self._run_agent_inner(
                         msg, room_context_prompt, projected_hist, member_source, session_id,
+                        _extra_toolsets=["room_member"],
                     )
                 finally:
+                    _room_ctx_token.reset()
                     reset_secret_scope(_secret_token)
                     reset_hermes_home_override(_home_token)
                 reply = run_result.get("final_response", "") if run_result else ""
+
+                # ── Raft AX 改造 1: version-based hold (turn-based gap) ──
+                # The article's core mechanism: an agent reasons against a
+                # room *snapshot*, and the room can move in the gap before
+                # it commits. If a NEW USER turn landed while this member was
+                # composing, delivering now would land a non-sequitur (reply
+                # to a question the user already moved past — the counting-
+                # game case). So instead of committing + delivering a stale
+                # reply, HOLD it: skip the store append, skip delivery, and
+                # persist a durable HeldReply the resolver can Revise /
+                # Stay-silent. We only count a new *user* message as "moved":
+                # peer *member* replies are our own intentional concurrent
+                # broadcast and must NOT trip this gate.
+                if reply and held_store is not None:
+                    try:
+                        _newer = messages_store.list_messages(
+                            room.room_id, since_seq=_snapshot_version,
+                        )
+                        _user_moved = any(
+                            m.sender_kind == "user" for m in _newer
+                        )
+                    except Exception:
+                        _user_moved = False
+                    if _user_moved:
+                        try:
+                            from gateway.agent_room_held_store import (
+                                HELD_REASON_ROOM_MOVED,
+                            )
+                            _cur = messages_store.max_sequence(room.room_id)
+                            # Stash the transport metadata a later Revise
+                            # needs to reconstruct a SessionSource and run a
+                            # fresh member turn against the CURRENT room.
+                            _held_extra = {
+                                "platform": getattr(
+                                    getattr(source, "platform", None), "value",
+                                    str(getattr(source, "platform", "") or ""),
+                                ),
+                                "chat_type": str(getattr(source, "chat_type", "") or ""),
+                                "user_id": getattr(source, "user_id", None),
+                                "user_name": getattr(source, "user_name", None),
+                                "thread_id": getattr(source, "thread_id", None),
+                                "original_msg": msg,
+                            }
+                            held = held_store.hold(
+                                room.room_id,
+                                session_id=session_id,
+                                member=member_profile,
+                                room_version=_snapshot_version,
+                                payload=reply,
+                                held_reason=HELD_REASON_ROOM_MOVED,
+                                chat_id=str(getattr(source, "chat_id", "") or ""),
+                                extra=_held_extra,
+                            )
+                            logger.info(
+                                "room %s: member %s reply held (room_moved: "
+                                "snapshot=%d now=%d, held_id=%s) — a new user "
+                                "turn superseded it; not delivering as-is",
+                                room.room_id, member_profile,
+                                _snapshot_version, _cur, held.id,
+                            )
+                            # Held, not committed: skip append + deliver,
+                            # and return "" so no @mention handoff fires.
+                            return ""
+                        except Exception as _he:  # noqa: BLE001 — hold must not crash
+                            logger.warning(
+                                "room %s: member %s room_moved hold failed "
+                                "(%s); falling back to deliver-as-is",
+                                room.room_id, member_profile, _he,
+                            )
 
                 # M3: persist member's reply back to the shared store so
                 # other members' future turns see it via projection.
@@ -28706,6 +28814,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.warning("M4.4 synthesis delivery failed: %s", exc)
                 return final
 
+            # Raft AX 改造 2 (Silence is a valid outcome): read the room's
+            # no-match policy from gateway config (agent_room.no_match_policy).
+            # Default "fallback" preserves the historical always-answer
+            # behavior; "silent" lets a room genuinely stay quiet when the
+            # classifier finds the message out-of-scope for every member.
+            try:
+                _ar_cfg = (_load_gateway_config().get("agent_room") or {})
+                _no_match_policy = str(_ar_cfg.get("no_match_policy") or "fallback")
+            except Exception:
+                _no_match_policy = "fallback"
+
             self._agent_room_router = AgentRoomRouter(
                 store=self._agent_room_store,
                 ack_sender=_ack_sender,
@@ -28722,7 +28841,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # handled by the @mention handoff chain
                 # (agent_room_router._run_handoff_chain).
                 synthesis_runner=None,
+                # Raft AX 改造 1: held-draft. On a §6.3 fence hit, hold the
+                # member's finished reply (durable, recoverable) instead of
+                # silently dropping it. room_version = the shared message
+                # store's max sequence — the snapshot marker the reply was
+                # reasoned against, so a resolver can tell "room moved"
+                # (→ Revise) from "transport lost" (→ Send-as-is).
+                held_store=held_store,
+                room_version_provider=(
+                    lambda rid: self._agent_room_messages_store.max_sequence(rid)
+                ),
+                # 改造 2: fallback (default) | silent
+                no_match_policy=_no_match_policy,
             )
+
+            # ── Raft AX 改造 1: held-draft resolver ────────────────────
+            # Takes held replies back out of the "held" state along one of
+            # Raft's four paths and actually DELIVERS them, closing the
+            # black hole. Send-as-is uses adapter.send — which, with the
+            # defect-#2 proactive/AI-Card fallback, no longer needs a live
+            # session_webhook, so a reply held because its webhook expired
+            # can now be delivered later. Revise re-runs the member against
+            # the current room. (docs/design/agent-room/ax-alignment.md §3.)
+            from gateway.agent_room_held_resolver import AgentRoomHeldResolver
+
+            async def _held_deliver(chat_id: str, payload: str) -> bool:
+                if not (adapter and hasattr(adapter, "send")):
+                    return False
+                try:
+                    res = await adapter.send(chat_id, payload, metadata={})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("held-draft delivery failed: %s", exc)
+                    return False
+                # SendResult.success (or a truthy result for adapters that
+                # return something simpler).
+                return bool(getattr(res, "success", res))
+
+            self._agent_room_held_resolver = AgentRoomHeldResolver(
+                held_store=held_store,
+                deliver=_held_deliver,
+                room_version_provider=(
+                    lambda rid: self._agent_room_messages_store.max_sequence(rid)
+                ),
+                # Raft AX 改造 1 收尾: online true-Revise. A room_moved hold
+                # means the room advanced past what the reply reasoned about;
+                # _agent_room_held_rerun re-runs the member against the
+                # CURRENT room (fresh projection incl. the newer turn) and
+                # returns updated text WITHOUT delivering (the resolver
+                # delivers to the held row's own chat_id) and WITHOUT
+                # re-holding. Empty rerun → resolver treats as stay-silent.
+                # This is what lets a held "1... 2... 3!" become a revised
+                # "oh, you said stop — nvm" instead of a stale non-sequitur.
+                rerun_member=self._agent_room_held_rerun,
+            )
+
+            # Startup drain: recover any replies held across a gateway
+            # restart (the durable-across-restart promise). Best-effort;
+            # rows whose transport is still down stay held for a later drain.
+            try:
+                await self._agent_room_held_resolver.resume_all()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("held-draft startup drain failed: %s", exc)
 
         try:
             await self._agent_room_router.process_message(
@@ -28731,6 +28910,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 history=history,
                 room=room,
             )
+            # Opportunistic drain: after handling a message, try to flush
+            # this room's held backlog (a fresh inbound often means the
+            # transport is live again — the ideal moment to deliver holds).
+            try:
+                resolver = getattr(self, "_agent_room_held_resolver", None)
+                if resolver is not None:
+                    await resolver.resume_all(room.room_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "held-draft post-message drain failed for room %s: %s",
+                    room.room_id, exc,
+                )
         except Exception as exc:
             logger.error(
                 "M1.7 room routing error for room %s: %s",
@@ -28743,6 +28934,129 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Return non-None to signal "handled by Room" — _handle_message
         # returns this and skips the normal _run_agent call.
         return ""
+
+    async def _agent_room_held_rerun(self, held) -> str:
+        """Raft AX 改造 1 收尾 · online true-Revise.
+
+        Re-run a held member reply against the CURRENT room and return the
+        FRESH reply text — WITHOUT delivering (the resolver delivers to the
+        held row's own chat_id) and WITHOUT re-holding (this is the recovery
+        path, not a fresh dispatch). Used only on the Revise path for a
+        ``room_moved`` hold: the room advanced past what the original reply
+        reasoned about, so we let the member look at where the conversation
+        is NOW and decide whether it still has something to add.
+
+        Returns "" when the member has nothing to add (→ resolver treats as
+        stay-silent) or when the run cannot be reconstructed (defensive: a
+        rerun failure must never crash the drain — the resolver falls back
+        to its reason-aware degrade)."""
+        import dataclasses as _dc
+
+        room = None
+        try:
+            room = self._agent_room_store.get_room(held.room_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("held-rerun: get_room(%s) failed: %s", held.room_id, exc)
+        if room is None:
+            logger.info("held-rerun: room %s gone; cannot revise", held.room_id)
+            return ""
+        member_profile = held.member
+        if member_profile not in room.members:
+            logger.info(
+                "held-rerun: member %s no longer in room %s; cannot revise",
+                member_profile, held.room_id,
+            )
+            return ""
+
+        # Reconstruct a SessionSource from the stashed transport metadata.
+        extra = held.extra or {}
+        try:
+            from gateway.platforms.base import Platform as _Platform
+            _plat = _Platform(str(extra.get("platform") or "").lower())
+        except Exception:
+            logger.info(
+                "held-rerun: unknown platform %r; cannot revise",
+                extra.get("platform"),
+            )
+            return ""
+        source = SessionSource(
+            platform=_plat,
+            chat_id=held.chat_id or "",
+            chat_type=str(extra.get("chat_type") or "dm"),
+            user_id=extra.get("user_id"),
+            user_name=extra.get("user_name"),
+            thread_id=extra.get("thread_id"),
+            profile=member_profile,
+        )
+
+        messages_store = self._agent_room_messages_store
+        session_id = held.session_id
+        # Fresh projection against the CURRENT room (includes the newer
+        # user turn that moved the room).
+        try:
+            from gateway.agent_room_projection import project_for_member_windowed
+            room_msgs = messages_store.list_messages(room.room_id)
+            projected = project_for_member_windowed(
+                room_msgs, target_member=member_profile,
+            )
+            projected_hist = [p.to_openai() for p in projected]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("held-rerun: projection failed: %s", exc)
+            projected_hist = []
+
+        # True-Revise framing: tell the member its earlier draft may now be
+        # stale, and let it decide whether to update or stay silent.
+        original = str(extra.get("original_msg") or "")
+        revise_prompt = (
+            "【修订请求】你之前针对下面这条消息准备了回复：\n"
+            f"「{original}」\n"
+            f"但在你思考期间，群聊里又有了新消息（已在上方对话历史中）。\n"
+            "请基于当前对话判断：如果你的回复现在仍然贴切，就给出（可按需更新后的）回复；"
+            "如果已经过时、被别人覆盖、或不再需要，就回复空内容表示不再发言。\n\n"
+            f"你之前草拟的回复是：\n「{held.payload}」"
+        )
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from agent.secret_scope import (
+            build_profile_secret_scope, set_secret_scope, reset_secret_scope,
+        )
+        from tools.room_fetch_context_tool import bind_room_context
+
+        hydrate_profile_secret_sources(Path(profile_home))
+        _home_token = set_hermes_home_override(str(profile_home))
+        _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        _room_ctx_token = bind_room_context(
+            messages_store, room.room_id, member_profile,
+        )
+        try:
+            run_result = await self._run_agent_inner(
+                revise_prompt, "", projected_hist, source, session_id,
+                _extra_toolsets=["room_member"],
+            )
+        finally:
+            _room_ctx_token.reset()
+            reset_secret_scope(_secret_token)
+            reset_hermes_home_override(_home_token)
+        fresh = (run_result.get("final_response", "") if run_result else "") or ""
+        fresh = fresh.strip()
+        # Persist the revised reply so future turns see it (the resolver
+        # delivers it; parity with the dispatcher's own append-on-success).
+        if fresh:
+            try:
+                messages_store.append(
+                    room.room_id, sender_kind="member",
+                    sender_name=member_profile, content=fresh,
+                )
+            except Exception as _e:  # noqa: BLE001
+                logger.warning("held-rerun: persist revised reply failed: %s", _e)
+        logger.info(
+            "held-rerun: member %s revised held #%s → %s",
+            member_profile, held.id,
+            f"{len(fresh)} chars" if fresh else "empty (stay-silent)",
+        )
+        return fresh
 
     async def _run_agent_inner(
         self,
@@ -28816,6 +29130,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # otherwise fall through to the adapter-aware resolver so webhook
         # per-route overrides keep working everywhere else.
         _toolsets_override = kwargs.pop("_toolsets_override", None)
+        # Raft AX 改造 3 (agent inbox): additive toolset(s) a caller wants
+        # UNIONED into whatever the source/profile normally resolves —
+        # distinct from _toolsets_override which REPLACES. Used to grant a
+        # room member the room_member toolset (room_fetch_context pull tool)
+        # on top of its own profile tools, without editing profile config.
+        _extra_toolsets = kwargs.pop("_extra_toolsets", None)
         if _toolsets_override:
             pt = dict(user_config.get("platform_toolsets") or {})
             pt[platform_key] = list(_toolsets_override)
@@ -28842,6 +29162,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_toolsets = self._resolve_enabled_toolsets_for_source(
                 user_config, source, platform_key
             )
+        # 改造 3: union in any additive toolsets (e.g. room_member) the
+        # caller requested, de-duped, order-stable.
+        if _extra_toolsets:
+            _seen = set(enabled_toolsets)
+            for _ts in _extra_toolsets:
+                if _ts not in _seen:
+                    enabled_toolsets.append(_ts)
+                    _seen.add(_ts)
         agent_cfg_local = user_config.get("agent") or {}
         from agent.skill_utils import parse_config_string_list
 

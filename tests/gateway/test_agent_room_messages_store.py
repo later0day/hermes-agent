@@ -93,6 +93,20 @@ def test_count(store):
     assert store.count("r1") == 2
 
 
+def test_max_sequence(store):
+    # Empty room → version 0 (Raft AX held-draft snapshot marker).
+    assert store.max_sequence("r1") == 0
+    store.append("r1", sender_kind="user", sender_name="a", content="x")
+    m2 = store.append("r1", sender_kind="user", sender_name="a", content="y")
+    assert store.max_sequence("r1") == m2.sequence == 2
+    # Independent per room.
+    store.append("r2", sender_kind="user", sender_name="a", content="z")
+    assert store.max_sequence("r2") == 1
+    # Deleting the tail row lowers the version.
+    store.delete_message("r1", m2.sequence)
+    assert store.max_sequence("r1") == 1
+
+
 def test_delete_room_clears_all(store):
     for i in range(3):
         store.append("r1", sender_kind="user", sender_name="a", content=f"m{i}")

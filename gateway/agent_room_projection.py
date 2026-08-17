@@ -36,6 +36,17 @@ from gateway.agent_room_messages_store import RoomMessage
 
 _MAX_CONTENT_CHARS = 4000  # M3-B7: cap per-message content length
 
+# Raft AX 改造 3 (agent inbox): default window size for the "summary +
+# recent N" projection. The article's core inbox idea is to invert
+# push→pull: stop flooding the whole room history into every member's
+# context (and hard-truncating it), and instead push only a compact
+# digest of the older tail + the last N verbatim turns, leaving the
+# member free to pull the rest on demand (room_fetch_context, slice 2).
+_DEFAULT_RECENT_N = 12
+# Per-row length inside the digest line — short, since the digest is a
+# scannable index, not the full artifact.
+_DIGEST_LINE_CHARS = 160
+
 
 @dataclass(frozen=True)
 class ProjectedMessage:
@@ -142,6 +153,74 @@ def project_for_member(
             role = "user"
         projected.append(ProjectedMessage(role=role, content=content))
 
+    return projected
+
+
+def _digest_line(msg: RoomMessage, target_member: str) -> str:
+    """One compact, scannable index line for an older (out-of-window) row.
+
+    Uses the same speaker attribution as full projection so the member can
+    tell who said what, but truncated hard to a short preview — the digest
+    is an *index* of what happened, not the artifact itself. The member
+    pulls the full text on demand (room_fetch_context, slice 2)."""
+    kind = msg.sender_kind
+    name = msg.sender_name
+    body = _truncate(msg.content or "", _DIGEST_LINE_CHARS)
+    if kind == "user":
+        who = "user"
+    elif kind == "observer":
+        who = "observer"
+    elif kind == "tool_result":
+        who = f"tool:{name}"
+    elif kind == "member" and name == target_member:
+        who = "me"
+    else:
+        who = name or kind
+    # #<seq> so a later room_fetch_context(range=...) can address it.
+    return f"#{msg.sequence} [{who}] {body}".rstrip()
+
+
+def project_for_member_windowed(
+    messages: list[RoomMessage],
+    target_member: str,
+    *,
+    recent_n: int = _DEFAULT_RECENT_N,
+) -> list[ProjectedMessage]:
+    """Raft AX 改造 3 · "summary + recent N" projection (agent inbox).
+
+    Backward-compatible superset of :func:`project_for_member`:
+
+      * When the room has ``<= recent_n`` rows (or ``recent_n <= 0``), this
+        returns EXACTLY what ``project_for_member`` returns — no digest, no
+        behavior change. Small rooms are unaffected.
+      * When the room is larger, the older tail is collapsed into a SINGLE
+        digest message (role="user") — one short attributed line per older
+        row, addressable by ``#<seq>`` — followed by the last ``recent_n``
+        rows projected verbatim via the normal per-member rules.
+
+    This inverts the historical full-push + hard-4000-char-truncation
+    (which the article criticizes as "the room deciding what's worth the
+    agent's context") into a compact index the member can act on, while
+    still pulling the full text on demand. Deterministic and O(n).
+    """
+    if not messages:
+        return []
+    if recent_n <= 0 or len(messages) <= recent_n:
+        return project_for_member(messages, target_member)
+
+    older = messages[:-recent_n]
+    recent = messages[-recent_n:]
+
+    digest_lines = [_digest_line(m, target_member) for m in older]
+    digest_content = (
+        f"[room digest — {len(older)} earlier message(s), oldest first; "
+        f"use room_fetch_context to read any in full]\n"
+        + "\n".join(digest_lines)
+    )
+    projected: list[ProjectedMessage] = [
+        ProjectedMessage(role="user", content=digest_content)
+    ]
+    projected.extend(project_for_member(recent, target_member))
     return projected
 
 

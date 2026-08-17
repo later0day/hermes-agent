@@ -236,6 +236,20 @@ class AgentRoomMessagesStore:
             for r in rows
         ]
 
+    def max_sequence(self, room_id: str) -> int:
+        """The highest sequence written to this room, or 0 if empty.
+
+        This is the room's "version" for Raft AX held-draft (改造 1): the
+        snapshot marker a member reply is reasoned against. Reads MAX(seq)
+        of live rows (not the seq counter) so a deleted tail row correctly
+        lowers the version — cheap single-row aggregate, no full scan."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(sequence) FROM agent_room_messages WHERE room_id = ?",
+                (room_id,),
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
     def count(self, room_id: str) -> int:
         with self._lock:
             row = self._conn.execute(

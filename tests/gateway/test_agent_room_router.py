@@ -1362,3 +1362,270 @@ async def test_first_hop_plain_list_return_still_works_back_compat(store, room):
     assert result["target_member"] == "finance"
     dispatched_input = dispatcher.await_args.args[-1]
     assert dispatched_input == "账单不对"
+
+
+# ---------------------------------------------------------------------------
+# Raft AX 改造 1 · held-draft — fence hit HOLDS instead of silently dropping
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def held_store(tmp_path):
+    from gateway.agent_room_held_store import AgentRoomHeldStore
+    s = AgentRoomHeldStore(db_path=tmp_path / "held.sqlite")
+    yield s
+    s.close()
+
+
+@pytest.mark.asyncio
+async def test_held_single_member_postdispatch_fence_holds_reply(
+    mocks, store, room, held_store,
+):
+    """§6.3 checkpoint C with a held_store wired: the member's finished
+    reply is HELD (durable + recoverable), not silently dropped."""
+    async def dispatch_then_fence(*_args, **_kw):
+        store.fence_room(room.room_id, ["room_member:room_1:client_svc"])
+        return "finance's finished analysis"
+
+    mocks["member_dispatcher"].side_effect = dispatch_then_fence
+    router = AgentRoomRouter(
+        store=store, held_store=held_store,
+        room_version_provider=lambda _rid: 42,
+        **mocks,
+    )
+
+    class _Src:
+        chat_id = "chat-xyz"
+
+    result = await router.process_message(_Src(), "msg", [], room)
+
+    assert result["fenced_at"] == "member_postdispatch"
+    assert result["reply"] is None
+    # The reply is now HELD, not gone.
+    held_id = result["held_id"]
+    assert held_id is not None
+    held = held_store.get(held_id)
+    assert held is not None
+    assert held.payload == "finance's finished analysis"
+    assert held.member == "client_svc"
+    assert held.room_version == 42
+    assert held.chat_id == "chat-xyz"
+    assert held.status == "held"
+
+
+@pytest.mark.asyncio
+async def test_held_no_store_preserves_legacy_silent_drop(
+    mocks, store, room,
+):
+    """Without a held_store wired, the fence behavior is byte-for-byte the
+    legacy silent drop — zero-risk additive change."""
+    async def dispatch_then_fence(*_args, **_kw):
+        store.fence_room(room.room_id, ["room_member:room_1:client_svc"])
+        return "would-be-dropped reply"
+
+    mocks["member_dispatcher"].side_effect = dispatch_then_fence
+    router = AgentRoomRouter(store=store, **mocks)  # NO held_store
+
+    result = await router.process_message(object(), "msg", [], room)
+
+    assert result["fenced_at"] == "member_postdispatch"
+    assert result["reply"] is None
+    # held_id is present but None — nothing was held.
+    assert result.get("held_id") is None
+
+
+@pytest.mark.asyncio
+async def test_held_empty_reply_is_not_held(mocks, store, room, held_store):
+    """An empty member reply on a fence is a genuine stay-silent, not a lost
+    artifact — it must NOT create a held row."""
+    async def dispatch_then_fence(*_args, **_kw):
+        store.fence_room(room.room_id, ["room_member:room_1:client_svc"])
+        return ""  # member chose to say nothing
+
+    mocks["member_dispatcher"].side_effect = dispatch_then_fence
+    router = AgentRoomRouter(
+        store=store, held_store=held_store,
+        room_version_provider=lambda _rid: 1, **mocks,
+    )
+
+    result = await router.process_message(object(), "msg", [], room)
+
+    assert result["fenced_at"] == "member_postdispatch"
+    assert result["held_id"] is None
+    assert held_store.list_held(room.room_id) == []
+
+
+@pytest.mark.asyncio
+async def test_held_multi_member_postdispatch_fence_holds_each_reply(
+    mocks, store, room, held_store,
+):
+    """Concurrent fan-out fenced mid-flight: each member's reply is held
+    (keyed by member) instead of the whole batch vanishing."""
+    call_state = {"first": True}
+
+    async def dispatch(member, sid, src, hist, msg):
+        # Fence only once the first member has produced its reply so the
+        # post-dispatch gate trips for the whole batch.
+        if call_state["first"]:
+            call_state["first"] = False
+        store.fence_room(room.room_id, [sid])
+        return f"{member}'s reply"
+
+    mocks["member_dispatcher"].side_effect = dispatch
+    # Force a multi-member decision via @mention of both members.
+    router = AgentRoomRouter(
+        store=store, held_store=held_store,
+        room_version_provider=lambda _rid: 9, **mocks,
+    )
+
+    result = await router.process_message(
+        object(), "@client_svc @finance 大家看看", [], room,
+    )
+
+    assert result["fenced_at"] == "member_postdispatch"
+    assert result["reply"] is None
+    held_ids = result["held_ids"]
+    # Both members' replies held.
+    assert set(held_ids.keys()) == {"client_svc", "finance"}
+    payloads = {
+        held_store.get(hid).member: held_store.get(hid).payload
+        for hid in held_ids.values() if hid is not None
+    }
+    assert payloads["client_svc"] == "client_svc's reply"
+    assert payloads["finance"] == "finance's reply"
+    for hid in held_ids.values():
+        assert held_store.get(hid).room_version == 9
+
+
+@pytest.mark.asyncio
+async def test_held_store_failure_degrades_to_drop(mocks, store, room):
+    """If the held_store.hold() itself raises, routing must NOT crash —
+    it degrades to the legacy drop with held_id=None."""
+    class _BoomStore:
+        def hold(self, *a, **k):
+            raise RuntimeError("disk full")
+
+    async def dispatch_then_fence(*_args, **_kw):
+        store.fence_room(room.room_id, ["room_member:room_1:client_svc"])
+        return "reply we could not persist"
+
+    mocks["member_dispatcher"].side_effect = dispatch_then_fence
+    router = AgentRoomRouter(
+        store=store, held_store=_BoomStore(),
+        room_version_provider=lambda _rid: 1, **mocks,
+    )
+
+    result = await router.process_message(object(), "msg", [], room)
+
+    assert result["fenced_at"] == "member_postdispatch"
+    assert result["reply"] is None
+    assert result["held_id"] is None  # persistence failed → legacy drop
+
+
+# ---------------------------------------------------------------------------
+# Raft AX 改造 2 · no_match_policy="silent" (Silence is a valid outcome)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_match_silent_policy_dispatches_nobody(store, room):
+    """Under silent policy, a forced no-match fallback stays silent —
+    NO member is dispatched, and the bundle marks stayed_silent."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(
+            members=["client_svc"], matched=False,
+            reason="不属于任何成员职责范围",
+        )
+    )
+    dispatcher = AsyncMock(return_value="should not be called")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop,
+        ack_sender=AsyncMock(return_value="h"), ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        member_dispatcher=dispatcher,
+        no_match_policy="silent",
+    )
+    result = await router.process_message(object(), "该先上线前端还是先修后端？", [], room)
+    assert result["stayed_silent"] is True
+    assert result["is_no_match"] is True
+    assert result["target_member"] is None
+    assert result["reply"] is None
+    dispatcher.assert_not_awaited()  # nobody ran
+
+
+@pytest.mark.asyncio
+async def test_no_match_fallback_policy_still_dispatches(store, room):
+    """Default policy (fallback) is unchanged: a no-match still dispatches
+    to the default member with the no-match prefix."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(
+            members=["client_svc"], matched=False, reason="out of scope",
+        )
+    )
+    dispatcher = AsyncMock(return_value="ok")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop,
+        ack_sender=AsyncMock(return_value="h"), ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        member_dispatcher=dispatcher,
+        # no_match_policy defaults to "fallback"
+    )
+    result = await router.process_message(object(), "随便问", [], room)
+    assert result.get("stayed_silent") is None
+    assert result["target_member"] == "client_svc"
+    dispatcher.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_silent_policy_does_not_silence_real_match(store, room):
+    """Silent policy only silences NO-MATCH. A real domain match under the
+    silent policy is dispatched normally — silence is not a gag order."""
+    first_hop = AsyncMock(
+        return_value=FirstHopResult(members=["finance"], matched=True, reason="账单")
+    )
+    dispatcher = AsyncMock(return_value="ok")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=first_hop,
+        ack_sender=AsyncMock(return_value="h"), ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        member_dispatcher=dispatcher,
+        no_match_policy="silent",
+    )
+    result = await router.process_message(object(), "账单不对", [], room)
+    assert result.get("stayed_silent") is None
+    assert result["target_member"] == "finance"
+    dispatcher.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_silent_policy_does_not_silence_mention(store, room):
+    """An explicit @mention is user intent — never silenced even under
+    silent policy (mentions never set is_no_match)."""
+    dispatcher = AsyncMock(return_value="ok")
+    router = AgentRoomRouter(
+        store=store, first_hop_runner=AsyncMock(),
+        ack_sender=AsyncMock(return_value="h"), ack_editor=AsyncMock(),
+        classifier=AsyncMock(
+            return_value=ClassifierResult(is_new_topic=True, confidence=1.0)
+        ),
+        member_dispatcher=dispatcher,
+        no_match_policy="silent",
+    )
+    result = await router.process_message(object(), "@finance 账单", [], room)
+    assert result.get("stayed_silent") is None
+    assert "finance" in (result["target_member"] or "")
+    dispatcher.assert_awaited_once()
+
+
+def test_unknown_no_match_policy_degrades_to_fallback(store, mocks):
+    """An unknown policy value must never accidentally go silent."""
+    router = AgentRoomRouter(store=store, no_match_policy="banana", **mocks)
+    assert router._no_match_policy == "fallback"
+    router2 = AgentRoomRouter(store=store, no_match_policy="SILENT", **mocks)
+    assert router2._no_match_policy == "silent"  # case-insensitive

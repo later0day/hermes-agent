@@ -45,6 +45,10 @@ from typing import Any, Awaitable, Callable, Optional
 from gateway.agent_room_store import AgentRoom, AgentRoomStore
 from gateway.agent_room_mentions import resolve_mention_targets, strip_mention_tokens
 from gateway.agent_room_firsthop import FirstHopResult
+from gateway.agent_room_held_store import (
+    AgentRoomHeldStore,
+    HELD_REASON_FENCED,
+)
 from gateway.agent_room_handoff import (
     HandoffPolicy,
     next_mention_depth,
@@ -254,12 +258,30 @@ class AgentRoomRouter:
         member_dispatcher: MemberDispatcher,
         synthesis_runner: Optional["SynthesisRunner"] = None,
         handoff_policy: Optional[HandoffPolicy] = None,
+        held_store: Optional["AgentRoomHeldStore"] = None,
+        room_version_provider: Optional[Callable[[str], int]] = None,
+        no_match_policy: str = "fallback",
     ) -> None:
         self._store = store
         self._ack_sender = ack_sender
         self._ack_editor = ack_editor
         self._classifier = classifier
         self._observer_runner = observer_runner
+        # Raft AX 改造 1 (held-draft). When ``held_store`` is injected, a
+        # reply that the §6.3 fence would otherwise SILENTLY DROP is instead
+        # persisted as a durable HeldReply — Raft's "hold, don't swallow"
+        # answer to the turn-based agent's read→reason→commit gap. When it's
+        # absent (existing callers / most unit tests) the router keeps its
+        # historical silent-drop behavior verbatim, so this is a zero-risk
+        # additive change.
+        self._held_store = held_store
+        # Snapshot marker source: maps room_id → the current room "version"
+        # (we use agent_room_messages' max sequence). Captured at the moment
+        # the member's turn is DISPATCHED (what it reasoned against) and
+        # stored on the HeldReply so a later resolver can tell "the room
+        # moved" (→ Revise) from "only the transport was lost" (→ Send-as-is).
+        # Optional + defensive: any failure just records version 0.
+        self._room_version_provider = room_version_provider
         # First-hop classifier (stateless). When present it fully replaces
         # the observer agent turn for the miss path in _decide_target.
         self._first_hop_runner = first_hop_runner
@@ -272,6 +294,24 @@ class AgentRoomRouter:
         # re-dispatch the named members (bounded by this policy's depth).
         # Replaces the central decompose DAG for multi-member coordination.
         self._handoff_policy = handoff_policy or resolve_handoff_policy()
+
+        # Raft AX 改造 2 (Silence is a valid outcome): what to do when the
+        # first-hop classifier judged the message out-of-scope for EVERY
+        # roster member (``decision.is_no_match``).
+        #   * "fallback" (default, historical behavior): still dispatch to
+        #     the default member with an explicit "you're a fallback" prefix.
+        #     A room always answers.
+        #   * "silent": genuinely stay silent — dispatch NOBODY, return a
+        #     ``stayed_silent`` bundle. This is Raft's "not every message
+        #     needs a reply; silence is a legitimate action" — a room may
+        #     opt into it (e.g. a room that should only speak when actually
+        #     addressed). Reuses the existing ``is_no_match`` signal, no new
+        #     data model.
+        # Unknown values degrade to "fallback" (never accidentally go silent).
+        self._no_match_policy = (
+            "silent" if str(no_match_policy or "").strip().lower() == "silent"
+            else "fallback"
+        )
 
         # §5.4: last_routed_member cache. Keyed by room_id; process-local,
         # not persisted. A restart forces the first message to run a full
@@ -380,6 +420,77 @@ class AgentRoomRouter:
             f"> ---\n"
             f"> 用户消息：{message}"
         )
+
+    # ------------------------------------------------------------------
+    # Raft AX 改造 1: held-draft
+    # ------------------------------------------------------------------
+
+    def _current_room_version(self, room_id: str) -> int:
+        """The room's current snapshot marker (agent_room_messages max seq).
+
+        Defensive: any provider failure (or no provider wired) records 0,
+        which a resolver reads as "unknown version" — still safe, it just
+        can't distinguish moved-vs-transport-lost for that one row."""
+        if self._room_version_provider is None:
+            return 0
+        try:
+            return int(self._room_version_provider(room_id) or 0)
+        except Exception as exc:  # noqa: BLE001 — never let versioning break routing
+            logger.debug("room %s: room_version_provider failed: %s", room_id, exc)
+            return 0
+
+    def _hold_reply(
+        self,
+        *,
+        room_id: str,
+        session_id: str,
+        member: str,
+        payload: str,
+        held_reason: str,
+        room_version: Optional[int] = None,
+        source: Any = None,
+    ) -> Optional[int]:
+        """Persist a would-be-dropped reply as a durable HeldReply.
+
+        This is the Raft "hold, don't swallow" step: instead of the router's
+        historical ``return {"reply": None}`` black hole, a finished member
+        reply that can't be delivered as-is (fence hit / transport gone) is
+        recorded so it can later be Revised / Sent-as-is / consciously
+        Stay-silent'd / Sent-anyway.
+
+        No-ops (returns None) when no held_store is wired — preserving the
+        exact legacy silent-drop for callers that haven't opted in — or when
+        there's no non-empty payload worth holding (an empty reply is a real
+        stay-silent, not a lost artifact). Never raises: a persistence
+        failure must not turn a drop into a crash, so it degrades back to
+        the legacy drop with a warning."""
+        if self._held_store is None:
+            return None
+        if not payload or not str(payload).strip():
+            return None
+        if room_version is None:
+            room_version = self._current_room_version(room_id)
+        chat_id = None
+        if source is not None:
+            chat_id = getattr(source, "chat_id", None)
+        try:
+            held = self._held_store.hold(
+                room_id,
+                session_id=session_id,
+                member=member,
+                room_version=int(room_version),
+                payload=payload,
+                held_reason=held_reason,
+                chat_id=str(chat_id) if chat_id is not None else None,
+            )
+            return held.id
+        except Exception as exc:  # noqa: BLE001 — hold must never crash routing
+            logger.warning(
+                "room %s: failed to hold reply from member %s (%s); "
+                "falling back to legacy drop",
+                room_id, member, exc,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # M4.4: decompose_and_route orchestration + synthesis
@@ -863,6 +974,32 @@ class AgentRoomRouter:
                     # decompose bundle (legacy M4 path) already fully handled
                     return decision
 
+        # ── Raft AX 改造 2:真沉默出口 (Silence is a valid outcome) ────
+        # When the room opts into no_match_policy="silent" AND this decision
+        # is a FORCED fallback (the classifier judged the message
+        # out-of-scope for every member), dispatch NOBODY and stay silent.
+        # We do NOT touch last_routed (nothing was routed) and we return a
+        # ``stayed_silent`` bundle so callers/metrics can see it was a
+        # conscious silence, not a drop. @mention / N4-reuse decisions never
+        # set is_no_match, so they can never be silenced here.
+        if self._no_match_policy == "silent" and getattr(
+            decision, "is_no_match", False
+        ):
+            logger.info(
+                "room %s: no-match under silent policy — staying silent "
+                "(dispatched nobody; reason=%s)",
+                room_id, decision.reason,
+            )
+            return {
+                "fenced_at": None,
+                "target_member": None,
+                "reason": decision.reason,
+                "reused_last_route": False,
+                "is_no_match": True,
+                "stayed_silent": True,
+                "reply": None,
+            }
+
         # Update the cache regardless of which path we took — successful
         # reuse also refreshes the "last route" so a subsequent classifier
         # call has a valid anchor. For multi-member decisions we cache
@@ -946,24 +1083,45 @@ class AgentRoomRouter:
                     )
                     return (m, f"[error: {type(exc).__name__}: {exc}]")
 
+            # Raft AX 改造 1: snapshot the room version the fan-out
+            # reasoned against, before running the concurrent turns.
+            _dispatch_version = self._current_room_version(room_id)
             results = await _asyncio.gather(*[_run_one(m) for m in member_ids])
             replies: dict[str, str] = dict(results)
 
-            # Post-dispatch fence (§6.3 checkpoint C): drop replies
-            # if the room was fenced during any of the concurrent turns.
-            for m, sid in member_sids.items():
-                if self._store.is_fenced(room_id, sid):
-                    logger.info(
-                        "room %s: member %s fenced during concurrent dispatch; dropping",
-                        room_id, m,
+            # Post-dispatch fence (§6.3 checkpoint C): if the room was
+            # fenced during any of the concurrent turns, the whole fan-out
+            # is stale. Raft AX 改造 1: HOLD each member's finished reply
+            # (durable, recoverable) instead of the historical silent drop.
+            if any(
+                self._store.is_fenced(room_id, sid)
+                for sid in member_sids.values()
+            ):
+                held_ids: dict[str, Optional[int]] = {}
+                for m, sid in member_sids.items():
+                    held_ids[m] = self._hold_reply(
+                        room_id=room_id,
+                        session_id=sid,
+                        member=m,
+                        payload=replies.get(m) or "",
+                        held_reason=HELD_REASON_FENCED,
+                        room_version=_dispatch_version,
+                        source=source,
                     )
-                    return {
-                        "fenced_at": "member_postdispatch",
-                        "target_member": decision.target_member,
-                        "reason": decision.reason,
-                        "reused_last_route": decision.reused_last_route,
-                        "reply": None,
-                    }
+                logger.info(
+                    "room %s: concurrent turn fenced post-dispatch; held %s",
+                    room_id,
+                    {m: hid for m, hid in held_ids.items() if hid is not None}
+                    or "nothing (no held_store / empty replies)",
+                )
+                return {
+                    "fenced_at": "member_postdispatch",
+                    "target_member": decision.target_member,
+                    "reason": decision.reason,
+                    "reused_last_route": decision.reused_last_route,
+                    "reply": None,
+                    "held_ids": held_ids,
+                }
 
             return {
                 "fenced_at": None,
@@ -1008,6 +1166,10 @@ class AgentRoomRouter:
                 "reply": None,
             }
 
+        # Raft AX 改造 1: capture the room snapshot the member reasoned
+        # against BEFORE it runs, so a post-dispatch hold records the
+        # version the reply is stale (or not) relative to.
+        _dispatch_version = self._current_room_version(room_id)
         reply_text = await self._member_dispatcher(
             decision.target_member,
             member_sid,
@@ -1017,13 +1179,28 @@ class AgentRoomRouter:
         )
 
         # §6.3 Fence check C: even after the member turn finishes, if
-        # the room was structurally changed in the meantime, drop the
-        # reply. This is the "已发出的 step4 edit_message 作废" case
-        # from M3-B8 that also applies to M1.
+        # the room was structurally changed in the meantime, the reply is
+        # stale relative to the room it was reasoned against. Raft AX
+        # 改造 1: instead of the historical SILENT DROP, HOLD the finished
+        # reply as a durable HeldReply so it can be Revised / Sent-as-is /
+        # consciously Stay-silent'd / Sent-anyway. (When no held_store is
+        # wired, _hold_reply is a no-op and this degrades to the legacy
+        # drop — same "已发出的 step4 edit_message 作废" M3-B8 behavior.)
         if self._store.is_fenced(room_id, member_sid):
+            held_id = self._hold_reply(
+                room_id=room_id,
+                session_id=member_sid,
+                member=decision.target_member,
+                payload=reply_text or "",
+                held_reason=HELD_REASON_FENCED,
+                room_version=_dispatch_version,
+                source=source,
+            )
             logger.info(
-                "room %s: member session %s fenced during dispatch; discarding reply",
+                "room %s: member session %s fenced during dispatch; "
+                "%s reply",
                 room_id, member_sid,
+                f"held (id={held_id})" if held_id is not None else "discarding",
             )
             return {
                 "fenced_at": "member_postdispatch",
@@ -1031,6 +1208,7 @@ class AgentRoomRouter:
                 "reason": decision.reason,
                 "reused_last_route": decision.reused_last_route,
                 "reply": None,
+                "held_id": held_id,
             }
 
         return {
