@@ -68,3 +68,56 @@ def test_strip_leaves_other_mentions():
     # stripping for tech_support should not remove @finance
     out = strip_mention_tokens("@tech_support ask @finance too", "tech_support")
     assert "@finance" in out
+
+
+# ---------------------------------------------------------------------------
+# Boundary-detection gaps found during the DingTalk "not every profile
+# replies" investigation (2026-08-17): _AFTER_BOUNDARY was missing several
+# full-width closing punctuation marks, and the module docstring claimed a
+# bare-CJK-character boundary was valid even though the code never actually
+# implemented that check. Both are now fixed in _is_after_boundary /
+# _CJK_RANGES; these tests pin the previously-broken cases.
+# ---------------------------------------------------------------------------
+
+
+def test_fullwidth_right_paren_is_valid_boundary():
+    assert is_agent_mentioned("请找 @finance）确认", "finance")
+
+
+def test_fullwidth_bracket_boundaries_are_valid():
+    assert is_agent_mentioned("@finance】请查看", "finance")
+    assert is_agent_mentioned("@finance」测试", "finance")
+    assert is_agent_mentioned("@finance』测试", "finance")
+    assert is_agent_mentioned("@finance》测试", "finance")
+
+
+def test_fullwidth_quote_boundaries_are_valid():
+    assert is_agent_mentioned("@finance”这样说", "finance")
+    assert is_agent_mentioned("@finance’这样说", "finance")
+
+
+def test_bare_cjk_character_immediately_after_name_is_valid_boundary():
+    # No punctuation at all between the name and the next CJK ideograph —
+    # the docstring has always claimed this is a valid boundary, now the
+    # code actually implements it.
+    assert is_agent_mentioned("@finance完成了吗", "finance")
+    assert is_agent_mentioned("@tech_support测试一下", "tech_support")
+
+
+def test_bare_kana_and_hangul_are_valid_boundaries():
+    assert is_agent_mentioned("@financeさん", "finance")
+    assert is_agent_mentioned("@finance님", "finance")
+
+
+def test_resolve_targets_with_explanatory_prose_and_mixed_punctuation():
+    # Regression for the live cascade: a member's prose explaining routing
+    # rules for OTHER members, using a mix of full-width punctuation, must
+    # resolve consistently (previously ) failed while ； succeeded).
+    content = "物流问题找@logistics_returns_specialist；退款问题找@finance）感谢"
+    out = resolve_mention_targets(
+        ("customer_service", "finance", "logistics_returns_specialist"),
+        content,
+        "customer_service",
+    )
+    # Order follows roster order (members param), not text-appearance order.
+    assert out == ["finance", "logistics_returns_specialist"]

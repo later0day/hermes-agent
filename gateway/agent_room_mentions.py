@@ -30,8 +30,19 @@ import re
 
 ALL_AGENTS_MENTION = "all"
 
-# Punctuation that legitimately terminates a mention token.
-_AFTER_BOUNDARY = set(".,!?;:，。！？；：)]}>")
+# Punctuation that legitimately terminates a mention token. Includes both
+# ASCII and full-width Chinese closing punctuation — the docstring above
+# has long claimed CJK punctuation was a valid boundary, but this set used
+# to be missing several common full-width closers (）】」』〉》""''～、),
+# which made @mention detection silently depend on which punctuation
+# happened to follow the name (e.g. "@finance）" failed to match while
+# "@finance；" matched, even though both are clearly sentence-final
+# boundaries to a human reader).
+_AFTER_BOUNDARY = set(
+    ".,!?;:)]}>"          # ASCII
+    "，。！？；：）】」』〉》～、…"  # full-width / CJK punctuation
+    "“”‘’\"'"
+)
 
 _QUOTED_MESSAGE_BLOCK_RE = re.compile(
     r"<quoted_message(?:\s[^>]*)?>.*?</quoted_message>",
@@ -40,6 +51,28 @@ _QUOTED_MESSAGE_BLOCK_RE = re.compile(
 
 _IDENT_CHAR_RE = re.compile(r"[A-Za-z0-9_]")
 _WS_RE = re.compile(r"\s")
+
+# CJK Unicode ranges covering the common blocks a mention name could be
+# immediately followed by (not just CJK *punctuation* — any CJK ideograph,
+# kana, or Hangul character). A mention name is always ASCII, so any of
+# these characters directly following it is an unambiguous word boundary,
+# not part of the identifier — this is what the module docstring has
+# always claimed ("whitespace / punctuation / CJK / end-of-string") but
+# the code never actually implemented until now.
+_CJK_RANGES = (
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+    (0x3040, 0x30FF),    # Hiragana + Katakana
+    (0xAC00, 0xD7A3),    # Hangul Syllables
+    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+    (0xFF00, 0xFFEF),    # Halfwidth/Fullwidth Forms (incl. full-width punct)
+    (0x3000, 0x303F),    # CJK Symbols and Punctuation
+)
+
+
+def _is_cjk(char: str) -> bool:
+    cp = ord(char)
+    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
 
 
 def _mask_quoted_blocks(content: str) -> str:
@@ -55,7 +88,12 @@ def _is_before_boundary(char: str | None) -> bool:
 
 
 def _is_after_boundary(char: str | None) -> bool:
-    return char is None or bool(_WS_RE.match(char)) or char in _AFTER_BOUNDARY
+    return (
+        char is None
+        or bool(_WS_RE.match(char))
+        or char in _AFTER_BOUNDARY
+        or _is_cjk(char)
+    )
 
 
 def _find_mention_ranges(content: str, mention_name: str) -> list[tuple[int, int]]:

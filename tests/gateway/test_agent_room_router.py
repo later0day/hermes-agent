@@ -690,6 +690,84 @@ async def test_m3_concurrent_dispatch_fans_out(router, mocks, room):
     )
 
 
+# ---------------------------------------------------------------------------
+# 2026-08-17 fix: concurrent-dispatch scope prefix.
+#
+# Root cause found while investigating a "team members coordinating" report
+# (real dev_team room, room_197aea4f01b1): when a compound request like
+# "后端把X实现一下，前端把Y写一下" is routed concurrently to BOTH
+# backend_engineer and frontend_engineer, every member used to receive the
+# exact same unmodified member_input — the full sentence literally spelling
+# out the teammate's half of the task too. Despite the room-context system
+# prompt's broadcast-repeat guardrail, each member's own LLM routinely
+# answered BOTH halves and fabricated completion claims for a teammate's
+# task it never ran (confirmed live: seq43/44, seq60/61, seq39 — none of
+# which contained an @mention token, ruling out the handoff-chain path).
+# Fix: give each concurrently-dispatched member an explicit scope note
+# naming who else was also routed the same message.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_concurrent_scope_prefix_names_other_members(router):
+    out = AgentRoomRouter._apply_concurrent_scope_prefix(
+        "后端把X实现一下，前端把Y写一下", "backend_engineer", ["frontend_engineer"],
+    )
+    assert "frontend_engineer" in out
+    assert "只处理属于你自己职责范围的" in out
+    # 2026-08-17: the wording explicitly forbids reporting a teammate's
+    # completion status ("✅ 后端接口已实现"), which live traffic showed
+    # frontend_engineer kept doing even with the milder first wording.
+    assert "工作进度" in out or "工作状态" in out
+    assert "后端把X实现一下，前端把Y写一下" in out
+
+
+def test_apply_concurrent_scope_prefix_multiple_others_joined():
+    out = AgentRoomRouter._apply_concurrent_scope_prefix(
+        "msg", "backend_engineer", ["frontend_engineer", "qa_engineer"],
+    )
+    assert "frontend_engineer、qa_engineer" in out
+
+
+def test_apply_concurrent_scope_prefix_noop_when_no_others():
+    # Defensive: if somehow called with an empty "others" list (should not
+    # happen from the router since is_multi implies >=2 members), the
+    # original message passes through unchanged rather than growing a
+    # useless prefix.
+    assert AgentRoomRouter._apply_concurrent_scope_prefix("msg", "x", []) == "msg"
+
+
+@pytest.mark.asyncio
+async def test_m3_concurrent_dispatch_gives_each_member_a_distinct_scoped_input(
+    router, mocks, room,
+):
+    """Each concurrently-dispatched member must receive an input naming its
+    OWN teammates (not itself), not the byte-identical original message."""
+    mocks["observer_runner"].return_value = RoutingDecision(
+        target_member=["client_svc", "finance"],
+        reason="split domains",
+        is_new_topic=True,
+        reused_last_route=False,
+    )
+    seen: dict[str, str] = {}
+
+    async def _capture(member, sid, src, hist, msg):
+        seen[member] = msg
+        return f"reply from {member}"
+
+    mocks["member_dispatcher"].side_effect = _capture
+
+    await router.process_message(object(), "后端实现X，前端写Y", [], room)
+
+    assert "finance" in seen["client_svc"]
+    assert "client_svc" in seen["finance"]
+    # Neither member's own name appears in the "routed to" list of its own input.
+    assert "路由提示：这条消息已同时路由给 finance" in seen["client_svc"]
+    assert "路由提示：这条消息已同时路由给 client_svc" in seen["finance"]
+    # The original message text still reaches both members.
+    assert "后端实现X，前端写Y" in seen["client_svc"]
+    assert "后端实现X，前端写Y" in seen["finance"]
+
+
 @pytest.mark.asyncio
 async def test_m3_concurrent_dedupes_and_filters_invalid_members(
     router, mocks, room,

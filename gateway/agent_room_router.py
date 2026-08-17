@@ -391,6 +391,47 @@ class AgentRoomRouter:
         )
 
     @staticmethod
+    def _apply_concurrent_scope_prefix(
+        message: str, member: str, other_members: list[str]
+    ) -> str:
+        """2026-08-17 fix: concurrent multi-member dispatch ("前后端联调"
+        broadcast, e.g. member=[backend_engineer, frontend_engineer])
+        used to hand EVERY dispatched member the exact same unmodified
+        ``member_input`` — the full compound request addressed to
+        multiple roles in one sentence (e.g. "后端把X实现一下，前端把Y写一下").
+        Each member's own turn would then see its teammate's half of the
+        request spelled out right there in its own inbound message and,
+        despite the room-context system prompt's "你只代表你自己一个人
+        回答" guardrail (which only targets the *broadcast-repeat* case,
+        not this *compound-request* case), routinely answered BOTH
+        halves — fabricating completion claims ("✅ 后端接口已实现并验证
+        通过") for a teammate's task it never actually ran.
+
+        Confirmed via real dev_team room traffic (room_197aea4f01b1,
+        seq43/44, seq60/61, seq39): none of the offending replies
+        contained an @mention token, ruling out the handoff-chain
+        mechanism — this is the member's own LLM over-answering the
+        full original text. Fix: give each concurrently-dispatched
+        member an explicit scope note naming who ELSE was also routed
+        this same message, telling it to only handle its own slice."""
+        if not other_members:
+            return message
+        others = "、".join(other_members)
+        return (
+            f"> 路由提示：这条消息已同时路由给 {others} 处理，"
+            "他们会各自在自己的气泡里单独回复。请只处理属于你自己职责范围的"
+            "部分。\n"
+            "> 特别注意：不要替对方总结、汇报或声称他们的工作进度——"
+            "**不要**写\"✅ 后端接口已实现\"\"前端代码已完成\"这类描述别人"
+            "工作状态的话（你无法知道对方是否真的做完了，写这种话会误导用户）。"
+            "直接从你自己负责的那部分开始写，也不要把对方那部分的代码/方案"
+            "再实现一遍。如果这条消息里完全没有你职责范围内的内容，简单说明"
+            "即可。\n"
+            f"> ---\n"
+            f"> 用户消息：{message}"
+        )
+
+    @staticmethod
     def _apply_no_match_prefix(message: str, decision: "RoutingDecision") -> str:
         """2026-08-14 no-match escalation: when ``decision.is_no_match`` is
         True, the first-hop classifier judged this message out-of-scope
@@ -1072,9 +1113,19 @@ class AgentRoomRouter:
 
             async def _run_one(m: str) -> tuple[str, str]:
                 sid = member_sids[m]
+                # 2026-08-17 fix: each concurrently-dispatched member gets
+                # its own scope note naming the OTHER members also routed
+                # this same message, instead of every member silently
+                # receiving byte-identical input — see
+                # _apply_concurrent_scope_prefix's docstring for the real
+                # traffic evidence this fixes.
+                others = [x for x in member_ids if x != m]
+                scoped_input = self._apply_concurrent_scope_prefix(
+                    member_input, m, others,
+                )
                 try:
                     r = await self._member_dispatcher(
-                        m, sid, source, history, member_input,
+                        m, sid, source, history, scoped_input,
                     )
                     return (m, r or "")
                 except Exception as exc:  # noqa: BLE001 — per-member isolation
