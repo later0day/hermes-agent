@@ -12,6 +12,7 @@ import os
 import re
 import time
 
+
 from agent.redact import redact_sensitive_text
 from agent.secret_scope import get_secret
 
@@ -33,7 +34,6 @@ _SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
-_DINGTALK_CONVERSATION_RE = re.compile(r"^\s*(cid[-A-Za-z0-9+/=]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -85,6 +85,12 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
 # more generous, so a conservative shared ceiling keeps behavior predictable.
 _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
+
+def prepare_send_message_platforms() -> None:
+    """Load enabled standalone plugins before tool schemas/cache keys are built."""
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins()
 
 
 def _media_caption_split(text, media_files, *, max_caption_len):
@@ -203,10 +209,6 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "IMPORTANT: In a live gateway/IM conversation, use target='origin' "
-        "or target='current' to send back to the current chat. Do NOT use a "
-        "bare platform name like 'dingtalk' for the current chat; bare platform "
-        "targets use the configured home channel only.\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
@@ -223,7 +225,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Use 'origin' or 'current' for the current gateway/IM chat. Format: 'platform' (uses home channel only), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'origin', 'telegram', 'telegram:-1001234567890:17585', 'dingtalk:cidUKHyy+TSBvzQY6P34TpjPA==', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -292,18 +294,16 @@ def _handle_react(args, remove=False):
     platform_name = parts[0].strip().lower()
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
+    prepare_send_message_platforms()
     if target_ref:
-        chat_id, _thread_id, _ = _parse_target_ref(platform_name, target_ref)
-        if not chat_id:
-            try:
-                from gateway.channel_directory import resolve_channel_name
-                resolved = resolve_channel_name(platform_name, target_ref)
-            except Exception:
-                resolved = None
-            # Opaque platform-native ids (e.g. photon space GUIDs like
-            # 'any;-;+1555...') match no parser pattern and no directory
-            # entry — pass them through verbatim; the adapter validates.
-            chat_id = resolved or target_ref
+        # Platform-native ids (e.g. photon space GUIDs like 'any;-;+1555...')
+        # match no parser pattern and no directory entry, so hand them to
+        # the adapter unchanged; it validates them.
+        chat_id, _thread_id, resolution_error = resolve_send_target(
+            platform_name, target_ref, pass_unresolved_references=True
+        )
+        if resolution_error:
+            return tool_error(resolution_error)
 
     try:
         from gateway.config import Platform, load_gateway_config
@@ -360,29 +360,6 @@ def _handle_react(args, remove=False):
     return json.dumps({"success": bool(result)})
 
 
-def _resolve_origin_target():
-    """Resolve target='origin'/'current' from the active gateway session."""
-    try:
-        from gateway.session_context import get_session_env
-    except Exception as exc:
-        return None, None, None, None, _error(
-            f"Could not read current gateway session context: {exc}"
-        )
-
-    platform_name = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
-    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
-    chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "").strip().lower()
-    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
-
-    if not platform_name or platform_name in {"cli", "local"} or not chat_id:
-        return None, None, None, None, _error(
-            "target='origin' is only available inside a live gateway/IM conversation. "
-            "Use send_message(action='list') and send to an explicit platform target instead."
-        )
-
-    return platform_name, chat_id, thread_id, chat_type, None
-
-
 def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
@@ -390,50 +367,19 @@ def _handle_send(args):
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
-    target_text = str(target).strip()
-    used_origin_target = target_text.lower() in {"origin", "current"}
-    send_metadata = None
-    if used_origin_target:
-        platform_name, chat_id, thread_id, origin_chat_type, origin_error = _resolve_origin_target()
-        if origin_error:
-            return json.dumps(origin_error)
-        target_ref = chat_id
-        is_explicit = True
-        if platform_name == "dingtalk" and origin_chat_type:
-            send_metadata = {
-                "conversation_type": "2"
-                if origin_chat_type in {"group", "channel", "thread", "forum"}
-                else "1"
-            }
-    else:
-        parts = target_text.split(":", 1)
-        platform_name = parts[0].strip().lower()
-        target_ref = parts[1].strip() if len(parts) > 1 else None
-        chat_id = None
-        thread_id = None
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    thread_id = None
 
-        if target_ref:
-            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-        else:
-            is_explicit = False
-
-    # Resolve human-friendly channel names to numeric IDs
-    if target_ref and not is_explicit:
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
-            else:
-                return tool_error(
-                    f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
-                )
-        except Exception:
-            return tool_error(
-                f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            )
+    prepare_send_message_platforms()
+    if target_ref:
+        chat_id, thread_id, resolution_error = resolve_send_target(
+            platform_name, target_ref
+        )
+        if resolution_error:
+            return tool_error(resolution_error)
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -445,8 +391,14 @@ def _handle_send(args):
     except Exception as e:
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
 
-    # Accept any platform name — built-in names resolve to their enum
-    # member, plugin platform names create dynamic members via _missing_().
+    from gateway.platform_registry import platform_registry
+
+    entry = platform_registry.get(platform_name)
+    is_builtin = platform_name in {member.value for member in Platform}
+    if not is_builtin and entry is None:
+        return tool_error(
+            f"Unknown or unregistered plugin platform: {platform_name}"
+        )
     try:
         platform = Platform(platform_name)
     except (ValueError, KeyError):
@@ -499,14 +451,6 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
-            if platform_name == "dingtalk":
-                return json.dumps({
-                    "error": (
-                        "No home channel set for dingtalk to determine where to send the message. "
-                        "Specify a DingTalk target directly, e.g. 'dingtalk:赣神魔', "
-                        "or set a valid DingTalk openConversationId via /sethome or dingtalk.home_channel."
-                    )
-                })
             home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
                 platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
             )
@@ -544,8 +488,10 @@ def _handle_send(args):
             "media_files": media_files,
             "force_document": force_document_attachments,
         }
-        if send_metadata:
-            send_kwargs["metadata"] = send_metadata
+        # Preserve the exact built-in call contract; only custom handlers need
+        # the complete typed request.
+        if entry is not None and entry.send_message_handler is not None:
+            send_kwargs["args"] = args
         result = _run_async(
             _send_to_platform(
                 platform,
@@ -557,8 +503,6 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
-        if used_origin_target and isinstance(result, dict) and result.get("success"):
-            result["resolved_target"] = f"{platform_name}:{chat_id}"
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -644,10 +588,6 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
-    if platform_name == "dingtalk":
-        match = _DINGTALK_CONVERSATION_RE.fullmatch(target_ref)
-        if match:
-            return match.group(1), None, True
     if platform_name == "whatsapp":
         # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
         # are explicit targets — pass through verbatim. E.164 '+' numbers fall
@@ -680,7 +620,146 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # XMPP JIDs (user@server or room@conference.server) are explicit
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
+
     return None, None, False
+
+
+def resolve_send_target(
+    platform_name: str, target_ref: str, *, pass_unresolved_references: bool = False
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve one send target the same way for every caller (model tool, CLI, cron).
+
+    Channel-directory IDs are trusted. Plugin platforms must explicitly parse
+    native target syntax; for the model-facing send tool (the default), a
+    target that can't be resolved is an error — the model can read the error
+    and pick a listed target instead.
+
+    ``pass_unresolved_references=True`` restores the old pass-through behavior for
+    callers that have no model in the loop (cron delivering a stored job's
+    output, react/unreact on platform-native message ids): if the target
+    can't be resolved and the platform is built in, or is a plugin platform
+    that declares no parser, the string is handed to the adapter exactly as
+    written and the adapter decides whether it's valid. A plugin platform
+    that DOES declare a parser stays strict for every caller — its parser is
+    the authority on native syntax.
+
+    The optional validator has the final say over parser-normalized,
+    directory-resolved, and passed-through IDs alike.
+    """
+    from gateway.config import Platform
+    from gateway.platform_registry import platform_registry
+
+    entry = platform_registry.get(platform_name)
+
+    def _validate(candidate: str) -> str | None:
+        if entry is None or entry.validate_target_ref_fn is None:
+            return None
+        try:
+            verdict = entry.validate_target_ref_fn(candidate)
+        except Exception:
+            logger.debug(
+                "Plugin target validator failed for %s", platform_name, exc_info=True
+            )
+            return f"Target validator failed for platform '{platform_name}'"
+        if verdict is True:
+            return None
+        if isinstance(verdict, str) and verdict:
+            return f"Invalid target '{target_ref}' on {platform_name}: {verdict}"
+        return f"Invalid target '{target_ref}' on {platform_name}"
+
+    if entry is not None and entry.parse_target_ref_fn is not None:
+        try:
+            parsed = entry.parse_target_ref_fn(target_ref)
+        except Exception:
+            logger.debug(
+                "Plugin target parser failed for %s", platform_name, exc_info=True
+            )
+            return None, None, f"Target parser failed for platform '{platform_name}'"
+        if parsed is not None:
+            if (
+                not isinstance(parsed, tuple)
+                or len(parsed) != 2
+                or not isinstance(parsed[0], str)
+                or not parsed[0]
+                or (parsed[1] is not None and not isinstance(parsed[1], str))
+            ):
+                return (
+                    None,
+                    None,
+                    f"Target parser for platform '{platform_name}' returned an invalid result",
+                )
+            parsed_chat_id, parsed_thread_id = parsed
+            error = _validate(parsed_chat_id)
+            return (None, None, error) if error else (
+                parsed_chat_id,
+                parsed_thread_id,
+                None,
+            )
+
+    parsed_chat_id, parsed_thread_id, explicit = _parse_target_ref(
+        platform_name, target_ref
+    )
+    if explicit and parsed_chat_id is not None:
+        error = _validate(parsed_chat_id)
+        return (None, None, error) if error else (
+            parsed_chat_id,
+            parsed_thread_id,
+            None,
+        )
+
+    resolution_failed = False
+    try:
+        from gateway.channel_directory import resolve_channel_name
+
+        resolved = resolve_channel_name(platform_name, target_ref)
+    except Exception:
+        resolved = None
+        resolution_failed = True
+    if resolved:
+        parsed_chat_id, parsed_thread_id, _ = _parse_target_ref(
+            platform_name, resolved
+        )
+        chat_id = parsed_chat_id or resolved
+        error = _validate(chat_id)
+        return (None, None, error) if error else (
+            chat_id,
+            parsed_thread_id,
+            None,
+        )
+
+    is_builtin = platform_name in {member.value for member in Platform}
+    if entry is None and not is_builtin:
+        return None, None, f"Unknown or unregistered plugin platform: {platform_name}"
+
+    def _pass_through_unresolved():
+        """Hand the raw target to the adapter unchanged (it validates)."""
+        error = _validate(target_ref)
+        if error:
+            return None, None, error
+        logger.debug(
+            "Handing unresolved target '%s' to the %s adapter unchanged "
+            "(the adapter validates it)",
+            target_ref, platform_name,
+        )
+        return target_ref, None, None
+
+    if entry is not None and entry.source == "plugin" and not is_builtin:
+        if pass_unresolved_references and entry.parse_target_ref_fn is None:
+            return _pass_through_unresolved()
+        return (
+            None,
+            None,
+            f"Could not resolve '{target_ref}' on {platform_name}. "
+            "The plugin parser did not recognize it and no channel-directory entry matched.",
+        )
+    if pass_unresolved_references:
+        return _pass_through_unresolved()
+    hint = (
+        "Try using a numeric channel ID instead."
+        if resolution_failed
+        else "Use send_message(action='list') to see available targets."
+    )
+    return None, None, f"Could not resolve '{target_ref}' on {platform_name}. {hint}"
 
 
 def _describe_media_for_mirror(media_files):
@@ -843,110 +922,7 @@ async def _send_via_adapter(
     }
 
 
-async def _await_on_gateway_loop(coro, loop):
-    """Await a coroutine on the gateway loop when we are in a tool worker loop."""
-    if loop is not None and getattr(loop, "is_running", lambda: False)():
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
-        if running_loop is not loop:
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
-            return await asyncio.wrap_future(future)
-    return await coro
-
-
-async def _send_dingtalk_with_live_adapter(chat_id, message, media_files=None, metadata=None):
-    """Send DingTalk media through the active gateway adapter when available.
-
-    The live adapter keeps per-chat DingTalk message context, including the
-    incoming robot_code and conversation_type. Standalone sends only have
-    config defaults, which can upload media successfully and then fail native
-    sends with resource.not.found when the configured robot_code is not the
-    robot that received the current message.
-    """
-    media_files = media_files or []
-    try:
-        from gateway.config import Platform
-        from gateway.run import _gateway_runner_ref
-    except Exception:
-        return None
-
-    runner = None
-    try:
-        runner = _gateway_runner_ref()
-    except Exception:
-        runner = None
-    if runner is None:
-        return None
-
-    try:
-        adapter = runner.adapters.get(Platform.DINGTALK)
-    except Exception:
-        adapter = None
-    if adapter is None:
-        return None
-
-    gateway_loop = getattr(runner, "_gateway_loop", None)
-    metadata = metadata or None
-
-    async def _send():
-        last_result = None
-        if message.strip():
-            last_result = await adapter.send(chat_id=chat_id, content=message, metadata=metadata)
-            if last_result and not getattr(last_result, "success", True):
-                return _error(f"DingTalk live adapter text send failed: {getattr(last_result, 'error', 'unknown')}")
-
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return _error(f"Media file not found: {media_path}")
-
-            ext = os.path.splitext(media_path)[1].lower()
-            if ext in _IMAGE_EXTS:
-                send_result = await adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
-            elif ext in _VIDEO_EXTS:
-                send_result = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
-            elif ext in _VOICE_EXTS and is_voice:
-                send_result = await adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
-            elif ext in _AUDIO_EXTS:
-                send_result = await adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
-            else:
-                send_result = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
-
-            if send_result and not getattr(send_result, "success", True):
-                return _error(f"DingTalk live adapter media send failed: {getattr(send_result, 'error', 'unknown')}")
-            last_result = send_result
-
-        if last_result is None:
-            return None
-
-        return {
-            "success": True,
-            "platform": "dingtalk",
-            "chat_id": chat_id,
-            "message_id": getattr(last_result, "message_id", None),
-            "via": "live_adapter",
-        }
-
-    try:
-        return await _await_on_gateway_loop(_send(), gateway_loop)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.debug("DingTalk live adapter media send raised", exc_info=True)
-        return _error(f"DingTalk live adapter media send failed: {exc}")
-
-
-async def _send_to_platform(
-    platform,
-    pconfig,
-    chat_id,
-    message,
-    thread_id=None,
-    media_files=None,
-    force_document=False,
-    metadata=None,
-):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -954,6 +930,8 @@ async def _send_to_platform(
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
 
     media_files = media_files or []
 
@@ -1307,6 +1285,20 @@ async def _send_to_platform(
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
+            from gateway.platform_registry import platform_registry
+
+            entry = platform_registry.get(platform_name)
+            handler = entry.send_message_handler if entry is not None else None
+            if handler is not None:
+                try:
+                    import inspect
+
+                    result = handler(args or {}, chat_id, platform_name, pconfig)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result
+                except Exception as e:
+                    return {"error": f"Plugin send_message handler failed: {e}"}
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
             result = await _send_via_adapter(

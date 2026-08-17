@@ -33,6 +33,7 @@ import {
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import {
   importSummary,
@@ -166,7 +167,7 @@ function sourceLabel(source: string): string {
 }
 
 /** Render an FTS5 snippet with highlighted matches.
- *  The backend wraps matches in >>> {t.dashboard?.uiand || "and"} <<< delimiters. */
+ *  The backend wraps matches in >>> and <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
   const parts: React.ReactNode[] = [];
   const regex = />>>(.*?)<<</g;
@@ -297,7 +298,7 @@ function MessageBubble({
   msg: SessionMessage;
   highlight?: string;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
 
   const ROLE_STYLES: Record<
     string,
@@ -329,7 +330,7 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: t.dashboard?.sessionsContextHandoff || "Context handoff",
+      label: "Context handoff",
     },
   };
 
@@ -404,7 +405,7 @@ function MessageBubble({
         )}
         {msg.timestamp && (
           <span className="text-xs text-text-tertiary">
-            {timeAgo(msg.timestamp, locale)}
+            {timeAgo(msg.timestamp)}
           </span>
         )}
       </div>
@@ -479,7 +480,7 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -547,8 +548,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label={t.dashboard?.sessionsRenameAria || "Rename session"}
-        title={t.dashboard?.sessionsRenameTitle || "Rename session"}
+        aria-label="Rename session"
+        title="Rename session"
         onClick={(e) => {
           e.stopPropagation();
           setRenameValue(
@@ -566,8 +567,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label={t.dashboard?.sessionsExportAria || "Export session"}
-        title={t.dashboard?.sessionsExportTitle || "Export session JSON"}
+        aria-label="Export session"
+        title="Export session JSON"
         onClick={(e) => {
           e.stopPropagation();
           onExport(session.id);
@@ -649,7 +650,7 @@ function SessionRow({
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}
-                      placeholder={t.dashboard?.sessionsTitlePlaceholder || "Session title"}
+                      placeholder="Session title"
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
@@ -657,8 +658,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-success"
-                      aria-label={t.dashboard?.sessionsSaveTitleAria || "Save title"}
-                      title={t.dashboard?.sessionsSaveTitleTitle || "Save title"}
+                      aria-label="Save title"
+                      title="Save title"
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
@@ -672,8 +673,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label={t.dashboard?.sessionsCancelRenameAria || "Cancel rename"}
-                      title={t.dashboard?.sessionsCancelRenameTitle || "Cancel rename"}
+                      aria-label="Cancel rename"
+                      title="Cancel rename"
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >
@@ -719,7 +720,7 @@ function SessionRow({
                   </>
                 )}
                 <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active, locale)}</span>
+                <span className="shrink-0">{timeAgo(session.last_active)}</span>
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
@@ -869,7 +870,7 @@ export default function SessionsPage() {
   const [pruning, setPruning] = useState(false);
   const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
@@ -1014,8 +1015,8 @@ export default function SessionsPage() {
         onClick={() => setPruneOpen(true)}
         prefix={<Archive />}
       >
-        <Archive className="h-3.5 w-3.5" />{t.dashboard?.miscPruneSessions || "Prune old sessions"}</Button>,
-
+        Prune old sessions
+      </Button>,
     );
     return () => {
       setEnd(null);
@@ -1455,13 +1456,13 @@ export default function SessionsPage() {
         setOverviewSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
-        showToast(t.dashboard?.sessionsToastRenamed || "Session renamed", "success");
+        showToast("Session renamed", "success");
         loadStats();
       } catch {
-        showToast(t.dashboard?.sessionsToastRenameFailed || "Failed to rename session", "error");
+        showToast("Failed to rename session", "error");
       }
     },
-    [showToast, loadStats, t.dashboard?.sessionsToastRenamed, t.dashboard?.sessionsToastRenameFailed],
+    [showToast, loadStats],
   );
 
   const handleExport = useCallback(
@@ -1484,35 +1485,32 @@ export default function SessionsPage() {
         a.click();
         URL.revokeObjectURL(url);
       } catch {
-        showToast(t.dashboard?.sessionsToastExportFailed || "Failed to export session", "error");
+        showToast("Failed to export session", "error");
       }
     },
-    [showToast, t.dashboard?.sessionsToastExportFailed],
+    [showToast],
   );
 
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
-      showToast(t.dashboard?.sessionsToastInvalidDays || "Enter a valid number of days", "error");
+      showToast("Enter a valid number of days", "error");
       return;
     }
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
-      showToast(
-        `${t.dashboard?.sessionsToastPruned || "Pruned"} ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
-        "success",
-      );
+      showToast(formatSessionPruneResult(resp), "success");
       setPruneOpen(false);
       loadSessions(0);
       setPage(0);
       loadStats();
     } catch {
-      showToast(t.dashboard?.sessionsToastPruneFailed || "Failed to prune sessions", "error");
+      showToast("Failed to prune sessions", "error");
     } finally {
       setPruning(false);
     }
-  }, [pruneDays, showToast, loadSessions, loadStats, t.dashboard?.sessionsToastInvalidDays, t.dashboard?.sessionsToastPruned, t.dashboard?.sessionsToastPruneFailed]);
+  }, [pruneDays, showToast, loadSessions, loadStats]);
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -1633,9 +1631,10 @@ export default function SessionsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>{t.dashboard?.uipruneOldSessions || "Prune old sessions"}</DialogTitle>
+            <DialogTitle>Prune old sessions</DialogTitle>
             <DialogDescription>
-              {t.dashboard?.uipermanentlyRemoveArchivedSes || "Permanently remove archived sessions whose last activity is older than the given number of days. Active sessions are never pruned."}
+              Permanently remove archived sessions whose last activity is older
+              than the given number of days. Active sessions are never pruned.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
@@ -1643,7 +1642,7 @@ export default function SessionsPage() {
               htmlFor="prune-days"
               className="text-xs font-medium text-muted-foreground"
             >
-              {t.dashboard?.uiolderThanDays || "Older than (days)"}
+              Older than (days)
             </label>
             <Input
               id="prune-days"
@@ -1672,7 +1671,7 @@ export default function SessionsPage() {
               className="gap-1.5"
             >
               {pruning && <Spinner className="text-sm" />}
-              {t.dashboard?.sessionsPruneBtn || "Prune"}
+              Prune
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1684,25 +1683,25 @@ export default function SessionsPage() {
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
-            <span className="text-xs text-muted-foreground">{t.dashboard?.uitotal || "Total"}</span>
+            <span className="text-xs text-muted-foreground">Total</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">{t.dashboard?.uiactiveInStore || "Active in store"}</span>
+            <span className="text-xs text-muted-foreground">Active in store</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
-            <span className="text-xs text-muted-foreground">{t.dashboard?.uiarchived || "Archived"}</span>
+            <span className="text-xs text-muted-foreground">Archived</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
-            <span className="text-xs text-muted-foreground">{t.dashboard?.uimessages || "Messages"}</span>
+            <span className="text-xs text-muted-foreground">Messages</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex flex-col">
@@ -2146,7 +2145,7 @@ export default function SessionsPage() {
                           </>
                         )}
                         {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active, locale)}
+                        {timeAgo(s.last_active)}
                       </span>
 
                       {s.preview && s.title && (

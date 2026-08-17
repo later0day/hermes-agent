@@ -276,9 +276,20 @@ class TestVisionConfig:
         )
         assert kwargs["temperature"] == 1.0
         assert kwargs["timeout"] == 77.0
+        # No hardcoded output cap — the aux client omits max_tokens so the
+        # provider uses its full output budget (max-tokens-knob policy).
+        assert "max_tokens" not in kwargs
 
         # Omitted values fall back to the built-in defaults.
         kwargs = await call_with({"auxiliary": {"vision": {}}})
+        assert kwargs["temperature"] == 0.1
+        assert kwargs["timeout"] == 120.0
+        assert "max_tokens" not in kwargs
+
+        # Even an explicit auxiliary.vision.max_tokens config entry must NOT
+        # be forwarded: user-facing max_tokens knobs are policy-prohibited.
+        kwargs = await call_with({"auxiliary": {"vision": {"max_tokens": 8000}}})
+        assert "max_tokens" not in kwargs
         assert kwargs["temperature"] == 0.1
         assert kwargs["timeout"] == 120.0
 
@@ -957,7 +968,7 @@ class TestVisionCpuBurstCap:
                     enc_inflight -= 1
             return "data:image/jpeg;base64,AAAA"
 
-        async def fake_native(image_url, question, task_id=None):
+        async def fake_native(image_url, question, task_id=None, **_kw):
             nonlocal calls_inflight, calls_peak
             calls_inflight += 1
             calls_peak = max(calls_peak, calls_inflight)
