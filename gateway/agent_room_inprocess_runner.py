@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -67,6 +68,37 @@ def _default_home_model() -> str:
         return str(model_cfg.get("default") or model_cfg.get("model") or "")
     except Exception:
         return ""
+
+
+# Text-form tool-call markup that some models (Gemini/qwen family) emit as
+# PROSE instead of a structured function_call. Even with every tool stripped
+# from the member turn (_lock_agent_tools_to_none), the model can still *type*
+# these blocks into its reply — they carry no execution (the tools are gone)
+# but they leak raw ``<tool_code>{"name":"write_file",...}`` into the room and
+# make the member look like it "did work". We defensively strip them from a
+# member's reply before it is persisted/returned. This is belt-and-suspenders
+# alongside the system-prompt rule that forbids them.
+_TOOLCODE_BLOCK_RE = re.compile(
+    r"<tool_code>.*?(?:</tool_code>|\Z)", re.DOTALL | re.IGNORECASE
+)
+# Some models use ```tool_code fenced blocks instead of <tool_code> tags.
+_TOOLCODE_FENCE_RE = re.compile(
+    r"```(?:tool_code|tool_call|json_tool)\b.*?(?:```|\Z)", re.DOTALL | re.IGNORECASE
+)
+
+
+def _strip_toolcode_text(reply: str) -> str:
+    """Remove text-form tool-call markup a conversation-only member should
+    never have emitted. Returns the cleaned prose (may be empty if the whole
+    reply was a tool-call block, which is itself a signal the turn produced
+    no real conversational content)."""
+    if not reply or "tool_code" not in reply.lower():
+        return reply
+    cleaned = _TOOLCODE_BLOCK_RE.sub("", reply)
+    cleaned = _TOOLCODE_FENCE_RE.sub("", cleaned)
+    # collapse the blank runs the removal leaves behind
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 def _read_member_desc(name: str) -> str:
@@ -168,6 +200,50 @@ def _lock_agent_tools(agent: Any, toolsets: list[str]) -> None:
     )
 
 
+def _lock_agent_tools_to_none(agent: Any) -> None:
+    """Strip EVERY tool from a member agent — a pure-conversation turn.
+
+    Group-chat members are chat roles: they discuss, they don't execute. A
+    member that keeps its profile's default file/terminal/execute_code tools
+    will actually run commands against the host and leak raw ``<tool_code>``
+    blocks into the shared room history (observed in live testing:
+    ``uv pip install``, repo reads/writes, WeasyPrint runs). We install the
+    same re-add-rejecting list subclass used by ``_lock_agent_tools`` but with
+    an EMPTY allow-list, so run_conversation's mid-run tool_search rebuild
+    can't repopulate it. tool_choice stays ``auto`` and, with zero tools on
+    the wire, the model can only answer in prose."""
+
+    class _NoTools(list):
+        def append(self, item):  # noqa: D401 — silently reject re-adds
+            pass
+
+        def extend(self, items):
+            pass
+
+        def __setitem__(self, key, value):
+            pass
+
+        def __deepcopy__(self, memo):
+            return []
+
+        def __copy__(self):
+            return []
+
+    agent.tools = _NoTools()
+    try:
+        agent.valid_tool_names = set()
+    except Exception:
+        pass
+    # Belt-and-suspenders: some run loops consult these flags to decide
+    # whether to send a tools array / tool_choice at all.
+    for attr in ("enabled_toolsets", "toolsets"):
+        try:
+            setattr(agent, attr, [])
+        except Exception:
+            pass
+    logger.info("inproc: member tools locked to NONE (conversation-only turn)")
+
+
 def _run_agent_blocking(
     *,
     profile: str,
@@ -259,11 +335,25 @@ def _run_agent_blocking(
             "credential_pool": runtime.get("credential_pool"),
             "fallback_model": fb or None,
         }
+        # ``toolsets`` semantics:
+        #   * None            → inherit the profile's default toolset (legacy).
+        #   * ["a","b",...]   → lock to exactly those toolsets' raw tools.
+        #   * []  (empty list)→ a PURE-CONVERSATION turn: no tools at all.
+        #     Group-chat members are chat roles, not workers — without this
+        #     they inherit file/terminal/execute_code from the default home
+        #     and "really do the work" (run `uv pip install`, read/write the
+        #     repo, and leak raw <tool_code> text into the room). An empty
+        #     enabled_toolsets + a hard tool lockdown makes the member reply
+        #     with prose only.
         if toolsets:
             kwargs["enabled_toolsets"] = list(toolsets)
+        elif toolsets is not None:  # explicit [] → conversation-only
+            kwargs["enabled_toolsets"] = []
         agent = AIAgent(**kwargs)
         if toolsets:
             _lock_agent_tools(agent, list(toolsets))
+        elif toolsets is not None:  # [] → strip every tool
+            _lock_agent_tools_to_none(agent)
 
         combined_system = system_message or ""
         if context_prompt:
@@ -378,10 +468,23 @@ class InProcessRoomRunner:
                     context_prompt=context_prompt,
                     history=projected_hist,
                     session_id=session_id,
-                    toolsets=None,
+                    # [] → pure-conversation: a group-chat member discusses,
+                    # it does not run terminal/file/execute_code tools (which
+                    # would leak <tool_code> and mutate the host). See
+                    # _lock_agent_tools_to_none.
+                    toolsets=[],
                 ),
             )
             reply = run_result.get("final_response", "") if run_result else ""
+            # Strip any text-form <tool_code> markup the model typed as prose
+            # (belt-and-suspenders with the tool lockdown + prompt rule).
+            _raw_len = len(reply or "")
+            reply = _strip_toolcode_text(reply or "")
+            if _raw_len and len(reply) != _raw_len:
+                logger.info(
+                    "inproc: stripped tool_code markup from %s reply (%d→%d chars)",
+                    member_profile, _raw_len, len(reply),
+                )
             if reply:
                 try:
                     msgs.append(
@@ -463,12 +566,28 @@ class InProcessRoomRunner:
                 except Exception:
                     return ""
 
-            return await classify_first_hop(
+            hop_result = await classify_first_hop(
                 message=msg,
                 members=members_desc,
                 default_member=default_member,
                 call_raw=_call_raw,
             )
+            # Persist the routing decision so the room history records WHY
+            # this turn was routed the way it was — parity with the observer
+            # path's _persist_observer_route. Without this, first-hop-routed
+            # turns leave ZERO observer/routing rows in the store, so there's
+            # no audit trail of the routing reasoning (observed in live
+            # testing: 0 observer rows across a whole conversation). Happens
+            # BEFORE member dispatch, so it lands chronologically ahead of the
+            # member replies. Defensive: a persistence failure must not break
+            # routing.
+            try:
+                self._persist_firsthop_route(
+                    room_arg.room_id, observer_profile, hop_result, default_member,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("inproc: first-hop route persist failed: %s", exc)
+            return hop_result
 
         return AgentRoomRouter(
             store=store,
@@ -502,6 +621,42 @@ class InProcessRoomRunner:
                         "member": member,
                         "reason": decision.reason,
                         "is_new_topic": decision.is_new_topic,
+                    }, ensure_ascii=False),
+                },
+            }],
+        )
+
+    def _persist_firsthop_route(
+        self, room_id, observer_profile, hop_result, default_member,
+    ):
+        """Record a first-hop routing decision as an observer row (parity
+        with _persist_observer_route). ``hop_result`` is a FirstHopResult:
+        a roster-validated member list + a ``matched`` flag (real domain
+        match vs. forced no-match fallback)."""
+        import json
+        members = [m for m in (getattr(hop_result, "members", None) or [])]
+        matched = bool(getattr(hop_result, "matched", True))
+        reason = str(getattr(hop_result, "reason", "") or "")
+        if not members:
+            members = [default_member]
+        routed = members if len(members) > 1 else members[0]
+        self._msgs.append(
+            room_id,
+            sender_kind="observer",
+            sender_name=observer_profile,
+            content="",
+            tool_calls=[{
+                "id": "call_obs_firsthop_inproc",
+                "function": {
+                    "name": "route_to_member",
+                    "arguments": json.dumps({
+                        "member": routed,
+                        "reason": (
+                            f"first-hop classifier ({'match' if matched else 'no match'})"
+                            + (f": {reason}" if reason else "")
+                        ),
+                        "is_new_topic": True,
+                        "matched": matched,
                     }, ensure_ascii=False),
                 },
             }],
@@ -550,6 +705,9 @@ class InProcessRoomRunner:
             f"- 历史里的\"[发送者]: ...\"是系统归属标记，不要复述或模仿；也不要输出\"[{member_profile}]:\"前缀。\n"
             "- 如果需要另一位成员接手或补充，在回复中 @ 对方名字（如 @finance），系统会自动转交；@ 时说清楚请对方做什么。\n"
             "- 如果你已能完整回答，直接回答，不要在结尾无意义地 @ 其他成员接力。\n"
+            "- 你是在群里【讨论】，不是在【执行】：不要调用任何工具，不要读写文件、"
+            "不要运行终端/代码，也不要输出 <tool_code>、```tool_code 之类的工具调用文本。"
+            "需要写代码或方案时，直接把代码/方案作为普通聊天内容贴出来即可。\n"
         )
 
     # ── public entry ────────────────────────────────────────────────
