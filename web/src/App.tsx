@@ -94,6 +94,7 @@ const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
 const McpPage = lazy(() => import("@/pages/McpPage"));
 const PairingPage = lazy(() => import("@/pages/PairingPage"));
 const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
+const RoomsPage = lazy(() => import("@/pages/RoomsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
@@ -172,6 +173,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/mcp": McpPage,
   "/pairing": PairingPage,
   "/channels": ChannelsPage,
+  "/rooms": RoomsPage,
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
   "/profiles": ProfilesPage,
@@ -216,6 +218,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
   { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
+  { path: "/rooms", labelKey: "rooms", label: "Rooms", icon: MessageSquare },
   { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
   { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },

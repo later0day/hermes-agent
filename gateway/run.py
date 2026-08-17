@@ -5726,6 +5726,51 @@ class TurnRunner:
                     self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
 
+        # M1.7 Agent Room: if _toolsets_override is set on this TurnRunner,
+        # replace agent.tools with ONLY the schemas from the specified
+        # toolsets — not a filter on the existing list (route_to_member
+        # might not be in agent.tools yet because tool_search defers it),
+        # but a fresh list built from the TOOLSETS registry's schemas.
+        _ts_override = getattr(self, "_toolsets_override", None)
+        if _ts_override:
+            from tools.room_router_tool import ROUTE_TO_MEMBER_SCHEMA
+            # Wrap in the OpenAI function-calling envelope that
+            # agent.tools expects: {"type": "function", "function": {schema}}.
+            # route_to_member is built fresh here (not filtered from
+            # agent.tools) because tool_search defers it, so it may not be
+            # present yet. It handles single/multi-member first-hop dispatch;
+            # member-to-member coordination is handled downstream by the
+            # deterministic @mention handoff chain (agent_room_mentions +
+            # agent_room_handoff), not by a central decompose DAG (M4
+            # disabled — see agent_room_router hybrid handoff).
+            _locked = [
+                {"type": "function", "function": ROUTE_TO_MEMBER_SCHEMA},
+            ]
+            # _LockedTools rejects append/extend so tool_search inside
+            # run_conversation cannot re-add _HERMES_CORE_TOOLS.
+            class _LockedTools(list):
+                def append(self, item): pass
+                def extend(self, items): pass
+                def __iadd__(self, other): return self
+                def __setitem__(self, key, value): pass
+            agent.tools = _LockedTools(_locked)
+            # CRITICAL: update valid_tool_names too — conversation_loop
+            # checks tool calls against this set before dispatch, and it was
+            # set at agent init time (line 1441) from the FULL 30-tool list
+            # which didn't include route_to_member (it was deferred by
+            # tool_search). Without this update, conversation_loop returns
+            # "Tool 'route_to_member' does not exist" and the tool_call is
+            # rejected before reaching tool_executor's elif branch.
+            agent.valid_tool_names = {
+                t.get("function", {}).get("name", "") for t in _locked
+            }
+            logger.info(
+                "M1.7: observer tools locked to %d: %s (valid_tool_names=%s)",
+                len(_locked),
+                [t.get("function", {}).get("name") for t in _locked],
+                agent.valid_tool_names,
+            )
+
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
         # Gate on needs_progress_queue (tool_progress OR thinking_progress)
@@ -15987,6 +16032,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "pause": self._handle_pause_command,
                 "agents": self._handle_agents_command,
                 "agent": self._handle_agent_command,
+                "room": self._handle_room_command,
                 "background": self._handle_background_command,
                 "kanban": self._handle_kanban_command,
                 "subgoal": self._handle_subgoal_command,
@@ -17156,6 +17202,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_agents_command(event)
         if canonical == "agent":
             return await self._handle_agent_command(event)
+        if canonical == "room":
+            return await self._handle_room_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)
@@ -19920,6 +19968,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._send_reply(source, _resend_result, event=event)
                 return
 
+            # ── Agent Room M1.7: Room routing branch ──────────────────────
+            # Check if this IM source (e.g. DingTalk group) is bound to an
+            # agent room via SourceAgentBinding.fallback_extra['room_id'].
+            # If so, hand off to the Room router's five-step flow instead of
+            # the normal single-profile agent turn.
+            #
+            # The check is fast (one SQLite lookup) and falls through
+            # transparently if the source is not room-bound — zero behaviour
+            # change for any existing single-profile or unbound sessions.
+            _room_result = await self._process_message_via_room_if_bound(
+                event=event,
+                source=source,
+                message_text=message_text,
+                history=history,
+            )
+            if _room_result is not None:
+                # Room handled the message; skip the normal agent turn.
+                return _room_result
+
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
             # below; a /new or another lifecycle transition may move
@@ -22321,6 +22388,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                # M1.7 Agent Room: if _toolsets_override was passed
+                # (observer turn), force-filter agent.tools to ONLY
+                # contain tools from the specified toolsets. tool_search's
+                # tier 1 mechanism keeps _HERMES_CORE_TOOLS alive even when
+                # enabled_toolsets is narrowed — without this filter the
+                # observer sees 57 tools and route_to_member gets buried.
+                if _toolsets_override:
+                    from toolsets import resolve_toolset as _resolve_ts
+                    _allowed = set()
+                    for _ts in _toolsets_override:
+                        _allowed.update(_resolve_ts(_ts))
+                    if hasattr(agent, "tools") and isinstance(agent.tools, list):
+                        # Keep ONLY the allowed tools' schemas. Also save
+                        # the full list so run_conversation's internal
+                        # tool_search rebuild can be intercepted.
+                        _observer_tools = [
+                            t for t in agent.tools
+                            if t.get("function", {}).get("name") in _allowed
+                        ]
+                        agent.tools = _observer_tools
+                        # Monkey-patch agent.tools setter to prevent
+                        # tool_search from re-adding core tools during
+                        # run_conversation. This is the ONLY reliable way
+                        # to lock down the observer's tool surface —
+                        # tool_search.load_config() reads from a separate
+                        # config cache (hermes_cli.config.load_config) that
+                        # ignores both _load_gateway_config() and
+                        # set_hermes_home_override, so injecting
+                        # tool_search:off into user_config has no effect.
+                        _observer_tools_ref = _observer_tools
+                        class _LockedTools(list):
+                            """A list that always returns the observer's
+                            locked tool set, ignoring appends/replacements
+                            from tool_search's internal rebuild."""
+                            def __init__(self, items):
+                                super().__init__(items)
+                            def append(self, item):
+                                pass  # silently reject
+                            def extend(self, items):
+                                pass
+                            def __setitem__(self, key, value):
+                                pass
+                        agent.tools = _LockedTools(_observer_tools_ref)
+                        logger.info(
+                            "M1.7: observer tools locked to %d schemas: %s",
+                            len(_observer_tools_ref),
+                            [t.get("function", {}).get("name") for t in _observer_tools_ref],
+                        )
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -27749,6 +27864,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=message_type,
             )
 
+    def _binding_profile_for_source(self, source: SessionSource) -> Optional[str]:
+        """Return the profile a source→agent binding maps this source to, or None.
+
+        Single source of truth for binding-store profile resolution, shared by
+        the ingress stamping path (``_profile_name_for_source``) and the turn
+        home resolver (``_resolve_profile_home_for_source``) so both agree on
+        which profile owns a bound conversation. Best-effort: any lookup error
+        (missing store, malformed key) returns None so routing falls through to
+        profile_routes / the active profile rather than dropping the message.
+
+        Lookup order:
+          1. Per-user key  (group_sessions_per_user=True) — exact user match.
+          2. Chat-level key (group_sessions_per_user=False) — fallback for
+             group members who didn't run ``/agent use`` themselves.
+        """
+        try:
+            store = getattr(self, "_source_agent_binding_store", None)
+            if store is None:
+                return None
+            from gateway.session import build_source_binding_key
+            # 1) per-user lookup (default)
+            binding = store.get_binding(build_source_binding_key(source))
+            if binding and binding.profile_name:
+                return binding.profile_name
+            # 2) chat-level fallback (no user_id in key)
+            chat_type = str(getattr(source, "chat_type", None) or "group")
+            if chat_type != "dm":
+                chat_key = build_source_binding_key(
+                    source, group_sessions_per_user=False,
+                )
+                binding = store.get_binding(chat_key)
+                if binding and binding.profile_name:
+                    return binding.profile_name
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "binding store lookup failed for source %s: %s",
+                getattr(source, "chat_id", "?"), exc,
+            )
+        return None
+
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.
 
@@ -27769,6 +27924,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
+        # Our fork: the source→agent binding store (e.g. a DingTalk group bound
+        # to a profile via `/room bind` or the dashboard) takes precedence over
+        # static profile_routes. This is the SINGLE stamping path: whatever we
+        # return here is stamped onto ``source.profile`` at ingress (see the
+        # multiplex ingress gate), which in turn selects BOTH the session-key
+        # namespace (``agent:<profile>``) AND the profile the turn runs under
+        # (``_resolve_profile_home_for_source``). Resolving the binding here —
+        # not only in the home resolver — is what keeps those two in agreement:
+        # without it a bound group's turn runs under the right profile home but
+        # its session history lands in the active profile's namespace.
+        bound = self._binding_profile_for_source(source)
+        if bound:
+            return bound
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
@@ -27841,14 +28009,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not name:
                 # Our fork: resolve profile from the source→agent binding store
                 # (e.g. DingTalk session_webhook bindings) before route matching.
-                try:
-                    from gateway.session import build_source_binding_key
-                    binding = self._source_agent_binding_store.get_binding(build_source_binding_key(source))
-                    if binding and binding.profile_name:
-                        name = binding.profile_name
-                        explicit_profile = name  # Binding explicitly set this profile
-                except Exception as _bs_exc:
-                    logger.debug("binding store lookup failed for source %s: %s", getattr(source, "chat_id", "?"), _bs_exc)
+                # Shared with the ingress stamping path so the session-key
+                # namespace and the turn's profile home stay in agreement.
+                bound = self._binding_profile_for_source(source)
+                if bound:
+                    name = bound
+                    explicit_profile = name  # Binding explicitly set this profile
             if not name:
                 name = self._profile_name_for_source(source)
                 if name:
@@ -27884,6 +28050,1193 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return get_hermes_home()
 
+    # ── Agent Room M1.7 helpers ─────────────────────────────────────────────
+
+    def _get_room_for_source(self, source: "SessionSource"):
+        """Return the AgentRoom bound to *source*, or None.
+
+        Looks up source_binding_key → SourceAgentBinding, then checks
+        fallback_extra['room_id'] per design.html §4.2.  None means the
+        source is either unbound or bound to a single profile (not a room).
+        Fast path: one SQLite read; called on every inbound message.
+        """
+        try:
+            if not hasattr(self, "_source_agent_binding_store"):
+                from gateway.source_agent_binding import SourceAgentBindingStore
+                self._source_agent_binding_store = SourceAgentBindingStore()
+            if not hasattr(self, "_agent_room_store"):
+                from gateway.agent_room_store import AgentRoomStore
+                self._agent_room_store = AgentRoomStore()
+            from gateway.session import build_source_binding_key
+            binding = self._source_agent_binding_store.get_binding(
+                build_source_binding_key(source)
+            )
+            if not binding:
+                return None
+            room_id = (binding.fallback_extra or {}).get("room_id")
+            if not room_id:
+                return None
+            return self._agent_room_store.get_room(room_id)
+        except Exception as exc:
+            logger.debug(
+                "M1.7 _get_room_for_source failed (falling through to normal agent): %s", exc
+            )
+            return None
+
+    async def _process_message_via_room_if_bound(
+        self,
+        *,
+        event,
+        source,
+        message_text: str,
+        history: list,
+    ):
+        """Check if the source is room-bound; if so, run the §6.1 five-step
+        flow and return a sentinel (empty string == handled). Return None to
+        let the normal agent path continue.
+
+        This method is the M1.7 integration bridge between
+        GatewayRunner._handle_message and gateway/agent_room_router.py.
+
+        Router dependency injection uses real gateway callables:
+          - ack_sender / ack_editor → DingTalk session_webhook (if present)
+            via self._adapter_for_source + edit_message
+          - classifier → auxiliary_client.py aux LLM call
+          - observer_runner → _profile_runtime_scope + _run_agent_inner
+          - member_dispatcher → _profile_runtime_scope + _run_agent_inner
+
+        M1 simplification: all four callables are wired here as thin
+        closures that wrap the real gateway machinery. They operate on
+        dataclasses.replace(source, profile=<profile>) clones so the
+        underlying _run_agent_inner always sees the right profile without
+        mutating the original SessionSource.
+        """
+        room = self._get_room_for_source(source)
+        if room is None:
+            return None
+
+        try:
+            from gateway.agent_room_router import (
+                AgentRoomRouter,
+                ClassifierResult,
+                RoutingDecision,
+            )
+        except ImportError as exc:
+            logger.error("M1.7: failed to import AgentRoomRouter: %s", exc)
+            return None
+
+        # ── M3.2: shared messages store (lazy-init) ────────────────────
+        # Under M3 the authoritative history for a room is the shared
+        # agent_room_messages table, not each member's per-session
+        # history. The observer sees projected multi-party history and
+        # the members each see history projected from their own POV.
+        if not hasattr(self, "_agent_room_messages_store"):
+            from gateway.agent_room_messages_store import AgentRoomMessagesStore
+            self._agent_room_messages_store = AgentRoomMessagesStore()
+        messages_store = self._agent_room_messages_store
+
+        # ── Raft AX 改造 1: held-draft store (lazy-init) ────────────────
+        # Durable backing for member replies the §6.3 fence would otherwise
+        # SILENTLY DROP. Instead of the historical black hole, a fenced
+        # reply is persisted here so it survives even a gateway restart and
+        # can later be Revised / Sent-as-is / consciously Stay-silent'd /
+        # Sent-anyway (docs/design/agent-room/ax-alignment.md §3 改造 1).
+        if not hasattr(self, "_agent_room_held_store"):
+            from gateway.agent_room_held_store import AgentRoomHeldStore
+            self._agent_room_held_store = AgentRoomHeldStore()
+        held_store = self._agent_room_held_store
+
+        # Persist the inbound user message BEFORE running observer/members.
+        # This way even if the observer/members crash, the user's message
+        # is already recorded and the next turn sees it in history.
+        try:
+            _user_sender = getattr(source, "user_id", None) or getattr(source, "user_name", None) or "user"
+            messages_store.append(
+                room.room_id,
+                sender_kind="user",
+                sender_name=str(_user_sender),
+                content=message_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "M3: failed to persist user message to room %s: %s",
+                room.room_id, exc,
+            )
+
+        # ── Lazy-init the router, attach it to the GatewayRunner so the
+        # M1.6 Fence helper can also clear its cache.
+        if not hasattr(self, "_agent_room_router"):
+            adapter = self._adapter_for_source(source)
+
+            async def _ack_sender(src, text: str):
+                """Step 1: immediate ack via session_webhook / adapter."""
+                try:
+                    binding = self._source_agent_binding_store.get_binding(
+                        __import__("gateway.session", fromlist=["build_source_binding_key"]).build_source_binding_key(src)
+                    )
+                    webhook = (binding.fallback_extra or {}).get("session_webhook") if binding else None
+                    if webhook:
+                        from gateway.slash_commands import _send_dingtalk_webhook  # noqa: F401
+                except Exception:
+                    webhook = None
+                if adapter and hasattr(adapter, "send"):
+                    try:
+                        result = await adapter.send(src.chat_id, text, metadata={})
+                        return result
+                    except Exception:
+                        pass
+                return None
+
+            async def _ack_editor(handle, text: str):
+                """Step 4: edit the ack message."""
+                if handle is None:
+                    return
+                try:
+                    msg_id = getattr(handle, "message_id", None)
+                    if adapter and msg_id and hasattr(adapter, "edit_message"):
+                        await adapter.edit_message(src.chat_id, str(msg_id), text)
+                except Exception as exc:
+                    logger.debug("M1.7 ack_editor: %s", exc)
+
+            async def _classifier(history_tail: list, last_routed):
+                """N4 aux LLM: is the latest message a continuation of the
+                same topic (→ reuse last_routed member) or a new topic
+                (→ run the first-hop classifier)?"""
+                if not last_routed:
+                    # Nothing to reuse — always run first-hop.
+                    return ClassifierResult(is_new_topic=True, confidence=1.0)
+                try:
+                    from agent.auxiliary_client import async_call_llm
+                    recent = "\n".join(
+                        f"{m.get('role','?')}: {str(m.get('content',''))[:200]}"
+                        for m in (history_tail or [])
+                    )
+                    prompt = (
+                        f"当前对话最近由成员 `{last_routed}` 处理。\n"
+                        f"最近的消息：\n{recent}\n\n"
+                        f"最新一条消息是否延续同一话题（应继续由 `{last_routed}` 处理）？"
+                        f"只输出 JSON：{{\"is_new_topic\": bool, \"confidence\": 0到1的小数}}。"
+                        f"不要输出其他文字。"
+                    )
+                    resp = await async_call_llm(
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.0,
+                        max_tokens=64,
+                        timeout=20,
+                        extra_body={"response_format": {"type": "json_object"}},
+                    )
+                    raw = ""
+                    try:
+                        raw = resp.choices[0].message.content or ""
+                    except Exception:
+                        raw = ""
+                    import json as _json, re as _re
+                    m = _re.search(r'\{[^}]+\}', raw or "")
+                    if m:
+                        d = _json.loads(m.group())
+                        return ClassifierResult(
+                            is_new_topic=bool(d.get("is_new_topic", True)),
+                            confidence=float(d.get("confidence", 0.5)),
+                        )
+                except Exception as exc:
+                    logger.debug("M1.7 classifier: %s", exc)
+                # Fallback: treat as new topic → run the first-hop classifier.
+                return ClassifierResult(is_new_topic=True, confidence=1.0)
+
+            async def _first_hop_runner(msg, room_arg):
+                """Step 3 (stateless first-hop classifier).
+
+                Replaces the observer agent turn: a single structured-output
+                LLM call with NO room history and NO tool_calls. Returns a
+                FirstHopResult — a roster-validated list of member names
+                plus a ``matched`` flag distinguishing a real domain match
+                from a forced no-match fallback (2026-08-14 redesign; see
+                agent_room_firsthop.py's module docstring). The dirty-history
+                projection + fragile tool_call that made the observer fall
+                back to prose in production are both gone — this reads only
+                the current message + the roster descriptions.
+
+                Runs under the observer profile's model config + secret
+                scope (reusing the room's routing credentials/model), but it
+                does NOT run an agent loop and never touches SOUL/toolsets.
+                """
+                from gateway.agent_room_firsthop import classify_first_hop
+                from agent.auxiliary_client import async_call_llm
+
+                observer_profile = room_arg.observer_profile
+                # Build the (name, description) roster from member profiles.
+                members_desc: list[tuple[str, str]] = []
+                for _m in room_arg.members:
+                    _desc = ""
+                    try:
+                        from hermes_cli.profiles import read_profile_meta, get_profile_dir
+                        _desc = str(read_profile_meta(get_profile_dir(_m)).get("description") or "")
+                    except Exception:
+                        _desc = ""
+                    members_desc.append((_m, _desc))
+                default_member = room_arg.resolve_default_member()
+
+                # Resolve the router model/provider from the observer
+                # profile's config.yaml (same model the observer used).
+                _model = _provider = _base_url = None
+                try:
+                    import dataclasses
+                    _obs_source = dataclasses.replace(source, profile=observer_profile)
+                    _profile_home = self._resolve_profile_home_for_source(_obs_source)
+                    from hermes_cli.profiles import _read_config_model
+                    _model, _provider = _read_config_model(Path(_profile_home))
+                except Exception as _e:
+                    logger.debug("first-hop: could not read observer model cfg: %s", _e)
+
+                async def _call_raw(messages):
+                    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                    from hermes_cli.env_loader import hydrate_profile_secret_sources
+                    from agent.secret_scope import (
+                        build_profile_secret_scope, set_secret_scope, reset_secret_scope,
+                    )
+                    import dataclasses
+                    _obs_source = dataclasses.replace(source, profile=observer_profile)
+                    _phome = self._resolve_profile_home_for_source(_obs_source)
+                    hydrate_profile_secret_sources(Path(_phome))
+                    _ht = set_hermes_home_override(str(_phome))
+                    _st = set_secret_scope(build_profile_secret_scope(Path(_phome)))
+                    try:
+                        resp = await async_call_llm(
+                            provider=_provider,
+                            model=_model,
+                            messages=messages,
+                            temperature=0.0,
+                            max_tokens=256,
+                            timeout=30,
+                            extra_body={"response_format": {"type": "json_object"}},
+                        )
+                        try:
+                            return resp.choices[0].message.content or ""
+                        except Exception:
+                            return ""
+                    finally:
+                        reset_secret_scope(_st)
+                        reset_hermes_home_override(_ht)
+
+                return await classify_first_hop(
+                    message=msg,
+                    members=members_desc,
+                    default_member=default_member,
+                    call_raw=_call_raw,
+                )
+
+            async def _observer_runner(
+                observer_profile, session_id, _src, hist, msg
+            ):
+                """Step 3: run the observer's agent turn under its profile scope.
+
+                M3.3 integration: rebuild the observer's history from the
+                shared agent_room_messages table via project_for_observer,
+                so the observer sees the full multi-party stream (not just
+                its own past routing turns). The `hist` argument from the
+                caller is ignored under M3.
+                """
+                import dataclasses
+
+
+                observer_source = dataclasses.replace(
+                    _src,
+                    profile=observer_profile,
+                )
+                profile_home = self._resolve_profile_home_for_source(observer_source)
+
+                # M3.3: build observer's history from the shared store
+                try:
+                    from gateway.agent_room_projection import project_for_observer
+                    room_msgs = messages_store.list_messages(room.room_id)
+                    # The user's current message is already appended before
+                    # observer_runner is called; skip the last row (it IS
+                    # the current message) so it doesn't appear twice.
+                    projected = project_for_observer(room_msgs[:-1] if room_msgs else [])
+                    projected_hist = [p.to_openai() for p in projected]
+                    logger.info(
+                        "M3: observer sees %d projected history rows (from %d room messages)",
+                        len(projected_hist), len(room_msgs),
+                    )
+                except Exception as exc:
+                    logger.warning("M3: observer projection failed, using empty hist: %s", exc)
+                    projected_hist = []
+                result_text = ""
+                reason = ""
+                is_new_topic = True
+                # Switch HERMES_HOME for SOUL.md / config.yaml / toolsets,
+                # and hydrate the observer profile's .env so its API keys
+                # are available via get_secret().  This inherits the
+                # observer's own credential pool (auth.json + .env),
+                # which M1.2's bootstrapper should populate at creation
+                # time from the calling profile's credentials.
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
+                hydrate_profile_secret_sources(Path(profile_home))
+                _home_token = set_hermes_home_override(str(profile_home))
+                _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                # Override platform_toolsets so _run_agent_inner's internal
+                # _get_platform_tools() returns ONLY [room_observer] —
+                # the observer's single-toolset lockdown (Spike 3, §5.1).
+                # Without this, the gateway's global config (xcx's
+                # platform_toolsets) leaks hermes-cli's _HERMES_CORE_TOOLS
+                # into the observer, and route_to_member is never visible
+                # to the LLM — it outputs text instead of a tool call.
+                try:
+                    run_result = await self._run_agent_inner(
+                        msg,
+                        "",  # context_prompt
+                        projected_hist,  # M3.3: projected history
+                        observer_source,
+                        session_id,
+                        _toolsets_override=["room_observer"],
+                    )
+                    result_text = run_result.get("final_response", "") if run_result else ""
+                    logger.info("M1.7 observer result_text: %r", result_text[:200])
+                    if run_result and run_result.get("messages"):
+                        for _m in run_result["messages"][-5:]:
+                            _role = _m.get("role", "?")
+                            _content = str(_m.get("content", ""))[:100]
+                            _tcs = _m.get("tool_calls")
+                            logger.info("M1.7 observer msg: role=%s content=%r tool_calls=%s", _role, _content, bool(_tcs))
+                    # The observer should have called route_to_member which triggers
+                    # hard_interrupt and stores the decision in the tool result.
+                    # Parse it back out of the conversation messages.
+                    import json as _json
+                    if run_result and run_result.get("messages"):
+                        for msg_item in reversed(run_result["messages"]):
+                            if msg_item.get("role") == "tool":
+                                try:
+                                    d = _json.loads(msg_item.get("content", "{}"))
+                                    if d.get("action") == "decompose_and_route":
+                                        # M4: observer emitted a subtask DAG.
+                                        _tasks = d.get("tasks") or []
+                                        try:
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="observer",
+                                                sender_name=observer_profile,
+                                                content="",
+                                                tool_calls=[{
+                                                    "id": msg_item.get("tool_call_id", "call_obs_decompose"),
+                                                    "function": {
+                                                        "name": "decompose_and_route",
+                                                        "arguments": _json.dumps({
+                                                            "tasks": _tasks,
+                                                            "reason": d.get("reason", ""),
+                                                            "is_new_topic": d.get("is_new_topic", False),
+                                                        }, ensure_ascii=False),
+                                                    },
+                                                }],
+                                            )
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="tool_result",
+                                                sender_name="decompose_and_route",
+                                                content=msg_item.get("content", ""),
+                                                tool_call_id=msg_item.get("tool_call_id"),
+                                            )
+                                        except Exception as _e:
+                                            logger.warning("M4: decompose decision persist failed: %s", _e)
+                                        logger.info(
+                                            "M4: observer decomposed into %d subtasks", len(_tasks),
+                                        )
+                                        return RoutingDecision(
+                                            target_member="",
+                                            reason=d.get("reason", ""),
+                                            is_new_topic=bool(d.get("is_new_topic", True)),
+                                            reused_last_route=False,
+                                            action="decompose_and_route",
+                                            decompose_tasks=_tasks,
+                                        )
+                                    if d.get("action") == "route_to_member":
+                                        # M3: persist the observer's routing decision
+                                        try:
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="observer",
+                                                sender_name=observer_profile,
+                                                content="",
+                                                tool_calls=[{
+                                                    "id": msg_item.get("tool_call_id", "call_obs"),
+                                                    "function": {
+                                                        "name": "route_to_member",
+                                                        "arguments": _json.dumps({
+                                                            "member": d.get("member", ""),
+                                                            "reason": d.get("reason", ""),
+                                                            "is_new_topic": d.get("is_new_topic", False),
+                                                        }, ensure_ascii=False),
+                                                    },
+                                                }],
+                                            )
+                                            messages_store.append(
+                                                room.room_id,
+                                                sender_kind="tool_result",
+                                                sender_name="route_to_member",
+                                                content=msg_item.get("content", ""),
+                                                tool_call_id=msg_item.get("tool_call_id"),
+                                            )
+                                        except Exception as _e:
+                                            logger.warning("M3: observer decision persist failed: %s", _e)
+                                        return RoutingDecision(
+                                            target_member=d.get("member", ""),
+                                            reason=d.get("reason", ""),
+                                            is_new_topic=bool(d.get("is_new_topic", True)),
+                                            reused_last_route=False,
+                                        )
+                                except Exception:
+                                    pass
+
+                    # M3 fallback: some models (e.g. qwen3.7-max via
+                    # dashscope OpenAI-compat, when tools list has only
+                    # 1 item) emit a text-form tool call in the assistant
+                    # content instead of a real tool_call structure.
+                    # Recognize that shape and treat it as a valid route.
+                    #
+                    # Expected formats (checked ONLY against the LAST
+                    # assistant message emitted in THIS turn — not earlier
+                    # projected history rows which may contain stale
+                    # routing JSON from previous turns):
+                    #   {"name": "route_to_member", "arguments": {...}}
+                    #   {"action": "route_to_member", "member": ..., ...}
+                    #   {"member": ..., "reason": ...}
+                    #
+                    # We look at ONLY the last assistant row; if that row
+                    # doesn't parse as a valid route (e.g. content is '*'
+                    # or empty after thinking-only), we return the empty
+                    # fallback rather than scanning further back into
+                    # history and false-matching a prior turn.
+                    _last_assistant = None
+                    for msg_item in reversed(run_result.get("messages", [])):
+                        if msg_item.get("role") == "assistant":
+                            _last_assistant = msg_item
+                            break
+
+                    parsed_route = None
+                    if _last_assistant is not None:
+                        content = (_last_assistant.get("content") or "").strip()
+                        if content and len(content) >= 3:  # skip '*', '', etc.
+                            import re as _re
+
+                            # ── Format A: JSON blob {...} ─────────────────
+                            blob = _re.search(r"\{.*\}", content, _re.DOTALL)
+                            if blob:
+                                try:
+                                    parsed = _json.loads(blob.group())
+                                    if isinstance(parsed, dict):
+                                        parsed_route = parsed
+                                except Exception:
+                                    pass
+
+                            # ── Format B: Python call form
+                            #   `route_to_member(member=[...], reason='...', is_new_topic=True)`
+                            # qwen3.7-max sometimes emits this when it interprets the
+                            # schema description as pseudo-code rather than an OpenAI
+                            # tool-call structure.
+                            if parsed_route is None:
+                                py_call = _re.search(
+                                    r"route_to_member\s*\((.*?)\)",
+                                    content,
+                                    _re.DOTALL,
+                                )
+                                if py_call:
+                                    try:
+                                        import ast as _ast
+                                        call_src = f"route_to_member({py_call.group(1)})"
+                                        node = _ast.parse(call_src, mode="eval").body
+                                        if isinstance(node, _ast.Call):
+                                            kw_dict: dict = {}
+                                            for kw in node.keywords:
+                                                if kw.arg:
+                                                    kw_dict[kw.arg] = _ast.literal_eval(kw.value)
+                                            if kw_dict:
+                                                parsed_route = kw_dict
+                                    except Exception:
+                                        pass
+
+                            # ── Format C: <tool>{...}</tool> XML-ish wrapper ──
+                            # Some qwen variants emit
+                            #   <tool>{"name":"route_to_member","arguments":{...}}</tool>
+                            # (sometimes with empty arguments — those are unusable).
+                            if parsed_route is None:
+                                xml_calls = _re.findall(
+                                    r"<tool>\s*(\{.*?\})\s*</tool>",
+                                    content,
+                                    _re.DOTALL,
+                                )
+                                for candidate in xml_calls:
+                                    try:
+                                        parsed = _json.loads(candidate)
+                                    except Exception:
+                                        continue
+                                    if isinstance(parsed, dict) and (
+                                        parsed.get("member")
+                                        or (parsed.get("arguments") or {}).get("member")
+                                    ):
+                                        parsed_route = parsed
+                                        break
+
+                    if parsed_route is not None:
+                        # M4: text-form decompose_and_route (qwen quirk).
+                        # Shapes:
+                        #   {"action":"decompose_and_route","tasks":[...],...}
+                        #   {"name":"decompose_and_route","arguments":{...}}
+                        _decompose_args = None
+                        if parsed_route.get("action") == "decompose_and_route":
+                            _decompose_args = parsed_route
+                        elif parsed_route.get("name") == "decompose_and_route":
+                            _da = parsed_route.get("arguments", {}) or {}
+                            if isinstance(_da, str):
+                                try:
+                                    _da = _json.loads(_da)
+                                except Exception:
+                                    _da = {}
+                            _decompose_args = _da
+                        elif isinstance(parsed_route.get("tasks"), list):
+                            _decompose_args = parsed_route
+                        if _decompose_args is not None and _decompose_args.get("tasks"):
+                            _tasks = _decompose_args.get("tasks") or []
+                            logger.info(
+                                "M4 fallback: parsed text-form decompose_and_route "
+                                "(%d subtasks)", len(_tasks),
+                            )
+                            try:
+                                messages_store.append(
+                                    room.room_id,
+                                    sender_kind="observer",
+                                    sender_name=observer_profile,
+                                    content="",
+                                    tool_calls=[{
+                                        "id": "call_obs_decompose_textform",
+                                        "function": {
+                                            "name": "decompose_and_route",
+                                            "arguments": _json.dumps({
+                                                "tasks": _tasks,
+                                                "reason": _decompose_args.get("reason", ""),
+                                                "is_new_topic": _decompose_args.get("is_new_topic", False),
+                                            }, ensure_ascii=False),
+                                        },
+                                    }],
+                                )
+                            except Exception as _e:
+                                logger.warning("M4: text-form decompose persist failed: %s", _e)
+                            return RoutingDecision(
+                                target_member="",
+                                reason=_decompose_args.get("reason", ""),
+                                is_new_topic=bool(_decompose_args.get("is_new_topic", False)),
+                                reused_last_route=False,
+                                action="decompose_and_route",
+                                decompose_tasks=_tasks,
+                            )
+
+                        # Unwrap {"name": "route_to_member", "arguments": {...}}
+                        if parsed_route.get("name") == "route_to_member":
+                            args = parsed_route.get("arguments", {}) or {}
+                            if isinstance(args, str):
+                                try:
+                                    args = _json.loads(args)
+                                except Exception:
+                                    args = {}
+                            member = args.get("member", "")
+                            reason = args.get("reason", "")
+                            is_new = bool(args.get("is_new_topic", False))
+                        elif "member" in parsed_route:
+                            member = parsed_route.get("member", "")
+                            reason = parsed_route.get("reason", "")
+                            is_new = bool(parsed_route.get("is_new_topic", False))
+                        else:
+                            member = ""
+                            reason = ""
+                            is_new = False
+
+                        if member:  # only accept if parse yielded a real target
+                            logger.info(
+                                "M3 fallback: parsed text-form route_to_member "
+                                "from assistant content (member=%r)",
+                                member,
+                            )
+                            # Persist decision to messages store for projection
+                            try:
+                                messages_store.append(
+                                    room.room_id,
+                                    sender_kind="observer",
+                                    sender_name=observer_profile,
+                                    content="",
+                                    tool_calls=[{
+                                        "id": "call_obs_textform",
+                                        "function": {
+                                            "name": "route_to_member",
+                                            "arguments": _json.dumps({
+                                                "member": member,
+                                                "reason": reason,
+                                                "is_new_topic": is_new,
+                                            }, ensure_ascii=False),
+                                        },
+                                    }],
+                                )
+                            except Exception as _e:
+                                logger.warning("M3: text-form decision persist failed: %s", _e)
+                            return RoutingDecision(
+                                target_member=member,
+                                reason=reason,
+                                is_new_topic=is_new,
+                                reused_last_route=False,
+                            )
+
+                    # Fallback: no route_to_member found → empty member → router falls back
+                    return RoutingDecision(
+                        target_member="",
+                        reason="observer produced no route_to_member output",
+                        is_new_topic=True,
+                        reused_last_route=False,
+                    )
+                finally:
+                    reset_secret_scope(_secret_token)
+                    reset_hermes_home_override(_home_token)
+
+            async def _member_dispatcher(
+                member_profile, session_id, _src, hist, msg
+            ):
+                """Step 5: run the member's agent turn under its profile scope.
+
+                M3.3 integration: build the member's history from the
+                shared agent_room_messages table via project_for_member.
+                Persist the member's reply back to the store so other
+                members see it in future turns.
+                """
+                import dataclasses
+                member_source = dataclasses.replace(_src, profile=member_profile)
+                profile_home = self._resolve_profile_home_for_source(member_source)
+
+                # Raft AX 改造 1 (version-based hold): snapshot the room
+                # version this member is about to reason against. If a NEW
+                # user turn lands before we deliver, this reply is stale —
+                # it reasoned about a conversation that already moved on
+                # (the article's turn-based "gap" / counting-game case).
+                try:
+                    _snapshot_version = messages_store.max_sequence(room.room_id)
+                except Exception:
+                    _snapshot_version = 0
+
+                # M3.3: build history from shared store, projected for this member
+                try:
+                    from gateway.agent_room_projection import (
+                        project_for_member_windowed,
+                    )
+                    room_msgs = messages_store.list_messages(room.room_id)
+                    # Skip the last message (== current user turn we're
+                    # about to feed as `msg`) so it doesn't appear twice.
+                    # Raft AX 改造 3 (agent inbox): "summary + recent N"
+                    # instead of full-push + hard-truncation. Collapses the
+                    # older tail into a scannable digest and pushes only the
+                    # last N verbatim, so the room stops flooding the
+                    # member's context. Backward-compatible: small rooms
+                    # (<= recent_n) project identically to before.
+                    projected = project_for_member_windowed(
+                        room_msgs[:-1] if room_msgs else [],
+                        target_member=member_profile,
+                    )
+                    projected_hist = [p.to_openai() for p in projected]
+                    logger.info(
+                        "M3: member %s sees %d projected history rows",
+                        member_profile, len(projected_hist),
+                    )
+                except Exception as exc:
+                    logger.warning("M3: member projection failed, using empty hist: %s", exc)
+                    projected_hist = []
+
+                # Switch HERMES_HOME + hydrate the member profile's .env +
+                # install its secret_scope so API keys resolve correctly.
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
+                hydrate_profile_secret_sources(Path(profile_home))
+                _home_token = set_hermes_home_override(str(profile_home))
+                _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+
+                # Studio-style room-aware context prompt injected via
+                # _run_agent_inner's context_prompt arg. Ports the rules
+                # from hermes-studio's buildAgentInstructions (see
+                # packages/server/src/services/hermes/context-engine/prompt.ts)
+                # to fix the "each member echoes everyone else's answer"
+                # bug: without this, the member's default SOUL doesn't
+                # know it's in a room, doesn't know the roster, and
+                # naturally tries to answer for the whole group when
+                # given a broadcast message.
+                _member_desc_lookup: dict[str, str] = {}
+                for _m in room.members:
+                    try:
+                        from hermes_cli.profiles import read_profile_meta, get_profile_dir
+                        _meta = read_profile_meta(get_profile_dir(_m))
+                        _member_desc_lookup[_m] = str(_meta.get("description") or "")
+                    except Exception:
+                        _member_desc_lookup[_m] = ""
+                _other_members_lines = [
+                    f"- {_n}: {_member_desc_lookup.get(_n, '') or '专业助手'}"
+                    for _n in room.members if _n != member_profile
+                ]
+                _other_members_section = (
+                    "\n".join(_other_members_lines) if _other_members_lines else "- 无"
+                )
+                _own_desc = _member_desc_lookup.get(member_profile, "") or "专业的 AI 助手"
+
+                room_context_prompt = (
+                    f"你是 \"{member_profile}\"，群聊房间 \"{room.room_name}\" 中的 AI 成员之一。\n\n"
+                    f"你的角色：{_own_desc}\n\n"
+                    f"房间描述：{room.description or '通用协作团队'}\n\n"
+                    f"当前房间其他 AI 成员（每个成员在自己独立的对话气泡里回复）：\n"
+                    f"{_other_members_section}\n\n"
+                    "群聊路由规则（重要）：\n"
+                    "- 系统已经判断你需要回复本条消息；请直接回应，不要输出空回复或说\"没什么可说的\"。\n"
+                    "- 你只代表你自己一个人回答；其他成员会分别在他们自己的气泡里回复，不需要你替他们说话或模拟他们的口吻。\n"
+                    "- 不要因为用户说\"大家 / 都 / 所有 / everyone / all\"就把自己的回复重复多次或替其他成员回答——那是系统层做的分发，你只需要以自己一个人的身份说一次。\n"
+                    "- 回答简洁、对群聊有帮助；使用与用户相同的语言。\n"
+                    "- 不要假装是人类；需要时明确表明自己是 AI。\n"
+                    f"- 对话历史里的\"[发送者]: ...\"只是系统添加的归属标记，用来帮你理解谁说了这句话；不要在你的回复中复述或模仿这种方括号前缀。也不要输出\"[{member_profile}]:\"这类格式，直接以自然语言回复即可。\n"
+                    "- 如果这个问题需要另一位成员接手或补充，在回复中 @ 对方的名字（例如 @finance），系统会自动把你的回复转交给对方；@ 时请说清楚请对方做什么。\n"
+                    "- 如果你已经能完整回答，直接回答即可，不要在结尾无意义地 @ 其他成员接力。\n"
+                    "- 你的对话历史开头可能是一段【room digest】摘要，只给出较早消息的简短预览（每条带 #序号）。如果需要看某条较早消息的完整内容（比如另一位成员早前说了什么、或用户早前的请求），调用 room_fetch_context（按 query 关键词或 start_seq/end_seq 区间拉取）；只在确有需要时拉取，摘要已给出大意。\n"
+                )
+
+                # 改造 3 (agent inbox): bind this room+member so the
+                # room_fetch_context pull tool serves reads scoped to THIS
+                # room only (the LLM cannot forge a different room_id).
+                from tools.room_fetch_context_tool import bind_room_context
+                _room_ctx_token = bind_room_context(
+                    messages_store, room.room_id, member_profile,
+                )
+                try:
+                    run_result = await self._run_agent_inner(
+                        msg, room_context_prompt, projected_hist, member_source, session_id,
+                        _extra_toolsets=["room_member"],
+                    )
+                finally:
+                    _room_ctx_token.reset()
+                    reset_secret_scope(_secret_token)
+                    reset_hermes_home_override(_home_token)
+                reply = run_result.get("final_response", "") if run_result else ""
+
+                # ── Raft AX 改造 1: version-based hold (turn-based gap) ──
+                # The article's core mechanism: an agent reasons against a
+                # room *snapshot*, and the room can move in the gap before
+                # it commits. If a NEW USER turn landed while this member was
+                # composing, delivering now would land a non-sequitur (reply
+                # to a question the user already moved past — the counting-
+                # game case). So instead of committing + delivering a stale
+                # reply, HOLD it: skip the store append, skip delivery, and
+                # persist a durable HeldReply the resolver can Revise /
+                # Stay-silent. We only count a new *user* message as "moved":
+                # peer *member* replies are our own intentional concurrent
+                # broadcast and must NOT trip this gate.
+                if reply and held_store is not None:
+                    try:
+                        _newer = messages_store.list_messages(
+                            room.room_id, since_seq=_snapshot_version,
+                        )
+                        _user_moved = any(
+                            m.sender_kind == "user" for m in _newer
+                        )
+                    except Exception:
+                        _user_moved = False
+                    if _user_moved:
+                        try:
+                            from gateway.agent_room_held_store import (
+                                HELD_REASON_ROOM_MOVED,
+                            )
+                            _cur = messages_store.max_sequence(room.room_id)
+                            # Stash the transport metadata a later Revise
+                            # needs to reconstruct a SessionSource and run a
+                            # fresh member turn against the CURRENT room.
+                            _held_extra = {
+                                "platform": getattr(
+                                    getattr(source, "platform", None), "value",
+                                    str(getattr(source, "platform", "") or ""),
+                                ),
+                                "chat_type": str(getattr(source, "chat_type", "") or ""),
+                                "user_id": getattr(source, "user_id", None),
+                                "user_name": getattr(source, "user_name", None),
+                                "thread_id": getattr(source, "thread_id", None),
+                                "original_msg": msg,
+                            }
+                            held = held_store.hold(
+                                room.room_id,
+                                session_id=session_id,
+                                member=member_profile,
+                                room_version=_snapshot_version,
+                                payload=reply,
+                                held_reason=HELD_REASON_ROOM_MOVED,
+                                chat_id=str(getattr(source, "chat_id", "") or ""),
+                                extra=_held_extra,
+                            )
+                            logger.info(
+                                "room %s: member %s reply held (room_moved: "
+                                "snapshot=%d now=%d, held_id=%s) — a new user "
+                                "turn superseded it; not delivering as-is",
+                                room.room_id, member_profile,
+                                _snapshot_version, _cur, held.id,
+                            )
+                            # Held, not committed: skip append + deliver,
+                            # and return "" so no @mention handoff fires.
+                            return ""
+                        except Exception as _he:  # noqa: BLE001 — hold must not crash
+                            logger.warning(
+                                "room %s: member %s room_moved hold failed "
+                                "(%s); falling back to deliver-as-is",
+                                room.room_id, member_profile, _he,
+                            )
+
+                # M3: persist member's reply back to the shared store so
+                # other members' future turns see it via projection.
+                if reply:
+                    try:
+                        messages_store.append(
+                            room.room_id,
+                            sender_kind="member",
+                            sender_name=member_profile,
+                            content=reply,
+                        )
+                    except Exception as _e:
+                        logger.warning(
+                            "M3: failed to persist member %s reply: %s",
+                            member_profile, _e,
+                        )
+
+                # Prefix with the member profile name so the user can see
+                # which agent replied (design.html §11m1 B4: 显示身份). This
+                # display prefix is for DELIVERY only — the clean reply is
+                # what we persist (above) and return (below) so the @mention
+                # handoff chain scans the member's real words, not the
+                # "profile: X" plumbing line.
+                delivered = f"profile: {member_profile}\n\n{reply}" if reply else reply
+                # Deliver to the original IM source via adapter.
+                try:
+                    if adapter and hasattr(adapter, "send"):
+                        await adapter.send(
+                            source.chat_id,
+                            delivered or "(no reply)",
+                            metadata={},
+                        )
+                except Exception as exc:
+                    logger.warning("M1.7 member reply delivery failed: %s", exc)
+                return reply
+
+            # Capture source for closures
+            src = source
+
+            async def _synthesis_runner(
+                observer_profile, session_id, _src, rendered_results,
+            ):
+                """M4.4: second observer turn that composes the final
+                user-facing reply from the orchestrated subtask results.
+
+                Reuses the observer session (per M4.1 spike decision) so
+                the observer sees its own decompose decision in history.
+                Runs UNDER the observer's toolset lockdown but we do NOT
+                want it to route/decompose again — the SOUL.md synthesis
+                instructions tell it to just summarize. If it emits no
+                tool call the plain assistant text IS the synthesis, which
+                is exactly what we want here.
+                """
+                import dataclasses
+                observer_source = dataclasses.replace(_src, profile=observer_profile)
+                profile_home = self._resolve_profile_home_for_source(observer_source)
+
+                synthesis_prompt = (
+                    "以下是你刚才拆分的子任务由各成员执行后的结果。"
+                    "请你综合这些结果，为用户写一条最终的、完整连贯的中文回复。"
+                    "不要再调用任何工具，不要再拆分或转交；直接输出面向用户的最终答复文本。"
+                    "如果有子任务失败或被跳过，也请在回复中如实、简洁地说明。\n\n"
+                    f"{rendered_results}"
+                )
+
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
+                hydrate_profile_secret_sources(Path(profile_home))
+                _home_token = set_hermes_home_override(str(profile_home))
+                _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                try:
+                    run_result = await self._run_agent_inner(
+                        synthesis_prompt,
+                        "",  # context_prompt
+                        [],  # history: the observer session already carries the decompose turn
+                        observer_source,
+                        session_id,
+                        _toolsets_override=["room_observer"],
+                    )
+                finally:
+                    reset_secret_scope(_secret_token)
+                    reset_hermes_home_override(_home_token)
+                final = run_result.get("final_response", "") if run_result else ""
+                logger.info("M4.4 synthesis result: %r", (final or "")[:200])
+
+                # Persist synthesis as an observer message so future turns
+                # see the conclusion in projected history.
+                if final:
+                    try:
+                        messages_store.append(
+                            room.room_id,
+                            sender_kind="observer",
+                            sender_name=observer_profile,
+                            content=final,
+                        )
+                    except Exception as _e:
+                        logger.warning("M4.4: synthesis persist failed: %s", _e)
+
+                # Deliver to the IM source.
+                if final:
+                    try:
+                        if adapter and hasattr(adapter, "send"):
+                            await adapter.send(source.chat_id, final, metadata={})
+                    except Exception as exc:
+                        logger.warning("M4.4 synthesis delivery failed: %s", exc)
+                return final
+
+            # Raft AX 改造 2 (Silence is a valid outcome): read the room's
+            # no-match policy from gateway config (agent_room.no_match_policy).
+            # Default "fallback" preserves the historical always-answer
+            # behavior; "silent" lets a room genuinely stay quiet when the
+            # classifier finds the message out-of-scope for every member.
+            try:
+                _ar_cfg = (_load_gateway_config().get("agent_room") or {})
+                _no_match_policy = str(_ar_cfg.get("no_match_policy") or "fallback")
+            except Exception:
+                _no_match_policy = "fallback"
+
+            self._agent_room_router = AgentRoomRouter(
+                store=self._agent_room_store,
+                ack_sender=_ack_sender,
+                ack_editor=_ack_editor,
+                classifier=_classifier,
+                # First-hop routing is now a stateless classifier (no room
+                # history, no tool_calls) — it replaces the observer agent
+                # turn that fell back to prose under production dirty
+                # history. observer_runner is left defined above but no
+                # longer wired; first_hop_runner takes precedence.
+                first_hop_runner=_first_hop_runner,
+                member_dispatcher=_member_dispatcher,
+                # M4 decompose/synthesis disabled: member coordination is
+                # handled by the @mention handoff chain
+                # (agent_room_router._run_handoff_chain).
+                synthesis_runner=None,
+                # Raft AX 改造 1: held-draft. On a §6.3 fence hit, hold the
+                # member's finished reply (durable, recoverable) instead of
+                # silently dropping it. room_version = the shared message
+                # store's max sequence — the snapshot marker the reply was
+                # reasoned against, so a resolver can tell "room moved"
+                # (→ Revise) from "transport lost" (→ Send-as-is).
+                held_store=held_store,
+                room_version_provider=(
+                    lambda rid: self._agent_room_messages_store.max_sequence(rid)
+                ),
+                # 改造 2: fallback (default) | silent
+                no_match_policy=_no_match_policy,
+            )
+
+            # ── Raft AX 改造 1: held-draft resolver ────────────────────
+            # Takes held replies back out of the "held" state along one of
+            # Raft's four paths and actually DELIVERS them, closing the
+            # black hole. Send-as-is uses adapter.send — which, with the
+            # defect-#2 proactive/AI-Card fallback, no longer needs a live
+            # session_webhook, so a reply held because its webhook expired
+            # can now be delivered later. Revise re-runs the member against
+            # the current room. (docs/design/agent-room/ax-alignment.md §3.)
+            from gateway.agent_room_held_resolver import AgentRoomHeldResolver
+
+            async def _held_deliver(chat_id: str, payload: str) -> bool:
+                if not (adapter and hasattr(adapter, "send")):
+                    return False
+                try:
+                    res = await adapter.send(chat_id, payload, metadata={})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("held-draft delivery failed: %s", exc)
+                    return False
+                # SendResult.success (or a truthy result for adapters that
+                # return something simpler).
+                return bool(getattr(res, "success", res))
+
+            self._agent_room_held_resolver = AgentRoomHeldResolver(
+                held_store=held_store,
+                deliver=_held_deliver,
+                room_version_provider=(
+                    lambda rid: self._agent_room_messages_store.max_sequence(rid)
+                ),
+                # Raft AX 改造 1 收尾: online true-Revise. A room_moved hold
+                # means the room advanced past what the reply reasoned about;
+                # _agent_room_held_rerun re-runs the member against the
+                # CURRENT room (fresh projection incl. the newer turn) and
+                # returns updated text WITHOUT delivering (the resolver
+                # delivers to the held row's own chat_id) and WITHOUT
+                # re-holding. Empty rerun → resolver treats as stay-silent.
+                # This is what lets a held "1... 2... 3!" become a revised
+                # "oh, you said stop — nvm" instead of a stale non-sequitur.
+                rerun_member=self._agent_room_held_rerun,
+            )
+
+            # Startup drain: recover any replies held across a gateway
+            # restart (the durable-across-restart promise). Best-effort;
+            # rows whose transport is still down stay held for a later drain.
+            try:
+                await self._agent_room_held_resolver.resume_all()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("held-draft startup drain failed: %s", exc)
+
+        try:
+            await self._agent_room_router.process_message(
+                source=source,
+                message=message_text,
+                history=history,
+                room=room,
+            )
+            # Opportunistic drain: after handling a message, try to flush
+            # this room's held backlog (a fresh inbound often means the
+            # transport is live again — the ideal moment to deliver holds).
+            try:
+                resolver = getattr(self, "_agent_room_held_resolver", None)
+                if resolver is not None:
+                    await resolver.resume_all(room.room_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "held-draft post-message drain failed for room %s: %s",
+                    room.room_id, exc,
+                )
+        except Exception as exc:
+            logger.error(
+                "M1.7 room routing error for room %s: %s",
+                room.room_id, exc, exc_info=True,
+            )
+            # On routing failure, fall through to normal agent turn so the
+            # user isn't silently dropped.
+            return None
+
+        # Return non-None to signal "handled by Room" — _handle_message
+        # returns this and skips the normal _run_agent call.
+        return ""
+
+    async def _agent_room_held_rerun(self, held) -> str:
+        """Raft AX 改造 1 收尾 · online true-Revise.
+
+        Re-run a held member reply against the CURRENT room and return the
+        FRESH reply text — WITHOUT delivering (the resolver delivers to the
+        held row's own chat_id) and WITHOUT re-holding (this is the recovery
+        path, not a fresh dispatch). Used only on the Revise path for a
+        ``room_moved`` hold: the room advanced past what the original reply
+        reasoned about, so we let the member look at where the conversation
+        is NOW and decide whether it still has something to add.
+
+        Returns "" when the member has nothing to add (→ resolver treats as
+        stay-silent) or when the run cannot be reconstructed (defensive: a
+        rerun failure must never crash the drain — the resolver falls back
+        to its reason-aware degrade)."""
+        import dataclasses as _dc
+
+        room = None
+        try:
+            room = self._agent_room_store.get_room(held.room_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("held-rerun: get_room(%s) failed: %s", held.room_id, exc)
+        if room is None:
+            logger.info("held-rerun: room %s gone; cannot revise", held.room_id)
+            return ""
+        member_profile = held.member
+        if member_profile not in room.members:
+            logger.info(
+                "held-rerun: member %s no longer in room %s; cannot revise",
+                member_profile, held.room_id,
+            )
+            return ""
+
+        # Reconstruct a SessionSource from the stashed transport metadata.
+        extra = held.extra or {}
+        try:
+            from gateway.platforms.base import Platform as _Platform
+            _plat = _Platform(str(extra.get("platform") or "").lower())
+        except Exception:
+            logger.info(
+                "held-rerun: unknown platform %r; cannot revise",
+                extra.get("platform"),
+            )
+            return ""
+        source = SessionSource(
+            platform=_plat,
+            chat_id=held.chat_id or "",
+            chat_type=str(extra.get("chat_type") or "dm"),
+            user_id=extra.get("user_id"),
+            user_name=extra.get("user_name"),
+            thread_id=extra.get("thread_id"),
+            profile=member_profile,
+        )
+
+        messages_store = self._agent_room_messages_store
+        session_id = held.session_id
+        # Fresh projection against the CURRENT room (includes the newer
+        # user turn that moved the room).
+        try:
+            from gateway.agent_room_projection import project_for_member_windowed
+            room_msgs = messages_store.list_messages(room.room_id)
+            projected = project_for_member_windowed(
+                room_msgs, target_member=member_profile,
+            )
+            projected_hist = [p.to_openai() for p in projected]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("held-rerun: projection failed: %s", exc)
+            projected_hist = []
+
+        # True-Revise framing: tell the member its earlier draft may now be
+        # stale, and let it decide whether to update or stay silent.
+        original = str(extra.get("original_msg") or "")
+        revise_prompt = (
+            "【修订请求】你之前针对下面这条消息准备了回复：\n"
+            f"「{original}」\n"
+            f"但在你思考期间，群聊里又有了新消息（已在上方对话历史中）。\n"
+            "请基于当前对话判断：如果你的回复现在仍然贴切，就给出（可按需更新后的）回复；"
+            "如果已经过时、被别人覆盖、或不再需要，就回复空内容表示不再发言。\n\n"
+            f"你之前草拟的回复是：\n「{held.payload}」"
+        )
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from agent.secret_scope import (
+            build_profile_secret_scope, set_secret_scope, reset_secret_scope,
+        )
+        from tools.room_fetch_context_tool import bind_room_context
+
+        hydrate_profile_secret_sources(Path(profile_home))
+        _home_token = set_hermes_home_override(str(profile_home))
+        _secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        _room_ctx_token = bind_room_context(
+            messages_store, room.room_id, member_profile,
+        )
+        try:
+            run_result = await self._run_agent_inner(
+                revise_prompt, "", projected_hist, source, session_id,
+                _extra_toolsets=["room_member"],
+            )
+        finally:
+            _room_ctx_token.reset()
+            reset_secret_scope(_secret_token)
+            reset_hermes_home_override(_home_token)
+        fresh = (run_result.get("final_response", "") if run_result else "") or ""
+        fresh = fresh.strip()
+        # Persist the revised reply so future turns see it (the resolver
+        # delivers it; parity with the dispatcher's own append-on-success).
+        if fresh:
+            try:
+                messages_store.append(
+                    room.room_id, sender_kind="member",
+                    sender_name=member_profile, content=fresh,
+                )
+            except Exception as _e:  # noqa: BLE001
+                logger.warning("held-rerun: persist revised reply failed: %s", _e)
+        logger.info(
+            "held-rerun: member %s revised held #%s → %s",
+            member_profile, held.id,
+            f"{len(fresh)} chars" if fresh else "empty (stay-silent)",
+        )
+        return fresh
+
     async def _run_agent_inner(
         self,
         message: str,
@@ -27901,6 +29254,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -27934,13 +29288,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if run_generation is None or not session_key:
                 return True
             return self._is_session_run_current(session_key, run_generation)
-        
+
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        enabled_toolsets = self._resolve_enabled_toolsets_for_source(
-            user_config, source, platform_key
-        )
+        # M1.7 Agent Room: if the caller (observer_runner) passed a
+        # _toolsets_override via kwargs, inject it into platform_toolsets
+        # so _get_platform_tools returns only the observer's lockdown
+        # toolset (e.g. ["room_observer"]). Without this, the global
+        # gateway config's platform_toolsets leaks _HERMES_CORE_TOOLS
+        # into the observer, and route_to_member is never visible to
+        # the LLM (#M1-live-bug, found during DingTalk integration test).
+        #
+        # This is a distinct mechanism from upstream's adapter-driven
+        # toolsets_for_source() override (used for e.g. per-route webhook
+        # toolsets): ours is an explicit kwargs override the agent-room
+        # code passes on specific calls; upstream's is queried from the
+        # platform adapter itself. Compose both — kwargs override wins
+        # when present (it's the more specific, call-site-scoped signal),
+        # otherwise fall through to the adapter-aware resolver so webhook
+        # per-route overrides keep working everywhere else.
+        _toolsets_override = kwargs.pop("_toolsets_override", None)
+        # Raft AX 改造 3 (agent inbox): additive toolset(s) a caller wants
+        # UNIONED into whatever the source/profile normally resolves —
+        # distinct from _toolsets_override which REPLACES. Used to grant a
+        # room member the room_member toolset (room_fetch_context pull tool)
+        # on top of its own profile tools, without editing profile config.
+        _extra_toolsets = kwargs.pop("_extra_toolsets", None)
+        if _toolsets_override:
+            pt = dict(user_config.get("platform_toolsets") or {})
+            pt[platform_key] = list(_toolsets_override)
+            user_config = dict(user_config)
+            user_config["platform_toolsets"] = pt
+            # Also inject tool_search: off so tool_search doesn't
+            # re-add _HERMES_CORE_TOOLS back into agent.tools.
+            tools_cfg = dict(user_config.get("tools") or {})
+            ts_cfg = dict(tools_cfg.get("tool_search") or {})
+            ts_cfg["enabled"] = "off"
+            tools_cfg["tool_search"] = ts_cfg
+            user_config["tools"] = tools_cfg
+            logger.info(
+                "M1.7 DEBUG: _toolsets_override=%s platform_key=%s "
+                "platform_toolsets=%s tool_search=%s override=%s",
+                _toolsets_override, platform_key,
+                user_config.get("platform_toolsets"),
+                user_config.get("tools", {}).get("tool_search"),
+                get_hermes_home_override(),
+            )
+            from hermes_cli.tools_config import _get_platform_tools
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        else:
+            enabled_toolsets = self._resolve_enabled_toolsets_for_source(
+                user_config, source, platform_key
+            )
+        # 改造 3: union in any additive toolsets (e.g. room_member) the
+        # caller requested, de-duped, order-stable.
+        if _extra_toolsets:
+            _seen = set(enabled_toolsets)
+            for _ts in _extra_toolsets:
+                if _ts not in _seen:
+                    enabled_toolsets.append(_ts)
+                    _seen.add(_ts)
         agent_cfg_local = user_config.get("agent") or {}
         from agent.skill_utils import parse_config_string_list
 
@@ -28236,6 +29644,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_display_kind=persist_user_display_kind,
         )
         turn_runner = TurnRunner(self, turn_ctx)
+        # M1.7 Agent Room: pass toolsets_override to TurnRunner so its
+        # run_sync can force-filter agent.tools after AIAgent construction.
+        # This is the ONLY reliable interception point — run_sync lives in
+        # TurnRunner (a separate class), not a nested closure of
+        # _run_agent_inner, so local-variable closure capture does NOT work.
+        if _toolsets_override:
+            turn_runner._toolsets_override = _toolsets_override
         # Callback invoked by agent on tool lifecycle events — extracted to
         # TurnRunner.progress_callback (bound method, same signature).
         turn_ctx.progress_callback = turn_runner.progress_callback

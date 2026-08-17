@@ -44,6 +44,7 @@ import uuid
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -148,6 +149,34 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+
+# Stream liveness watchdog. DingTalk Stream Mode connections can silently go
+# "half-open": the TCP socket stays established and the SDK's ``async for
+# raw_message in websocket`` blocks forever waiting for business frames that
+# will never arrive, while ``start()`` neither returns nor raises — so the
+# adapter's own reconnect loop (``_run_stream``) never gets control. Observed
+# in production 2026-08-12: a connection went silent for 4.5 days with zero
+# exceptions until a manual restart. The fix is an application-layer watchdog
+# that actively pings the live websocket and force-closes it if the pong does
+# not return within a timeout, which breaks the SDK's inner loop and triggers
+# its (and our) reconnect path with a fresh ticket. A quiet-but-healthy
+# connection returns the pong promptly, so this never churns a live socket.
+STREAM_PING_INTERVAL = 60  # seconds between liveness pings
+STREAM_PING_TIMEOUT = 20  # seconds to await the pong before declaring half-open
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    """Read a positive int from env, falling back to ``default`` on any error."""
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 _DINGTALK_MEDIA_UPLOAD_URL = "https://oapi.dingtalk.com/media/upload"
@@ -343,6 +372,14 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         self._stream_client: Any = None
         self._stream_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        # Liveness watchdog tuning (env-overridable for ops without a redeploy).
+        self._ping_interval: int = _env_int(
+            "DINGTALK_STREAM_PING_INTERVAL", STREAM_PING_INTERVAL
+        )
+        self._ping_timeout: int = _env_int(
+            "DINGTALK_STREAM_PING_TIMEOUT", STREAM_PING_TIMEOUT
+        )
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._card_sdk: Optional[Any] = None
         self._robot_sdk: Optional[Any] = None
@@ -473,6 +510,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
             self._stream_task = asyncio.create_task(self._run_stream())
+            self._watchdog_task = asyncio.create_task(self._run_watchdog())
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
             return True
@@ -502,10 +540,75 @@ class DingTalkAdapter(BasePlatformAdapter):
             await asyncio.sleep(delay)
             backoff_idx += 1
 
+    async def _run_watchdog(self) -> None:
+        """Detect and recover half-open Stream connections.
+
+        Periodically pings the live websocket and awaits the pong. A healthy
+        (even if idle) connection returns the pong promptly; a half-open one
+        never does. On timeout we force the websocket closed, which unblocks
+        the SDK's inner ``async for`` and triggers a fresh reconnect with a new
+        ticket. See ``STREAM_PING_INTERVAL`` for the full rationale.
+        """
+        while self._running:
+            await asyncio.sleep(self._ping_interval)
+            if not self._running:
+                return
+
+            websocket = (
+                getattr(self._stream_client, "websocket", None)
+                if self._stream_client
+                else None
+            )
+            if websocket is None:
+                # Not connected yet (or mid-reconnect); nothing to probe.
+                continue
+
+            try:
+                # ws.ping() returns a future that resolves when the matching
+                # pong arrives. Awaiting it under a timeout is the actual
+                # half-open detector (the SDK's own keepalive never awaits it).
+                pong_waiter = await websocket.ping()
+                await asyncio.wait_for(pong_waiter, timeout=self._ping_timeout)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                # Includes asyncio.TimeoutError (pong never arrived) and any
+                # ConnectionClosed* raised by ping() on an already-dead socket.
+                if not self._running:
+                    return
+                logger.warning(
+                    "[%s] Stream liveness check failed (%s: %s) — forcing "
+                    "reconnect on suspected half-open connection",
+                    self.name,
+                    type(exc).__name__,
+                    exc,
+                )
+                try:
+                    await websocket.close()
+                except Exception as close_exc:
+                    logger.debug(
+                        "[%s] watchdog websocket close failed: %s",
+                        self.name,
+                        close_exc,
+                    )
+
     async def disconnect(self) -> None:
         """Disconnect from DingTalk."""
         self._running = False
         self._mark_disconnected()
+
+        # Stop the liveness watchdog first so it doesn't race the shutdown
+        # close() below and trigger a spurious "half-open" reconnect.
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await asyncio.wait_for(self._watchdog_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                logger.debug(
+                    "[%s] watchdog task did not exit cleanly during disconnect",
+                    self.name,
+                )
+            self._watchdog_task = None
 
         # Close the active websocket first so the stream task sees the
         # disconnection and exits cleanly, rather than getting stuck
@@ -2040,13 +2143,25 @@ class DingTalkAdapter(BasePlatformAdapter):
                 )
 
         if not session_webhook:
+            # Defect #2 fix: a session_webhook is only valid for a short
+            # window after the user's inbound message. Long agent turns and
+            # gateway restarts routinely outlive it, and the old code simply
+            # dropped the reply here ("Reply must follow an incoming
+            # message"). We instead fall back to the robot-native proactive
+            # message path (_send_robot_native_message → OrgGroupSend /
+            # PrivateChatSend), which authenticates with the app access
+            # token instead of the ephemeral webhook and can deliver at any
+            # time. This is the same capability already used for native
+            # media messages; here we wire it for plain markdown replies.
             logger.warning(
-                "[%s] No valid session_webhook for chat_id=%s",
+                "[%s] No valid session_webhook for chat_id=%s — falling back "
+                "to robot-native proactive send",
                 self.name, chat_id,
             )
-            return SendResult(
-                success=False,
-                error="No valid session_webhook available. Reply must follow an incoming message.",
+            return await self._send_markdown_proactive(
+                chat_id, content, at_payload, metadata,
+                emotion_names=emotion_names,
+                fire_final_reaction=fire_final_reaction,
             )
 
         if not self._http_client:
@@ -2079,6 +2194,26 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.warning(
                 "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
             )
+            # Defect #2 fix (continued): a webhook that DingTalk rejects
+            # (expired mid-flight → 400 "expired", robot removed from group,
+            # etc.) is just as dead as a missing one. Fall back to the
+            # proactive path rather than losing the reply. We only retry on
+            # 4xx (the webhook itself is bad); 5xx is a transient DingTalk
+            # server issue where a retry against the SAME dead webhook is
+            # pointless and the proactive path may hit the same outage.
+            if 400 <= resp.status_code < 500:
+                logger.warning(
+                    "[%s] webhook rejected (HTTP %d) — falling back to "
+                    "robot-native proactive send for chat_id=%s",
+                    self.name, resp.status_code, chat_id,
+                )
+                fallback = await self._send_markdown_proactive(
+                    chat_id, content, at_payload, metadata,
+                    emotion_names=emotion_names,
+                    fire_final_reaction=fire_final_reaction,
+                )
+                if fallback.success:
+                    return fallback
             return SendResult(
                 success=False, error=f"HTTP {resp.status_code}: {body[:200]}"
             )
@@ -2089,6 +2224,98 @@ class DingTalkAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Send error: %s", self.name, e)
             return SendResult(success=False, error=str(e))
+
+    async def _send_markdown_proactive(
+        self,
+        chat_id: str,
+        content: str,
+        at_payload: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        emotion_names: Optional[list] = None,
+        fire_final_reaction: bool = False,
+    ) -> SendResult:
+        """Deliver a markdown reply without a session_webhook (Defect #2).
+
+        A session_webhook is only valid for a short window after the user's
+        inbound message; long agent turns and gateway restarts outlive it.
+        Two webhook-independent transports exist for a Stream app, tried in
+        order of reliability:
+
+          1. **AI Card** (``_create_and_stream_card``) — the SDK-proven
+             transport. It authenticates with the app access token and
+             targets a group by ``dtv1.card//IM_GROUP.{conversation_id}``
+             (or a DM robot open-space), so it works with no live webhook.
+             This is the SAME path ``send()`` already prefers when an
+             inbound message context exists; here we drive it explicitly
+             for the resume case where that context was lost on restart, by
+             synthesizing a minimal message carrying ``conversation_id`` =
+             ``chat_id``.
+          2. **Robot-native ``sampleMarkdown``** (OrgGroupSend /
+             PrivateChatSend) — only works for a *published org-internal
+             robot*; a plain Stream app is rejected with ``robot 不存在``.
+             Kept as a best-effort last resort for deployments that DO have
+             one configured.
+
+        @mentions are best-effort on both paths: the proactive template
+        carries no structured ``at`` payload the way the webhook does, so
+        mention tokens are prepended inline instead.
+        """
+        normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
+        normalized = self._prepend_mention_tokens(normalized, at_payload or {})
+        if not normalized.strip():
+            return SendResult(success=False, error="Empty content; nothing to send")
+
+        # Transport 1: AI Card. Reuse a live inbound context if we still
+        # have one; otherwise synthesize a group-targeted message from
+        # chat_id (a DingTalk cid... conversationId).
+        card_result: Optional[SendResult] = None
+        if self._card_template_id and self._card_sdk:
+            current_message = self._message_contexts.get(chat_id)
+            if current_message is None:
+                current_message = SimpleNamespace(
+                    conversation_id=chat_id,
+                    # cid-group conversations use conversation_type "2"; a
+                    # cid... id that is actually a DM still delivers via the
+                    # group open-space fallback inside the card path, so
+                    # defaulting to group is the safer guess post-restart.
+                    conversation_type="2",
+                    sender_staff_id="",
+                    robot_code=self._robot_code,
+                )
+            card_result = await self._create_and_stream_card(
+                chat_id, current_message, normalized,
+                finalize=True,
+                at_users=None,
+            )
+            if card_result and card_result.success:
+                self._fire_custom_reactions(chat_id, emotion_names or [])
+                if fire_final_reaction:
+                    self._fire_done_reaction(chat_id)
+                return card_result
+
+        # Transport 2: robot-native sampleMarkdown (last resort).
+        result = await self._send_robot_native_message(
+            chat_id,
+            msg_key="sampleMarkdown",
+            msg_param={"title": "Hermes", "text": normalized},
+            metadata=metadata,
+        )
+        if result.success:
+            self._fire_custom_reactions(chat_id, emotion_names or [])
+            if fire_final_reaction:
+                self._fire_done_reaction(chat_id)
+            return result
+        # Neither transport worked — surface the more informative error.
+        if card_result is not None and not card_result.success:
+            return SendResult(
+                success=False,
+                error=(
+                    f"proactive AI Card failed ({card_result.error}); "
+                    f"robot-native fallback failed ({result.error})"
+                ),
+            )
+        return result
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
@@ -2182,6 +2409,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         open_conversation_id = (
             metadata.get("dingtalk_open_conversation_id")
             or metadata.get("open_conversation_id")
+            # Match the dingtalk_stream SDK's own proactive path, which uses
+            # incoming_message.conversation_id as openConversationId. chat_id
+            # is normally the cid conversationId already, but fall through to
+            # the cached inbound message's conversation_id when it isn't.
+            or getattr(current_message, "conversation_id", None)
             or chat_id
         )
         if not open_conversation_id:

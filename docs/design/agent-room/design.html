@@ -1,0 +1,2215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Room · M1 设计文档</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-code: #1a1f28;
+  --bg-hover: #21262d;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --text-strong: #f0f6fc;
+  --accent: #58a6ff;
+  --accent-dim: #79c0ff;
+  --green: #56d364;
+  --yellow: #e3b341;
+  --red: #f85149;
+  --purple: #d2a8ff;
+  --tag-bg: #1f2937;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  line-height: 1.65;
+  margin: 0;
+  padding: 0;
+  font-size: 14.5px;
+}
+
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 40px 32px;
+}
+
+header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 24px;
+  margin-bottom: 32px;
+}
+
+h1 {
+  color: var(--text-strong);
+  font-size: 30px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+.subtitle {
+  color: var(--text-dim);
+  font-size: 15px;
+  margin-bottom: 12px;
+}
+
+.meta-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.meta-row span {
+  background: var(--bg-card);
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+h2 {
+  color: var(--text-strong);
+  font-size: 22px;
+  font-weight: 600;
+  margin: 40px 0 16px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+h3 {
+  color: var(--text-strong);
+  font-size: 17px;
+  font-weight: 600;
+  margin: 24px 0 12px 0;
+}
+
+h4 {
+  color: var(--accent-dim);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 18px 0 10px 0;
+}
+
+p { margin: 12px 0; }
+
+code {
+  background: var(--bg-code);
+  color: var(--accent-dim);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Consolas, Monaco, monospace;
+  font-size: 13px;
+}
+
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+pre code {
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13.5px;
+}
+
+th, td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+
+th {
+  color: var(--text-strong);
+  font-weight: 600;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+tr:hover { background: rgba(88, 166, 255, 0.04); }
+
+ul, ol { padding-left: 22px; margin: 10px 0; }
+
+li { margin: 6px 0; }
+
+blockquote {
+  border-left: 3px solid var(--accent);
+  background: var(--bg-card);
+  padding: 12px 18px;
+  margin: 16px 0;
+  color: var(--text);
+  border-radius: 0 6px 6px 0;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin: 14px 0;
+}
+
+.card h3, .card h4 { margin-top: 0; }
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  font-weight: 500;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.tag-m1 { background: rgba(88, 166, 255, 0.15); color: var(--accent-dim); border: 1px solid rgba(88, 166, 255, 0.35); }
+.tag-m2 { background: rgba(210, 168, 255, 0.15); color: var(--purple); border: 1px solid rgba(210, 168, 255, 0.35); }
+.tag-m3 { background: rgba(227, 179, 65, 0.15); color: var(--yellow); border: 1px solid rgba(227, 179, 65, 0.35); }
+.tag-m4 { background: rgba(248, 81, 73, 0.15); color: var(--red); border: 1px solid rgba(248, 81, 73, 0.35); }
+
+.tag-good { background: rgba(86, 211, 100, 0.15); color: var(--green); }
+.tag-warn { background: rgba(227, 179, 65, 0.15); color: var(--yellow); }
+.tag-risk { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+
+.callout {
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 14px 0;
+  border-left: 3px solid;
+}
+
+.callout-info { background: rgba(88, 166, 255, 0.08); border-left-color: var(--accent); }
+.callout-warn { background: rgba(227, 179, 65, 0.08); border-left-color: var(--yellow); }
+.callout-good { background: rgba(86, 211, 100, 0.08); border-left-color: var(--green); }
+.callout-risk { background: rgba(248, 81, 73, 0.08); border-left-color: var(--red); }
+
+.callout-title {
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 6px;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 14px 0;
+}
+
+.decision-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.decision-key { color: var(--accent-dim); font-weight: 600; font-size: 13px; }
+.decision-value { color: var(--text-strong); font-size: 13.5px; margin-top: 4px; }
+
+.toc {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 24px;
+  margin-bottom: 32px;
+}
+
+.toc ol { padding-left: 20px; margin: 8px 0; }
+.toc li { margin: 4px 0; font-size: 13.5px; }
+.toc a { color: var(--accent); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+
+.arrow-flow {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  line-height: 2;
+  overflow-x: auto;
+}
+
+.footer {
+  margin-top: 60px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.spike-good::before {
+  content: "✓ ";
+  color: var(--green);
+  font-weight: bold;
+}
+.spike-fix::before {
+  content: "✎ ";
+  color: var(--yellow);
+  font-weight: bold;
+}
+.spike-warn::before {
+  content: "⚠ ";
+  color: var(--red);
+  font-weight: bold;
+}
+
+.number-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  text-align: center;
+  line-height: 22px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+<h1>Agent Room · M1 设计文档</h1>
+<div class="subtitle">给 hermes-agent 加"一组 profile + 一个观察者"的会话组织结构，绑定 DingTalk 群自动路由消息</div>
+<div class="meta-row">
+  <span>分支 <code>feat/agent-room-m1-design</code></span>
+  <span>基准 <code>449d4e711</code> (upstream tip 2026-08-07)</span>
+  <span>阶段 <span class="tag tag-m1">M1</span></span>
+  <span>状态 设计完成 · 待启动开发</span>
+</div>
+</header>
+
+<div class="toc">
+<strong>目录</strong>
+<ol>
+  <li><a href="#s1">一句话定位 & 与现有概念的关系</a></li>
+  <li><a href="#s_arch">架构图集（6 张 SVG）</a>
+    <ol style="margin-top:4px;font-size:13px;color:var(--text-dim);">
+      <li><a href="#arch1">系统全景</a></li>
+      <li><a href="#arch2">数据模型 · 三存储位置</a></li>
+      <li><a href="#arch3">消息路由时序</a></li>
+      <li><a href="#arch4">观察者 Profile 内部结构</a></li>
+      <li><a href="#arch5">Session ID 三层命名空间</a></li>
+      <li><a href="#arch6">Fence 机制状态机</a></li>
+    </ol>
+  </li>
+  <li><a href="#s2">四期路线图（M1 / M2 / M3 / M4）</a></li>
+  <li><a href="#s3">用户决策一览（全部拍板结果）</a></li>
+  <li><a href="#s4">M1 数据模型</a></li>
+  <li><a href="#s5">观察者 Profile 的构造与终止机制</a></li>
+  <li><a href="#s6">运行时路由完整流程</a></li>
+  <li><a href="#s7">Slash Commands + REST API</a></li>
+  <li><a href="#s8">跨成员上下文摘要（M1 关键补丁）</a></li>
+  <li><a href="#s9">架构评估（Spike 验证后 · 9/10 契合）</a></li>
+  <li><a href="#s10">M1 前置工作 + 工作量估计</a></li>
+  <li><a href="#s11">各期验收标准 + 线上测试方案</a>
+    <ol style="margin-top:4px;font-size:13px;color:var(--text-dim);">
+      <li><a href="#s11m1">M1 验收 · 手动 room + 自动路由</a></li>
+      <li><a href="#s11m2">M2 验收 · 自动规划 room</a></li>
+      <li><a href="#s11m3">M3 验收 · 完整投影 + 并发多成员</a></li>
+      <li><a href="#s11m4">M4 验收 · 任务拆分</a></li>
+      <li><a href="#s11cross">跨期回归测试原则</a></li>
+      <li><a href="#s11env">线上测试环境准备</a></li>
+    </ol>
+  </li>
+</ol>
+</div>
+
+<!-- ─────────────────── §1 定位 ─────────────────── -->
+<h2 id="s1">1. 一句话定位</h2>
+
+<div class="callout callout-info">
+<div class="callout-title">Agent Room 是什么</div>
+一个 <b>DingTalk 群</b> ↔ 一份 <b>成员 profile 名册</b> + 一个自动生成的 <b>观察者 profile</b>。
+群里的消息由观察者判断该路由到哪个成员 profile 应答，成员回复异步发回原群。
+<br><br>
+<b>本文档覆盖 Agent Room 完整四期规划（M1 → M4）</b>：
+<ul style="margin:8px 0 0 0;padding-left:22px;">
+  <li><b>M1</b>（本次开发目标）：手动创建 room、手动绑定群、单成员路由、异步回复 —— 拿到详细技术规格 + 前置架构 spike + 完整验收方案</li>
+  <li><b>M2 / M3 / M4</b>：自动规划、并发多成员、任务拆分 —— 拿到范围边界、工作量粗估、依赖关系、验收标准 + 线上测试方案</li>
+</ul>
+详见 §2 路线图和 §11 各期验收。
+</div>
+
+<h3>与 hermes-agent 现有概念的关系</h3>
+
+<table>
+<tr><th>现有概念</th><th>Agent Room 如何用</th></tr>
+<tr>
+  <td><code>Profile</code></td>
+  <td>观察者和成员都是普通 profile 目录（<code>~/.hermes/profiles/&lt;name&gt;/</code>），完全同构。观察者只是自动生成 + 打了 <code>.observer</code> 标记文件。</td>
+</tr>
+<tr>
+  <td><code>SourceAgentBinding</code></td>
+  <td>复用现有绑定表，通过 <code>fallback_extra.room_id</code> JSON 字段扩展，<b>零迁移、完全向后兼容</b>。旧的"群→单 profile"绑定继续正常工作。</td>
+</tr>
+<tr>
+  <td><code>_profile_runtime_scope</code></td>
+  <td>核心原语——临时切换 <code>HERMES_HOME</code> + secret scope。Room 路由的"先跑观察者、再跑成员"两次 turn 直接嵌套/串接它。</td>
+</tr>
+<tr>
+  <td>Kanban <code>decompose</code></td>
+  <td>M1 借鉴其 aux LLM 分诊模式的设计，但独立实现（输入是群消息，输出是 tool call）。M4 才复用其任务图能力。</td>
+</tr>
+<tr>
+  <td><code>request_hard_interrupt</code> + <code>get_active_subagent_parent</code></td>
+  <td>观察者 <code>route_to_member</code> 工具执行后强制中断 agent loop，避免继续 iterate 浪费 token。</td>
+</tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- §Arch 架构图集 ─ 6 张 SVG                                  -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="s_arch">🎨 架构图集 · 6 张 SVG</h2>
+<p class="diagram-caption">先睹为快，六张架构图完整覆盖 Room 系统的所有关键面。每张图对应下文一个或多个章节的详细文字描述。</p>
+
+<!-- ────────── ① 系统全景 ────────── -->
+<h3 id="arch1">① 系统全景 · Room 在 hermes-agent 中的位置</h3>
+<p class="diagram-caption">从 IM 平台入站消息到 agent 应答的完整数据流，Room 层是叠加在现有单 profile 通路上的新分支</p>
+
+<div class="diagram-box">
+<svg width="1080" height="520" viewBox="0 0 1120 520" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#56d364"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ffa657"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="30" width="180" height="80" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="120" y="60" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="600">DingTalk 群</text>
+  <text x="120" y="82" text-anchor="middle" fill="#8b949e" font-size="11">用户在此发消息</text>
+  <text x="120" y="98" text-anchor="middle" fill="#8b949e" font-size="11">session_webhook 可回写</text>
+
+  <rect x="290" y="30" width="220" height="80" rx="8" fill="#1a1f28" stroke="#c9d1d9" stroke-width="1"/>
+  <text x="400" y="55" text-anchor="middle" fill="#f0f6fc" font-size="13" font-weight="600">Gateway 消息入口</text>
+  <text x="400" y="75" text-anchor="middle" fill="#8b949e" font-size="11">gateway/run.py::process_message</text>
+  <text x="400" y="92" text-anchor="middle" fill="#8b949e" font-size="11">_resolve_profile_home_for_source()</text>
+
+  <rect x="580" y="30" width="240" height="80" rx="8" fill="#1a1f28" stroke="#c9d1d9" stroke-width="1"/>
+  <text x="700" y="55" text-anchor="middle" fill="#f0f6fc" font-size="13" font-weight="600">SourceAgentBindingStore</text>
+  <text x="700" y="75" text-anchor="middle" fill="#8b949e" font-size="11">source_binding_key → binding</text>
+  <text x="700" y="92" text-anchor="middle" fill="#8b949e" font-size="11">检查 fallback_extra.room_id</text>
+
+  <rect x="880" y="30" width="110" height="80" rx="4" fill="#2d2410" stroke="#e3b341" stroke-width="1.5"/>
+  <text x="935" y="60" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">分支判断</text>
+  <text x="935" y="78" text-anchor="middle" fill="#8b949e" font-size="10">room_id</text>
+  <text x="935" y="92" text-anchor="middle" fill="#8b949e" font-size="10">是否存在</text>
+
+  <rect x="620" y="180" width="260" height="70" rx="8" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="750" y="203" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">单 Profile 分支（现有 · 不变）</text>
+  <text x="750" y="222" text-anchor="middle" fill="#8b949e" font-size="11">binding.profile_name → _profile_runtime_scope</text>
+  <text x="750" y="238" text-anchor="middle" fill="#8b949e" font-size="11">走原有 _run_agent_inner</text>
+
+  <rect x="240" y="180" width="320" height="70" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="400" y="203" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">Room 分支（新增 · 本设计）</text>
+  <text x="400" y="222" text-anchor="middle" fill="#8b949e" font-size="11">AgentRoomStore.get_room(room_id)</text>
+  <text x="400" y="238" text-anchor="middle" fill="#8b949e" font-size="11">走 AgentRoomRouter._process_message_via_room()</text>
+
+  <rect x="70" y="310" width="240" height="90" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="190" y="335" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">Observer Profile</text>
+  <text x="190" y="355" text-anchor="middle" fill="#8b949e" font-size="11">room_&lt;name&gt;_observer</text>
+  <text x="190" y="372" text-anchor="middle" fill="#8b949e" font-size="11">toolsets: [room_observer]</text>
+  <text x="190" y="388" text-anchor="middle" fill="#8b949e" font-size="11">调用 route_to_member 决策</text>
+
+  <rect x="360" y="310" width="240" height="90" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="480" y="335" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Member Profiles (≤5)</text>
+  <text x="480" y="355" text-anchor="middle" fill="#8b949e" font-size="11">客服 / 财务 / 技术 / ...</text>
+  <text x="480" y="372" text-anchor="middle" fill="#8b949e" font-size="11">被路由的成员跑一次完整 turn</text>
+  <text x="480" y="388" text-anchor="middle" fill="#8b949e" font-size="11">通过 session_webhook 回消息</text>
+
+  <rect x="70" y="440" width="980" height="60" rx="8" fill="#0d1e1a" stroke="#56d364" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="560" y="465" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">现有基础设施（复用，不改动）</text>
+  <text x="560" y="486" text-anchor="middle" fill="#8b949e" font-size="11">_profile_runtime_scope · request_hard_interrupt · get_active_subagent_parent · aux LLM client · DingTalk session_webhook · _run_agent_inner</text>
+
+  <path d="M 210 70 L 285 70" stroke="#58a6ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 510 70 L 575 70" stroke="#58a6ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 820 70 L 875 70" stroke="#58a6ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+  <path d="M 990 100 Q 900 145 810 178" stroke="#56d364" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <path d="M 900 110 Q 700 145 480 178" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arrow-orange)"/>
+
+  <text x="880" y="150" fill="#56d364" font-size="11">无 room_id</text>
+  <text x="580" y="155" fill="#d2a8ff" font-size="11">有 room_id</text>
+
+  <path d="M 340 250 Q 250 275 190 305" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arrow-orange)"/>
+  <path d="M 470 250 Q 470 275 480 305" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arrow-orange)"/>
+
+  <text x="215" y="285" fill="#d2a8ff" font-size="11">路由决策</text>
+  <text x="500" y="285" fill="#d2a8ff" font-size="11">派发执行</text>
+
+  <path d="M 310 355 L 355 355" stroke="#e3b341" stroke-width="1.5" fill="none" marker-end="url(#arrow)" stroke-dasharray="3,3"/>
+  <text x="315" y="348" fill="#e3b341" font-size="10">选中</text>
+
+  <path d="M 380 400 Q 200 460 120 110" stroke="#79c0ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.6"/>
+  <text x="220" y="415" fill="#79c0ff" font-size="10">异步 session_webhook 回消息</text>
+
+  <path d="M 190 400 L 190 435" stroke="#56d364" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <path d="M 480 400 L 480 435" stroke="#56d364" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <path d="M 750 250 L 750 435" stroke="#56d364" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+</svg>
+</div>
+
+<div class="callout callout-info">
+<b>关键点</b>：Room 分支是<b>叠加</b>在现有单 profile 通路上的第二种绑定形态，通过 <code>SourceAgentBinding.fallback_extra.room_id</code> 区分。所有现有的"群→单 profile"绑定继续走绿色分支，零迁移。
+</div>
+
+<!-- ────────── ② 数据模型 ────────── -->
+<h3 id="arch2">② 数据模型 · 三个存储位置的关系</h3>
+<p class="diagram-caption">Room 数据分散在三处：新表 agent_rooms、扩展现有 SourceAgentBinding、profile 目录</p>
+
+<div class="diagram-box">
+<svg width="1080" height="490" viewBox="0 0 1120 490" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="30" width="330" height="290" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <rect x="30" y="30" width="330" height="34" rx="8" fill="#2b1f45"/>
+  <text x="195" y="52" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">agent_rooms  【新表】</text>
+  <text x="42" y="80" fill="#8b949e" font-size="10">gateway_agent_rooms.sqlite</text>
+  <text x="42" y="105" fill="#f0f6fc" font-size="11.5" font-family="monospace">room_id          PRIMARY KEY</text>
+  <text x="42" y="125" fill="#f0f6fc" font-size="11.5" font-family="monospace">room_name        UNIQUE</text>
+  <text x="42" y="145" fill="#f0f6fc" font-size="11.5" font-family="monospace">description</text>
+  <text x="42" y="165" fill="#f0f6fc" font-size="11.5" font-family="monospace">observer_profile ────┐</text>
+  <text x="42" y="185" fill="#f0f6fc" font-size="11.5" font-family="monospace">members_json     JSON│</text>
+  <text x="42" y="205" fill="#f0f6fc" font-size="11.5" font-family="monospace">default_member       │</text>
+  <text x="42" y="225" fill="#f0f6fc" font-size="11.5" font-family="monospace">created_at, ...      │</text>
+  <text x="42" y="258" fill="#e3b341" font-size="11">▸ N3: members_json 最多 5</text>
+  <text x="42" y="275" fill="#e3b341" font-size="11">▸ N1: observer 每 room 独立</text>
+  <text x="42" y="295" fill="#e3b341" font-size="11">▸ profile 是文件目录，无外键</text>
+
+  <rect x="400" y="30" width="330" height="290" rx="8" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5"/>
+  <rect x="400" y="30" width="330" height="34" rx="8" fill="#1a3529"/>
+  <text x="565" y="52" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">SourceAgentBinding  【扩展】</text>
+  <text x="412" y="80" fill="#8b949e" font-size="10">gateway_source_agent_bindings.sqlite（现有）</text>
+  <text x="412" y="105" fill="#f0f6fc" font-size="11.5" font-family="monospace">source_binding_key  PK</text>
+  <text x="412" y="125" fill="#f0f6fc" font-size="11.5" font-family="monospace">profile_name</text>
+  <text x="412" y="145" fill="#f0f6fc" font-size="11.5" font-family="monospace">agent_id</text>
+  <text x="412" y="165" fill="#f0f6fc" font-size="11.5" font-family="monospace">fallback_target     JSON</text>
+  <text x="412" y="185" fill="#f0f6fc" font-size="11.5" font-family="monospace">fallback_extra      JSON  ★</text>
+  <text x="412" y="205" fill="#f0f6fc" font-size="11.5" font-family="monospace">created_at, ...</text>
+  <text x="412" y="238" fill="#79c0ff" font-size="11">★ fallback_extra 内容（M1 新增）：</text>
+  <text x="422" y="256" fill="#c9d1d9" font-size="11" font-family="monospace">"session_webhook": ...,</text>
+  <text x="422" y="272" fill="#c9d1d9" font-size="11" font-family="monospace">"session_webhook_expired": ...,</text>
+  <text x="422" y="288" fill="#d2a8ff" font-size="11" font-family="monospace" font-weight="600">"room_id": "room_ab12cd34"  ← 新</text>
+  <text x="422" y="308" fill="#56d364" font-size="11">不改表结构 · 零迁移</text>
+
+  <rect x="770" y="30" width="320" height="290" rx="8" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <rect x="770" y="30" width="320" height="34" rx="8" fill="#1a3549"/>
+  <text x="930" y="52" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Profile 目录  【文件系统】</text>
+  <text x="782" y="80" fill="#8b949e" font-size="10">~/.hermes/profiles/&lt;name&gt;/</text>
+  <text x="782" y="106" fill="#f0f6fc" font-size="11.5" font-family="monospace">SOUL.md      自动生成 ★</text>
+  <text x="782" y="126" fill="#f0f6fc" font-size="11.5" font-family="monospace">config.yaml  toolsets 锁死</text>
+  <text x="782" y="146" fill="#f0f6fc" font-size="11.5" font-family="monospace">profile.yaml description</text>
+  <text x="782" y="166" fill="#f0f6fc" font-size="11.5" font-family="monospace">.observer    标记文件 ★</text>
+  <text x="782" y="186" fill="#f0f6fc" font-size="11.5" font-family="monospace">memory/      不启用</text>
+  <text x="782" y="220" fill="#e3b341" font-size="11">▸ SOUL.md 成员变动时重生成</text>
+  <text x="782" y="237" fill="#e3b341" font-size="11">▸ .observer 用于删除时保护</text>
+  <text x="782" y="254" fill="#e3b341" font-size="11">▸ memory 默认关闭（无需配）</text>
+  <text x="782" y="272" fill="#e3b341" font-size="11">▸ toolsets: [room_observer]</text>
+  <text x="782" y="289" fill="#e3b341" font-size="11">    只装 route_to_member 一个</text>
+  <text x="782" y="306" fill="#e3b341" font-size="11">    工具，行为被锁死</text>
+
+  <path d="M 360 165 L 400 165" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr-blue)"/>
+  <text x="360" y="158" fill="#58a6ff" font-size="10">room_id →</text>
+
+  <path d="M 305 175 Q 500 400 780 175" stroke="#d2a8ff" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)" stroke-dasharray="4,3" opacity="0.7"/>
+  <text x="530" y="420" fill="#d2a8ff" font-size="11">observer_profile 指向 profile 目录</text>
+
+  <path d="M 200 205 Q 400 460 830 200" stroke="#79c0ff" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)" stroke-dasharray="4,3" opacity="0.7"/>
+  <text x="360" y="480" fill="#79c0ff" font-size="11">members_json 各元素 → profile 目录</text>
+</svg>
+</div>
+
+<div class="callout callout-warn">
+<b>一致性维护</b>：三处存储的 CRUD 需要保证同步。<b>创建 room</b>：先建 profile 目录 → 再插 rooms 表；<b>删除 room</b>：先解绑（清 fallback_extra.room_id）→ Fence → 删 rooms 表 → 删 profile 目录。M1 需要一个孤立数据扫描修复逻辑跑在 gateway 启动时。
+</div>
+
+<!-- ────────── ③ 消息路由时序 ────────── -->
+<h3 id="arch3">③ 消息路由时序 · 5 步 + 摘要注入</h3>
+<p class="diagram-caption">从群消息到达到成员回复的完整时序，含 N4 轻量分类分支和 §8 跨成员摘要注入</p>
+
+<div class="diagram-box">
+<svg width="1080" height="720" viewBox="0 0 1120 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="seq-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c9d1d9"/>
+    </marker>
+    <marker id="seq-arr-return" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <rect x="40" y="20" width="120" height="40" rx="4" fill="#0f2537" stroke="#58a6ff"/>
+  <text x="100" y="45" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600">DingTalk 群</text>
+  <line x1="100" y1="60" x2="100" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="200" y="20" width="120" height="40" rx="4" fill="#161b22" stroke="#c9d1d9"/>
+  <text x="260" y="45" text-anchor="middle" fill="#f0f6fc" font-size="12" font-weight="600">Gateway 入口</text>
+  <line x1="260" y1="60" x2="260" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="360" y="20" width="140" height="40" rx="4" fill="#1c1730" stroke="#d2a8ff"/>
+  <text x="430" y="45" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="600">RoomRouter</text>
+  <line x1="430" y1="60" x2="430" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="540" y="20" width="140" height="40" rx="4" fill="#2d2410" stroke="#e3b341"/>
+  <text x="610" y="45" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">Aux LLM 分类</text>
+  <line x1="610" y1="60" x2="610" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="720" y="20" width="140" height="40" rx="4" fill="#1c1730" stroke="#d2a8ff"/>
+  <text x="790" y="45" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="600">Observer Profile</text>
+  <line x1="790" y1="60" x2="790" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="900" y="20" width="140" height="40" rx="4" fill="#0f2537" stroke="#58a6ff"/>
+  <text x="970" y="45" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600">Member Profile</text>
+  <line x1="970" y1="60" x2="970" y2="700" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <path d="M 100 100 L 258 100" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="180" y="93" text-anchor="middle" fill="#c9d1d9" font-size="11">用户消息</text>
+  <text x="6" y="105" fill="#58a6ff" font-size="11" font-weight="600">STEP 1</text>
+
+  <path d="M 258 130 L 102 130" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="180" y="123" text-anchor="middle" fill="#79c0ff" font-size="11">立刻回："已收到，正在选择处理人..."</text>
+  <text x="6" y="135" fill="#79c0ff" font-size="10">(不进入 turn)</text>
+
+  <path d="M 260 170 L 428 170" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="345" y="163" text-anchor="middle" fill="#c9d1d9" font-size="11">检测到 room_id，走 room 路径</text>
+
+  <path d="M 430 200 L 608 200" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="519" y="193" text-anchor="middle" fill="#c9d1d9" font-size="11">最近5条历史 + last_routed</text>
+  <text x="6" y="205" fill="#58a6ff" font-size="11" font-weight="600">STEP 2</text>
+
+  <path d="M 608 230 L 432 230" stroke="#8b949e" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="519" y="223" text-anchor="middle" fill="#8b949e" font-size="11">{ is_new_topic, confidence }</text>
+
+  <rect x="150" y="270" width="880" height="70" rx="6" fill="#1a1c14" stroke="#e3b341" stroke-dasharray="3,3"/>
+  <text x="590" y="292" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">分支 3a · 沿用路由：is_new_topic=False && confidence &gt; 0.7</text>
+  <text x="590" y="311" text-anchor="middle" fill="#8b949e" font-size="11">target_member = last_routed_member（跳过观察者 turn，省钱）</text>
+  <text x="590" y="328" text-anchor="middle" fill="#8b949e" font-size="11">→ 直接跳到 STEP 4</text>
+
+  <path d="M 430 370 L 788 370" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="605" y="363" text-anchor="middle" fill="#c9d1d9" font-size="11">分支 3b · 触发完整观察者 turn</text>
+  <text x="6" y="375" fill="#58a6ff" font-size="11" font-weight="600">STEP 3b</text>
+  <text x="605" y="386" text-anchor="middle" fill="#8b949e" font-size="10">_profile_runtime_scope + session=room_observer:{room_id}</text>
+
+  <rect x="720" y="405" width="140" height="60" rx="4" fill="#3d2a5e" stroke="#d2a8ff"/>
+  <text x="790" y="425" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">route_to_member</text>
+  <text x="790" y="442" text-anchor="middle" fill="#8b949e" font-size="10">工具调用 →</text>
+  <text x="790" y="457" text-anchor="middle" fill="#8b949e" font-size="10">request_hard_interrupt</text>
+
+  <path d="M 788 495 L 432 495" stroke="#8b949e" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="605" y="488" text-anchor="middle" fill="#8b949e" font-size="11">{ member, reason, is_new_topic } · loop 强制中断</text>
+
+  <path d="M 430 530 L 102 530" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#seq-arr-return)"/>
+  <text x="265" y="523" text-anchor="middle" fill="#79c0ff" font-size="11">edit_message：转交给 {target_member} 处理...</text>
+  <text x="6" y="535" fill="#58a6ff" font-size="11" font-weight="600">STEP 4</text>
+
+  <rect x="150" y="555" width="880" height="42" rx="6" fill="#331e1e" stroke="#f85149" stroke-dasharray="3,3"/>
+  <text x="590" y="575" text-anchor="middle" fill="#f85149" font-size="12" font-weight="600">STEP 4.5 · 跨成员摘要注入（M1 必做补丁）</text>
+  <text x="590" y="591" text-anchor="middle" fill="#8b949e" font-size="11">若 reason 含上一位成员的摘要 → 拼到成员消息前作为 context prefix</text>
+
+  <path d="M 430 630 L 968 630" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#seq-arr)"/>
+  <text x="700" y="623" text-anchor="middle" fill="#c9d1d9" font-size="11">派发（_profile_runtime_scope + _run_agent_inner）</text>
+  <text x="6" y="635" fill="#58a6ff" font-size="11" font-weight="600">STEP 5</text>
+  <text x="700" y="646" text-anchor="middle" fill="#8b949e" font-size="10">session=room_member:{room_id}:{member}</text>
+
+  <path d="M 970 690 Q 500 700 102 690" stroke="#79c0ff" stroke-width="1.5" fill="none" marker-end="url(#seq-arr-return)"/>
+  <text x="530" y="708" text-anchor="middle" fill="#79c0ff" font-size="11">异步 session_webhook · 成员回复消息</text>
+</svg>
+</div>
+
+<div class="callout callout-info">
+<b>关键防抖</b>：STEP 2 的轻量分类（N4）是核心成本控制——话题延续时直接沿用上次路由，避免每条消息都跑完整 observer turn。<b>关键 loop 终止</b>：STEP 3b 里的 <code>request_hard_interrupt</code> 是 M1 唯一必做的架构补丁，避免观察者调完 tool 后继续 iterate 浪费 token。
+</div>
+
+<!-- ────────── ④ 观察者 Profile 内部 ────────── -->
+<h3 id="arch4">④ 观察者 Profile 内部结构</h3>
+<p class="diagram-caption">观察者是普通 profile 目录，通过 4 个特殊约定被锁定成"只能路由不能干活"</p>
+
+<div class="diagram-box">
+<svg width="1080" height="480" viewBox="0 0 1120 480" xmlns="http://www.w3.org/2000/svg">
+  <rect x="30" y="30" width="1060" height="430" rx="10" fill="#1c1730" stroke="#d2a8ff" stroke-width="2"/>
+  <rect x="30" y="30" width="1060" height="40" rx="10" fill="#2b1f45"/>
+  <text x="560" y="55" text-anchor="middle" fill="#d2a8ff" font-size="14" font-weight="600">~/.hermes/profiles/room_&lt;name&gt;_observer/  【自动生成 · 用户不应手改】</text>
+
+  <rect x="60" y="100" width="240" height="200" rx="6" fill="#0f1621" stroke="#79c0ff"/>
+  <rect x="60" y="100" width="240" height="30" rx="6" fill="#1a3549"/>
+  <text x="180" y="120" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="600">SOUL.md  【自动模板】</text>
+  <text x="70" y="150" fill="#c9d1d9" font-size="11" font-family="monospace">You are the observer</text>
+  <text x="70" y="167" fill="#c9d1d9" font-size="11" font-family="monospace">for {room_name}...</text>
+  <text x="70" y="188" fill="#8b949e" font-size="11" font-family="monospace">## Members</text>
+  <text x="70" y="203" fill="#c9d1d9" font-size="11" font-family="monospace">- client_svc: desc</text>
+  <text x="70" y="218" fill="#c9d1d9" font-size="11" font-family="monospace">- finance:    desc</text>
+  <text x="70" y="233" fill="#c9d1d9" font-size="11" font-family="monospace">- tech:       desc</text>
+  <text x="70" y="255" fill="#8b949e" font-size="11" font-family="monospace">## Workflow</text>
+  <text x="70" y="270" fill="#c9d1d9" font-size="11" font-family="monospace">Emit route_to_member</text>
+  <text x="70" y="285" fill="#e3b341" font-size="10" font-style="italic">▸ 成员变动时重生成</text>
+
+  <rect x="330" y="100" width="240" height="200" rx="6" fill="#0f1621" stroke="#e3b341"/>
+  <rect x="330" y="100" width="240" height="30" rx="6" fill="#2d2410"/>
+  <text x="450" y="120" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">config.yaml  【锁死行为】</text>
+  <text x="340" y="150" fill="#c9d1d9" font-size="11" font-family="monospace">toolsets:</text>
+  <text x="340" y="167" fill="#d2a8ff" font-size="11" font-family="monospace" font-weight="600">  - room_observer  ★</text>
+  <text x="340" y="188" fill="#c9d1d9" font-size="11" font-family="monospace">model:</text>
+  <text x="340" y="203" fill="#c9d1d9" font-size="11" font-family="monospace">  provider: (aux)</text>
+  <text x="340" y="220" fill="#c9d1d9" font-size="11" font-family="monospace">  name: (aux)</text>
+  <text x="340" y="243" fill="#8b949e" font-size="10">memory 什么都不写</text>
+  <text x="340" y="258" fill="#8b949e" font-size="10">→ memory_enabled 默认 False</text>
+  <text x="340" y="282" fill="#e3b341" font-size="10" font-style="italic">▸ 只装 route_to_member 一个工具</text>
+
+  <rect x="600" y="100" width="240" height="200" rx="6" fill="#0f1621" stroke="#56d364"/>
+  <rect x="600" y="100" width="240" height="30" rx="6" fill="#1a3529"/>
+  <text x="720" y="120" text-anchor="middle" fill="#56d364" font-size="12" font-weight="600">profile.yaml</text>
+  <text x="610" y="150" fill="#c9d1d9" font-size="11" font-family="monospace">description: |</text>
+  <text x="610" y="167" fill="#c9d1d9" font-size="11" font-family="monospace">  Room observer for</text>
+  <text x="610" y="182" fill="#c9d1d9" font-size="11" font-family="monospace">  客户支持组</text>
+  <text x="610" y="203" fill="#d2a8ff" font-size="11" font-family="monospace" font-weight="600">description_auto: true</text>
+  <text x="610" y="220" fill="#c9d1d9" font-size="11" font-family="monospace">template: false</text>
+  <text x="610" y="255" fill="#56d364" font-size="10" font-style="italic">▸ description_auto=true</text>
+  <text x="610" y="272" fill="#56d364" font-size="10" font-style="italic">   意味着可编辑但会被</text>
+  <text x="610" y="287" fill="#56d364" font-size="10" font-style="italic">   下次成员变动重写</text>
+
+  <rect x="870" y="100" width="200" height="200" rx="6" fill="#0f1621" stroke="#f85149"/>
+  <rect x="870" y="100" width="200" height="30" rx="6" fill="#331e1e"/>
+  <text x="970" y="120" text-anchor="middle" fill="#f85149" font-size="12" font-weight="600">.observer  【标记】</text>
+  <text x="880" y="155" fill="#c9d1d9" font-size="11">（空文件）</text>
+  <text x="880" y="182" fill="#8b949e" font-size="11">存在即表示：</text>
+  <text x="880" y="200" fill="#c9d1d9" font-size="11">此 profile 是自动生成</text>
+  <text x="880" y="218" fill="#c9d1d9" font-size="11">的 room observer</text>
+  <text x="880" y="248" fill="#e3b341" font-size="10">用途：</text>
+  <text x="880" y="265" fill="#c9d1d9" font-size="10">▸ /agent list 打 badge</text>
+  <text x="880" y="280" fill="#c9d1d9" font-size="10">▸ 删除时检查是否被</text>
+  <text x="880" y="295" fill="#c9d1d9" font-size="10">   room 引用</text>
+
+  <rect x="60" y="330" width="1010" height="110" rx="8" fill="#0f2537" stroke="#e3b341" stroke-width="1.5"/>
+  <text x="565" y="356" text-anchor="middle" fill="#e3b341" font-size="13" font-weight="600">工具锁死机制（三层锁定，线上 DingTalk 测试修正）</text>
+  <text x="80" y="382" fill="#c9d1d9" font-size="11.5">
+    第一层：观察者的 config.yaml 声明 <tspan fill="#d2a8ff" font-family="monospace">toolsets: [room_observer]</tspan> + <tspan fill="#d2a8ff" font-family="monospace">tool_search: off</tspan>
+  </text>
+  <text x="80" y="402" fill="#c9d1d9" font-size="11.5">
+    第二层：<tspan fill="#79c0ff" font-family="monospace">registry.register()</tspan> 注册 route_to_member schema，否则 _compute_tool_definitions 返回 0 个 schema
+  </text>
+  <text x="80" y="422" fill="#c9d1d9" font-size="11.5">
+    第三层：TurnRunner.run_sync 里用 <tspan fill="#e3b341" font-family="monospace">_LockedTools</tspan> 替换 agent.tools + 同步 <tspan fill="#e3b341" font-family="monospace">valid_tool_names</tspan>，阻止 tool_search 重新加核心工具
+  </text>
+</svg>
+</div>
+
+<!-- ────────── ⑤ Session ID ────────── -->
+<h3 id="arch5">⑤ Session ID 三层命名空间</h3>
+<p class="diagram-caption">Room 用两种确定性 session_id 隔离观察者与成员，不影响现有单聊 session_key</p>
+
+<div class="diagram-box">
+<svg width="1080" height="470" viewBox="0 0 1120 470" xmlns="http://www.w3.org/2000/svg">
+  <rect x="30" y="30" width="340" height="410" rx="10" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <rect x="30" y="30" width="340" height="40" rx="10" fill="#2b1f45"/>
+  <text x="200" y="55" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">观察者 Session（每 room 一条）</text>
+  <text x="45" y="95" fill="#c9d1d9" font-size="12">命名：</text>
+  <rect x="45" y="105" width="310" height="30" rx="4" fill="#0f1621"/>
+  <text x="200" y="125" text-anchor="middle" fill="#79c0ff" font-size="12" font-family="monospace">room_observer:{room_id}</text>
+  <text x="45" y="160" fill="#c9d1d9" font-size="12">生命周期：Room 存在则持续</text>
+  <text x="45" y="185" fill="#c9d1d9" font-size="12">上下文：极小</text>
+  <text x="60" y="205" fill="#8b949e" font-size="11">观察者只调 route_to_member 工具</text>
+  <text x="60" y="220" fill="#8b949e" font-size="11">不产任何用户可见文本</text>
+  <text x="45" y="248" fill="#c9d1d9" font-size="12">重置触发：</text>
+  <text x="60" y="268" fill="#e3b341" font-size="11">▸ 成员名册变动（Fence）</text>
+  <text x="60" y="285" fill="#e3b341" font-size="11">▸ /room delete</text>
+  <text x="60" y="302" fill="#e3b341" font-size="11">▸ 手动 clear-context 命令</text>
+  <text x="45" y="335" fill="#c9d1d9" font-size="12">典型历史内容：</text>
+  <rect x="45" y="345" width="310" height="80" rx="4" fill="#0f1621"/>
+  <text x="55" y="363" fill="#8b949e" font-size="10" font-family="monospace">[user] 用户消息 1</text>
+  <text x="55" y="377" fill="#8b949e" font-size="10" font-family="monospace">[tool_call] route_to_member(finance)</text>
+  <text x="55" y="391" fill="#8b949e" font-size="10" font-family="monospace">[user] 用户消息 2</text>
+  <text x="55" y="405" fill="#8b949e" font-size="10" font-family="monospace">[tool_call] route_to_member(client)</text>
+  <text x="55" y="419" fill="#8b949e" font-size="10" font-family="monospace">...</text>
+
+  <rect x="390" y="30" width="340" height="410" rx="10" fill="#0f2537" stroke="#58a6ff" stroke-width="1.5"/>
+  <rect x="390" y="30" width="340" height="40" rx="10" fill="#1a3549"/>
+  <text x="560" y="55" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">成员 Session（每 room × member 一条）</text>
+  <text x="405" y="95" fill="#c9d1d9" font-size="12">命名：</text>
+  <rect x="405" y="105" width="310" height="30" rx="4" fill="#0f1621"/>
+  <text x="560" y="125" text-anchor="middle" fill="#79c0ff" font-size="11.5" font-family="monospace">room_member:{room_id}:{member}</text>
+  <text x="405" y="160" fill="#c9d1d9" font-size="12">生命周期：Room 存在则持续</text>
+  <text x="405" y="185" fill="#c9d1d9" font-size="12">上下文：正常大小</text>
+  <text x="420" y="205" fill="#8b949e" font-size="11">M1: 只含自己被路由过的历史</text>
+  <text x="420" y="220" fill="#8b949e" font-size="11">M3: 完整 room 历史 + 单人称改写</text>
+  <text x="405" y="248" fill="#c9d1d9" font-size="12">重置触发：</text>
+  <text x="420" y="268" fill="#e3b341" font-size="11">▸ 该成员从 room 移除</text>
+  <text x="420" y="285" fill="#e3b341" font-size="11">▸ /room delete</text>
+  <text x="420" y="302" fill="#e3b341" font-size="11">▸ 手动 clear-context 命令</text>
+  <text x="405" y="335" fill="#c9d1d9" font-size="12">典型历史内容：</text>
+  <rect x="405" y="345" width="310" height="80" rx="4" fill="#0f1621"/>
+  <text x="415" y="363" fill="#8b949e" font-size="10" font-family="monospace">[user] &gt; 上一位: {摘要}</text>
+  <text x="415" y="377" fill="#8b949e" font-size="10" font-family="monospace">        &gt; 用户消息</text>
+  <text x="415" y="391" fill="#8b949e" font-size="10" font-family="monospace">[assistant] {成员回复}</text>
+  <text x="415" y="405" fill="#8b949e" font-size="10" font-family="monospace">[tool_call] ... (成员真的干活)</text>
+  <text x="415" y="419" fill="#8b949e" font-size="10" font-family="monospace">[assistant] {最终回复}</text>
+
+  <rect x="750" y="30" width="340" height="410" rx="10" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <rect x="750" y="30" width="340" height="40" rx="10" fill="#1a3529"/>
+  <text x="920" y="55" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">现有单聊 Session（不变）</text>
+  <text x="765" y="95" fill="#c9d1d9" font-size="12">命名：</text>
+  <rect x="765" y="105" width="310" height="30" rx="4" fill="#0f1621"/>
+  <text x="920" y="125" text-anchor="middle" fill="#79c0ff" font-size="11.5" font-family="monospace">build_session_key(source, ...)</text>
+  <text x="765" y="160" fill="#c9d1d9" font-size="12">生命周期：会话生命周期</text>
+  <text x="765" y="185" fill="#c9d1d9" font-size="12">上下文：正常大小</text>
+  <text x="780" y="205" fill="#8b949e" font-size="11">用户在群/DM 里连续对话</text>
+  <text x="765" y="248" fill="#c9d1d9" font-size="12">规则：</text>
+  <text x="780" y="268" fill="#e3b341" font-size="11">▸ DM: source:{platform}:dm:{chat_id}</text>
+  <text x="780" y="285" fill="#e3b341" font-size="11">▸ 群+线程: +thread_id</text>
+  <text x="780" y="302" fill="#e3b341" font-size="11">▸ 群无线程: +user_id (可选)</text>
+  <text x="765" y="335" fill="#c9d1d9" font-size="12">M1 保证：</text>
+  <rect x="765" y="345" width="310" height="80" rx="4" fill="#0d1f1a"/>
+  <text x="775" y="365" fill="#56d364" font-size="11">✓ 未绑定 room 的会话完全不受影响</text>
+  <text x="775" y="383" fill="#56d364" font-size="11">✓ session_key 与 room 前缀不撞</text>
+  <text x="775" y="401" fill="#56d364" font-size="11">✓ 老用户升级零迁移</text>
+  <text x="775" y="419" fill="#56d364" font-size="11">✓ 单 profile 绑定的群继续走它</text>
+</svg>
+</div>
+
+<!-- ────────── ⑥ Fence 机制 ────────── -->
+<h3 id="arch6">⑥ Fence 机制 · 保护正在跑的 turn 不污染新状态</h3>
+<p class="diagram-caption">当 room 结构发生变动时，正在执行的 agent turn 输出被丢弃，防止旧状态迟到污染</p>
+
+<div class="diagram-box">
+<svg width="1080" height="500" viewBox="0 0 1120 500" xmlns="http://www.w3.org/2000/svg">
+  <line x1="60" y1="450" x2="1060" y2="450" stroke="#30363d" stroke-width="2"/>
+  <text x="60" y="475" fill="#8b949e" font-size="11">t=0</text>
+  <text x="1030" y="475" fill="#8b949e" font-size="11">t →</text>
+
+  <line x1="120" y1="440" x2="120" y2="460" stroke="#58a6ff" stroke-width="2"/>
+  <text x="120" y="435" text-anchor="middle" fill="#58a6ff" font-size="11">用户发消息</text>
+
+  <line x1="240" y1="440" x2="240" y2="460" stroke="#d2a8ff" stroke-width="2"/>
+  <text x="240" y="435" text-anchor="middle" fill="#d2a8ff" font-size="11">Observer turn 开始</text>
+
+  <line x1="380" y1="440" x2="380" y2="460" stroke="#f85149" stroke-width="2"/>
+  <text x="380" y="435" text-anchor="middle" fill="#f85149" font-size="11">用户 /room unbind</text>
+  <text x="380" y="415" text-anchor="middle" fill="#f85149" font-size="11" font-weight="600">FENCE!</text>
+
+  <line x1="580" y1="440" x2="580" y2="460" stroke="#d2a8ff" stroke-width="2"/>
+  <text x="580" y="435" text-anchor="middle" fill="#d2a8ff" font-size="11">Observer 完成 · 输出被丢弃</text>
+
+  <line x1="780" y1="440" x2="780" y2="460" stroke="#8b949e" stroke-width="2" stroke-dasharray="3,3"/>
+  <text x="780" y="435" text-anchor="middle" fill="#8b949e" font-size="11">Member turn 未派发</text>
+
+  <rect x="30" y="30" width="330" height="240" rx="8" fill="#1c1730" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="195" y="55" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="600">Fence 触发条件</text>
+  <text x="45" y="90" fill="#c9d1d9" font-size="12" font-weight="600">/room delete &lt;name&gt;</text>
+  <text x="55" y="107" fill="#8b949e" font-size="11">删除整个 room</text>
+  <text x="45" y="135" fill="#c9d1d9" font-size="12" font-weight="600">/room unbind</text>
+  <text x="55" y="152" fill="#8b949e" font-size="11">解绑当前群</text>
+  <text x="45" y="180" fill="#c9d1d9" font-size="12" font-weight="600">/room members add|remove</text>
+  <text x="55" y="197" fill="#8b949e" font-size="11">成员名册变动</text>
+  <text x="45" y="225" fill="#c9d1d9" font-size="12" font-weight="600">/room clear-context</text>
+  <text x="55" y="242" fill="#8b949e" font-size="11">显式清空历史</text>
+  <text x="45" y="262" fill="#f85149" font-size="10" font-style="italic">▸ 都会同步执行下面的动作 →</text>
+
+  <rect x="400" y="30" width="330" height="240" rx="8" fill="#331e1e" stroke="#f85149" stroke-width="1.5"/>
+  <text x="565" y="55" text-anchor="middle" fill="#f85149" font-size="13" font-weight="600">Fence 动作</text>
+  <text x="415" y="90" fill="#c9d1d9" font-size="12">1. 收集 room 所有活跃 session_id：</text>
+  <text x="430" y="108" fill="#8b949e" font-size="10.5" font-family="monospace">room_observer:{room_id}</text>
+  <text x="430" y="123" fill="#8b949e" font-size="10.5" font-family="monospace">room_member:{room_id}:{m1}</text>
+  <text x="430" y="138" fill="#8b949e" font-size="10.5" font-family="monospace">room_member:{room_id}:{m2}</text>
+  <text x="430" y="153" fill="#8b949e" font-size="10.5" font-family="monospace">...</text>
+  <text x="415" y="180" fill="#c9d1d9" font-size="12">2. 加入 fenced_sessions 内存集合：</text>
+  <rect x="430" y="188" width="260" height="34" rx="4" fill="#0f1621"/>
+  <text x="440" y="209" fill="#f85149" font-size="11" font-family="monospace">AgentRoomStore.fenced_sessions</text>
+  <text x="415" y="240" fill="#c9d1d9" font-size="12">3. 后续检查</text>
+  <text x="430" y="257" fill="#8b949e" font-size="11">每次要 emit 消息前检查</text>
+
+  <rect x="770" y="30" width="320" height="240" rx="8" fill="#0d1f1a" stroke="#56d364" stroke-width="1.5"/>
+  <text x="930" y="55" text-anchor="middle" fill="#56d364" font-size="13" font-weight="600">检查点（守门函数）</text>
+  <text x="785" y="90" fill="#c9d1d9" font-size="12">观察者 turn 完成前：</text>
+  <text x="800" y="107" fill="#8b949e" font-size="11">检查 room_observer:xxx 是否 fenced</text>
+  <text x="800" y="122" fill="#f85149" font-size="11">是 → 丢弃 route_to_member 决策</text>
+  <text x="785" y="155" fill="#c9d1d9" font-size="12">成员派发前：</text>
+  <text x="800" y="172" fill="#8b949e" font-size="11">检查 room_member:xxx:m 是否 fenced</text>
+  <text x="800" y="187" fill="#f85149" font-size="11">是 → 不派发成员 turn</text>
+  <text x="785" y="220" fill="#c9d1d9" font-size="12">成员回消息前：</text>
+  <text x="800" y="237" fill="#8b949e" font-size="11">检查是否 fenced</text>
+  <text x="800" y="252" fill="#f85149" font-size="11">是 → 丢弃输出不发到群</text>
+
+  <rect x="30" y="290" width="1060" height="140" rx="8" fill="#0f1621" stroke="#30363d"/>
+  <text x="560" y="315" text-anchor="middle" fill="#f0f6fc" font-size="13" font-weight="600">时序示例：改绑发生在观察者 turn 进行中</text>
+  <rect x="240" y="335" width="340" height="16" rx="3" fill="#3d2a5e" opacity="0.6"/>
+  <text x="410" y="347" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="600">Observer turn 执行中</text>
+  <rect x="240" y="360" width="140" height="16" rx="3" fill="#56d364" opacity="0.3"/>
+  <text x="310" y="372" text-anchor="middle" fill="#56d364" font-size="10">turn 正常</text>
+  <rect x="380" y="360" width="200" height="16" rx="3" fill="#f85149" opacity="0.3"/>
+  <text x="480" y="372" text-anchor="middle" fill="#f85149" font-size="10">已被 fenced（迟到）</text>
+  <text x="60" y="405" fill="#8b949e" font-size="11">用户在 t=380 触发 fence 时，t=240 就开始的 observer turn 已经在跑；</text>
+  <text x="60" y="420" fill="#8b949e" font-size="11">turn 在 t=580 完成后，守门函数检查发现 session 已 fenced，丢弃决策 → 成员 turn 不派发 → 无污染。</text>
+</svg>
+</div>
+
+<div class="callout callout-warn">
+<b>为什么需要 Fence</b>：如果不做这个保护，用户 unbind 后正在跑的 observer 完成 → 派发成员 → 成员完成 → session_webhook 发消息回群——群已经解绑但收到了一条迟到的 room 消息，用户会困惑。M1 简化版 Fence 只在 <b>room 结构变化</b> 时触发（Studio 版本是每消息细粒度 fence），对 M1 场景足够。
+</div>
+
+<!-- ─────────────────── §2 四期路线图 ─────────────────── -->
+<h2 id="s2">2. 四期路线图</h2>
+
+<p class="diagram-caption">
+每期边界严格互斥（不重叠）。前期做的东西后期不重做，只是扩展。<b>验收标准 + 线上测试方案</b>见 §11。
+</p>
+
+<h3>2.1 总览</h3>
+
+<table>
+<tr>
+  <th>阶段</th>
+  <th>核心能力（本期新增）</th>
+  <th>工作量估算</th>
+  <th>关键依赖</th>
+</tr>
+<tr>
+  <td><span class="tag tag-m1">M1</span></td>
+  <td>手动创建 room、手动绑定 IM 群、观察者 <b>自动</b> 生成、单成员路由、异步回复</td>
+  <td>~2700-3000 行 / 2 周</td>
+  <td>无（仅依赖现有 hermes-agent 基础设施）</td>
+</tr>
+<tr>
+  <td><span class="tag tag-m2">M2</span></td>
+  <td>从自然语言需求自动规划 room（拆能力域 → 匹配 profile / 缺失自动 create + 生成 description）</td>
+  <td>~1500-2000 行 / 1.5 周</td>
+  <td>M1 完整交付（M2 只写"规划器"，落地调 M1 的 Room CRUD）</td>
+</tr>
+<tr>
+  <td><span class="tag tag-m3">M3</span></td>
+  <td>完整上下文投影层：成员看 room 完整历史（单人称改写）+ 消息乱序修复 + 并发多成员回复</td>
+  <td>~2500-3000 行 / 3 周</td>
+  <td>M1 完整交付。<b>会重写 M1 的成员 session 加载逻辑</b>（M1 的"看自己历史"是简版，M3 换成完整投影）</td>
+</tr>
+<tr>
+  <td><span class="tag tag-m4">M4</span></td>
+  <td>观察者判定"复杂任务"时走 kanban 拆分：任务图 + 依赖执行 + 综合回群</td>
+  <td>~1500-2000 行 / 2 周</td>
+  <td>
+    <b>必需依赖</b>：M1 + kanban 现有 decompose 能力<br>
+    <b>可选依赖</b>：M3（若要子任务<b>并行</b>执行则需 M3 的并发派发；若接受串行执行则可从 M1 直跳 M4）<br>
+    <b>接口影响</b>：给 <code>room_observer</code> toolset 加第二个工具 <code>decompose_and_route</code>（M1 的"单工具锁死"设计需放松到"两个路由类工具"）
+  </td>
+</tr>
+<tr>
+  <td colspan="2"><b>合计（M1→M4 全交付）</b></td>
+  <td><b>~8000-10000 行 / 8-10 周</b></td>
+  <td>非并行，每期依赖前期，需线性排期</td>
+</tr>
+</table>
+
+<div class="callout callout-info">
+<div class="callout-title">路线选择建议</div>
+如果你觉得"手动 <code>/room create --members ...</code> 太憋屈、上线就要一句需求自动组装"——那 <b>M1 + M2 合并做</b>（3.5 周）而不是拆两期。<br>
+如果你觉得"先跑通再说，手动组一次能验证机制没毛病"——那 <b>M1 独立交付</b>，用 1-2 周实际使用数据决定要不要投 M2/M3/M4。
+</div>
+
+<h4>2.1.1 可行的交付路径（不是必须 M1→M2→M3→M4 一路顺次）</h4>
+
+<table>
+<tr><th>路径</th><th>周期</th><th>适用场景</th><th>需知的取舍</th></tr>
+<tr>
+  <td><b>只 M1</b></td>
+  <td>2 周</td>
+  <td>先跑通验证；DingTalk 群规模不大，管理员手动 create 可接受</td>
+  <td>用户体验有 UX 断崖（成员只看自己历史，靠摘要注入救场）</td>
+</tr>
+<tr>
+  <td><b>M1 + M2</b></td>
+  <td>3.5 周</td>
+  <td>用户不想手动指定成员，要"一句话组装 room"</td>
+  <td>依然只做单成员路由 + 成员看自己历史，M3 UX 问题还在</td>
+</tr>
+<tr>
+  <td><b>M1 + M3</b>（跳过 M2）</td>
+  <td>5 周</td>
+  <td>管理员愿意手动创建，但要求成员之间上下文完整贯通</td>
+  <td>依然缺自动规划；上线后 M2 补齐时能力平滑扩展</td>
+</tr>
+<tr>
+  <td><b>M1 + M4</b>（跳过 M2 + M3）</td>
+  <td>4 周</td>
+  <td>业务本身以复杂多步任务为主（不是简单问答），单成员基本用不到</td>
+  <td>子任务只能串行执行；跨成员上下文用摘要注入救场</td>
+</tr>
+<tr>
+  <td><b>M1 + M2 + M3</b></td>
+  <td>6.5 周</td>
+  <td>要"一句需求组装 room + 完整多成员协作"，但不做任务拆分</td>
+  <td>观察者路由粒度最多到"多成员并发"，不做任务图</td>
+</tr>
+<tr>
+  <td><b>全套 M1 → M4</b></td>
+  <td>8-10 周</td>
+  <td>要完整达到用户原话的目标形态</td>
+  <td>非并行开发，需严格按依赖顺序排期</td>
+</tr>
+</table>
+
+<h3>2.2 M1 · 核心闭环（本文档所有细节章节的对象）</h3>
+
+<table>
+<tr><th>M1 明确包含</th><th>M1 明确不包含（推给后续期）</th></tr>
+<tr>
+<td>
+▸ 数据模型：<code>agent_rooms</code> 表、扩展 <code>SourceAgentBinding.fallback_extra.room_id</code><br>
+▸ <code>/room create --members p1,p2,p3</code>（手动指定成员）<br>
+▸ 观察者 profile <b>自动</b> 生成（SOUL.md / config.yaml / .observer）<br>
+▸ <code>route_to_member</code> 工具 + loop 终止<br>
+▸ <code>/room bind</code> / <code>/room unbind</code>（手动绑定 IM 群）<br>
+▸ 运行时路由：轻量分类 → 观察者 turn → 单成员派发 → session_webhook 回消息<br>
+▸ 跨成员摘要注入（在 <code>reason</code> 字段带上一位成员最后回复摘要）<br>
+▸ Fence 机制（Room 结构变化时触发）<br>
+▸ Dashboard REST API（<code>/api/rooms</code> 全套 CRUD）+ 极简管理页
+</td>
+<td>
+▸ 从需求自动规划成员名单（→ M2）<br>
+▸ 自动创建缺失的成员 profile（→ M2）<br>
+▸ 成员之间共享完整对话历史（→ M3）<br>
+▸ 消息乱序修复（→ M3）<br>
+▸ 并发多成员同时回复（→ M3）<br>
+▸ 观察者判定复杂任务时拆分成子任务图（→ M4）<br>
+▸ 房间成员之间用 <code>delegate_task</code> 互相调用的策略（→ M4）
+</td>
+</tr>
+</table>
+
+<h3>2.3 M2 · 自动规划 room</h3>
+
+<table>
+<tr><th>M2 明确包含</th><th>M2 明确不包含</th></tr>
+<tr>
+<td>
+▸ 新增 slash command <code>/room plan &lt;需求描述&gt;</code>（自然语言输入）<br>
+▸ Room-planner 用 aux LLM 调用（复用 <code>kanban_decompose</code> 那套模板）<br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 输入：需求 + 现有 profile 名册 + 各 profile description<br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 输出：建议成员列表 + 需新建的缺失 profile + room description<br>
+▸ 规划结果 <b>先展示给用户确认</b>，用户回复 Y/N 才落地<br>
+▸ 确认后自动串起 <code>/agent create</code>（缺失 profile）+ <code>profile_describer</code>（生成 description）+ M1 的 <code>/room create</code>（组装 room）<br>
+▸ Dashboard 侧：需求输入框 → 规划预览 → 一键确认<br>
+▸ 规划失败的兜底：aux LLM 不可用/规划荒谬时给明确错误提示，不自动降级
+</td>
+<td>
+▸ 不改变 M1 的 room 数据模型（M2 只写规划器，最终落地还是走 M1 的 Room CRUD）<br>
+▸ 不涉及运行时路由（那是 M1 的事）<br>
+▸ 不做"规划后自动 bind 群"——bind 依然是显式动作（M1 <code>/room bind</code>）<br>
+▸ 不做规划历史/版本追踪（M2 每次规划都是独立事件）
+</td>
+</tr>
+</table>
+
+<h3>2.4 M3 · 完整上下文投影 + 并发多成员</h3>
+
+<table>
+<tr><th>M3 明确包含</th><th>M3 明确不包含</th></tr>
+<tr>
+<td>
+▸ 新增 <code>gateway/agent_room_projection.py</code>：把 room 完整消息历史投影成"以某成员为中心"的对话形式<br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 别人的消息 → <code>role: user</code>，前缀 <code>[发送者名]:</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 自己的消息 → <code>role: assistant</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;- 工具调用/结果 → 转描述文本塞进 user 消息<br>
+▸ 消息落库时的顺序保证（<code>gc_messages</code> 类的排序修复）<br>
+▸ 观察者能一次 <code>route_to_member</code> 输出多个成员（数组），触发并发派发<br>
+▸ 并发派发时的 <b>结果聚合</b>：多个成员同时回，是全都发出去、还是选最好的、还是让观察者综合<br>
+▸ M1 的"看自己被路由过的历史"简版逻辑被 M3 <b>整体替换</b>（M1 的 stub 代码被删）<br>
+▸ 完整 room 消息历史存储表（<code>agent_room_messages</code>）——M1 是靠成员各自 session，M3 需要一份共享的
+</td>
+<td>
+▸ 不做任务拆分（"这个需求要三步依赖顺序做"是 M4）<br>
+▸ 不做远程 agent 联邦（Studio Group Chat 那种跨实例 agent 加入房间——不在四期计划）<br>
+▸ 不改 M1 的 Room CRUD 数据模型（agent_rooms 表不变，只新增 agent_room_messages 表）<br>
+▸ 不做群内 @mention 手动指定成员（M3 依然由观察者决策，只是决策粒度从单成员改成多成员）
+</td>
+</tr>
+</table>
+
+<h3>2.5 M4 · 任务拆分</h3>
+
+<table>
+<tr><th>M4 明确包含</th><th>M4 明确不包含</th></tr>
+<tr>
+<td>
+▸ 给 <code>room_observer</code> toolset 加第二个工具 <code>decompose_and_route</code><br>
+▸ 观察者判断"这是复杂任务"时不调 <code>route_to_member</code>，改调 <code>decompose_and_route</code><br>
+▸ <code>decompose_and_route</code> 内部复用 kanban 现有的 <code>decompose_triage_task</code> 逻辑<br>
+▸ 拆出的子任务丢进 kanban 队列，assignee 是 room 成员（<b>限制在 room 成员名册内</b>，不能跨 room）<br>
+▸ 子任务完成通知汇聚回观察者的一个"综合 turn"，输出最终回复到群<br>
+▸ M1 的"观察者单工具锁死"约束需要放松（现在允许两个工具，但都是路由类）
+</td>
+<td>
+▸ 不做子任务之间的实时并发（子任务图按 kanban 现有依赖顺序执行）<br>
+▸ 不做"跨 room 委托"（子任务的 assignee 必须是当前 room 成员）<br>
+▸ 不改 M1 的观察者 SOUL.md 模板（只加"复杂任务用 decompose_and_route"一段）
+</td>
+</tr>
+</table>
+
+<div class="callout callout-warn">
+<div class="callout-title">M1 → M3 的一处技术债</div>
+M1 用 <code>members_json</code>（字符串数组，最多 5 个）存成员，M3 引入并发多成员回复时可能需要给每个成员挂"优先级 / 当前是否忙 / 上次响应时长"等元数据——届时需要迁移到独立的 <code>agent_room_members</code> 表。M1 的实现要预留"未来迁移到独立表"的接口边界，避免 M3 时到处改代码。
+</div>
+
+<!-- ─────────────────── §3 决策一览 ─────────────────── -->
+<h2 id="s3">3. 用户决策一览（拍板结果）</h2>
+
+<p class="diagram-caption">每张卡片下方灰色小字标注 <b>M1 交付形态</b> 和 <b>完整形态时点</b>——防止只看卡片就以为 M1 是最终形态。</p>
+
+<style>
+.decision-progress { color: var(--text-dim); font-size: 11px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-soft); }
+.decision-progress b { color: var(--yellow); }
+.decision-progress .m1 { color: var(--accent); }
+.decision-progress .final { color: var(--purple); }
+</style>
+
+<div class="grid-2">
+  <div class="decision-box">
+    <div class="decision-key">A1 · 观察者形态</div>
+    <div class="decision-value">有状态 agent（真实 profile，非无状态 LLM 调用）</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 已完整落地 ✓ ｜ <span class="final">完整形态</span>: M1 一次到位</div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">A2 · 路由粒度（你选了"两者都要"）</div>
+    <div class="decision-value">默认单成员 · 复杂任务拆分</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 只做单成员部分 ｜ <span class="final">完整形态</span>: <b>M4 交付时凑齐"两者都要"</b></div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">A3 · 回复时序</div>
+    <div class="decision-value">异步（DingTalk 场景强制）</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 已完整落地 ✓ ｜ <span class="final">完整形态</span>: M1 一次到位</div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">A4 · 成员并发（你选了"并发在场"→ 追问后确认 X）</div>
+    <div class="decision-value">上下文共享 + 单点触发（<b>理解 X</b>）</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 简版 X（成员只看自己历史 + 摘要注入救场）｜ <span class="final">完整形态</span>: <b>M3 交付完整 context-projection</b></div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">A5 · 命令入口</div>
+    <div class="decision-value">Slash command + Dashboard UI 双入口</div>
+    <div class="decision-progress"><span class="m1">M1</span>: slash 完整 + Dashboard 简版页 ｜ <span class="final">完整形态</span>: M2 补 Dashboard 规划页</div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">A6 · 群 ↔ Room</div>
+    <div class="decision-value">一对一（改绑必须先解绑）</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 已完整落地 ✓ ｜ <span class="final">完整形态</span>: M1 一次到位</div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">N1 · 观察者记忆</div>
+    <div class="decision-value">每 room 独立观察者 profile，各记各的</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 已完整落地 ✓ ｜ <span class="final">完整形态</span>: M1 一次到位</div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">N2 · 消息乱序</div>
+    <div class="decision-value">M1 只按时间戳，M3 再做保序</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 时间戳排序 ｜ <span class="final">完整形态</span>: <b>M3 引入 canonical order</b>（借鉴 Studio group-message-ordering）</div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">N3 · Room 规模</div>
+    <div class="decision-value">最多 5 成员，优先复用现有 profile</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 硬上限 5 + 手动指定 ｜ <span class="final">完整形态</span>: M2 自动匹配现有 profile 优先</div>
+  </div>
+  <div class="decision-box">
+    <div class="decision-key">N4 · 观察者调用时机</div>
+    <div class="decision-value">先跑轻量分类，是新话题才跑完整观察者 turn</div>
+    <div class="decision-progress"><span class="m1">M1</span>: 已完整落地 ✓ ｜ <span class="final">完整形态</span>: M1 一次到位</div>
+  </div>
+</div>
+
+<!-- ─────────────────── §4 数据模型 ─────────────────── -->
+<h2 id="s4">4. M1 数据模型</h2>
+
+<h3>4.1 新表 <code>agent_rooms</code></h3>
+
+<p>存储位置：<code>~/.hermes/gateway_agent_rooms.sqlite</code>，与 <code>gateway_source_agent_bindings.sqlite</code> 同级。运行时数据，不入 profile 目录。</p>
+
+<pre><code>CREATE TABLE agent_rooms (
+    room_id           TEXT PRIMARY KEY,        -- 形如 "room_ab12cd34"
+    room_name         TEXT NOT NULL UNIQUE,    -- 用户可读名，形如 "客户支持组"
+    description       TEXT NOT NULL DEFAULT '',
+    observer_profile  TEXT NOT NULL,           -- 观察者 profile 名
+    members_json      TEXT NOT NULL DEFAULT '[]',  -- ["客服","财务","技术"]
+    default_member    TEXT NOT NULL DEFAULT '',    -- 兜底路由目标
+    created_at        INTEGER NOT NULL,
+    created_by        TEXT NOT NULL DEFAULT '',
+    updated_at        INTEGER NOT NULL,
+    updated_by        TEXT NOT NULL DEFAULT ''
+);
+
+CREATE UNIQUE INDEX idx_agent_rooms_name ON agent_rooms(room_name);</code></pre>
+
+<div class="callout callout-info">
+<div class="callout-title">为什么不建 room_members 独立表</div>
+成员就是 profile 名的字符串数组，profile 是文件系统目录不是 SQL 表，建外键关联意义不大。
+M1 用 <code>members_json</code> 存字符串数组，配合 <b>N3 硬上限 5 个</b> 完全够用。
+M3 阶段需要给成员挂更多元数据时再迁移到独立表。
+</div>
+
+<h3>4.2 扩展 <code>SourceAgentBindingStore</code>（不改表结构）</h3>
+
+<p>复用现有 <code>fallback_extra</code> JSON 字段，加一个可选键 <code>room_id</code>：</p>
+
+<pre><code>{
+    "session_webhook": "...",
+    "session_webhook_expired_time": 12345,
+    "room_id": "room_ab12cd34"       ← 新增，可选
+}</code></pre>
+
+<p><code>gateway/run.py::_resolve_profile_home_for_source</code>（约 24690 行）加分支：</p>
+
+<pre><code>binding = source_agent_binding_store.get_binding(source_binding_key)
+if binding:
+    room_id = (binding.fallback_extra or {}).get("room_id")
+    if room_id:
+        → 进入 room 路由流程（§6）
+    else:
+        → 使用 binding.profile_name（原单 profile 分支，不变）</code></pre>
+
+<div class="callout callout-good">
+<div class="callout-title">向后兼容 · 零迁移</div>
+所有现有"群→单 profile"绑定不受任何影响。Room 是叠加语义。
+</div>
+
+<!-- ─────────────────── §5 观察者构造 ─────────────────── -->
+<h2 id="s5">5. 观察者 Profile 的构造与终止机制</h2>
+
+<h3>5.1 目录结构</h3>
+
+<p><code>~/.hermes/profiles/&lt;observer_profile_name&gt;/</code>：跟普通 profile 完全同构，但有几处 M1 特殊约定：</p>
+
+<table>
+<tr><th>文件</th><th>M1 内容</th></tr>
+<tr><td><code>SOUL.md</code></td><td>代码自动生成（模板见 §5.2），成员变动时重写</td></tr>
+<tr><td><code>config.yaml</code></td><td><code>toolsets: [room_observer]</code> + <code>tools.tool_search.enabled: off</code> + <code>model</code> 段（从默认 profile 继承）——见下方凭据继承说明</td></tr>
+<tr><td><code>profile.yaml</code></td><td><code>description: "Room observer for &lt;room_name&gt;"</code>，<code>description_auto: true</code></td></tr>
+<tr><td><code>.observer</code></td><td>空标记文件，标识"自动生成的观察者"，用于 CRUD 时区别对待</td></tr>
+<tr><td><code>.env</code></td><td>从默认 profile (<code>~/.hermes/.env</code>) 自动拷贝——观察者必须调 LLM 才能产出 <code>route_to_member</code> 决策，所以需要 API key</td></tr>
+<tr><td><code>auth.json</code></td><td>从默认 profile 自动拷贝——credential pool 定义（含 provider/base_url/source 引用）</td></tr>
+</table>
+
+<div class="callout callout-info">
+<div class="callout-title">凭据继承（线上 DingTalk 测试发现）</div>
+M1.2 的 bootstrapper 创建空白 profile 后，自动从 <code>~/.hermes/</code> 拷贝 <code>.env</code> 和 <code>auth.json</code>，并从 <code>~/.hermes/config.yaml</code> 继承 <code>model</code> 段（provider/base_url/default model）。
+<br><br>
+原因：<code>auth.json</code> 里 alibaba provider 的 <code>base_url</code> 默认是国际版（<code>dashscope-intl.aliyuncs.com</code>），但 API key 可能只对国内版（<code>dashscope.aliyuncs.com</code>）有效 → 401。继承 <code>config.yaml</code> 的 <code>model.base_url</code> 覆盖 auth.json 的默认值。
+</div>
+
+<div class="callout callout-good">
+<span class="spike-good"></span><b>Spike 结论：memory 什么都不用配</b>——<code>memory.memory_enabled</code> 字段（<code>agent/agent_init.py:1691</code>）默认 <code>False</code>，观察者 profile 不写就自动无长期记忆。
+</div>
+
+<div class="callout callout-warn">
+<span class="spike-warn"></span><b>Spike 3 修正（线上 DingTalk 测试证伪）</b>：原结论"单 toolset 能真正锁死行为"<b>不完全正确</b>。<code>toolsets: [room_observer]</code> 确实让 <code>enabled_toolsets</code> 只含 <code>route_to_member</code>，但 <code>tool_search</code> 的 tier-1 机制仍会保留 <code>_HERMES_CORE_TOOLS</code>（30 个核心工具），且 <code>agent.valid_tool_names</code> 在 agent 初始化时从全量工具提取（不含 <code>route_to_member</code>）。
+<br><br>
+实际需要的<b>三层锁定</b>：
+<ol style="margin:6px 0;">
+<li><code>registry.register()</code>——把 <code>route_to_member</code> 注册进 <code>ToolRegistry</code>，否则 <code>_compute_tool_definitions</code> 返回 0 个 schema</li>
+<li><code>_LockedTools</code>——在 <code>TurnRunner.run_sync</code> 里 AIAgent 构造后替换 <code>agent.tools</code>，阻止 <code>tool_search</code> 重新加核心工具</li>
+<li><code>agent.valid_tool_names</code> 同步——否则 <code>conversation_loop</code> 会以"Tool does not exist"拒绝 LLM 的 tool_call</li>
+</ol>
+</div>
+
+<h3>5.2 SOUL.md 模板</h3>
+
+<pre><code># Observer Agent for Room: {room_name}
+
+You are the observer for a group of specialized agents. Your job is to read
+incoming messages and decide which member should respond.
+
+## Room description
+{room.description}
+
+## Members
+- **{member_1}**: {member_1.description}
+- **{member_2}**: {member_2.description}
+- **{member_3}**: {member_3.description}
+
+## Your workflow
+1. Read the latest message (see conversation history).
+2. Determine whether this is a NEW topic or a continuation.
+   - Continuation: keep routing to the same member as last time.
+   - New topic: pick the best-matching member by their descriptions.
+3. Emit your routing decision by calling `route_to_member` with:
+   - `member`: profile name from the roster above
+   - `reason`: 1-sentence explanation (see §8 for cross-member summary rules)
+   - `is_new_topic`: true if you consider this a new topic
+
+If ambiguous → route to `{default_member}` with reason "fallback".
+
+Do NOT write any user-facing reply yourself.
+Your only output is the `route_to_member` tool call.</code></pre>
+
+<h3>5.3 <code>route_to_member</code> 工具 + Loop 终止（M1 关键实现）</h3>
+
+<div class="card">
+<h4>tools/room_router_tool.py</h4>
+<pre><code>def route_to_member(
+    member: str,
+    reason: str,
+    is_new_topic: bool = False,
+) -> dict:
+    """Emit a routing decision. Called by the observer agent only."""
+
+    # 拿到当前正在跑的 agent 实例（ContextVar 已经在 tool 调度期间绑定）
+    from agent.subagent_lifecycle import get_active_subagent_parent
+    from agent.interrupt_compat import request_hard_interrupt
+
+    agent = get_active_subagent_parent()
+    if agent is not None:
+        # 强制中断 agent loop，避免继续 iterate 浪费 token
+        request_hard_interrupt(agent, f"Route decided: {member}")
+
+    return {
+        "action": "route_to_member",
+        "member": member,
+        "reason": reason,
+        "is_new_topic": is_new_topic,
+    }</code></pre>
+</div>
+
+<div class="callout callout-good">
+<div class="callout-title"><span class="spike-good"></span>Spike 结论：终止机制零件全在</div>
+<code>agent/subagent_lifecycle.py::get_active_subagent_parent</code> 已经通过
+<code>_ACTIVE_PARENT_AGENT</code> ContextVar 在 tool 调度期间绑定当前 agent；
+<code>agent/interrupt_compat.py::request_hard_interrupt</code> 是现成的强制中断。
+<b>不需要改 agent runtime、不需要新的 turn 终止协议</b>。
+</div>
+
+<h3>5.4 N4 · 轻量分类先行</h3>
+
+<p>观察者跑完整 agent turn 有成本。M1 用一个 aux LLM 前置过滤：</p>
+
+<div class="arrow-flow">
+消息进入
+   ↓
+【轻量分类 aux LLM】(复用 <code>agent/auxiliary_client.py</code>)
+   ├── 输入: 最近5条历史 + last_routed_member（内存缓存）
+   └── 输出: { is_new_topic: bool, confidence: float }
+   ↓
+if is_new_topic == False && confidence > 0.7 && last_routed_member 存在:
+    → 沿用 last_routed_member，跳过观察者 turn
+else:
+    → 触发完整观察者 turn
+</div>
+
+<div class="callout callout-info">
+<code>last_routed_member</code> 只在内存里缓存（不落库），进程重启后失效。重启后第一条消息触发完整观察者判断，这是正常代价——避免额外 IO，且 Fence 时天然失效。
+</div>
+
+<!-- ─────────────────── §6 运行时路由 ─────────────────── -->
+<h2 id="s6">6. 运行时路由完整流程</h2>
+
+<div class="card">
+<h4>入口分支（<code>gateway/run.py</code>）</h4>
+<pre><code>def _resolve_room_for_source(self, source) -> Optional[RoomBinding]:
+    binding = self._source_agent_binding_store.get_binding(
+        build_source_binding_key(source)
+    )
+    if not binding:
+        return None
+    room_id = (binding.fallback_extra or {}).get("room_id")
+    if not room_id:
+        return None
+    return self._agent_room_store.get_room(room_id)
+
+# 在 process_message 主分支前置：
+room = self._resolve_room_for_source(source)
+if room:
+    return await self._process_message_via_room(message, source, room)
+# 否则走现有单 profile 流程（不变）</code></pre>
+</div>
+
+<h3>6.1 异步路由五步（含 §8 摘要注入）</h3>
+
+<div class="arrow-flow">
+<span class="number-badge">1</span> <b>立刻回一句</b> "已收到，正在为你选择处理人..."
+   └─ 通过 DingTalk session_webhook，不进入任何 agent turn
+
+<span class="number-badge">2</span> <b>轻量分类</b> aux LLM 调用（§5.4）
+   └─ 输出 { is_new_topic, confidence }
+
+<span class="number-badge">3</span> <b>路由决策</b>
+   ├─ 沿用: target_member = last_routed_member
+   └─ 或跑完整观察者 turn:
+       ├─ 加载 observer_profile 的 HERMES_HOME
+       ├─ 使用 <code>_profile_runtime_scope</code>（ContextVar 隔离，async-safe）
+       ├─ session_id = <code>room_observer:{room_id}</code>
+       ├─ 观察者输出 route_to_member 工具调用
+       ├─ 提取 target_member, reason, is_new_topic
+       ├─ 校验 target_member ∈ members_json，否则用 default_member
+       └─ 更新 last_routed_member 内存缓存
+
+<span class="number-badge">4</span> <b>更新群消息</b> "转交给 {target_member} 处理..."
+   └─ 用 DingTalk adapter 的 edit_message（fork 已实现）
+
+<span class="number-badge">4.5</span> <b>跨成员摘要注入</b>（§8）
+   └─ 如果 reason 字段含跨成员摘要，拼到给成员的消息前面作为 context prefix
+
+<span class="number-badge">5</span> <b>派发成员执行</b>
+   ├─ 加载 target_member profile 的 HERMES_HOME
+   ├─ session_id = <code>room_member:{room_id}:{target_member}</code>
+   ├─ 走 hermes-agent 现有 <code>_run_agent_inner</code> 完整 turn
+   └─ 成员输出通过 session_webhook 发回原群
+</div>
+
+<h3>6.2 Session ID 命名约定</h3>
+
+<table>
+<tr><th>用途</th><th>命名</th><th>生命周期</th></tr>
+<tr>
+  <td>观察者 session</td>
+  <td><code>room_observer:{room_id}</code></td>
+  <td>Room 生命周期内持续；上下文小（只调工具不产文本）</td>
+</tr>
+<tr>
+  <td>成员 session</td>
+  <td><code>room_member:{room_id}:{member_profile}</code></td>
+  <td>Room 生命周期内持续；跟单聊 session 完全隔离</td>
+</tr>
+<tr>
+  <td>非 room 单 profile 绑定</td>
+  <td>不变，走 <code>build_session_key</code></td>
+  <td>不变</td>
+</tr>
+</table>
+
+<h3>6.3 Session Fence（借鉴 Studio）</h3>
+
+<p><code>AgentRoomStore</code> 内存维护 <code>fenced_sessions: set[str]</code>。触发 Fence 的操作：</p>
+
+<ul>
+<li>删除 room</li>
+<li>解绑群</li>
+<li>成员名册变动</li>
+</ul>
+
+<p>触发时把当前 room 所有活跃 session（观察者 + 成员）加入 Fence 集合。<b>每次回消息前检查 session 是否被 fenced</b>——是则丢弃输出，防止"清空后旧 turn 迟到污染新状态"。</p>
+
+<div class="callout callout-info">
+M1 只在 room 结构变化时 Fence，不做 Studio 那种每消息细粒度 Fence。此简化对 M1 场景够用。
+</div>
+
+<!-- ─────────────────── §7 命令入口 ─────────────────── -->
+<h2 id="s7">7. Slash Commands + REST API</h2>
+
+<h3>7.1 群内 Slash Commands（<code>gateway/slash_commands.py</code>）</h3>
+
+<table>
+<tr><th>命令</th><th>作用</th></tr>
+<tr><td><code>/room create &lt;name&gt; --members &lt;p1,p2,p3&gt; [--description ...] [--default-member ...]</code></td><td>创建 room，自动生成观察者 profile</td></tr>
+<tr><td><code>/room list</code></td><td>列出所有 room</td></tr>
+<tr><td><code>/room info &lt;name&gt;</code></td><td>查看 room 详情：成员、观察者、绑定的群列表</td></tr>
+<tr><td><code>/room bind &lt;name&gt;</code></td><td>把当前 IM 群绑定到 room（已有绑定则报错）</td></tr>
+<tr><td><code>/room unbind</code></td><td>解绑当前群</td></tr>
+<tr><td><code>/room delete &lt;name&gt;</code></td><td>删除：先解绑所有关联群 → Fence → 删观察者 profile → 删 room 记录</td></tr>
+<tr><td><code>/room members &lt;name&gt; add|remove &lt;profile&gt;</code></td><td>调整成员，触发 SOUL.md 重生成 + Fence</td></tr>
+<tr><td><code>/room set-default-member &lt;name&gt; &lt;profile&gt;</code></td><td>设置观察者兜底路由</td></tr>
+</table>
+
+<h3>7.2 Dashboard REST API（<code>hermes_cli/web_server.py</code>）</h3>
+
+<table>
+<tr><th>方法</th><th>路径</th><th>作用</th></tr>
+<tr><td><code>GET</code></td><td><code>/api/rooms</code></td><td>列表</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/rooms</code></td><td>创建</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/rooms/{room_id}</code></td><td>详情</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/api/rooms/{room_id}</code></td><td>修改成员/描述/默认成员</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/api/rooms/{room_id}</code></td><td>删除</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/rooms/{room_id}/bind</code></td><td>绑定 IM 群</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/rooms/{room_id}/unbind</code></td><td>解绑</td></tr>
+</table>
+
+<!-- ─────────────────── §8 摘要注入 ─────────────────── -->
+<h2 id="s8">8. 跨成员上下文摘要（M1 关键补丁）</h2>
+
+<div class="callout callout-risk">
+<div class="callout-title">M1 简化取舍的 UX 断崖</div>
+M1 里成员的 session 只包含"自己被路由过的历史"，看不到"另一个成员之前说了什么"。
+真实场景例：用户先问客服"怎么退款"→客服答→用户接着问"再问下之前的账单"→观察者
+判断话题延续但换到财务→财务 profile 看不到之前客服的对话，只看到"再问下之前的账单"。
+</div>
+
+<h3>缓解方案 · 在 M1 里必须做</h3>
+
+<ol>
+<li><b>观察者 SOUL.md 加规则</b>：当检测到 <code>is_new_topic=False</code> 且要换成员时，在 <code>reason</code> 字段带上"上一位成员最后回复的一句摘要"</li>
+<li><b>Room router 在派发前解析 reason</b>：如果含跨成员摘要，前置到给成员的消息</li>
+</ol>
+
+<div class="card">
+<h4>格式约定</h4>
+<pre><code>&gt; 上一位处理人 {previous_member} 的回复摘要：{summary}
+&gt; ---
+&gt; 用户消息：{original_message}</code></pre>
+</div>
+
+<div class="callout callout-info">
+这不是 M3 那种完整 <code>context-projection</code>（Studio 的单人称改写），只是最小可用的缓解。
+M3 会完整替换掉这一层。<b>但 M1 交付时必须至少有这个</b>，否则用户第一次跨成员对话就会觉得系统很傻。
+</div>
+
+<!-- ─────────────────── §9 架构评估 ─────────────────── -->
+<h2 id="s9">9. 架构评估 · Spike 验证后</h2>
+
+<div class="callout callout-good">
+<div class="callout-title">整体契合度：9 / 10</div>
+初版评估 8/10 时基于印象判断。做完 8 组代码 spike 后，v1 里两处主要摩擦点被推翻，评分上调到 9/10。<b>没有发现任何设计层面必须回退或大改的问题</b>。
+</div>
+
+<h3>9.1 已验证的关键机制</h3>
+
+<table>
+<tr><th>#</th><th>Spike 目标</th><th>初版假设</th><th>Spike 结论</th></tr>
+<tr>
+  <td>1</td>
+  <td><code>_profile_runtime_scope</code> 通用性</td>
+  <td>假设是无条件的通用原语</td>
+  <td class="spike-good">机制无条件工作，只是现有代码只在 multiplex 模式下调用。Room 主动无条件调用是新调用模式，不是新机制</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><code>memory.enabled</code> 字段</td>
+  <td>假设需要新加</td>
+  <td class="spike-fix">已存在为 <code>memory.memory_enabled</code>，默认 False，观察者不需要显式配置</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>默认工具注入锁定</td>
+  <td>担心锁不住</td>
+  <td class="spike-good">核心工具通过命名 toolset 显式打包，不自动注入，<code>toolsets:[room_observer]</code> 能真正锁死</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>观察者 loop 终止</td>
+  <td>三方案备选</td>
+  <td class="spike-good">方案 A 有完整现成路径：<code>get_active_subagent_parent</code> + <code>request_hard_interrupt</code>，无需改 runtime</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td><code>SessionSource</code> 克隆</td>
+  <td>需验证</td>
+  <td class="spike-good">纯 dataclass，<code>dataclasses.replace(source, profile=...)</code> 直接可用</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td><code>_active_profile_name</code> 全仓审计</td>
+  <td>担心 93 处调用点污染</td>
+  <td class="spike-good">通过 <code>get_hermes_home()</code> 读 ContextVar，scope-aware，自动跟随。初版担忧基本推翻</td>
+</tr>
+<tr>
+  <td>7</td>
+  <td>agent turn 入口</td>
+  <td>假设复用现成 wrapper</td>
+  <td class="spike-good">确认可行——写平级新 wrapper 无条件套 scope，模式清晰可仿</td>
+</tr>
+<tr>
+  <td>8</td>
+  <td>ContextVar 隔离</td>
+  <td>假设 async-safe</td>
+  <td class="spike-good">确认 <code>_HERMES_HOME_OVERRIDE</code> 是 ContextVar，asyncio 天然隔离，无需加锁</td>
+</tr>
+</table>
+
+<h3>9.2 M1 唯一保留的必做补丁</h3>
+
+<ol>
+<li><b>观察者 loop 终止用方案 A</b>（§5.3 已给出完整代码）——不改 runtime，用现成 <code>request_hard_interrupt</code></li>
+<li><b>跨成员上下文摘要注入</b>（§8）——不做的话 M1 交付时用户体验会断崖</li>
+</ol>
+
+<h3>9.3 与其他子系统的交互评估</h3>
+
+<table>
+<tr><th>子系统</th><th>交互影响</th></tr>
+<tr><td>Cron</td><td class="spike-good">无冲突。cron 派任务给 room 成员时不影响 room 路由</td></tr>
+<tr><td>Kanban</td><td class="spike-good">M1 不直接依赖，M4 才集成</td></tr>
+<tr><td>Multiplexer</td><td>需 M1 后跑测试确认双重 scope 嵌套（约 30 分钟）</td></tr>
+<tr><td>delegate_task</td><td class="spike-good">成员 turn 内可调，无冲突</td></tr>
+<tr><td>Approval / write-gate</td><td class="spike-good">走原有机制，无冲突</td></tr>
+<tr><td>Curator / memory</td><td class="spike-good">观察者不写 memory.md，成员正常写自己 profile 的 memory.md</td></tr>
+</table>
+
+<!-- ─────────────────── §10 前置工作 + 工作量 ─────────────────── -->
+<h2 id="s10">10. 各期前置工作 + 工作量估计</h2>
+
+<h3>10.1 M1 · 前置架构工作（已完成 Spike 验证）</h3>
+
+<div class="callout callout-good">
+<div class="callout-title">从 2-4 小时降到 30 分钟</div>
+初版列了 6 项前置 spike。Spike 完成后 5 项已消解，只剩 1 项<b>多路复用交互测试</b>——需要在 M1 实现出来后跑（不能提前）。
+</div>
+
+<h3>10.2 M1 · 组件文件清单</h3>
+
+<table>
+<tr><th>文件</th><th>类型</th><th>估计行数</th><th>用途</th></tr>
+<tr><td><code>gateway/agent_room_store.py</code></td><td>新</td><td>~250</td><td>SQLite CRUD + Fence 集合管理</td></tr>
+<tr><td><code>gateway/agent_room_router.py</code></td><td>新</td><td>~350</td><td>路由主流程（轻量分类 + 观察者 + 派发）</td></tr>
+<tr><td><code>gateway/agent_room_bootstrapper.py</code></td><td>新</td><td>~200</td><td>观察者 profile 目录 + SOUL.md 生成</td></tr>
+<tr><td><code>tools/room_router_tool.py</code></td><td>新</td><td>~80</td><td><code>route_to_member</code> 工具</td></tr>
+<tr><td><code>toolsets.py</code></td><td>改</td><td>~10</td><td>注册 <code>room_observer</code> toolset</td></tr>
+<tr><td><code>gateway/slash_commands.py</code></td><td>改</td><td>~300</td><td><code>_handle_room_command</code> + 子命令</td></tr>
+<tr><td><code>gateway/run.py</code></td><td>改</td><td>~50</td><td>Room 分支前置</td></tr>
+<tr><td><code>hermes_cli/web_server.py</code></td><td>改</td><td>~250</td><td>7 个 REST 端点</td></tr>
+<tr><td>Dashboard 前端页面</td><td>新</td><td>~400</td><td>简版 Room 管理 UI</td></tr>
+<tr><td>单元 + 集成测试</td><td>新</td><td>~600</td><td>Store CRUD、bootstrapper、路由、Fence</td></tr>
+<tr><td colspan="2"><b>M1 合计</b></td><td><b>~2500-3000</b></td><td><b>2 周实际编码</b>（含测试，不含 review）</td></tr>
+</table>
+
+<h3>10.3 M2 · 前置工作 + 组件清单</h3>
+
+<h4>前置架构工作（30 分钟）</h4>
+<ul>
+<li>确认 <code>agent/auxiliary_client.py</code> 可复用（现有 <code>kanban_specify.py</code> / <code>kanban_decompose.py</code> / <code>profile_describer.py</code> 都用它，模板成熟）</li>
+<li>确认 <code>hermes_cli/profiles.py::create_profile</code> + <code>hermes_cli/profile_describer.py</code> 无阻塞调用（M2 的自动创建会串行调用它们）</li>
+<li>Dashboard 前端要新增"规划预览页"，确认现有 React/Vue 项目工具链能加新页面（不用重建）</li>
+</ul>
+
+<h4>组件文件清单</h4>
+<table>
+<tr><th>文件</th><th>类型</th><th>估计行数</th><th>用途</th></tr>
+<tr><td><code>gateway/agent_room_planner.py</code></td><td>新</td><td>~350</td><td>Aux LLM 规划器（读 profile 名册 → 输出成员建议 + 缺失 profile 建议）</td></tr>
+<tr><td><code>gateway/agent_room_planner_prompts.py</code></td><td>新</td><td>~150</td><td>Prompt 模板（system + user + 输出格式约束）</td></tr>
+<tr><td><code>gateway/slash_commands.py</code></td><td>改</td><td>~200</td><td><code>/room plan</code> 子命令 + 用户 Y/N 确认交互</td></tr>
+<tr><td><code>hermes_cli/web_server.py</code></td><td>改</td><td>~180</td><td><code>POST /api/rooms/plan</code> + <code>POST /api/rooms/plan/confirm</code></td></tr>
+<tr><td>Dashboard 前端 · 规划预览页</td><td>新</td><td>~300</td><td>输入框 → 规划结果卡片 → 一键确认</td></tr>
+<tr><td>单元 + 集成测试</td><td>新</td><td>~400</td><td>Prompt 输出解析、幻觉过滤、回滚测试</td></tr>
+<tr><td colspan="2"><b>M2 合计</b></td><td><b>~1500-1800</b></td><td><b>1.5 周</b></td></tr>
+</table>
+
+<h3>10.4 M3 · 前置工作 + 组件清单</h3>
+
+<h4>前置架构工作（2-3 小时）</h4>
+<ul>
+<li><b>迁移策略确认</b>：M1 阶段成员消息藏在各自 hermes session 里，M3 要建 <code>agent_room_messages</code> 表并把旧数据迁进去。需要跑一个 dry-run 迁移脚本验证不丢消息</li>
+<li><b>投影算法性能测试</b>：给一个 500 条消息的 room 做单人称投影，看单次投影耗时是否 &lt; 100ms（超过则需要缓存）</li>
+<li><b>并发派发的资源限制</b>：DingTalk session_webhook 有 QPS 限制，同时并发多个成员回消息可能触发；测试 3/5 并发下的表现</li>
+</ul>
+
+<h4>组件文件清单</h4>
+<table>
+<tr><th>文件</th><th>类型</th><th>估计行数</th><th>用途</th></tr>
+<tr><td><code>gateway/agent_room_projection.py</code></td><td>新</td><td>~400</td><td>单人称视角改写算法（借鉴 Studio <code>context-projection.ts</code>）</td></tr>
+<tr><td><code>gateway/agent_room_messages_store.py</code></td><td>新</td><td>~250</td><td><code>agent_room_messages</code> 表 CRUD + canonical order 排序</td></tr>
+<tr><td><code>gateway/agent_room_router.py</code></td><td>改</td><td>~200</td><td>并发派发逻辑 + 结果聚合（M1 单派发路径重写）</td></tr>
+<tr><td><code>tools/room_router_tool.py</code></td><td>改</td><td>~50</td><td><code>route_to_member</code> 支持数组输出（选多个成员）</td></tr>
+<tr><td><code>scripts/migrate_m1_to_m3.py</code></td><td>新</td><td>~200</td><td>把 M1 阶段 hermes session 里的消息迁入 <code>agent_room_messages</code></td></tr>
+<tr><td>移除 M1 摘要注入代码</td><td>删</td><td>~-100</td><td>M3 完整投影后 §8 补丁不再需要</td></tr>
+<tr><td>单元 + 集成测试</td><td>新</td><td>~800</td><td>投影算法、消息排序、并发派发、迁移完整性</td></tr>
+<tr><td colspan="2"><b>M3 合计</b></td><td><b>~1800-2100</b></td><td><b>3 周</b>（含迁移测试）</td></tr>
+</table>
+
+<h3>10.5 M4 · 前置工作 + 组件清单</h3>
+
+<h4>前置架构工作（1 小时）</h4>
+<ul>
+<li><b>kanban decompose 复用</b>：确认 <code>hermes_cli/kanban_decompose.py</code> 能被 <code>decompose_and_route</code> 工具复用（不要在 room 里重造 decompose）</li>
+<li><b>子任务 assignee 限制</b>：确认 kanban 现有 assignee 校验可以扩展成"必须在 room members 名册内"</li>
+<li><b>综合 turn 的 session 归属</b>：观察者的综合 turn 用观察者 session，还是新起一个 session？— 建议复用观察者 session（不破坏 session 定义）</li>
+</ul>
+
+<h4>组件文件清单</h4>
+<table>
+<tr><th>文件</th><th>类型</th><th>估计行数</th><th>用途</th></tr>
+<tr><td><code>tools/room_decompose_tool.py</code></td><td>新</td><td>~150</td><td><code>decompose_and_route</code> 工具</td></tr>
+<tr><td><code>toolsets.py</code></td><td>改</td><td>~5</td><td><code>room_observer</code> toolset 加第二个工具</td></tr>
+<tr><td><code>gateway/agent_room_task_orchestrator.py</code></td><td>新</td><td>~400</td><td>子任务生命周期 · 依赖图执行 · 结果收集</td></tr>
+<tr><td><code>gateway/agent_room_router.py</code></td><td>改</td><td>~150</td><td>观察者综合 turn 分支（拿全部子任务结果再跑一次 turn）</td></tr>
+<tr><td><code>gateway/agent_room_bootstrapper.py</code></td><td>改</td><td>~50</td><td>SOUL.md 模板补充"复杂任务用 decompose_and_route"段</td></tr>
+<tr><td>Dashboard 前端 · 任务图可视化</td><td>新</td><td>~250</td><td>展示子任务图 + 依赖关系 + 各自状态</td></tr>
+<tr><td>单元 + 集成测试</td><td>新</td><td>~500</td><td>拆分决策、依赖执行顺序、失败传播、综合 turn</td></tr>
+<tr><td colspan="2"><b>M4 合计</b></td><td><b>~1500-1800</b></td><td><b>2 周</b></td></tr>
+</table>
+
+<div class="callout callout-info">
+<b>M1 → M4 累计工作量</b>: ~7300-8700 行 / 8.5 周实际编码（不含 review 迭代 + 上线运维）
+</div>
+
+<!-- ─────────────────── §11 验收标准 ─────────────────── -->
+<h2 id="s11">11. 各期验收标准 + 线上测试方案</h2>
+
+<p class="diagram-caption">
+每期独立写"完成定义 / 单元测试 / 集成测试 / 线上真实环境测试"四档。
+线上测试<b>都要用生产 <code>.venv</code>（非测试环境）</b>并对真实 DingTalk 群产生真实消息效果。
+</p>
+
+<!-- ═════════════ M1 验收 ═════════════ -->
+<h3 id="s11m1"><span class="tag tag-m1">M1</span> · 手动创建 room + 自动路由</h3>
+
+<h4>完成定义（Definition of Done）</h4>
+<ul>
+<li>M1 §2.2 明确包含的所有能力都实现且合并到 main 分支</li>
+<li><b>数据契约稳定</b>：<code>agent_rooms</code> 表结构、<code>fallback_extra.room_id</code> 语义、两种 session_id 命名规则被文档冻结，M2/M3/M4 都不改</li>
+<li>单元 + 集成 + 线上三档测试全过</li>
+<li>回归测试证明未 room 绑定的 IM 会话零影响（原单 profile 绑定继续正常工作）</li>
+</ul>
+
+<h4>单元测试</h4>
+<ul>
+<li><code>AgentRoomStore</code> CRUD、并发读写、损坏 JSON 容错、SQLite WAL 模式初始化（照抄 <code>source_agent_binding.py::_execute_sqlite_init</code>）</li>
+<li>观察者 SOUL.md 生成正确性：成员名册注入准确、增删成员后 <b>重生成</b> 覆盖旧文件</li>
+<li><code>route_to_member</code> 工具单独调用 → <code>request_hard_interrupt</code> 触发 → 返回决策结构</li>
+<li>Fence 集合：结构变动时正确加入活跃 session_id，回消息前正确检查</li>
+<li>N4 轻量分类分支：<code>is_new_topic=False &amp;&amp; confidence &gt; 0.7</code> 时确实跳过完整观察者 turn</li>
+<li>兜底：观察者返回不存在的成员名 → 走 <code>default_member</code>；<code>default_member</code> 未设 → 走 <code>members[0]</code></li>
+<li><code>dataclasses.replace(source, profile=...)</code> 克隆语义正确性（观察者/成员 turn 用不同 profile）</li>
+</ul>
+
+<h4>集成测试</h4>
+<ul>
+<li><b>完整链路</b>：创建 room（模拟）→ 绑定（模拟 DingTalk source）→ 发消息 → 观察者路由 → 成员回复 → 落回原群</li>
+<li><b>沿用路由</b>：连续 3 条消息，只有第 1 条跑完整观察者 turn，后 2 条 N4 沿用</li>
+<li><b>跨成员切换 + 摘要注入</b>：切换成员时 <code>reason</code> 字段带上一位摘要，成员消息前得到 context prefix</li>
+<li><b>Fence 有效性</b>：让 observer turn 跑到一半时触发 <code>/room unbind</code>，验证 observer 输出被丢弃、成员未派发、群里不出现迟到消息</li>
+<li><b>多路复用兼容性</b>：在 <code>multiplex_profiles: True</code> 的 gateway 里跑 room 路由，验证 <code>_profile_runtime_scope</code> 嵌套不冲突</li>
+<li><b>孤立数据修复</b>：手工制造孤立 profile 目录（存在 <code>.observer</code> 但无 rooms 表记录）+ 孤立 rooms 记录（无 profile 目录），gateway 启动时能识别并清理</li>
+</ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤（在本机生产 <code>.venv</code> 上执行）</h4>
+<ol>
+<li>创建两个测试成员 profile：<code>hermes profile create room_test_client --description "客服 · 处理咨询和退款"</code>、<code>hermes profile create room_test_finance --description "财务 · 处理账单和支付"</code></li>
+<li><code>/room create test_support --members room_test_client,room_test_finance --description "客户支持组"</code></li>
+<li>验证 <code>~/.hermes/profiles/room_test_support_observer/</code> 目录被创建，SOUL.md 里包含两个成员的 description</li>
+<li>在真实 DingTalk 测试群里 <code>/room bind test_support</code>（管理员执行）</li>
+<li><b>Case A（新话题）</b>：群里发"我要退款怎么办" → 立刻收到"已收到，正在选择处理人..." → 几秒后收到"转交给 room_test_client 处理..." → 收到 room_test_client 的实际回复</li>
+<li><b>Case B（话题延续）</b>：接着问"那我上次的订单还能退吗" → 直接沿用 room_test_client，跳过完整观察者 turn（可查日志确认）</li>
+<li><b>Case C（跨成员切换 + 摘要）</b>：接着问"顺便问下我这个月账单多少" → 观察者判定 new_topic → 转到 room_test_finance → 财务的消息前面有"上一位处理人 room_test_client 的回复摘要：..."</li>
+<li><b>Case D（Fence 生效）</b>：先发一条会跑久的消息，立刻在观察者 turn 期间 <code>/room unbind</code>，验证群里不再收到成员的迟到回复</li>
+<li><b>回归 · 未绑定群不受影响</b>：另找一个只绑定单 profile 的 DingTalk 群，发消息，确认走原流程不变</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>Case A/B/C/D 全部按预期表现</li>
+<li>观察者/成员日志里 profile scope 切换正确（没有跑在错的 <code>HERMES_HOME</code> 下）</li>
+<li>观察者 session 的历史条目里能看到 <code>route_to_member</code> 工具调用记录</li>
+<li>成员 session 的历史条目里能看到 turn 完整流程</li>
+<li>生产 <code>.venv</code> 335 包完好、gateway/dashboard 服务未崩溃、无 ERROR 级别日志</li>
+</ul>
+</div>
+
+<h4>边界测试</h4>
+<div class="card">
+<table>
+<tr><th>#</th><th>边界场景</th><th>预期行为</th></tr>
+<tr>
+  <td>B1</td>
+  <td>成员 profile 不存在时 <code>/room create --members ghost</code></td>
+  <td>报错拒绝创建，不落 room 记录 · 不建观察者目录</td>
+</tr>
+<tr>
+  <td>B2</td>
+  <td>member 名字含 shell 元字符 / 中文 / emoji</td>
+  <td>只要 profile 存在则允许；观察者 SOUL.md 里正确转义显示</td>
+</tr>
+<tr>
+  <td>B3</td>
+  <td>members_json 数组长度 = 6（超过 N3 上限 5）</td>
+  <td>创建时报错；已存在 room 加成员时也拒绝</td>
+</tr>
+<tr>
+  <td>B4</td>
+  <td>观察者调 <code>route_to_member</code> 返回 <code>member=""</code>（空字符串）</td>
+  <td>走 default_member 兜底 · 记 WARN 日志</td>
+</tr>
+<tr>
+  <td>B5</td>
+  <td>观察者 turn 触发时 DingTalk session_webhook 已过期</td>
+  <td>路由决策不受影响；发送阶段捕获错误并 log；不 crash gateway</td>
+</tr>
+<tr>
+  <td>B6</td>
+  <td>成员 turn 里成员自己调 <code>delegate_task</code> 派生子 agent（合法但少见）</td>
+  <td>子 agent 用成员 profile 的 scope 跑；不与观察者 session 交叉</td>
+</tr>
+<tr>
+  <td>B7</td>
+  <td>并发：同一群 1 秒内进来 3 条消息</td>
+  <td>3 条各自独立触发路由（M1 不做合并）；观察者被调 3 次；不 crash</td>
+</tr>
+<tr>
+  <td>B8</td>
+  <td>观察者 SOUL.md 手工被用户修改后成员变动触发重生成</td>
+  <td>无警告直接覆盖（文档已说明"用户不应手改"）</td>
+</tr>
+<tr>
+  <td>B9</td>
+  <td>删除 room 时观察者 profile 目录已被人工删了（不一致状态）</td>
+  <td>删除操作幂等：清 sqlite 记录 + 解绑 · 不 crash</td>
+</tr>
+<tr>
+  <td>B10</td>
+  <td>用户改绑（先 unbind + 立即 bind 另一 room）时观察者正在跑</td>
+  <td>旧 room 观察者输出被 Fence 丢弃；新 room 从头开始</td>
+</tr>
+<tr>
+  <td>B11</td>
+  <td>gateway 重启时正在跑的观察者/成员 turn</td>
+  <td>turn 中断丢失；重启后新消息触发新 turn；不引起数据损坏</td>
+</tr>
+<tr>
+  <td>B12</td>
+  <td>Aux LLM 不可用时的 N4 轻量分类</td>
+  <td>降级为"总是跑完整观察者 turn"，不静默沿用 · 记 WARN 日志</td>
+</tr>
+<tr>
+  <td>B13</td>
+  <td>Room 数据库文件被外部程序上锁</td>
+  <td><code>_execute_sqlite_init</code> 重试 6 次 · 全失败则报明确错误不静默</td>
+</tr>
+<tr>
+  <td>B14</td>
+  <td>成员 profile 在 room 运行中被 <code>hermes profile delete</code> 强删</td>
+  <td>下次派发到该成员时报错 · 走 default_member 兜底 · 建议用户 <code>/room members remove</code></td>
+</tr>
+</table>
+</div>
+
+<h4>线上真实 A/B 测试</h4>
+<div class="card">
+<p><b>目的</b>：量化 M1 Room 路由相比"手动 <code>/agent use &lt;profile&gt;</code> 单绑定"在真实使用体验上的改进（或退化）。</p>
+
+<h4 style="margin-top:14px;">A/B 实验分组</h4>
+<table>
+<tr><th>组</th><th>配置</th><th>DingTalk 群</th></tr>
+<tr>
+  <td><b>A 组（对照 · 现有能力）</b></td>
+  <td>群里手动 <code>/agent use client_svc</code> 绑单 profile</td>
+  <td>真实客服群 #1</td>
+</tr>
+<tr>
+  <td><b>B 组（M1 Room）</b></td>
+  <td><code>/room create test_ab --members client_svc,finance,tech</code> + <code>/room bind test_ab</code></td>
+  <td>真实客服群 #2（相似业务/相似流量）</td>
+</tr>
+</table>
+
+<h4 style="margin-top:14px;">测试运行 · 7 天 dogfooding 周期</h4>
+<ol>
+<li>让 2-3 个内部用户在 A 组、B 组两个群里发同类问题（客服 + 财务 + 技术混合）</li>
+<li>每天记录 2 组的 <b>问题解决率</b>（用户主观打分 1-5）+ <b>响应质量</b>（回答是否切题）+ <b>响应时延</b>（消息发出到成员开始回复的秒数）</li>
+<li>后端埋点自动记录：
+  <ul style="margin:4px 0;">
+    <li>观察者 turn 触发次数 / 沿用 (N4) 触发次数（评估轻量分类效果）</li>
+    <li>路由决策：是否与用户真实意图匹配（人工标注 sample 10 条/天）</li>
+    <li>跨成员摘要注入次数 + 摘要有效性（成员是否真用到了上下文）</li>
+    <li>Aux LLM token 消耗（成本估算）</li>
+  </ul>
+</li>
+</ol>
+
+<h4 style="margin-top:14px;">A/B 成功指标（M1 交付可上线的门槛）</h4>
+<table>
+<tr><th>指标</th><th>目标</th><th>不达标怎么办</th></tr>
+<tr>
+  <td>路由准确率</td>
+  <td>&ge; 85%（观察者选的成员与人工标注一致）</td>
+  <td>调 SOUL.md prompt · 增强 profile description 的具体度</td>
+</tr>
+<tr>
+  <td>用户主观满意度</td>
+  <td>B 组 &ge; A 组（M1 至少不比手动单绑差）</td>
+  <td>若显著低于 A，暂停 M1 上线 · 排查用户体验瓶颈</td>
+</tr>
+<tr>
+  <td>响应时延</td>
+  <td>&le; A 组 + 3 秒（观察者 turn 额外开销可接受）</td>
+  <td>用轻量分类阈值调优（N4 confidence 阈值提到 0.8）</td>
+</tr>
+<tr>
+  <td>N4 沿用率</td>
+  <td>&ge; 40%（大多数消息应能沿用不跑完整 turn）</td>
+  <td>&lt; 40% 说明轻量分类效果差，成本失控；重新设计 prompt</td>
+</tr>
+<tr>
+  <td>Aux LLM 成本</td>
+  <td>&le; A 组 + 30%（B 组会多 2 次调用：轻量分类 + 观察者）</td>
+  <td>成本超 50% 触发降级："只在群主明确要求路由时才用 Room"</td>
+</tr>
+<tr>
+  <td>跨成员摘要有效性</td>
+  <td>&ge; 60% 的跨成员切换后成员真"用到"上文（人工标注）</td>
+  <td>&lt; 60% 直接推 M3 优先级</td>
+</tr>
+<tr>
+  <td>生产 gateway 稳定性</td>
+  <td>零 crash · 无内存泄漏 · CPU 峰值 &lt; 单聊 +20%</td>
+  <td>任一红线触发直接回滚，禁止上线</td>
+</tr>
+</table>
+
+<h4 style="margin-top:14px;">A/B 决策矩阵</h4>
+<table>
+<tr><th>结果</th><th>决策</th></tr>
+<tr>
+  <td>7 项指标全部达标</td>
+  <td>M1 正式上线 · 推 M2（自动规划）</td>
+</tr>
+<tr>
+  <td>5-6 项达标，路由准确率 &ge; 85%</td>
+  <td>M1 灰度上线（只对内部用户）· 优化未达标项</td>
+</tr>
+<tr>
+  <td>路由准确率 &lt; 85% 或稳定性红线破</td>
+  <td>M1 暂缓上线 · 补 spec 缺陷或往上加投影层（前置 M3）</td>
+</tr>
+<tr>
+  <td>用户满意度 B &lt; A</td>
+  <td>暂停 M1 上线 · 复盘 UX 断崖（摘要注入效果不够）· 直接投 M3</td>
+</tr>
+</table>
+</div>
+
+<!-- ═════════════ M2 验收 ═════════════ -->
+<h3 id="s11m2"><span class="tag tag-m2">M2</span> · 自然语言需求自动规划 room</h3>
+
+<h4>完成定义（Definition of Done）</h4>
+<ul>
+<li>M2 §2.3 明确包含的所有能力都实现且合并到 main</li>
+<li>规划器 aux LLM 调用有明确的 prompt 版本 + prompt 单元测试固化输出</li>
+<li>M1 的 Room CRUD 接口未被 M2 修改（M2 只是新 caller）</li>
+<li>用户确认前不能创建任何 profile / room 记录（防止 aux LLM 幻觉产出"意外"）</li>
+</ul>
+
+<h4>单元测试</h4>
+<ul>
+<li>Prompt 输出解析：模拟 aux LLM 返回各种格式（合法 JSON / 带 markdown 码围栏的 JSON / 缺字段 / 无效 JSON），确认解析容错正确</li>
+<li>规划结果校验：产出的成员超过 N3 限制（&gt;5）时正确报错</li>
+<li>缺失 profile 创建流程：模拟规划器要求新建 3 个 profile，验证 <code>create_profile</code> + <code>profile_describer</code> 被正确串起来</li>
+<li>用户拒绝确认时的回滚：确保没有半途留下的 profile 目录</li>
+<li>规划器 aux LLM 不可用时的兜底：返回明确错误而非静默失败</li>
+</ul>
+
+<h4>集成测试</h4>
+<ul>
+<li><b>全新场景规划</b>：无任何现有可复用 profile 时，规划器要求创建全部新成员，验证从 <code>/room plan</code> → 确认 → profile 建立 → room 组装的完整链路</li>
+<li><b>混合场景</b>：已有部分匹配的 profile 时，规划器复用现有 profile + 创建缺失的（复用/新建的比例日志可查）</li>
+<li><b>拒绝场景</b>：用户回复 N，验证无任何持久化数据被写入</li>
+<li><b>并发场景</b>：同一 gateway 同时收到两个 <code>/room plan</code>，两次规划互不干扰</li>
+</ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤</h4>
+<ol>
+<li>预先创建 3 个专业 profile（<code>legal</code> / <code>ops</code> / <code>marketing</code>）+ 各自 description</li>
+<li>在 DingTalk 群里发 <code>/room plan 我要处理法务合同 + 运营数据分析 + 品牌传播</code></li>
+<li>验证 aux LLM 规划结果里复用了 <code>legal</code> / <code>ops</code> / <code>marketing</code>，不重复创建</li>
+<li>发 <code>/room plan 我要处理宠物美容和婴儿哺乳咨询</code>（现有 profile 完全不匹配）→ 规划器应建议新建 2 个 profile</li>
+<li>用户回复 <code>Y</code> 确认 → 观察 2 个新 profile 被创建 + description 通过 <code>profile_describer</code> 生成 + room 落地</li>
+<li>发同样的 <code>/room plan</code> 但用户回复 <code>N</code> → 确认无残留数据</li>
+<li><code>/room plan</code> 后直接 <code>/room bind</code> → 完整走一次 M1 路由链路，验证 M2 组装的 room 跟 M1 手动组装的 room 行为一致</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>规划器不产幻觉成员（不出现名册里没有的 profile 名）</li>
+<li>确认前后的数据一致性：确认前 SQLite 无 room 记录，确认后完整落地</li>
+<li>规划 aux LLM 调用成本可查（日志里记录 input/output token）</li>
+<li>M2 交付的 room 跟 M1 手动创建的 room 在运行时表现 <b>完全等价</b>（这是 M2 不改 M1 数据模型的验证）</li>
+</ul>
+</div>
+
+<h4>边界测试</h4>
+<div class="card">
+<table>
+<tr><th>#</th><th>边界场景</th><th>预期行为</th></tr>
+<tr><td>B1</td><td>需求描述极短（"帮我"，2个字）</td><td>规划器返回"需求过于模糊，请补充具体场景"，不产生规划结果</td></tr>
+<tr><td>B2</td><td>需求描述超长（> 2000 字）</td><td>截断输入 + 告知用户；不 crash；aux LLM 仍能正常调用</td></tr>
+<tr><td>B3</td><td>规划器建议的成员 = 全部不存在的 profile</td><td>提示"以下 profile 需要新建：..."；用户确认后串行调 create_profile</td></tr>
+<tr><td>B4</td><td>规划器建议 7 个成员（超上限 5）</td><td>截取前 5 个 + 告知用户"已按上限截取"</td></tr>
+<tr><td>B5</td><td>用户回复 N 拒绝规划结果后，立即发另一条 /room plan</td><td>前次状态已清零，新规划独立开始，无残留</td></tr>
+<tr><td>B6</td><td>aux LLM 返回非法 JSON（缺字段 / 类型错）</td><td>宽容解析，只取能解析的字段；解析完全失败则明确报错，不静默建空 room</td></tr>
+<tr><td>B7</td><td>create_profile 中途失败（磁盘满 / 权限不足）</td><td>回滚：已创建的 profile 目录删掉，room 记录不落，用户看到明确错误</td></tr>
+<tr><td>B8</td><td>规划出的 room_name 与现有 room 重名</td><td>报错提示重名，要求用户修改后重新 plan</td></tr>
+<tr><td>B9</td><td>同一用户并发发 2 次 /room plan</td><td>排队串行处理，不并发创建 profile（防重复创建）</td></tr>
+<tr><td>B10</td><td>规划结果里 description 含特殊字符（引号/换行/emoji）</td><td>写入 profile.yaml 时正确转义；SOUL.md 渲染正常</td></tr>
+</table>
+</div>
+
+<h4>线上真实 A/B 测试</h4>
+<div class="card">
+<p><b>目的</b>：对比 M2"自然语言规划"与 M1"手动指定成员"在规划准确性和用户体验上的差异。</p>
+<h4 style="margin-top:12px;">A/B 分组</h4>
+<table>
+<tr><th>组</th><th>方式</th><th>操作者</th></tr>
+<tr><td><b>A 组（M1 手动）</b></td><td>管理员看需求后手工决定成员，<code>/room create --members p1,p2,p3</code></td><td>有 hermes 经验的管理员</td></tr>
+<tr><td><b>B 组（M2 规划）</b></td><td>直接发 <code>/room plan &lt;需求&gt;</code>，确认后自动组装</td><td>同一管理员</td></tr>
+</table>
+<h4 style="margin-top:12px;">测试流程（10 个真实需求场景）</h4>
+<ol>
+<li>准备 10 个不同类型的需求描述（简单单域 / 跨域 / 模糊 / 复杂多步各 2-3 个）</li>
+<li>A 组：管理员阅读需求后，不看 profile 列表，凭经验手选成员，记录选择理由</li>
+<li>B 组：同一需求发给 M2 规划器，记录规划结果</li>
+<li>对比两组选出的成员名单，记录：
+  <ul style="margin:4px 0;">
+    <li>成员重叠率（两组选了相同成员的比例）</li>
+    <li>规划时间：A 组管理员决策耗时 vs B 组规划器响应耗时</li>
+    <li>规划结果的 description 质量评分（1-5，第三方盲测）</li>
+  </ul>
+</li>
+<li>用 B 组规划出的 room 实际跑 3 天，用 M1 的 A/B 指标（路由准确率 / 满意度）评估效果</li>
+</ol>
+<h4 style="margin-top:12px;">M2 成功指标</h4>
+<table>
+<tr><th>指标</th><th>目标</th><th>不达标</th></tr>
+<tr><td>成员重叠率（M2 vs 人工）</td><td>&ge; 70%（M2 大体跟人工判断一致）</td><td>说明规划器质量差，检查 profile description 是否足够具体</td></tr>
+<tr><td>规划响应时间</td><td>&le; 8 秒（用户能接受等待）</td><td>超 8 秒加进度提示"正在分析需求..."缓解体感</td></tr>
+<tr><td>幻觉率（建议不存在的 profile）</td><td>= 0%</td><td>任何幻觉都是 blocker，立即修 prompt</td></tr>
+<tr><td>用户确认率</td><td>&ge; 80%（用户收到规划后直接 Y 确认）</td><td>&lt; 80% 说明规划质量差或规划结果展示不够清晰</td></tr>
+</table>
+</div>
+
+<!-- ═════════════ M3 验收 ═════════════ -->
+<h3 id="s11m3"><span class="tag tag-m3">M3</span> · 完整上下文投影 + 并发多成员</h3>
+
+<h4>完成定义（Definition of Done）</h4>
+<ul>
+<li>M3 §2.4 明确包含的所有能力都实现且合并到 main</li>
+<li>M1 的"看自己被路由过的历史"简版代码被删除，成员看 room 完整投影历史</li>
+<li>M1 的 <code>跨成员摘要注入</code> 补丁（§8）被移除（M3 有完整投影，不再需要摘要注入）</li>
+<li>新增 <code>agent_room_messages</code> 表，支持从 M1 迁移（旧成员 session 的消息按时间戳迁入）</li>
+<li>回归：M1 阶段验收过的所有 case 在 M3 里仍全部通过</li>
+</ul>
+
+<h4>单元测试</h4>
+<ul>
+<li>上下文投影算法：给定 room 历史 + 目标成员，输出的对话符合"自己是 assistant、别人是 user 带前缀"规则</li>
+<li>工具调用/结果的投影：不同成员的 <code>tool_calls</code> 被转成文本描述塞进 user 消息</li>
+<li>消息乱序修复：模拟并发写入，读取时按 canonical order 排序</li>
+<li>并发派发：观察者返回多个成员时，各自的 turn 独立执行、不共享临时变量、Fence 分别检查</li>
+<li>结果聚合策略：多成员并发回复时的顺序（时间戳）、去重、失败一个不影响其他</li>
+</ul>
+
+<h4>集成测试</h4>
+<ul>
+<li><b>跨成员话题延续 · 完整历史</b>：用户先问客服 → 客服答 → 用户切话题问财务 → 财务能读到<b>完整</b>之前的客服对话（不是摘要）</li>
+<li><b>观察者判定并发派发</b>：观察者输出 <code>route_to_member=[client, finance]</code>，两个成员各自跑 turn，两个回复都落回群</li>
+<li><b>M1 → M3 数据迁移</b>：手工模拟 M1 阶段留下的成员 session，运行 M3 后能看到消息落到 <code>agent_room_messages</code> 表，且投影结果完整</li>
+<li><b>Studio group-message-ordering 借鉴</b>：多个成员并发 turn 时的 <code>tool_call/toolresult</code> multipart 消息排序不被打乱</li>
+</ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤</h4>
+<ol>
+<li>用 M1 的 room（客服 + 财务）作为迁移前基线，跑一遍跨话题对话 → 观察 M1 阶段的行为</li>
+<li>升级到 M3 → 数据迁移脚本跑一次</li>
+<li>重发跟 M1 一样的跨话题对话 → 财务成员这次能读到完整客服对话，回复应该更贴合（不再是"上下文碎"）</li>
+<li>群里发一条同时需要客服+财务响应的问题（"我要退这单同时要看下这个月账单"）→ 观察者判定并发派发 → 两个成员各自回一条，按时间戳排序落到群</li>
+<li>连续发 5 条快速消息，观察消息落库 + 展示顺序不被打乱</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>财务成员的 turn 里能通过日志看到<b>完整</b>的客服对话历史（不是摘要）</li>
+<li>并发派发的两个成员回复的时序、内容都正确</li>
+<li>M1 阶段验收过的所有 case（含 Fence、多路复用等）在 M3 后仍全部通过</li>
+<li>M1 的旧成员 session 历史成功迁移到 <code>agent_room_messages</code>（可查数据行数一致）</li>
+</ul>
+</div>
+
+<h4>边界测试</h4>
+<div class="card">
+<table>
+<tr><th>#</th><th>边界场景</th><th>预期行为</th></tr>
+<tr><td>B1</td><td>room 历史消息超过 100 条时的投影性能</td><td>单次投影 &lt; 200ms；超过 500 条触发滑动窗口截断（取最近 N 条）</td></tr>
+<tr><td>B2</td><td>两个成员几乎同时 emit 消息（时间差 &lt; 10ms）</td><td>canonical order 不乱序；两条都落库；UI 展示顺序稳定</td></tr>
+<tr><td>B3</td><td>观察者一次 route_to_member 输出 5 个成员（全并发）</td><td>5 个 turn 并行启动；DingTalk webhook QPS 不超限；全部回复落群</td></tr>
+<tr><td>B4</td><td>并发派发中某 1 个成员 turn 报错</td><td>其余成员正常完成；失败成员的错误记 log；不影响其他成员的回复</td></tr>
+<tr><td>B5</td><td>迁移脚本在 M1 数据不存在时运行</td><td>幂等空操作，不报错，0 行迁移</td></tr>
+<tr><td>B6</td><td>迁移后用 M1 的旧 session_id 访问成员 session</td><td>仍能读到历史（向后兼容），只是写入路径改为 agent_room_messages</td></tr>
+<tr><td>B7</td><td>成员 tool_calls 里的 arguments 含 base64 大图（> 100KB）</td><td>投影时截断 arguments 到 4000 字符（同 Studio 逻辑）；不 OOM</td></tr>
+<tr><td>B8</td><td>3 个成员并发回复时用户在中间 /room unbind</td><td>Fence 触发；3 个进行中 turn 全部被 fence；已发出的 step4 edit_message 作废；群不再收到迟到消息</td></tr>
+<tr><td>B9</td><td>agent_room_messages 表写入失败（磁盘满）</td><td>消息丢失但 gateway 不 crash；记录 ERROR 日志；后续消息继续处理</td></tr>
+<tr><td>B10</td><td>M1 升级到 M3 后第一条消息（迁移完成后）</td><td>投影历史正确包含迁移过来的 M1 消息 + M3 新增消息，不重复，不乱序</td></tr>
+</table>
+</div>
+
+<h4>线上真实 A/B 测试</h4>
+<div class="card">
+<p><b>目的</b>：量化 M3 完整上下文投影相比 M1 摘要注入在跨成员对话连贯性上的提升。</p>
+<h4 style="margin-top:12px;">A/B 分组</h4>
+<table>
+<tr><th>组</th><th>配置</th><th>说明</th></tr>
+<tr><td><b>A 组（M1 摘要注入）</b></td><td>保持 M1 状态：成员只看自己历史 + reason 字段带摘要</td><td>M3 上线前在 staging 上复现 M1 行为</td></tr>
+<tr><td><b>B 组（M3 完整投影）</b></td><td>M3 完整 context-projection：成员看全 room 单人称改写历史</td><td>生产分支</td></tr>
+</table>
+<h4 style="margin-top:12px;">测试流程（5 天连续跨成员对话）</h4>
+<ol>
+<li>设计 20 个需要跨成员切换的对话场景（客服→财务→技术 等链条）</li>
+<li>每个场景在 A 组和 B 组各走一遍，记录：
+  <ul style="margin:4px 0;">
+    <li>成员是否"断链"（回答了"不知道您刚才说的"或"请重新描述问题"）</li>
+    <li>最终解决用户问题所需的轮次数（越少越好）</li>
+    <li>成员消息中主动引用上文的比例</li>
+  </ul>
+</li>
+<li>埋点记录：单次投影耗时 / 投影历史 token 数 / 成员 turn 总 token 成本对比</li>
+</ol>
+<h4 style="margin-top:12px;">M3 成功指标</h4>
+<table>
+<tr><th>指标</th><th>目标</th><th>不达标</th></tr>
+<tr><td>断链率</td><td>B 组 &le; A 组 50%（M3 断链次数应至少减半）</td><td>说明 context-projection 算法有缺陷，检查单人称改写逻辑</td></tr>
+<tr><td>平均解决轮次</td><td>B 组 &le; A 组 - 1（减少至少 1 轮）</td><td>投影有效但节省轮次不明显，可接受但需记录</td></tr>
+<tr><td>成员 token 成本增量</td><td>&le; A 组 + 80%（完整历史比摘要贵，但不能超一倍）</td><td>投影历史太长 → 需引入滑动窗口截断历史条数</td></tr>
+<tr><td>单次投影耗时</td><td>&le; 100ms（不能成为路由瓶颈）</td><td>超 100ms 加缓存；超 500ms 投影结果截断历史条数</td></tr>
+<tr><td>M1 所有 A/B 指标</td><td>B 组仍达标（M3 不能让路由准确率退化）</td><td>任一 M1 指标退化即视为 M3 引入回归</td></tr>
+</table>
+</div>
+
+<!-- ═════════════ M4 验收 ═════════════ -->
+<h3 id="s11m4"><span class="tag tag-m4">M4</span> · 任务拆分（复杂需求）</h3>
+
+<h4>完成定义（Definition of Done）</h4>
+<ul>
+<li>M4 §2.5 明确包含的所有能力都实现且合并到 main</li>
+<li><code>room_observer</code> toolset 从 1 个工具（<code>route_to_member</code>）扩展到 2 个（<code>+ decompose_and_route</code>）</li>
+<li>M1 §5.3 的 loop 终止方案 A 对新工具同样有效</li>
+<li>回归：M1/M2/M3 的所有 case 全过</li>
+</ul>
+
+<h4>单元测试</h4>
+<ul>
+<li><code>decompose_and_route</code> 工具单独调用 → 返回子任务图结构 → <code>request_hard_interrupt</code> 触发</li>
+<li>子任务图的 assignee 必须在 room 成员名册内的校验（拒绝跨 room 委派）</li>
+<li>依赖图执行顺序：无依赖的子任务并行，有依赖的等前置完成</li>
+<li>综合回复：所有子任务完成后触发观察者的"综合 turn"，输出用户可见的最终回复</li>
+</ul>
+
+<h4>集成测试</h4>
+<ul>
+<li><b>简单任务走原路径</b>：观察者对简单问题仍调 <code>route_to_member</code>（不是每个消息都拆分）</li>
+<li><b>复杂任务拆分</b>：给一个明显需要多步的需求（"帮我起草合同 + 找财务算成本 + 发给客户"），观察者调 <code>decompose_and_route</code> → 3 个子任务按依赖顺序执行</li>
+<li><b>依赖失败传播</b>：中间某个子任务失败 → 后续依赖它的子任务不执行 → 观察者综合 turn 里能看到失败信息</li>
+<li><b>回归 M1</b>：普通对话依然走 M1 单成员路径</li>
+</ul>
+
+<h4>线上真实环境测试</h4>
+<div class="card">
+<h4 style="margin-top:0;">测试步骤</h4>
+<ol>
+<li>在群里发简单问题 → 应走 M1/M3 单成员路径（可看日志确认 <code>route_to_member</code> 而非 <code>decompose_and_route</code>）</li>
+<li>发复杂问题："帮我起草这份合同，然后让财务估算成本，最后综合给客户一个方案" → 应走 <code>decompose_and_route</code> → 拆成 3 个子任务</li>
+<li>验证子任务在 kanban 里可见，assignee 正确 = room 成员</li>
+<li>依赖顺序：合同起草完成前，客户方案子任务不启动</li>
+<li>全部完成后 → 观察者综合 turn 生成最终回复发到群</li>
+<li>中间人为让某个子任务失败 → 后续依赖子任务不执行 → 综合 turn 里带上失败信息</li>
+</ol>
+
+<h4>测试通过判定</h4>
+<ul>
+<li>观察者能自主判断"简单 vs 复杂"，且判断合理（简单问题不拆分）</li>
+<li>子任务在 kanban 里可查、可追踪</li>
+<li>综合 turn 的最终回复包含所有子任务的关键信息</li>
+<li>M1/M2/M3 的验收 case 全过</li>
+</ul>
+</div>
+
+<h4>边界测试</h4>
+<div class="card">
+<table>
+<tr><th>#</th><th>边界场景</th><th>预期行为</th></tr>
+<tr><td>B1</td><td>观察者对简单问题误判为复杂任务并拆分</td><td>不是 blocker，但要记录误判率；子任务图哪怕只有 1 个节点也应正常执行完成</td></tr>
+<tr><td>B2</td><td>子任务图存在循环依赖（A 依赖 B，B 依赖 A）</td><td>创建时校验拒绝，返回明确错误，不产生死锁</td></tr>
+<tr><td>B3</td><td>子任务 assignee 指定成 room 名册外的 profile</td><td>创建时拒绝，报错"assignee 必须是 room 成员"</td></tr>
+<tr><td>B4</td><td>所有子任务都失败</td><td>综合 turn 仍要触发，明确告知用户"任务未能完成，原因：..."，不是静默无响应</td></tr>
+<tr><td>B5</td><td>子任务执行中途 room 被删除</td><td>Fence 生效，未完成子任务标记取消，综合 turn 不触发</td></tr>
+<tr><td>B6</td><td>子任务数量超过 kanban 单次拆分上限（如 20 个）</td><td>观察者的拆分 prompt 里已限制 2-6 个（继承 kanban_decompose 的现有约束），超限自动收窄</td></tr>
+<tr><td>B7</td><td>综合 turn 期间用户又发了新消息</td><td>新消息进入正常路由队列（不阻塞等综合 turn 完成），观察者按 M1 并发处理规则</td></tr>
+<tr><td>B8</td><td>observer session 在拆分模式和普通路由模式之间切换</td><td>同一个 observer session 历史里两种工具调用穿插出现，互不干扰</td></tr>
+</table>
+</div>
+
+<h4>线上真实 A/B 测试</h4>
+<div class="card">
+<p><b>目的</b>：验证 M4 任务拆分对复杂多步需求的完成质量提升，同时确认没有对简单请求造成过度拆分。</p>
+<h4 style="margin-top:12px;">A/B 分组</h4>
+<table>
+<tr><th>组</th><th>配置</th><th>说明</th></tr>
+<tr><td><b>A 组（M1-M3，无拆分）</b></td><td>观察者只能 route_to_member，复杂需求被硬塞给一个成员</td><td>回归到 M3 行为</td></tr>
+<tr><td><b>B 组（M4 拆分）</b></td><td>观察者可选 decompose_and_route</td><td>生产分支</td></tr>
+</table>
+<h4 style="margin-top:12px;">测试流程</h4>
+<ol>
+<li>设计 15 个需求：5 个简单单步、5 个中等两步、5 个复杂三步以上</li>
+<li>两组各跑一遍，记录：
+  <ul style="margin:4px 0;">
+    <li>简单需求：A/B 组都应该不拆分（对照组），验证 B 组没有"没事找事拆分"</li>
+    <li>复杂需求：A 组由单个成员硬扛 vs B 组拆分执行，对比完成质量（人工评分 1-5）</li>
+    <li>复杂需求完成总耗时：A 组单 turn vs B 组多子任务累计</li>
+  </ul>
+</li>
+</ol>
+<h4 style="margin-top:12px;">M4 成功指标</h4>
+<table>
+<tr><th>指标</th><th>目标</th><th>不达标</th></tr>
+<tr><td>简单需求误拆分率</td><td>0%（5 个简单需求全部走单成员路径）</td><td>任何误拆分都要回去调观察者的判断 prompt</td></tr>
+<tr><td>复杂需求完成质量提升</td><td>B 组评分 &ge; A 组 + 1 分（5 分制）</td><td>提升不明显则复杂任务拆分的价值存疑，评估是否值得维护这层复杂度</td></tr>
+<tr><td>子任务依赖执行正确率</td><td>100%（后置任务不能在前置完成前执行）</td><td>任何顺序错误都是 blocker</td></tr>
+<tr><td>综合 turn 覆盖率</td><td>100%（所有拆分任务最终都有综合回复，无论成败）</td><td>任何"拆了没有下文"都是 blocker</td></tr>
+</table>
+</div>
+
+<h3 id="s11cross">跨期回归测试原则</h3>
+
+<div class="callout callout-info">
+每期交付前都必须<b>回归运行前期的所有验收 case</b>。M4 交付时要跑 M1+M2+M3 全部 case；M3 交付时跑 M1+M2 全部 case。用 <code>scripts/run_tests.sh</code> 的 per-file 隔离模式跑（避免模块状态泄漏）。
+</div>
+
+<h3 id="s11env">线上测试环境准备（M1-M4 共用）</h3>
+
+<ol>
+<li><b>专属测试 DingTalk 群</b>：不用生产群，避免真实用户被路由错误影响</li>
+<li><b>专属测试 profile 前缀</b>：<code>room_test_*</code>，方便一键清理</li>
+<li><b>生产 <code>.venv</code></b>：用 <code>/opt/hermes-agent/.venv</code>（335 包完好），不用测试 venv—— 线上问题只在真 SDK/真 config.yaml 下才暴露</li>
+<li><b>日志级别提升到 DEBUG</b>：临时改 <code>~/.hermes/config.yaml</code> 里 <code>gateway.log_level</code>，测试完恢复</li>
+<li><b>每期结束清理</b>：<code>/room delete test_*</code> + <code>hermes profile delete room_test_*</code> + 删测试 SQLite 表数据</li>
+</ol>
+
+<div class="footer">
+文档版本 v2 · 基于 8 组代码 spike 验证 · 生成于 hermes-agent <code>449d4e711</code>
+<br>
+源文件：<code>docs/design/agent-room/README.md</code> / <code>m1-spec.md</code> / <code>architecture-assessment-v2.md</code>
+</div>
+
+</div>
+</body>
+</html>

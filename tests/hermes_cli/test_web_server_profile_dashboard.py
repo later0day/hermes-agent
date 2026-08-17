@@ -62,7 +62,7 @@ async def test_profile_details_includes_bindings_kanban_cron_and_health(isolated
         name="worker-cron",
     )
     memory_dir = isolated_dashboard_profiles["worker_alpha"] / "memories"
-    memory_dir.mkdir(parents=True)
+    memory_dir.mkdir(parents=True, exist_ok=True)
     (memory_dir / "MEMORY.md").write_text(
         "worker memory\nOPENAI_API_KEY=sk-secret-value",
         encoding="utf-8",
@@ -858,7 +858,7 @@ async def test_source_binding_api_and_session_annotation(isolated_dashboard_prof
             profile_name="worker_alpha",
         )
     )
-    sessions = await web_server.get_sessions(limit=10, offset=0)
+    sessions = web_server.get_sessions(limit=10, offset=0)
 
     assert set_result["binding"]["profile_name"] == "worker_alpha"
     assert sessions["sessions"][0]["source_binding_key"] == "source:dingtalk:group:chat1:user1"
@@ -866,7 +866,7 @@ async def test_source_binding_api_and_session_annotation(isolated_dashboard_prof
     assert sessions["sessions"][0]["session_profile"] == "worker_alpha"
 
     cleared = await web_server.delete_source_binding("source:dingtalk:group:chat1:user1")
-    sessions_after = await web_server.get_sessions(limit=10, offset=0)
+    sessions_after = web_server.get_sessions(limit=10, offset=0)
 
     assert cleared == {"ok": True, "deleted": True}
     assert sessions_after["sessions"][0]["bound_profile"] == "default"
@@ -1074,4 +1074,10 @@ async def test_cron_owner_filter_remains_logical(isolated_dashboard_profiles):
 
     assert [job["id"] for job in default_jobs] == [default_job["id"]]
     assert [job["id"] for job in worker_jobs] == [worker_job["id"]]
-    assert not (isolated_dashboard_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
+    # Cron storage is partitioned per profile: worker_alpha's jobs land in its
+    # own profile home, not the default/centralized store.
+    assert (isolated_dashboard_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
+    default_cron = (
+        isolated_dashboard_profiles["default"] / "cron" / "jobs.json"
+    ).read_text(encoding="utf-8")
+    assert worker_job["id"] not in default_cron

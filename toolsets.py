@@ -302,6 +302,42 @@ TOOLSETS = {
         "includes": []
     },
 
+    "room_observer": {
+        # Agent Room M1.4:
+        # docs/design/agent-room/design.html §5.3 + §9.2 + §2.5
+        #
+        # The observer profile's ONLY toolset — grants exactly one tool:
+        #   * route_to_member — single/multi-member first-hop routing (M1/M3)
+        #
+        # M4 decompose_and_route is DISABLED (kept in tools/room_decompose_
+        # tool.py but no longer registered here). Multi-member coordination
+        # is handled by the deterministic @mention handoff chain
+        # (gateway/agent_room_mentions.py + agent_room_handoff.py, driven by
+        # agent_room_router._run_handoff_chain) rather than a central
+        # observer-emitted DAG — see that module for rationale.
+        #
+        # route_to_member ends the observer's turn via request_hard_interrupt
+        # (§9.2 patch A). Combined with the observer profile's config.yaml
+        # ``toolsets: [room_observer]`` + the runtime lockdown patched in
+        # TurnRunner.run_sync, this yields the single-tool behavioral
+        # lockdown: _HERMES_CORE_TOOLS is packaged only into other named
+        # toolsets (hermes-cli / hermes-cron / hermes-telegram / …), so an
+        # observer that lists only room_observer cannot terminal / read_file
+        # / delegate / anything else — its only expressible action is a
+        # routing decision.
+        #
+        # See:
+        #   * tools/room_router_tool.py      — route_to_member
+        "description": (
+            "Agent Room routing — the observer profile's single tool: "
+            "route_to_member for single/multi-member first-hop dispatch. "
+            "It emits a decision that terminates the observer's turn "
+            "via request_hard_interrupt (§9.2 patch A)."
+        ),
+        "tools": ["route_to_member"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

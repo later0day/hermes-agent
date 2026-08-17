@@ -1434,7 +1434,141 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+
+  // ── Agent Room API (M1.8 REST + M2.4 planner) ─────────────────────────
+  listRooms: () =>
+    fetchJSON<{ rooms: RoomRecord[] }>("/api/rooms"),
+  getRoom: (roomId: string) =>
+    fetchJSON<{ room: RoomRecord }>(`/api/rooms/${encodeURIComponent(roomId)}`),
+  createRoom: (body: RoomCreateRequest) =>
+    fetchJSON<{ ok: boolean; room: RoomRecord }>("/api/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  patchRoom: (roomId: string, body: RoomPatchRequest) =>
+    fetchJSON<{ ok: boolean; room: RoomRecord }>(
+      `/api/rooms/${encodeURIComponent(roomId)}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
+  deleteRoom: (roomId: string) =>
+    fetchJSON<{ ok: boolean; deleted: boolean }>(
+      `/api/rooms/${encodeURIComponent(roomId)}`,
+      { method: "DELETE" },
+    ),
+  bindRoom: (roomId: string, source_binding_key: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/rooms/${encodeURIComponent(roomId)}/bind`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_binding_key }),
+      },
+    ),
+  unbindRoom: (roomId: string, source_binding_key: string) =>
+    fetchJSON<{ ok: boolean; unbound: boolean }>(
+      `/api/rooms/${encodeURIComponent(roomId)}/unbind`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_binding_key }),
+      },
+    ),
+  planRoom: (body: RoomPlanRequest) =>
+    fetchJSON<{ plan: RoomPlan }>("/api/rooms/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  confirmRoomPlan: (body: RoomPlanConfirmRequest = {}) =>
+    fetchJSON<{ ok: boolean; room: RoomRecord; new_profiles: string[] }>(
+      "/api/rooms/plan/confirm",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
+  listRoomMessages: (roomId: string, limit: number = 100) =>
+    fetchJSON<{
+      room_id: string;
+      count: number;
+      messages: RoomMessageRow[];
+    }>(`/api/rooms/${encodeURIComponent(roomId)}/messages?limit=${limit}`),
+  deleteRoomMessage: (roomId: string, sequence: number) =>
+    fetchJSON<{ ok: boolean; deleted: boolean }>(
+      `/api/rooms/${encodeURIComponent(roomId)}/messages/${sequence}`,
+      { method: "DELETE" },
+    ),
+  dispatchRoomMessage: (roomId: string, message: string, broadcast: boolean = false) =>
+    fetchJSON<{
+      ok: boolean;
+      target_members: string[];
+      broadcast: boolean;
+      replies: Record<string, string>;
+    }>(`/api/rooms/${encodeURIComponent(roomId)}/dispatch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, broadcast }),
+    }),
 };
+
+// ── Agent Room types ─────────────────────────────────────────────────────
+
+export interface RoomRecord {
+  room_id: string;
+  room_name: string;
+  observer_profile: string;
+  members: string[];
+  description: string;
+  default_member: string;
+  created_at: number;
+  updated_at: number;
+  actor: string;
+}
+
+export interface RoomMessageRow {
+  room_id: string;
+  sequence: number;
+  sender_kind: "user" | "observer" | "member" | "tool_result";
+  sender_name: string;
+  content: string;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+  timestamp: number;
+}
+
+export interface RoomCreateRequest {
+  name: string;
+  members: string[];
+  description?: string;
+  default_member?: string;
+}
+
+export interface RoomPatchRequest {
+  members?: string[];
+  description?: string;
+  default_member?: string;
+}
+
+export interface RoomPlannedMember {
+  profile: string | null;   // existing profile name, null if new
+  is_new: boolean;
+  name: string;
+  description: string;
+  reason: string;
+}
+
+export interface RoomPlan {
+  rationale: string;
+  members: RoomPlannedMember[];
+  room_description: string;
+}
+
+export interface RoomPlanRequest {
+  requirement: string;
+  max_members?: number;
+}
+
+export interface RoomPlanConfirmRequest {
+  room_name?: string;
+}
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *
