@@ -15645,10 +15645,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _handler
 
     def _make_default_profile_message_handler(self):
-        """Scope a multiplexed default-profile message from ingress onward."""
-        profile_home = Path(get_hermes_home())
+        """Scope a multiplexed default-profile message from ingress onward.
+
+        The primary adapter (e.g. a single shared DingTalk/Telegram/Discord
+        credential) is registered ONCE at startup, so ``profile_home`` used to
+        be computed ONCE here and reused for every inbound event — always the
+        default/root profile.
+
+        But our fork's source→agent binding store (``/agent use``, dashboard
+        bindings) can route an individual chat on that SAME shared credential
+        to a different, non-default profile at RUNTIME. ``_run_agent`` already
+        re-resolves the correct profile and re-enters ``_profile_runtime_scope``
+        around just the agent turn — but that narrower, later scope closes
+        before this handler's outer scope does. Everything else in the turn
+        (``get_or_create_session`` before ``_run_agent``, ``update_session`` /
+        ``_refresh_agent_cache_message_count`` after it) ran under the STALE
+        outer (root) scope, so the "official" session row landed in the root
+        database while the agent's own turn data landed in the bound profile's
+        database — the root row's ``message_count`` then never advances,
+        which makes the cross-process coherence guard treat every turn as a
+        foreign write and rebuild the cached agent from scratch every time.
+        See tests/gateway/test_64674_multiplex_primary_token_scope.py::
+        TestPrimaryHandlerFollowsBoundProfile.
+
+        Resolve the per-event profile home the same way ``_run_agent`` does
+        (via ``_resolve_profile_home_for_source``, sharing the ingress
+        stamping / binding-store lookup) BEFORE entering the scope, so the
+        WHOLE turn — session bookkeeping included — runs under one
+        consistently-correct scope. When resolution fails or the source's
+        profile route is rejected, fall back to the default/root profile home,
+        matching ``_handle_message``'s own ingress-gate fallback semantics.
+        """
+        default_profile_home = Path(get_hermes_home())
 
         async def _handler(event):
+            profile_home = default_profile_home
+            source = getattr(event, "source", None)
+            if source is not None:
+                try:
+                    profile_home = self._resolve_profile_home_for_source(source)
+                except Exception:
+                    # Includes ProfileRouteRejected (an explicit route target
+                    # that isn't served) and any resolution error — both fall
+                    # back to the default profile so the message still reaches
+                    # _handle_message's own (more authoritative) ingress gate,
+                    # which handles rejection/authorization itself.
+                    logger.debug(
+                        "default-profile handler: profile home resolution "
+                        "failed, using root profile home",
+                        exc_info=True,
+                    )
+                    profile_home = default_profile_home
             with _profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 

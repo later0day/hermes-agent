@@ -195,11 +195,19 @@ class TestPrimaryMessageRuntimeScope:
             "platform_toolsets:\n  discord:\n    - discord\n", encoding="utf-8"
         )
         monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
+        # Also point the real env var at `home` (not just the run.py alias):
+        # the handler now resolves the per-event profile home via
+        # _resolve_profile_home_for_source's fallback (get_active_profile_name
+        # / get_profile_dir), which reads HERMES_HOME directly rather than
+        # through run_mod's patched name. In a real (unpatched) process both
+        # already read the same env var, so this just keeps the test honest.
+        monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "wrong-process-token")
         secret_scope.set_multiplex_active(True)
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._source_agent_binding_store = None
 
         async def _handle_message(_event):
             from gateway.session import _discord_tools_loaded
@@ -212,6 +220,128 @@ class TestPrimaryMessageRuntimeScope:
         assert await handler(SimpleNamespace(source=SimpleNamespace(profile=None))) is True
         with pytest.raises(secret_scope.UnscopedSecretError):
             secret_scope.get_secret("DISCORD_BOT_TOKEN")
+
+
+class TestPrimaryHandlerFollowsBoundProfile:
+    """The default-profile handler's scope must track EACH event's resolved
+    profile, not the profile computed once at handler-creation time.
+
+    Root cause pinned here: our fork's source→agent binding store can route
+    an individual chat on the SHARED primary credential (e.g. one DingTalk
+    bot serving both the default and a secondary "xcx" profile) to a
+    non-default profile at runtime. ``_run_agent`` already re-resolves the
+    right profile and re-enters ``_profile_runtime_scope`` — but only around
+    the agent turn itself. Everything else in the turn
+    (``get_or_create_session`` before ``_run_agent``, ``update_session`` /
+    ``_refresh_agent_cache_message_count`` after it) used to run under the
+    STALE outer scope computed once at handler-creation time — always the
+    default profile — so the "official" session row (with its message_count)
+    landed in the wrong database and never advanced, while the agent's own
+    turn data landed in the right one. The cross-process coherence guard then
+    saw a permanent mismatch and rebuilt the cached agent on every turn.
+
+    The fix: resolve the profile home per-event via the SAME
+    ``_resolve_profile_home_for_source`` helper ``_run_agent`` already trusts,
+    BEFORE entering the scope, so the whole turn — session bookkeeping
+    included — runs under one consistently-correct scope.
+    """
+
+    def _setup_homes(self, tmp_path, monkeypatch, run_mod):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".env").write_text("DISCORD_BOT_TOKEN=default-token\n", encoding="utf-8")
+
+        profile_dir = home / "profiles" / "xcx"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / ".env").write_text("DISCORD_BOT_TOKEN=xcx-token\n", encoding="utf-8")
+
+        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "wrong-process-token")
+        return home, profile_dir
+
+    @pytest.mark.asyncio
+    async def test_bound_source_runs_under_the_bound_profiles_scope(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+        from gateway import run as run_mod
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+        from gateway.session import SessionSource, build_source_binding_key
+        from gateway.source_agent_binding import SourceAgentBindingStore
+
+        self._setup_homes(tmp_path, monkeypatch, run_mod)
+        secret_scope.set_multiplex_active(True)
+
+        store = SourceAgentBindingStore(db_path=tmp_path / "bindings.sqlite")
+        bound_source = SessionSource(
+            platform=Platform.DINGTALK, chat_id="qlogin-group",
+            chat_type="group", user_id="u1",
+        )
+        store.set_binding(build_source_binding_key(bound_source), "xcx")
+        unbound_source = SessionSource(
+            platform=Platform.DINGTALK, chat_id="other-group",
+            chat_type="group", user_id="u2",
+        )
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._source_agent_binding_store = store
+
+        seen_tokens = []
+
+        async def _handle_message(event):
+            seen_tokens.append(secret_scope.get_secret("DISCORD_BOT_TOKEN"))
+            return None
+
+        runner._handle_message = _handle_message  # type: ignore[method-assign]
+        handler = runner._primary_message_handler()
+
+        await handler(SimpleNamespace(source=bound_source))
+        await handler(SimpleNamespace(source=unbound_source))
+
+        assert seen_tokens == ["xcx-token", "default-token"]
+
+    @pytest.mark.asyncio
+    async def test_resolution_failure_falls_back_to_default_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """A resolver error (or a rejected explicit route) must never crash
+        the handler — fall back to the default profile, same as
+        ``_handle_message``'s own ingress-gate fallback semantics."""
+        from agent import secret_scope
+        from gateway import run as run_mod
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        self._setup_homes(tmp_path, monkeypatch, run_mod)
+        secret_scope.set_multiplex_active(True)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._source_agent_binding_store = None
+        runner._resolve_profile_home_for_source = MagicMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        seen_tokens = []
+
+        async def _handle_message(event):
+            seen_tokens.append(secret_scope.get_secret("DISCORD_BOT_TOKEN"))
+            return None
+
+        runner._handle_message = _handle_message  # type: ignore[method-assign]
+        handler = runner._primary_message_handler()
+
+        source = SessionSource(
+            platform=Platform.DINGTALK, chat_id="whatever", chat_type="group",
+            user_id="u1",
+        )
+        await handler(SimpleNamespace(source=source))
+
+        assert seen_tokens == ["default-token"]
 
 
 class TestReconnectDropsEmptyToken:
