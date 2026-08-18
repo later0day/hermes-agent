@@ -18536,6 +18536,737 @@ _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
 app.include_router(_dashboard_auth_router)
 
+# ──────────────────────────────────────────────────────────────────────────
+# Agent Room REST API — M1.8 (design.html §7.2)
+# 7 endpoints mirroring the /room slash commands (M1.6).
+# Backed by the same AgentRoomStore + agent_room_bootstrapper as the slash
+# command handler; no additional logic lives here.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _room_store():
+    from gateway.agent_room_store import AgentRoomStore
+    return AgentRoomStore()
+
+
+def _room_binding_store():
+    from gateway.source_agent_binding import SourceAgentBindingStore
+    return SourceAgentBindingStore()
+
+
+class _RoomCreate(BaseModel):
+    name: str
+    members: List[str]
+    description: str = ""
+    default_member: str = ""
+
+
+class _RoomPatch(BaseModel):
+    members: Optional[List[str]] = None
+    description: Optional[str] = None
+    default_member: Optional[str] = None
+
+
+class _RoomBindBody(BaseModel):
+    source_binding_key: str
+
+
+@app.get("/api/rooms")
+async def list_rooms():
+    store = _room_store()
+    try:
+        return {"rooms": [r.to_dict() for r in store.list_rooms()]}
+    finally:
+        store.close()
+
+
+@app.post("/api/rooms")
+async def create_room(body: _RoomCreate):
+    import uuid
+    from gateway.agent_room_store import AgentRoomError
+    from gateway.agent_room_bootstrapper import (
+        BootstrapError,
+        build_observer_profile,
+        observer_profile_name_for,
+        teardown_observer_profile,
+    )
+    from hermes_cli.profiles import profile_exists, read_profile_meta, get_profile_dir
+
+    missing = [m for m in body.members if not profile_exists(m)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Profiles not found: {missing}")
+
+    observer_name = observer_profile_name_for(body.name)
+    if profile_exists(observer_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Observer profile name '{observer_name}' already taken",
+        )
+
+    members_with_desc: list[tuple[str, str]] = []
+    for m in body.members:
+        try:
+            meta = read_profile_meta(get_profile_dir(m))
+        except Exception:
+            meta = {}
+        members_with_desc.append((m, str(meta.get("description") or "")))
+
+    room_id = f"room_{uuid.uuid4().hex[:12]}"
+    store = _room_store()
+    try:
+        try:
+            build_observer_profile(
+                room_name=body.name,
+                room_description=body.description,
+                members=members_with_desc,
+                default_member=body.default_member or body.members[0],
+                observer_name=observer_name,
+            )
+        except BootstrapError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        try:
+            room = store.create_room(
+                room_id, body.name,
+                observer_profile=observer_name,
+                members=body.members,
+                description=body.description,
+                default_member=body.default_member,
+                actor="dashboard",
+            )
+        except AgentRoomError as exc:
+            try:
+                teardown_observer_profile(observer_name)
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        return {"ok": True, "room": room.to_dict()}
+    finally:
+        store.close()
+
+
+@app.get("/api/rooms/{room_id}")
+async def get_room(room_id: str):
+    store = _room_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+        return {"room": room.to_dict()}
+    finally:
+        store.close()
+
+
+@app.patch("/api/rooms/{room_id}")
+async def patch_room(room_id: str, body: _RoomPatch):
+    from gateway.agent_room_store import AgentRoomError
+    from gateway.agent_room_bootstrapper import (
+        BootstrapError,
+        regenerate_observer_soul,
+    )
+    from hermes_cli.profiles import read_profile_meta, get_profile_dir
+
+    store = _room_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        new_members = list(body.members) if body.members is not None else list(room.members)
+        new_default = body.default_member if body.default_member is not None else room.default_member
+
+        try:
+            updated = store.update_members(
+                room_id, new_members,
+                default_member=new_default,
+                description=body.description,
+                actor="dashboard",
+            )
+        except AgentRoomError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        members_with_desc: list[tuple[str, str]] = []
+        for m in updated.members:
+            try:
+                meta = read_profile_meta(get_profile_dir(m))
+            except Exception:
+                meta = {}
+            members_with_desc.append((m, str(meta.get("description") or "")))
+        try:
+            regenerate_observer_soul(
+                observer_profile=updated.observer_profile,
+                room_name=updated.room_name,
+                room_description=body.description if body.description is not None else updated.description,
+                members=members_with_desc,
+                default_member=updated.default_member or updated.members[0],
+            )
+        except BootstrapError as exc:
+            _log.warning("PATCH /api/rooms/%s: SOUL regen failed: %s", room_id, exc)
+
+        return {"ok": True, "room": updated.to_dict()}
+    finally:
+        store.close()
+
+
+@app.delete("/api/rooms/{room_id}")
+async def delete_room(room_id: str):
+    from gateway.agent_room_bootstrapper import BootstrapError, teardown_observer_profile
+
+    store = _room_store()
+    binding_store = _room_binding_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        for b in binding_store.list_bindings():
+            if (b.fallback_extra or {}).get("room_id") == room_id:
+                binding_store.delete_binding(b.source_binding_key)
+
+        try:
+            teardown_observer_profile(room.observer_profile)
+        except BootstrapError as exc:
+            _log.warning("DELETE /api/rooms/%s: teardown failed: %s", room_id, exc)
+
+        store.delete_room(room_id)
+        return {"ok": True, "deleted": True}
+    finally:
+        store.close()
+        binding_store.close()
+
+
+@app.post("/api/rooms/{room_id}/bind")
+async def bind_room(room_id: str, body: _RoomBindBody):
+    source_key = (body.source_binding_key or "").strip()
+    if not source_key.startswith("source:"):
+        raise HTTPException(status_code=400, detail="source_binding_key must start with 'source:'")
+
+    store = _room_store()
+    binding_store = _room_binding_store()
+    try:
+        room = store.get_room(room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        existing = binding_store.get_binding(source_key)
+        if existing:
+            existing_room = (existing.fallback_extra or {}).get("room_id")
+            if existing_room == room_id:
+                return {"ok": True, "already_bound": True}
+            raise HTTPException(
+                status_code=409,
+                detail="Source is already bound to another room or profile; unbind first",
+            )
+
+        binding_store.set_binding(
+            source_key,
+            room.observer_profile,
+            fallback_extra={"room_id": room_id},
+            actor_user_id="dashboard",
+        )
+        return {"ok": True, "room_id": room_id, "source_binding_key": source_key}
+    finally:
+        store.close()
+        binding_store.close()
+
+
+@app.post("/api/rooms/{room_id}/unbind")
+async def unbind_room(room_id: str, body: _RoomBindBody):
+    source_key = (body.source_binding_key or "").strip()
+    if not source_key.startswith("source:"):
+        raise HTTPException(status_code=400, detail="source_binding_key must start with 'source:'")
+
+    store = _room_store()
+    binding_store = _room_binding_store()
+    try:
+        existing = binding_store.get_binding(source_key)
+        if not existing:
+            raise HTTPException(status_code=404, detail="No binding found for this source")
+        if (existing.fallback_extra or {}).get("room_id") != room_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Source is not bound to the specified room",
+            )
+        binding_store.delete_binding(source_key)
+        return {"ok": True, "unbound": True}
+    finally:
+        store.close()
+        binding_store.close()
+
+
+# ── M2.4 · Room planner REST API ─────────────────────────────────────────
+# Pending plans are stored in a module-level dict keyed by session token
+# so the same authenticated user can get a plan from POST /api/rooms/plan
+# and confirm it with POST /api/rooms/plan/confirm in a subsequent request.
+# The dict is process-local (not persisted) — a restart clears all pending
+# plans, which is acceptable (the user just re-runs /room plan).
+
+_pending_room_plans: dict[str, "object"] = {}  # token → RoomPlan
+
+
+class _RoomPlanRequest(BaseModel):
+    requirement: str
+    max_members: int = 5
+
+
+class _RoomPlanConfirmRequest(BaseModel):
+    room_name: Optional[str] = None  # user-supplied override; auto-derived if absent
+
+
+class _RoomDispatchRequest(BaseModel):
+    """Send a test message to a room from the dashboard.
+
+    Simulates a user message arriving on an IM channel and drives the
+    Room router synchronously so the dashboard can display the
+    resulting reply/replies inline. Used for /rooms chat panel.
+    """
+    message: str
+    broadcast: bool = False  # True → skip observer, dispatch to all members
+
+
+def _current_session_token(request: Request) -> Optional[str]:
+    """Return the dashboard session token from this request (for plan keying)."""
+    from hermes_cli.web_server import _SESSION_HEADER_NAME
+    return request.headers.get(_SESSION_HEADER_NAME, "anonymous")
+
+
+@app.post("/api/rooms/plan")
+async def post_rooms_plan(request: Request, body: _RoomPlanRequest):
+    """M2.4 §7.2: Accept a natural-language requirement, call the aux LLM
+    room planner, and return a preview of the proposed composition.
+
+    The plan is stored server-side so POST /api/rooms/plan/confirm can
+    look it up without re-running the LLM.
+
+    Returns {"plan": {...plan dict...}} or {"error": "..."} on failure.
+    """
+    from hermes_cli.profiles import list_profiles, read_profile_meta, get_profile_dir
+    from gateway.agent_room_planner import plan_room
+
+    try:
+        all_profiles = list_profiles()
+    except Exception:
+        all_profiles = []
+
+    roster: list[tuple[str, str]] = []
+    for p in all_profiles:
+        if p.name == "default":
+            continue
+        try:
+            meta = read_profile_meta(get_profile_dir(p.name))
+            desc = str(meta.get("description") or "")
+        except Exception:
+            desc = ""
+        roster.append((p.name, desc))
+
+    plan = plan_room(
+        body.requirement,
+        roster,
+        max_members=min(body.max_members, 5),
+    )
+
+    if not plan.is_actionable:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Planning failed: {plan.rationale}",
+        )
+
+    token = _current_session_token(request)
+    _pending_room_plans[token] = plan
+
+    return {"plan": plan.to_dict()}
+
+
+@app.post("/api/rooms/plan/confirm")
+async def post_rooms_plan_confirm(request: Request, body: _RoomPlanConfirmRequest):
+    """M2.4 §7.2: Confirm and execute the pending room plan for this session.
+
+    Creates any new profiles, builds the observer, and creates the room.
+    Full rollback on any failure — no partial state is left.
+
+    Returns {"ok": True, "room": {...}} on success.
+    """
+    import uuid
+    import re as _re
+    from hermes_cli.profiles import (
+        create_profile as _create_profile,
+        delete_profile as _delete_profile,
+        write_profile_meta,
+        get_profile_dir as _get_dir,
+        profile_exists as _pexists,
+    )
+    from gateway.agent_room_bootstrapper import (
+        build_observer_profile,
+        observer_profile_name_for,
+        teardown_observer_profile,
+        BootstrapError,
+    )
+    from gateway.agent_room_store import AgentRoomStore, AgentRoomError
+
+    token = _current_session_token(request)
+    plan = _pending_room_plans.pop(token, None)
+
+    if plan is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No pending room plan. Call POST /api/rooms/plan first.",
+        )
+
+    from gateway.agent_room_planner import RoomPlan
+    assert isinstance(plan, RoomPlan)
+
+    if not plan.is_actionable:
+        raise HTTPException(status_code=422, detail="Pending plan is not actionable.")
+
+    created_profiles: list[str] = []
+
+    # Step 1: create new profiles
+    for m in plan.new_profiles:
+        try:
+            _create_profile(
+                m.name,
+                clone_from=None,
+                clone_all=False,
+                clone_config=False,
+                clone_env=False,
+                clone_skills=False,
+                no_alias=True,
+                no_skills=True,
+            )
+            write_profile_meta(
+                _get_dir(m.name),
+                description=m.description,
+                description_auto=True,
+            )
+            created_profiles.append(m.name)
+        except Exception as exc:
+            _log.warning("M2.4 confirm: create profile %s failed: %s", m.name, exc)
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create profile '{m.name}': {exc}",
+            )
+
+    # Step 2: derive room name
+    room_name = body.room_name or ""
+    if not room_name:
+        room_name = plan.room_description[:30].replace(" ", "_").lower()
+        room_name = _re.sub(r"[^a-z0-9_-]", "", room_name) or "planned_room"
+
+    store = AgentRoomStore()
+    try:
+        if store.get_room_by_name(room_name) is not None:
+            room_name = f"{room_name}_{uuid.uuid4().hex[:6]}"
+
+        member_names = [
+            m.profile if not m.is_new else m.name for m in plan.members
+        ]
+        members_with_desc = [
+            (m.profile if not m.is_new else m.name, m.description)
+            for m in plan.members
+        ]
+
+        obs_name = observer_profile_name_for(room_name)
+        if _pexists(obs_name):
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=409,
+                detail=f"Observer profile '{obs_name}' already exists.",
+            )
+
+        # Step 3: build observer
+        try:
+            build_observer_profile(
+                room_name=room_name,
+                room_description=plan.room_description,
+                members=members_with_desc,
+                default_member=member_names[0],
+                observer_name=obs_name,
+            )
+        except BootstrapError as exc:
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        # Step 4: create room row
+        room_id = f"room_{uuid.uuid4().hex[:12]}"
+        try:
+            room = store.create_room(
+                room_id,
+                room_name,
+                observer_profile=obs_name,
+                members=member_names,
+                description=plan.room_description,
+                default_member=member_names[0],
+                actor="dashboard",
+            )
+        except AgentRoomError as exc:
+            try:
+                teardown_observer_profile(obs_name)
+            except Exception:
+                pass
+            for cp in created_profiles:
+                try:
+                    _delete_profile(cp, yes=True)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        return {
+            "ok": True,
+            "room": room.to_dict(),
+            "new_profiles": created_profiles,
+        }
+    finally:
+        store.close()
+
+
+@app.get("/api/rooms/{room_id}/messages")
+async def list_room_messages(room_id: str, limit: int = 100):
+    """Return the room's shared message history (M3 store), newest-last
+    in canonical order. Used by the Rooms dashboard chat panel to
+    display prior conversation on room-select."""
+    from gateway.agent_room_messages_store import AgentRoomMessagesStore
+    store = AgentRoomMessagesStore()
+    try:
+        msgs = store.list_messages(room_id)
+        # Trim to newest `limit` entries (list is already in sequence order)
+        if limit and len(msgs) > limit:
+            msgs = msgs[-limit:]
+        return {
+            "room_id": room_id,
+            "count": len(msgs),
+            "messages": [m.to_dict() for m in msgs],
+        }
+    finally:
+        store.close()
+
+
+@app.delete("/api/rooms/{room_id}/messages/{sequence}")
+async def delete_room_message(room_id: str, sequence: int):
+    """Delete a single message from a room's shared history.
+
+    Used by the Rooms dashboard chat panel to remove a specific bubble.
+    Does NOT re-number surrounding messages — sequence is a monotonic
+    ID, not an index; gaps are fine and don't affect projection or
+    canonical ordering.
+
+    Returns:
+      {"ok": True, "deleted": True} on success
+      {"ok": True, "deleted": False} if the message didn't exist (idempotent)
+    """
+    from gateway.agent_room_messages_store import AgentRoomMessagesStore
+    store = AgentRoomMessagesStore()
+    try:
+        deleted = store.delete_message(room_id, sequence)
+        return {"ok": True, "deleted": deleted}
+    finally:
+        store.close()
+
+
+@app.post("/api/rooms/{room_id}/dispatch")
+async def dispatch_room_message(room_id: str, body: _RoomDispatchRequest):
+    """Dashboard-side chat: send `message` to a room and return every
+    member's reply inline. Runs the same router pipeline as an IM-inbound
+    message would, but synchronously and with results collected into the
+    HTTP response instead of sent back through a webhook.
+
+    On success:
+      {"ok": true, "target_members": [...], "replies": {member: reply, ...}}
+
+    ``broadcast=true`` skips the observer's routing decision and fans
+    out to every room member concurrently — the escape hatch for
+    "greet everyone" / "each of you introduce yourselves" cases where
+    LLM observers reliably pick a single member.
+    """
+    from gateway.agent_room_store import AgentRoomStore
+    from gateway.agent_room_messages_store import AgentRoomMessagesStore
+    from gateway.agent_room_planner import _sanitize_profile_name  # noqa: F401
+
+    def _read_member_desc(name: str) -> str:
+        """Look up a member profile's description, empty on failure."""
+        try:
+            from hermes_cli.profiles import read_profile_meta, get_profile_dir
+            meta = read_profile_meta(get_profile_dir(name))
+            return str(meta.get("description") or "")
+        except Exception:
+            return ""
+
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="message is empty")
+
+    store = AgentRoomStore()
+    msgs_store = AgentRoomMessagesStore()
+    try:
+        room = store.get_room(room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail=f"Room {room_id} not found")
+        if not room.members:
+            raise HTTPException(status_code=400, detail="Room has no members")
+
+        # Persist the user's message once
+        try:
+            msgs_store.append(
+                room_id,
+                sender_kind="user",
+                sender_name="dashboard",
+                content=body.message,
+            )
+        except Exception as exc:
+            _log.warning("dispatch: failed to persist user msg: %s", exc)
+
+        # Non-broadcast: run the REAL room pipeline in-process — observer
+        # decides route vs. decompose, member turns run under their own
+        # profile scope, and (for a decompose) a synthesis turn composes the
+        # final reply. Every step persists to the shared messages store, so
+        # the dashboard Rooms panel shows the full closed-loop history.
+        # broadcast=true keeps the lightweight aux-LLM fan-out below as an
+        # escape hatch for "everyone introduce yourselves" cases.
+        import asyncio
+        from gateway.agent_room_projection import project_for_member
+
+        room_msgs = msgs_store.list_messages(room_id)
+
+        if not body.broadcast:
+            from gateway.agent_room_inprocess_runner import InProcessRoomRunner
+
+            runner = InProcessRoomRunner(store, msgs_store)
+            result = await runner.dispatch(room, body.message)
+            routing = result.get("routing") or {}
+            replies = dict(result.get("replies") or {})
+            synthesis = result.get("synthesis")
+            return {
+                "ok": True,
+                "target_members": list(replies.keys()),
+                "broadcast": False,
+                "decompose": bool(routing.get("decompose")),
+                "replies": replies,
+                "synthesis": synthesis,
+                "routing": {
+                    "reason": routing.get("reason"),
+                    "decompose": bool(routing.get("decompose")),
+                    "orchestration": routing.get("orchestration"),
+                },
+            }
+
+        # broadcast=true → fan out to every member concurrently.
+        target_members = list(room.members)
+
+        async def _run_member_dispatch(member_name: str) -> tuple[str, str]:
+            """Run one member's reply via auxiliary LLM, using projected history."""
+            try:
+                from agent.auxiliary_client import call_llm as _call_llm
+
+                # Fetch own description via shared helper
+                desc = _read_member_desc(member_name)
+
+                # Build system prompt in Studio's style — see hermes-studio's
+                # packages/server/src/services/hermes/context-engine/prompt.ts
+                # (buildAgentInstructions). Key rules that fix the "each
+                # member replies for the whole group" bug:
+                #   1. Tell the agent the system has ALREADY decided it
+                #      should reply — no self-deciding to skip.
+                #   2. Only respond to messages that mention it.
+                #   3. Never mimic the "[sender]: ..." projection format
+                #      in own output.
+                #   4. Don't @-mention others unnecessarily to avoid loops.
+                other_members_lines = [
+                    f"- {m_name}: {m_desc or '专业助手'}"
+                    for m_name, m_desc in [
+                        (other, _read_member_desc(other))
+                        for other in room.members if other != member_name
+                    ]
+                ]
+                other_members_section = (
+                    "\n".join(other_members_lines) if other_members_lines else "- 无"
+                )
+
+                system_prompt = (
+                    f"你是\"{member_name}\"，群聊房间\"{room.room_name}\"中的 AI 助手。\n\n"
+                    f"你的角色：{desc or '专业的 AI 助手，随时准备协助解决问题。'}\n\n"
+                    f"房间描述：{room.description or '通用协作团队'}\n\n"
+                    f"当前房间其他参与者（每个成员会在自己独立的对话气泡里回复）：\n"
+                    f"{other_members_section}\n\n"
+                    "规则：\n"
+                    "- 当你收到群聊任务时，说明系统已经判断你需要回复；请直接回应当前消息，不要因为消息里同时提及其他成员而拒绝回复或输出空回复。\n"
+                    "- 你只代表你自己一个人回答；其他成员会分别在他们自己的气泡里回复，不需要你替他们说话或模拟他们的口吻。\n"
+                    "- 不要因为用户说\"大家/都/所有/everyone/all\"就把自己的回复重复多次，或替其他成员回答——那是系统层做的分发，你只需要以自己一个人的身份说一次。\n"
+                    "- 回答简洁、对群聊有帮助。\n"
+                    "- 不要假装是人类，需要时明确表明自己是 AI。\n"
+                    "- 对话历史中包含多个人的消息，每条消息前标有发送者名字。\n"
+                    f"- 历史消息里的\"[发送者]: ...\"只是系统添加的归属标记，用来帮助你理解谁说了这句话；不要在你的回复中复述或模仿这种方括号前缀。\n"
+                    f"- 回复时使用自然语言即可；如果需要点名某人，只使用 @名字，不要输出\"[{member_name}]:\"这类格式。\n"
+                    "- 回复最新一条来自用户的消息，使用与用户相同的语言。\n"
+                    "- 不要主动 @ 任何人，除非最新消息明确要求你转交、邀请、询问某个具体成员。\n"
+                    "- 如果只是回答提问，直接回答，不要在结尾 @ 其他成员继续接力。\n"
+                    "- 不要为了活跃气氛、征求补充、让别人也看看而 @ 其他成员或用户。\n"
+                )
+
+                projected = project_for_member(
+                    room_msgs[:-1] if room_msgs else [],
+                    target_member=member_name,
+                )
+                messages = [{"role": "system", "content": system_prompt}]
+                for p in projected:
+                    messages.append(p.to_openai())
+                messages.append({"role": "user", "content": body.message})
+
+                loop = asyncio.get_running_loop()
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda: _call_llm(
+                        task="room_member_dispatch",
+                        messages=messages,
+                        temperature=0.5,
+                        max_tokens=800,
+                        timeout=60,
+                    ),
+                )
+                reply = resp.choices[0].message.content or "(no reply)"
+
+                # Persist member reply back to shared store
+                try:
+                    msgs_store.append(
+                        room_id,
+                        sender_kind="member",
+                        sender_name=member_name,
+                        content=reply,
+                    )
+                except Exception as exc:
+                    _log.warning("dispatch: persist member reply failed: %s", exc)
+
+                return (member_name, reply)
+            except Exception as exc:
+                _log.warning("dispatch: member %s failed: %s", member_name, exc)
+                return (member_name, f"[error: {type(exc).__name__}: {exc}]")
+
+        # Run all target members concurrently
+        results = await asyncio.gather(*[
+            _run_member_dispatch(m) for m in target_members
+        ])
+        replies = dict(results)
+
+        return {
+            "ok": True,
+            "target_members": target_members,
+            "broadcast": body.broadcast,
+            "replies": replies,
+        }
+    finally:
+        store.close()
+        msgs_store.close()
+
 mount_spa(app)
 
 
