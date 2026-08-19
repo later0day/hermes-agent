@@ -77,8 +77,8 @@ export function ChannelOverridesEditor({
   value,
   onChange,
 }: {
-  value: Record<string, any>;
-  onChange: (v: Record<string, any>) => void;
+  value: Record<string, Record<string, string>>;
+  onChange: (v: Record<string, Record<string, string>>) => void;
 }) {
   const { t } = useI18n();
   const entries = Object.entries(value || {});

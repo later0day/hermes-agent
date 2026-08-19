@@ -1,4 +1,3 @@
-import { useI18n } from "@/i18n/context";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
@@ -330,7 +329,6 @@ function RoutingTrace({ route }: { route: RouteInfo }): React.ReactNode {
 // ─────────────────────────────────────────────────────────────────────────
 
 export default function RoomsPage() {
-  const { t: _t } = useI18n();
   const { setEnd } = usePageHeader();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast, showToast } = useToast();
@@ -456,7 +454,7 @@ export default function RoomsPage() {
       ]);
       setRooms(roomsResp.rooms);
       setProfiles(profilesResp.profiles.filter((p) => !p.name.startsWith("room_")));
-    } catch (err) {
+    } catch {
       showToast("Failed to load rooms", "error");
     } finally {
       setLoading(false);
@@ -554,7 +552,7 @@ export default function RoomsPage() {
       setCreateDefaultMember("");
       await loadRooms();
       setSelectedRoomId(resp.room.room_id);
-    } catch (err) {
+    } catch {
       showToast("Create failed", "error");
     } finally {
       setCreating(false);
@@ -584,7 +582,7 @@ export default function RoomsPage() {
       showToast(`Saved ${resp.room.room_name}`, "success");
       setEditing(false);
       await loadRooms();
-    } catch (err) {
+    } catch {
       showToast("Save failed", "error");
     } finally {
       setSavingEdit(false);
@@ -605,7 +603,7 @@ export default function RoomsPage() {
         max_members: planMaxMembers,
       });
       setPlannedResult(resp.plan);
-    } catch (err) {
+    } catch {
       showToast("Planning failed", "error");
     } finally {
       setPlanning(false);
@@ -625,7 +623,7 @@ export default function RoomsPage() {
       setPlannedRoomName("");
       await loadRooms();
       setSelectedRoomId(resp.room.room_id);
-    } catch (err) {
+    } catch {
       showToast("Confirmation failed", "error");
     } finally {
       setConfirmingPlan(false);
@@ -640,7 +638,7 @@ export default function RoomsPage() {
       await api.bindRoom(selectedRoom.room_id, bindKey.trim());
       showToast("Room bound to source", "success");
       setBindKey("");
-    } catch (err) {
+    } catch {
       showToast("Bind failed", "error");
     } finally {
       setBinding(false);
@@ -662,7 +660,7 @@ export default function RoomsPage() {
         if (cancelled) return;
         setChatHistory(rowsToBubbles(resp.messages));
         setChatInput("");
-      } catch (err) {
+      } catch {
         // Non-fatal — just start with an empty chat if fetch fails
         setChatHistory([]);
         setChatInput("");

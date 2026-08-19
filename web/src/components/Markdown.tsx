@@ -10,15 +10,14 @@ function ensureMermaid() {
 
 function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  const id = `mermaid-${Math.random().toString(36).slice(2)}`;
   useEffect(() => {
     ensureMermaid();
     if (!ref.current) return;
+    const id = `mermaid-${Math.random().toString(36).slice(2)}`;
     mermaid
       .render(id, code)
       .then(({ svg }) => { if (ref.current) ref.current.innerHTML = svg; })
       .catch(() => { if (ref.current) ref.current.textContent = code; });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
   return <div ref={ref} className="my-4 flex justify-center overflow-x-auto" />;
 }

@@ -441,7 +441,7 @@ export default function ConfigPage() {
                   <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
                 </div>
                 <ChannelOverridesEditor
-                  value={getNestedValue(config, key) as any}
+                  value={getNestedValue(config, key) as Record<string, Record<string, string>>}
                   onChange={(v) => setConfig(setNestedValue(config, key, v))}
                 />
               </div>
@@ -452,7 +452,7 @@ export default function ConfigPage() {
                   <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
                 </div>
                 <KeyValueEditor
-                  value={getNestedValue(config, key) as any}
+                  value={getNestedValue(config, key) as Record<string, string>}
                   onChange={(v) => setConfig(setNestedValue(config, key, v))}
                   keyPlaceholder={key.endsWith(".extra_headers") ? "Header-Name" : "Client Key"}
                   valPlaceholder={key.endsWith(".extra_headers") ? "Value" : "Model ID"}
