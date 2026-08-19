@@ -1067,6 +1067,7 @@ from tools.environments.base import EnvironmentConnectionError
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
+from tools.environments.agentproxy import AgentProxyEnvironment as _AgentProxyEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
@@ -1651,6 +1652,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "agentproxy":
+        default_cwd = "/root"
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
     else:
@@ -1701,6 +1704,16 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        # AgentProxy-specific config (env_type="agentproxy"): run commands in
+        # a Docker container on a remote AgentProxy agent, transported purely
+        # over the Dashboard task API (no SSH).
+        "ap_agent_id": os.getenv("TERMINAL_AP_AGENT", "home"),
+        "ap_container": os.getenv("TERMINAL_AP_CONTAINER", "hermes-reverse"),
+        "ap_image": os.getenv("TERMINAL_AP_IMAGE", default_image),
+        "ap_cloud_url": os.getenv("TERMINAL_AP_CLOUD_URL", "https://127.0.0.1:8080"),
+        "ap_env_file": os.getenv("TERMINAL_AP_ENV_FILE", "/opt/agentproxy/.env"),
+        "ap_path_prefix": os.getenv("TERMINAL_AP_PATH_PREFIX", "/usr/local/bin"),
+        "ap_docker_run_args": os.getenv("TERMINAL_AP_DOCKER_RUN_ARGS", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
@@ -1765,6 +1778,23 @@ def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
     }
 
 
+def _agentproxy_config_from_config(config: Dict[str, Any]) -> dict:
+    """Build the ``agentproxy_config`` dict passed to :func:`_create_environment`.
+
+    Shared by the terminal tool's own get-or-create path and the lazy
+    :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
+    """
+    return {
+        "agent_id": config.get("ap_agent_id", "home"),
+        "container": config.get("ap_container", "hermes-reverse"),
+        "image": config.get("ap_image", "nikolaik/python-nodejs:python3.11-nodejs20"),
+        "cloud_url": config.get("ap_cloud_url", "https://127.0.0.1:8080"),
+        "env_file": config.get("ap_env_file", "/opt/agentproxy/.env"),
+        "path_prefix": config.get("ap_path_prefix", "/usr/local/bin"),
+        "docker_run_args": config.get("ap_docker_run_args", ""),
+    }
+
+
 def _container_config_from_config(config: Dict[str, Any]) -> dict:
     """Build the ``container_config`` dict passed to :func:`_create_environment`.
 
@@ -1794,6 +1824,7 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
+                        agentproxy_config: dict = None,
                         task_id: str = "default",
                         host_cwd: Optional[str] = None):
     """
@@ -1801,7 +1832,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "ssh", "agentproxy"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1976,10 +2007,25 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             timeout=timeout,
         )
 
+    elif env_type == "agentproxy":
+        ac = agentproxy_config or {}
+        return _AgentProxyEnvironment(
+            agent_id=ac.get("agent_id", "home"),
+            container=ac.get("container", "hermes-reverse"),
+            image=ac.get("image", image),
+            cloud_url=ac.get("cloud_url", "https://127.0.0.1:8080"),
+            env_file=ac.get("env_file", "/opt/agentproxy/.env"),
+            path_prefix=ac.get("path_prefix", "/usr/local/bin"),
+            docker_run_args=ac.get("docker_run_args", ""),
+            cwd=cwd,
+            timeout=timeout,
+        )
+
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', 'ssh', "
+            f"or 'agentproxy'"
         )
 
 
@@ -2152,6 +2198,10 @@ def ensure_task_env(task_id: Optional[str] = None):
                 container_config=(
                     _container_config_from_config(config)
                     if env_type in _CONTAINER_BACKENDS else None
+                ),
+                agentproxy_config=(
+                    _agentproxy_config_from_config(config)
+                    if env_type == "agentproxy" else None
                 ),
                 local_config=None,
                 task_id=effective_task_id,
@@ -2841,6 +2891,10 @@ def terminal_tool(
                             _container_config_from_config(config)
                             if env_type in _CONTAINER_BACKENDS else None
                         )
+                        agentproxy_config = (
+                            _agentproxy_config_from_config(config)
+                            if env_type == "agentproxy" else None
+                        )
 
                         local_config = None
                         if env_type == "local":
@@ -2855,6 +2909,7 @@ def terminal_tool(
                             timeout=effective_timeout,
                             ssh_config=ssh_config,
                             container_config=container_config,
+                            agentproxy_config=agentproxy_config,
                             local_config=local_config,
                             task_id=effective_task_id,
                             host_cwd=host_cwd,
