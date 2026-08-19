@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router";
 import {
   Bot,
   Check,
+  ChevronRight,
   Copy,
   Edit3,
 
@@ -11,9 +12,11 @@ import {
   Loader2,
   MessageSquare,
   Plus,
+  Route,
   Sparkles,
   Trash2,
   Users,
+  Wrench,
   X,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -29,7 +32,7 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { api } from "@/lib/api";
-import type { ProfileInfo, RoomPlan, RoomRecord } from "@/lib/api";
+import type { ProfileInfo, RoomMessageRow, RoomPlan, RoomRecord, RoomToolCall } from "@/lib/api";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 
@@ -97,15 +100,15 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): React.ReactN
   }, [code]);
 
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900 dark:bg-slate-950 text-left">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-700/60 bg-slate-800/60 px-3 py-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+    <div className="room-surface my-2 overflow-hidden bg-secondary/60 text-left">
+      <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/40 px-3 py-1.5">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           {lang || "code"}
         </span>
         <button
           type="button"
           onClick={onCopy}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-400 transition-colors hover:bg-slate-700/60 hover:text-slate-200"
+          className="room-chip flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           aria-label="Copy code"
           title="Copy code"
         >
@@ -120,7 +123,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): React.ReactN
           )}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 text-[13px] leading-relaxed text-slate-100">
+      <pre className="overflow-x-auto p-3 text-[13px] leading-relaxed text-foreground">
         <code className="font-mono">{code}</code>
       </pre>
     </div>
@@ -183,7 +186,7 @@ function renderInline(text: string, k: number): React.ReactNode {
         nodes.push(
           <code
             key={`${k}-c-${subkey++}`}
-            className="rounded bg-slate-200 dark:bg-slate-800 px-1 py-0.5 text-xs font-mono"
+            className="room-chip bg-secondary/70 px-1 py-0.5 text-xs font-mono"
           >
             {text.slice(i + 1, end)}
           </code>,
@@ -221,6 +224,105 @@ function renderInline(text: string, k: number): React.ReactNode {
   }
   flush();
   return <React.Fragment key={`inl-${k}`}>{nodes}</React.Fragment>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Observer routing + tool-call rendering (beautifului "Thinking" + "Tool
+// chips"). The backend persists the observer's route_to_member decision and
+// members' tool_calls into the shared message store; these helpers surface
+// that data instead of dropping it.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface RouteInfo {
+  members: string[];      // routed target member(s)
+  reason: string;         // why the observer routed here
+  isNewTopic?: boolean;
+  matched?: boolean;      // first-hop classifier: real domain match vs fallback
+}
+
+// Parse a route_to_member tool_call's arguments into a RouteInfo.
+function parseRouteToolCall(tcs: RoomToolCall[] | null | undefined): RouteInfo | null {
+  if (!tcs || tcs.length === 0) return null;
+  for (const tc of tcs) {
+    if (tc?.function?.name !== "route_to_member") continue;
+    try {
+      const args = JSON.parse(tc.function.arguments || "{}");
+      const raw = args.member;
+      const members = Array.isArray(raw) ? raw.map(String) : raw != null ? [String(raw)] : [];
+      return {
+        members,
+        reason: String(args.reason || ""),
+        isNewTopic: Boolean(args.is_new_topic),
+        matched: args.matched === undefined ? undefined : Boolean(args.matched),
+      };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// A compact chip for a tool call (name + optional first arg preview).
+function ToolChip({ tc }: { tc: RoomToolCall }): React.ReactNode {
+  const name = tc?.function?.name || "tool";
+  let preview = "";
+  try {
+    const args = JSON.parse(tc?.function?.arguments || "{}");
+    const firstKey = Object.keys(args)[0];
+    if (firstKey) {
+      const v = args[firstKey];
+      preview = typeof v === "string" ? v : JSON.stringify(v);
+      if (preview.length > 32) preview = preview.slice(0, 32) + "…";
+    }
+  } catch {
+    /* ignore malformed args */
+  }
+  return (
+    <span className="room-chip inline-flex items-center gap-1 border border-border bg-muted/60 px-1.5 py-0.5 text-[11px] font-mono">
+      <Wrench className="h-3 w-3 opacity-70" />
+      <span className="font-medium">{name}</span>
+      {preview && <span className="text-muted-foreground">{preview}</span>}
+    </span>
+  );
+}
+
+// Expandable observer-routing trace (beautifului "Thinking" component). Shows
+// the routed target(s) inline, expands to reveal the observer's reason.
+function RoutingTrace({ route }: { route: RouteInfo }): React.ReactNode {
+  const [open, setOpen] = React.useState(false);
+  const targets = route.members.join(", ") || "—";
+  return (
+    <div className="flex justify-center">
+      <div className="w-full max-w-[85%]">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="room-trace-toggle flex w-full items-center gap-1.5 px-2 py-1 text-[11px] text-muted-foreground"
+          aria-expanded={open}
+        >
+          <ChevronRight
+            className={cn(
+              "h-3 w-3 shrink-0 transition-transform",
+              open && "rotate-90",
+            )}
+          />
+          <Route className="h-3 w-3 shrink-0 opacity-70" />
+          <span className="font-medium">Routed to {targets}</span>
+          {route.matched === false && (
+            <Badge tone="secondary" className="ml-1 text-[9px]">fallback</Badge>
+          )}
+          {route.isNewTopic && (
+            <Badge tone="secondary" className="text-[9px]">new topic</Badge>
+          )}
+        </button>
+        {open && route.reason && (
+          <div className="mt-0.5 ml-[1.35rem] border-l-2 border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
+            {route.reason}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -276,10 +378,12 @@ export default function RoomsPage() {
   interface ChatMessage {
     id: number;
     seq: number | null;   // store sequence (null for optimistic local messages)
-    kind: "user" | "member";
+    kind: "user" | "member" | "observer";
     sender: string;
     content: string;
     timestamp: number;    // unix seconds
+    toolCalls?: RoomToolCall[];  // member tool calls → tool chips
+    route?: RouteInfo;           // observer route_to_member → thinking trace
   }
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -287,6 +391,57 @@ export default function RoomsPage() {
   const [chatSending, setChatSending] = useState(false);
   const chatSeqRef = useRef(0);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Convert shared-store message rows → chat bubbles. Keeps observer rows
+  // (rendered as a thinking/routing trace) and member tool_calls (rendered
+  // as tool chips) instead of dropping them. tool_result rows stay hidden —
+  // they're raw routing plumbing with no user-facing value.
+  const rowsToBubbles = useCallback((rows: RoomMessageRow[]): ChatMessage[] => {
+    const bubbles: ChatMessage[] = [];
+    chatSeqRef.current = 0;
+    for (const m of rows) {
+      if (m.sender_kind === "user") {
+        chatSeqRef.current += 1;
+        bubbles.push({
+          id: chatSeqRef.current,
+          seq: m.sequence,
+          kind: "user",
+          sender: m.sender_name === "dashboard" ? "You" : m.sender_name,
+          content: m.content,
+          timestamp: m.timestamp,
+        });
+      } else if (m.sender_kind === "member") {
+        chatSeqRef.current += 1;
+        bubbles.push({
+          id: chatSeqRef.current,
+          seq: m.sequence,
+          kind: "member",
+          sender: m.sender_name,
+          content: m.content,
+          timestamp: m.timestamp,
+          toolCalls: m.tool_calls ?? undefined,
+        });
+      } else if (m.sender_kind === "observer") {
+        // Only surface observer rows that carry a route decision; skip
+        // empty/plumbing observer turns.
+        const route = parseRouteToolCall(m.tool_calls);
+        if (route) {
+          chatSeqRef.current += 1;
+          bubbles.push({
+            id: chatSeqRef.current,
+            seq: m.sequence,
+            kind: "observer",
+            sender: m.sender_name,
+            content: m.content,
+            timestamp: m.timestamp,
+            route,
+          });
+        }
+      }
+      // tool_result rows omitted from the visible chat
+    }
+    return bubbles;
+  }, []);
 
   const selectedRoom = useMemo(
     () => rooms.find((r) => r.room_id === selectedRoomId) ?? null,
@@ -335,7 +490,7 @@ export default function RoomsPage() {
 
   useEffect(() => {
     setEnd(
-      <div className="flex items-center gap-2">
+      <div className="rooms-scope flex items-center gap-2">
         <Button outlined size="sm" onClick={() => setShowPlanner(true)}>
           <Sparkles className="mr-1 h-4 w-4" />
           Plan with AI
@@ -505,34 +660,7 @@ export default function RoomsPage() {
       try {
         const resp = await api.listRoomMessages(selectedRoom.room_id, 100);
         if (cancelled) return;
-        // Convert store rows → chat bubbles. Skip observer rows and
-        // tool_result rows (those are routing metadata, not user-visible chat).
-        const bubbles: ChatMessage[] = [];
-        for (const m of resp.messages) {
-          if (m.sender_kind === "user") {
-            chatSeqRef.current += 1;
-            bubbles.push({
-              id: chatSeqRef.current,
-              seq: m.sequence,
-              kind: "user",
-              sender: m.sender_name === "dashboard" ? "You" : m.sender_name,
-              content: m.content,
-              timestamp: m.timestamp,
-            });
-          } else if (m.sender_kind === "member") {
-            chatSeqRef.current += 1;
-            bubbles.push({
-              id: chatSeqRef.current,
-              seq: m.sequence,
-              kind: "member",
-              sender: m.sender_name,
-              content: m.content,
-              timestamp: m.timestamp,
-            });
-          }
-          // observer + tool_result rows are omitted from the visible chat
-        }
-        setChatHistory(bubbles);
+        setChatHistory(rowsToBubbles(resp.messages));
         setChatInput("");
       } catch (err) {
         // Non-fatal — just start with an empty chat if fetch fails
@@ -543,7 +671,7 @@ export default function RoomsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedRoomId, selectedRoom]);
+  }, [selectedRoomId, selectedRoom, rowsToBubbles]);
 
   // ─── Send message from dashboard chat panel ─────────────────────────────
   const handleSendChat = useCallback(async () => {
@@ -592,36 +720,12 @@ export default function RoomsPage() {
       // and each closure captured the SAME `prev`, causing only the
       // last member's reply to actually land in state.
       setChatHistory((prev) => [...prev, ...newBubbles]);
-      // After dispatch, reload history so we get real seq numbers
-      // (enables delete). Non-blocking, best-effort.
+      // After dispatch, reload history so we get real seq numbers (enables
+      // delete) plus the persisted observer routing trace + tool_calls that
+      // the optimistic bubbles above don't carry. Non-blocking, best-effort.
       try {
         const fresh = await api.listRoomMessages(selectedRoom.room_id, 100);
-        const bubbles: ChatMessage[] = [];
-        chatSeqRef.current = 0;
-        for (const m of fresh.messages) {
-          if (m.sender_kind === "user") {
-            chatSeqRef.current += 1;
-            bubbles.push({
-              id: chatSeqRef.current,
-              seq: m.sequence,
-              kind: "user",
-              sender: m.sender_name === "dashboard" ? "You" : m.sender_name,
-              content: m.content,
-              timestamp: m.timestamp,
-            });
-          } else if (m.sender_kind === "member") {
-            chatSeqRef.current += 1;
-            bubbles.push({
-              id: chatSeqRef.current,
-              seq: m.sequence,
-              kind: "member",
-              sender: m.sender_name,
-              content: m.content,
-              timestamp: m.timestamp,
-            });
-          }
-        }
-        setChatHistory(bubbles);
+        setChatHistory(rowsToBubbles(fresh.messages));
       } catch { /* silent */ }
     } catch (err) {
       chatSeqRef.current += 1;
@@ -678,7 +782,7 @@ export default function RoomsPage() {
   }
 
   return (
-    <div className="flex min-h-0 w-full min-w-0 flex-1 h-full">
+    <div className="rooms-root flex min-h-0 w-full min-w-0 flex-1 h-full">
       {/* ═══ Left: rooms list ═══ */}
       <aside className="w-72 border-r border-border overflow-y-auto shrink-0">
         <div className="p-3 space-y-1">
@@ -698,9 +802,9 @@ export default function RoomsPage() {
                 type="button"
                 onClick={() => setSelectedRoomId(room.room_id)}
                 className={cn(
-                  "group w-full rounded-md px-3 py-2 text-left transition-colors",
-                  "hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring",
-                  selectedRoomId === room.room_id && "bg-accent",
+                  "room-tile group w-full px-3 py-2 text-left",
+                  "hover:bg-accent focus:outline-none focus-visible:shadow-[0_0_0_1.5px_var(--color-ring)]",
+                  selectedRoomId === room.room_id && "room-tile-selected",
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
@@ -751,10 +855,10 @@ export default function RoomsPage() {
         ) : (
           <div className="max-w-3xl mx-auto space-y-6">
             {/* Room header */}
-            <Card>
+            <Card className="room-surface-raised border-border bg-card">
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="text-2xl">
+                  <CardTitle className="text-2xl min-w-0 break-words">
                     {selectedRoom.room_name}
                   </CardTitle>
                   {!editing ? (
@@ -807,7 +911,7 @@ export default function RoomsPage() {
             </Card>
 
             {/* Members */}
-            <Card>
+            <Card className="room-surface-raised border-border bg-card">
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Users className="h-5 w-5" />
@@ -815,15 +919,15 @@ export default function RoomsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="flex flex-wrap gap-2 mb-3">
+                <div className="flex flex-wrap gap-2 mb-3 min-w-0">
                   {(editing ? editMembers : selectedRoom.members).map((m) => {
                     const meta = profiles.find((p) => p.name === m);
                     return (
                       <div
                         key={m}
-                        className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-1.5"
+                        className="room-chip flex min-w-0 max-w-full items-center gap-2 border border-border bg-muted/40 px-3 py-1.5"
                       >
-                        <span className="font-mono text-sm">{m}</span>
+                        <span className="font-mono text-sm break-all">{m}</span>
                         {meta?.description && (
                           <span className="text-xs text-muted-foreground max-w-[16rem] truncate">
                             {meta.description}
@@ -876,7 +980,7 @@ export default function RoomsPage() {
             </Card>
 
             {/* Bind IM source */}
-            <Card>
+            <Card className="room-surface-raised border-border bg-card">
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Link2 className="h-5 w-5" />
@@ -885,16 +989,16 @@ export default function RoomsPage() {
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground mb-3">
-                  Enter a <code className="text-xs bg-muted px-1 rounded">source_binding_key</code> (from an inbound message on DingTalk/Slack) to route that chat to this room.
+                  Enter a <code className="text-xs bg-muted px-1 rounded break-all">source_binding_key</code> (from an inbound message on DingTalk/Slack) to route that chat to this room.
                 </p>
-                <div className="flex gap-2">
+                <div className="flex gap-2 min-w-0">
                   <Input
                     value={bindKey}
                     onChange={(e) => setBindKey(e.target.value)}
                     placeholder="source:dingtalk:group:cid...:user_id"
-                    className="font-mono text-xs flex-1"
+                    className="font-mono text-xs flex-1 min-w-0"
                   />
-                  <Button onClick={handleBind} disabled={binding || !bindKey.trim()}>
+                  <Button onClick={handleBind} disabled={binding || !bindKey.trim()} className="shrink-0">
                     {binding ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Link2 className="mr-1 h-4 w-4" />}
                     Bind
                   </Button>
@@ -910,8 +1014,8 @@ export default function RoomsPage() {
         <aside className="flex-1 min-w-[400px] flex flex-col order-2">
           <div className="p-3 border-b border-border">
             <div className="flex items-center gap-2 text-sm font-medium">
-              <MessageSquare className="h-4 w-4" />
-              Chat with {selectedRoom.room_name}
+              <MessageSquare className="h-4 w-4 shrink-0" />
+              <span className="min-w-0 break-words">Chat with {selectedRoom.room_name}</span>
             </div>
             <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
               <label className="flex items-center gap-1 cursor-pointer">
@@ -927,7 +1031,7 @@ export default function RoomsPage() {
           </div>
 
           {/* Message list */}
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
             {chatHistory.length === 0 ? (
               <div className="text-center text-sm text-muted-foreground py-8">
                 <MessageSquare className="mx-auto h-8 w-8 opacity-30 mb-2" />
@@ -938,8 +1042,15 @@ export default function RoomsPage() {
               </div>
             ) : (
               chatHistory.map((m) => {
+                if (m.kind === "observer") {
+                  return m.route ? (
+                    <div key={m.id} className="pl-10 pr-1">
+                      <RoutingTrace route={m.route} />
+                    </div>
+                  ) : null;
+                }
                 const isUser = m.kind === "user";
-                const avatarBg = isUser ? "#3b82f6" : avatarColorFor(m.sender);
+                const avatarBg = isUser ? "var(--color-primary)" : avatarColorFor(m.sender);
                 return (
                   <div
                     key={m.id}
@@ -948,13 +1059,24 @@ export default function RoomsPage() {
                       isUser ? "flex-row-reverse" : "flex-row",
                     )}
                   >
-                    {/* Avatar */}
-                    <div
-                      className="shrink-0 flex items-center justify-center w-8 h-8 rounded-full text-white text-xs font-semibold"
-                      style={{ backgroundColor: avatarBg }}
-                      title={m.sender}
-                    >
-                      {avatarInitials(m.sender)}
+                    {/* Avatar with soft ring + online status dot */}
+                    <div className="relative shrink-0">
+                      <div
+                        className={cn(
+                          "room-avatar flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold",
+                          isUser ? "text-primary-foreground" : "text-white",
+                        )}
+                        style={{ backgroundColor: avatarBg }}
+                        title={m.sender}
+                      >
+                        {avatarInitials(m.sender)}
+                      </div>
+                      {!isUser && (
+                        <span
+                          className="room-status-dot absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-success"
+                          aria-hidden
+                        />
+                      )}
                     </div>
 
                     {/* Bubble + meta */}
@@ -966,14 +1088,21 @@ export default function RoomsPage() {
                     >
                       <div
                         className={cn(
-                          "rounded-lg px-3 py-2 break-words text-sm",
+                          "px-3 py-2 break-words text-sm",
                           isUser
-                            ? "bg-blue-600 text-white"
-                            : "bg-muted",
+                            ? "room-chip bg-primary text-primary-foreground shadow-[0_1px_2px_rgba(16,24,40,0.12)]"
+                            : "room-surface bg-card text-card-foreground",
                         )}
                       >
                         {renderChatContent(m.content)}
                       </div>
+                      {!isUser && m.toolCalls && m.toolCalls.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {m.toolCalls.map((tc, i) => (
+                            <ToolChip key={tc.id ?? i} tc={tc} />
+                          ))}
+                        </div>
+                      )}
                       <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground px-1">
                         <span className="font-mono">{m.sender}</span>
                         {m.timestamp > 0 && (
@@ -998,7 +1127,11 @@ export default function RoomsPage() {
             )}
             {chatSending && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground pl-10">
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <span className="flex items-center gap-1">
+                  <span className="room-typing-dot" />
+                  <span className="room-typing-dot" />
+                  <span className="room-typing-dot" />
+                </span>
                 <span>Members are thinking…</span>
               </div>
             )}
@@ -1073,7 +1206,7 @@ export default function RoomsPage() {
               <Label>Members</Label>
               <div className="flex flex-wrap gap-2 mb-2">
                 {createMembers.map((m) => (
-                  <div key={m} className="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-sm">
+                  <div key={m} className="room-chip flex items-center gap-1 bg-accent px-2 py-1 text-sm">
                     <span className="font-mono">{m}</span>
                     <button
                       type="button"
@@ -1180,7 +1313,7 @@ export default function RoomsPage() {
                     <Label className="text-xs">Members</Label>
                     <ul className="space-y-2 mt-1">
                       {plannedResult.members.map((m, idx) => (
-                        <li key={idx} className="flex items-start gap-2 rounded-md border p-2">
+                        <li key={idx} className="room-chip flex items-start gap-2 border border-border p-2">
                           <Badge tone={m.is_new ? "success" : "secondary"}>
                             {m.is_new ? "🆕 new" : "✅ existing"}
                           </Badge>

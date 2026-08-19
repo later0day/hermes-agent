@@ -1501,7 +1501,14 @@ export const api = {
       ok: boolean;
       target_members: string[];
       broadcast: boolean;
+      decompose?: boolean;
       replies: Record<string, string>;
+      synthesis?: string | null;
+      routing?: {
+        reason?: string | null;
+        decompose?: boolean;
+        orchestration?: unknown;
+      };
     }>(`/api/rooms/${encodeURIComponent(roomId)}/dispatch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1523,13 +1530,21 @@ export interface RoomRecord {
   actor: string;
 }
 
+export interface RoomToolCall {
+  id?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+}
+
 export interface RoomMessageRow {
   room_id: string;
   sequence: number;
   sender_kind: "user" | "observer" | "member" | "tool_result";
   sender_name: string;
   content: string;
-  tool_calls?: unknown;
+  tool_calls?: RoomToolCall[] | null;
   tool_call_id?: string;
   timestamp: number;
 }

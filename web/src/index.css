@@ -321,6 +321,106 @@ code { font-size: 0.875rem; }
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* ── Rooms page — beautifului.dev structural language ──────────────── */
+/* Borrows beautifului.dev's *structure* — hairline borders, soft
+   multi-layer shadows, small radii, ease-out-expo micro-interactions,
+   streaming dots, avatar rings — while the *color* stays on the global
+   theme's semantic tokens, so Rooms follows theme switches like every
+   other page. No palette atoms are overridden here. */
+.rooms-root,
+.rooms-scope {
+  --room-accent: var(--color-primary);
+  --room-accent-tint: color-mix(in srgb, var(--color-primary) 14%, transparent);
+
+  --room-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --room-radius-card: 12px;
+  --room-radius-control: 8px;
+  --room-radius-chip: 6px;
+
+  /* Hairline: a single crisp 1px ring in the theme's line color. */
+  --room-shadow-hairline: 0 0 0 1px var(--color-border);
+  /* Card / raised: hairline ring + soft multi-layer drop derived from the
+     theme's own background atom, so the elevation reads correctly on both
+     light and dark canvases (mix background toward transparent for alpha). */
+  --room-shadow-card:
+    0 0 0 1px var(--color-border),
+    0 1px 2px color-mix(in srgb, var(--background-base) 45%, transparent),
+    0 4px 12px color-mix(in srgb, var(--background-base) 30%, transparent);
+  --room-shadow-raised:
+    0 0 0 1px var(--color-border),
+    0 2px 6px color-mix(in srgb, var(--background-base) 50%, transparent),
+    0 8px 24px color-mix(in srgb, var(--background-base) 40%, transparent);
+}
+
+/* Interactive tile: small radius, eased transitions, subtle press + hover lift. */
+.room-tile {
+  border-radius: var(--room-radius-control);
+  transition:
+    background-color 0.15s var(--room-ease),
+    box-shadow 0.18s var(--room-ease),
+    transform 0.12s var(--room-ease);
+}
+.room-tile:hover {
+  box-shadow: var(--room-shadow-hairline);
+}
+.room-tile:active {
+  transform: scale(0.985);
+}
+/* Selected room tile — hairline ring + accent tint + left accent bar. */
+.room-tile-selected {
+  background-color: var(--room-accent-tint) !important;
+  box-shadow:
+    var(--room-shadow-hairline),
+    inset 3px 0 0 var(--room-accent);
+}
+
+/* Compact chip (member tags, tool chips). */
+.room-chip {
+  border-radius: var(--room-radius-chip);
+}
+
+/* Elevated surface (cards, code blocks, chat bubbles that need lift). */
+.room-surface {
+  border-radius: var(--room-radius-card);
+  box-shadow: var(--room-shadow-card);
+}
+.room-surface-raised {
+  border-radius: var(--room-radius-card);
+  box-shadow: var(--room-shadow-raised);
+}
+
+/* Streaming/typing dots — beautifului "members are thinking" indicator. */
+.room-typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background-color: var(--color-muted-foreground);
+  animation: room-typing 1.2s var(--room-ease) infinite;
+}
+.room-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.room-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes room-typing {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* Member avatar with a soft ring + status dot (Task-Row style). */
+.room-avatar {
+  box-shadow: 0 0 0 2px var(--color-card), 0 0 0 3px var(--color-border);
+}
+.room-status-dot {
+  box-shadow: 0 0 0 2px var(--color-card);
+}
+
+/* Expandable observer-routing trace (Thinking-trace style). */
+.room-trace-toggle {
+  border-radius: var(--room-radius-chip);
+  transition: background-color 0.15s var(--room-ease);
+}
+.room-trace-toggle:hover {
+  background-color: var(--color-accent);
+}
+
 /* RTL support — Arabic and any future right-to-left locale. The i18n provider
    sets `dir` on <html>; Tailwind v4's logical spacing utilities (ms-/me-,
    ps-/pe-) and logical properties then flip automatically. Scoped so the
