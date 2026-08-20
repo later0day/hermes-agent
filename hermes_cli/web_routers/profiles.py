@@ -1134,6 +1134,171 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     return {"ok": True}
 
 
+# Profile memory documents (MEMORY.md / USER.md). Restored here after the
+# web_server.py -> web_routers/ route extraction dropped these endpoints while
+# migrating the sibling SOUL.md routes. The dashboard Memory page
+# (web/src/pages/MemoryPage.tsx via api.getProfileMemoryFile /
+# updateProfileMemoryFile) depends on them; without the routes every open/save
+# 404s ("No such API endpoint: /api/profiles/<name>/memory/MEMORY.md"). The URL
+# segment is the singular ``memory`` but the files physically live under the
+# profile's plural ``memories/`` directory (same as the agent / doctor).
+_PROFILE_MEMORY_FILES = {"MEMORY.md", "USER.md"}
+
+
+def _resolve_profile_memory_file(profile_dir: Path, filename: str) -> Path:
+    safe_name = str(filename or "").strip()
+    if safe_name not in _PROFILE_MEMORY_FILES:
+        raise HTTPException(
+            status_code=400, detail="memory file must be MEMORY.md or USER.md"
+        )
+    return profile_dir / "memories" / safe_name
+
+
+def _profile_memory_summary(name: str, profile_dir: Path) -> Dict[str, Any]:
+    # Read this profile's memory.provider straight from its config.yaml. The
+    # old _load_profile_config_raw helper was dropped in the route extraction;
+    # only the provider string is needed here, so read the file directly and
+    # degrade to "" on any error (matching the original best-effort behavior).
+    provider = ""
+    try:
+        import yaml
+
+        cfg_path = profile_dir / "config.yaml"
+        if cfg_path.is_file():
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            memory_cfg = cfg.get("memory", {})
+            if isinstance(memory_cfg, dict):
+                provider = str(memory_cfg.get("provider") or "")
+    except Exception:
+        provider = ""
+    memory_dir = profile_dir / "memories"
+    memory_file_count = 0
+    memory_bytes = 0
+    if memory_dir.is_dir():
+        for item in memory_dir.rglob("*"):
+            if not item.is_file():
+                continue
+            memory_file_count += 1
+            try:
+                memory_bytes += item.stat().st_size
+            except OSError:
+                pass
+    state_db = profile_dir / "state.db"
+    try:
+        state_db_size = state_db.stat().st_size if state_db.exists() else 0
+    except OSError:
+        state_db_size = 0
+
+    def _preview_file(filename: str, limit: int = 2000) -> Dict[str, Any]:
+        path = memory_dir / filename
+        exists = path.is_file()
+        size = 0
+        content = ""
+        truncated = False
+        if exists:
+            try:
+                size = path.stat().st_size
+                raw = path.read_text(encoding="utf-8", errors="replace")
+                truncated = len(raw) > limit
+                content = raw[:limit]
+                try:
+                    from agent.redact import redact_sensitive_text
+
+                    content = redact_sensitive_text(content, force=True)
+                except Exception:
+                    pass
+            except OSError:
+                exists = False
+        return {
+            "name": filename,
+            "path": str(path),
+            "exists": exists,
+            "bytes": size,
+            "content": content,
+            "truncated": truncated,
+        }
+
+    return {
+        "provider": provider,
+        "memory_dir": str(memory_dir),
+        "memory_dir_exists": memory_dir.is_dir(),
+        "memory_file_count": memory_file_count,
+        "memory_bytes": memory_bytes,
+        "state_db": str(state_db),
+        "state_db_exists": state_db.exists(),
+        "state_db_bytes": state_db_size,
+        "previews": [
+            _preview_file("MEMORY.md"),
+            _preview_file("USER.md"),
+        ],
+    }
+
+
+@router.get("/api/profiles/{name}/memory/{memory_file:path}")
+async def get_profile_memory_file(name: str, memory_file: str):
+    profile_dir = _resolve_profile_dir(name)
+    path = _resolve_profile_memory_file(profile_dir, memory_file)
+    if not path.exists():
+        return {
+            "name": path.name,
+            "path": str(path),
+            "exists": False,
+            "content": "",
+            "bytes": 0,
+        }
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        size = path.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read {path.name}: {exc}")
+    return {
+        "name": path.name,
+        "path": str(path),
+        "exists": True,
+        "content": content,
+        "bytes": size,
+    }
+
+
+@router.put("/api/profiles/{name}/memory/{memory_file:path}")
+async def update_profile_memory_file(name: str, memory_file: str, body: ProfileSoulUpdate):
+    from gateway.agent_audit import append_agent_audit_event
+
+    profile_dir = _resolve_profile_dir(name)
+    path = _resolve_profile_memory_file(profile_dir, memory_file)
+    before_exists = path.exists()
+    before_bytes = 0
+    if before_exists:
+        try:
+            before_bytes = path.stat().st_size
+        except OSError:
+            before_bytes = 0
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body.content, encoding="utf-8")
+        after_bytes = path.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write {path.name}: {exc}")
+    try:
+        append_agent_audit_event(
+            "agent.memory_update",
+            actor_user_id="dashboard",
+            actor_user_name="Dashboard",
+            profile_name=name,
+            before={"file": path.name, "exists": before_exists, "bytes": before_bytes},
+            after={"file": path.name, "exists": True, "bytes": after_bytes},
+        )
+    except Exception:
+        _log.debug("Failed to append profile memory audit event", exc_info=True)
+    return {
+        "ok": True,
+        "name": path.name,
+        "path": str(path),
+        "bytes": after_bytes,
+        "memory": _profile_memory_summary(name, profile_dir),
+    }
+
+
 @router.put("/api/profiles/{name}/description")
 async def update_profile_description_endpoint(name: str, body: ProfileDescriptionUpdate):
     """Set or clear a profile's role description (kanban routing signal).
