@@ -12517,6 +12517,156 @@ def _cron_default_profile() -> str:
     return "default" if name in ("default", "custom") else name
 
 
+_DINGTALK_SESSION_WEBHOOK_RE = re.compile(r"^https://(?:api|oapi)\.dingtalk\.com/")
+
+
+def _source_binding_store():
+    """Open the source→agent binding store.
+
+    Restored (route-extraction refactor dropped this from web_server, leaving
+    ``late("_source_binding_store")`` in the profiles router dangling).
+    """
+    from gateway.source_agent_binding import SourceAgentBindingStore
+
+    return SourceAgentBindingStore()
+
+
+def _profile_raw_bindings(name: str):
+    """Return the raw SourceAgentBinding objects bound to a profile.
+
+    Callers serialize via ``binding.to_dict()``; keep returning the dataclass
+    instances (not dicts) to preserve that contract.
+    """
+    if not name:
+        return []
+    store = _source_binding_store()
+    try:
+        return list(store.list_bindings(profile_name=name))
+    except Exception:
+        _log.exception("Failed to list source bindings for profile %s", name)
+        return []
+    finally:
+        store.close()
+
+
+def _delete_profile_im_notification_text(profile_name: str) -> str:
+    return (
+        f"### Hermes agent `{profile_name}` 已删除\n\n"
+        "该 Agent 已从 Dashboard 删除，当前 IM 会话绑定已清除，后续将回到 `default` agent。\n\n"
+        "如需重新绑定，请发送 `/agent use <profile>`。"
+    )
+
+
+def _binding_delete_notification_webhook(binding: Dict[str, Any]) -> Optional[str]:
+    target = binding.get("fallback_target")
+    extra = binding.get("fallback_extra")
+    source_key = str(binding.get("source_binding_key") or "")
+    platform = ""
+    if isinstance(target, dict):
+        platform = str(target.get("platform") or "").strip().lower()
+    if platform and platform != "dingtalk":
+        return None
+    if not platform and not source_key.startswith("source:dingtalk:"):
+        return None
+    if not isinstance(extra, dict):
+        return None
+
+    webhook = str(extra.get("session_webhook") or "").strip()
+    if not webhook or not _DINGTALK_SESSION_WEBHOOK_RE.match(webhook):
+        return None
+    try:
+        expires_ms = int(extra.get("session_webhook_expired_time") or 0)
+    except (TypeError, ValueError):
+        expires_ms = 0
+    if expires_ms and expires_ms <= int(time.time() * 1000):
+        return None
+    return webhook
+
+
+def _send_dingtalk_session_webhook(session_webhook: str, text: str) -> None:
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "Hermes agent deleted",
+            "text": text,
+        },
+    }
+    request = urllib.request.Request(
+        session_webhook,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        status = getattr(response, "status", response.getcode())
+        body = response.read(512)
+    if int(status) >= 300:
+        raise RuntimeError(f"DingTalk webhook returned HTTP {status}: {body[:200]!r}")
+
+
+async def _notify_profile_delete_bindings(
+    profile_name: str,
+    bindings: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    """Best-effort IM notice to each bound session before a profile is deleted."""
+    summary = {"attempted": 0, "sent": 0, "failed": 0, "skipped": 0}
+    text = _delete_profile_im_notification_text(profile_name)
+    for binding in bindings:
+        webhook = _binding_delete_notification_webhook(binding)
+        if not webhook:
+            summary["skipped"] += 1
+            continue
+        summary["attempted"] += 1
+        try:
+            await asyncio.to_thread(_send_dingtalk_session_webhook, webhook, text)
+            summary["sent"] += 1
+        except Exception as exc:
+            summary["failed"] += 1
+            _log.warning(
+                "Failed to notify IM binding %s before deleting profile %s: %s",
+                binding.get("source_binding_key"),
+                profile_name,
+                exc,
+            )
+    return summary
+
+
+def _delete_cron_jobs_for_profile(profile_name: str) -> int:
+    """Remove cron jobs owned by a profile that is being deleted.
+
+    Rewritten against the current per-profile cron API
+    (``_call_cron_for_profile``/``_mutate_cron_for_profile``); the original
+    used a since-removed global ``_call_cron_store`` singleton.
+    """
+    if not profile_name:
+        return 0
+    removed = 0
+    try:
+        jobs = list(_call_cron_for_profile(profile_name, "list_jobs", True))
+    except Exception:
+        _log.debug(
+            "Failed to list cron jobs while deleting profile %s",
+            profile_name,
+            exc_info=True,
+        )
+        return 0
+    for job in jobs:
+        job_ref = str(job.get("id") or job.get("name") or "")
+        if not job_ref:
+            continue
+        try:
+            if _mutate_cron_for_profile(profile_name, "remove_job", job_ref):
+                removed += 1
+        except Exception:
+            _log.debug(
+                "Failed to remove cron job %s while deleting profile %s",
+                job_ref,
+                profile_name,
+                exc_info=True,
+            )
+    return removed
+
+
 def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
     from hermes_cli import profiles as profiles_mod

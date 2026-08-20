@@ -47,7 +47,6 @@ _open_session_db_for_profile = late("_open_session_db_for_profile")
 _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
-_session_source_binding_annotation = late("_session_source_binding_annotation")
 _strip_session_list_rows = late("_strip_session_list_rows")
 
 
@@ -152,13 +151,6 @@ def get_sessions(
                 )
                 s["profile"] = row_profile
                 s["is_default_profile"] = row_profile == "default"
-                # Fork: annotate each row with its source→profile binding so
-                # the desktop can show which profile a session is bound to.
-                s.update(
-                    _session_source_binding_annotation(
-                        str(s.get("id") or s.get("session_id") or "")
-                    )
-                )
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
