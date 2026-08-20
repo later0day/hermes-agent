@@ -295,7 +295,10 @@ def _run_agent_blocking(
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.fallback_config import get_fallback_chain
-        from run_agent import AIAgent
+        # AIAgent is constructed through the adapter (agent_room_runner_adapter)
+        # so the 13-kwarg coupling to the official constructor is validated in
+        # one place and fails loudly if an upstream signature drifts.
+        from gateway.agent_room_runner_adapter import build_agent
 
         cfg = load_config()
         model_cfg = cfg.get("model") or {}
@@ -349,7 +352,7 @@ def _run_agent_blocking(
             kwargs["enabled_toolsets"] = list(toolsets)
         elif toolsets is not None:  # explicit [] → conversation-only
             kwargs["enabled_toolsets"] = []
-        agent = AIAgent(**kwargs)
+        agent = build_agent(**kwargs)
         if toolsets:
             _lock_agent_tools(agent, list(toolsets))
         elif toolsets is not None:  # [] → strip every tool

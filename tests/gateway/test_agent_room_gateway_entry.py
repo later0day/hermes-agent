@@ -69,6 +69,89 @@ def test_process_message_via_room_if_bound_method_exists():
 
 
 # ---------------------------------------------------------------------------
+# Mount point 2: room reuses the OFFICIAL execution core (_run_agent_inner)
+# via _toolsets_override — NOT a private fork of the agent loop.
+#
+# The whole Agent Room design rests on "guard-style injection + reuse of the
+# official agent turn". These sentinels fail loudly if an upstream merge ever
+# removes/renames the _toolsets_override plumbing, which would silently make
+# the observer see all 57 tools (route_to_member buried) or the member run
+# with its default file/terminal tools. There was ZERO coverage of this path.
+# ---------------------------------------------------------------------------
+
+
+def test_observer_turn_reuses_run_agent_inner():
+    """The observer turn MUST go through the official _run_agent_inner, not a
+    forked loop — that is the core "reuse, don't reimplement" contract."""
+    src = inspect.getsource(run_module)
+    # The observer call site passes _toolsets_override=["room_observer"] into
+    # _run_agent_inner. Verify both the call and the override token exist.
+    assert "async def _run_agent_inner" in src, (
+        "official execution core _run_agent_inner missing from run.py"
+    )
+    assert 'self._run_agent_inner(' in src, (
+        "room path must invoke self._run_agent_inner (reuse official core)"
+    )
+    assert '_toolsets_override=["room_observer"]' in src, (
+        "observer turn must lock to the room_observer toolset via "
+        "_toolsets_override — otherwise route_to_member is buried in 57 tools"
+    )
+
+
+def test_run_agent_inner_accepts_toolsets_override_kwarg():
+    """_run_agent_inner must still consume the _toolsets_override kwarg and
+    turn it into a platform_toolsets replacement + tool_search:off. If an
+    upstream refactor drops this, the observer lockdown silently no-ops."""
+    src = inspect.getsource(run_module)
+    assert 'kwargs.pop("_toolsets_override"' in src, (
+        "_run_agent_inner no longer pops _toolsets_override — the room "
+        "observer/member toolset lockdown would be silently ignored"
+    )
+    # It replaces platform_toolsets for the resolved platform_key ...
+    assert 'pt[platform_key] = list(_toolsets_override)' in src, (
+        "_toolsets_override must REPLACE platform_toolsets[platform_key]"
+    )
+    # ... and disables tool_search so _HERMES_CORE_TOOLS isn't re-added.
+    override_block = src[src.find('kwargs.pop("_toolsets_override"'):]
+    override_block = override_block[:2000]
+    assert 'tool_search' in override_block and '"off"' in override_block, (
+        "override must force tool_search:off so tier-1 core tools are not "
+        "re-added on top of the locked toolset"
+    )
+
+
+def test_toolsets_override_propagates_to_turn_runner():
+    """The kwarg must be forwarded onto the TurnRunner instance, because the
+    only reliable point to force-filter agent.tools is TurnRunner.run_sync
+    (a separate class, not a closure of _run_agent_inner)."""
+    src = inspect.getsource(run_module)
+    assert 'turn_runner._toolsets_override = _toolsets_override' in src, (
+        "TurnRunner must receive _toolsets_override; without it the tool "
+        "force-filter in run_sync never fires"
+    )
+    # And TurnRunner actually reads it back and rebuilds agent.tools.
+    assert 'getattr(self, "_toolsets_override", None)' in src, (
+        "TurnRunner.run_sync must read _toolsets_override to lock agent.tools"
+    )
+
+
+def test_toolsets_override_filters_agent_tools_via_resolve_toolset():
+    """When _toolsets_override is active the agent's tool list is rebuilt from
+    the toolsets registry (resolve_toolset), not left as the default 57."""
+    src = inspect.getsource(run_module)
+    start = src.find("if _toolsets_override:")
+    assert start != -1, "expected an `if _toolsets_override:` guard in run.py"
+    # Somewhere under the override path we resolve the toolset to a tool set.
+    assert "from toolsets import resolve_toolset" in src, (
+        "override path must resolve the toolset via toolsets.resolve_toolset"
+    )
+    assert "ROUTE_TO_MEMBER_SCHEMA" in src, (
+        "observer override must inject route_to_member's schema explicitly "
+        "(tool_search defers it, so it may be absent from agent.tools)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _get_room_for_source: unit tests with stubbed stores
 # ---------------------------------------------------------------------------
 
