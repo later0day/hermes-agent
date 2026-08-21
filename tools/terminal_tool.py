@@ -3891,10 +3891,30 @@ def check_terminal_requirements() -> bool:
             from agent.secret_scope import get_secret
             return get_secret("DAYTONA_API_KEY") is not None
 
+        elif env_type == "agentproxy":
+            # Structurally identical to the ssh backend: nothing host-local to
+            # probe (the container lives on the remote AgentProxy agent). The
+            # only requirement is a Dashboard token to drive the task API,
+            # which resolves from $DASHBOARD_TOKEN first, then the ap env file
+            # (same source the ap CLI uses). cloud_url/container are validated
+            # lazily at create time. See commit 9c00b73ca3.
+            from agent.secret_scope import get_secret
+            if get_secret("DASHBOARD_TOKEN"):
+                return True
+            env_file = config.get("ap_env_file", "/opt/agentproxy/.env")
+            if os.path.exists(env_file):
+                return True
+            logger.error(
+                "agentproxy backend selected but no Dashboard token found: set "
+                "$DASHBOARD_TOKEN or provide the ap env file (%s).",
+                env_file,
+            )
+            return False
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, ssh, agentproxy.",
                 env_type,
             )
             return False
