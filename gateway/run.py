@@ -2175,7 +2175,7 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
 
-    Combines the two seams the multiplexer needs:
+    Combines the seams the multiplexer needs:
       1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
          skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
          it propagates into the agent worker thread via ``copy_context()``.
@@ -2183,6 +2183,11 @@ def _profile_runtime_scope(profile_home: "Path"):
          authoritative credential source, so ``get_secret`` reads this profile's
          keys and never the process-global ``os.environ`` (which in a
          multiplexer may hold another profile's values).
+      3. ``set_terminal_env_overlay`` — installs this profile's resolved
+         ``TERMINAL_*`` map so the terminal tool selects the profile's backend
+         (docker / agentproxy / ssh / ...) instead of racing on process-global
+         ``os.environ["TERMINAL_ENV"]``, which one profile would otherwise lock
+         for the whole multiplex process.
 
     Only used on the multiplexed inbound path. Single-profile gateways never
     enter this scope, so their behavior is unchanged. Loading the profile's
@@ -2197,13 +2202,29 @@ def _profile_runtime_scope(profile_home: "Path"):
         reset_secret_scope,
     )
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tools.terminal_env import (
+        build_scoped_terminal_env,
+        set_terminal_env_overlay,
+        reset_terminal_env_overlay,
+    )
 
     home_token = set_hermes_home_override(str(profile_home))
     hydrate_profile_secret_sources(Path(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    # 3. Terminal backend overlay — the multiplexer serves many profiles from
+    #    one process whose turns run concurrently in run_in_executor threads, so
+    #    process-global os.environ["TERMINAL_ENV"] cannot isolate them (whoever
+    #    touched the terminal first would lock the backend for everyone). Resolve
+    #    THIS profile's TERMINAL_* map now (HERMES_HOME override is live, so the
+    #    config lookups are profile-correct) and install it as a ContextVar
+    #    overlay that tools.terminal_env.terminal_env_get prefers over os.environ.
+    #    Built inside this scope so it is correct even when re-entered from the
+    #    executor thread (ContextVars do not follow run_in_executor).
+    terminal_token = set_terminal_env_overlay(build_scoped_terminal_env())
     try:
         yield
     finally:
+        reset_terminal_env_overlay(terminal_token)
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 

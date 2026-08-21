@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import re
 import select
 import shlex
@@ -285,7 +286,7 @@ def get_sandbox_dir() -> Path:
 
     Configurable via TERMINAL_SANDBOX_DIR. Defaults to {HERMES_HOME}/sandboxes/.
     """
-    custom = os.getenv("TERMINAL_SANDBOX_DIR")
+    custom = terminal_env_get("TERMINAL_SANDBOX_DIR")
     if custom:
         p = Path(custom)
     else:

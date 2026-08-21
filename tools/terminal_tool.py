@@ -35,6 +35,7 @@ Usage:
 
 import importlib.util
 import json
+import hashlib
 import logging
 import os
 import platform
@@ -68,6 +69,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 from tools.registry import tool_error
+from tools.terminal_env import terminal_env_get
 from tools.shell_heredoc import strip_inert_heredoc_bodies
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
@@ -791,7 +793,7 @@ def _sudo_nopasswd_works() -> bool:
     cache) so an expired sudo timestamp cannot make a later command silently
     block waiting for a password.
     """
-    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    terminal_env = terminal_env_get("TERMINAL_ENV", "local").strip().lower() or "local"
     if terminal_env != "local":
         return False
 
@@ -1142,7 +1144,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
     # ``container_config`` only carries container_* keys, so read
     # lifetime_seconds from the env var the rest of the module uses.
     try:
-        lifetime = int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300"))
+        lifetime = int(terminal_env_get("TERMINAL_LIFETIME_SECONDS", "300"))
     except (TypeError, ValueError):
         lifetime = 300
     lifetime = max(60, lifetime)
@@ -1329,9 +1331,9 @@ def _docker_session_isolation_enabled() -> bool:
     contract is unchanged.
     """
     _ensure_terminal_env_bridged()
-    if os.getenv("TERMINAL_ENV", "local") != "docker":
+    if terminal_env_get("TERMINAL_ENV", "local") != "docker":
         return False
-    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+    return terminal_env_get("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
 
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
@@ -1350,6 +1352,40 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     if not task_id or task_id not in _task_env_overrides:
         return False
     return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
+
+
+def _profile_container_namespace() -> str:
+    """Return a per-profile prefix for container/environment cache keys.
+
+    ``_active_environments`` is a process-global cache keyed by the collapsed
+    task id (``"default"`` for the top-level agent). Under the gateway
+    multiplexer many profiles share ONE process, so without namespacing a
+    ``docker`` profile and an ``agentproxy`` profile both collapse to
+    ``"default"`` and the first one's live sandbox is reused for the other —
+    the terminal backend race (the ``TERMINAL_ENV`` overlay fixes *selection*,
+    but a stale cached env would still serve the wrong backend).
+
+    ``get_hermes_home_override()`` is the profile scope seam
+    (``_profile_runtime_scope`` sets it to the profile's home). It returns
+    ``None`` for classic single-profile processes (CLI/TUI/desktop/one
+    gateway), so those keep the bare ``"default"`` key and their behavior is
+    completely unchanged. Only multiplexed turns get a prefix.
+
+    The prefix is a short hash (not the raw path) because the resolved key
+    flows into filesystem paths (``get_sandbox_dir()/docker/<key>``) and
+    Docker label/name sanitization — a raw ``/root/.hermes/...`` path would
+    corrupt those. A hash is stable per profile and safe in all of them.
+    """
+    try:
+        from hermes_constants import get_hermes_home_override
+
+        override = get_hermes_home_override()
+    except Exception:
+        override = None
+    if not override:
+        return ""
+    digest = hashlib.sha1(str(override).encode("utf-8")).hexdigest()[:12]
+    return f"p{digest}-"
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1382,12 +1418,18 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     workspace can no longer appear in a new session's container.
     ``delegate_task`` children keep sharing the parent's container via the
     alias registry (``register_container_alias``).
+
+    Multiplex profile namespacing: the resolved key is prefixed with the
+    active profile scope (:func:`_profile_container_namespace`) so profiles
+    sharing one gateway process never collide on the ``"default"`` container
+    and each keeps its own backend/sandbox. Unscoped (single-profile)
+    processes get an empty prefix and are unaffected.
     """
     if task_id and _has_isolation_overrides(task_id):
-        return task_id
+        return f"{_profile_container_namespace()}{task_id}"
     if task_id and _docker_session_isolation_enabled():
-        return _resolve_container_alias(task_id)
-    return "default"
+        return f"{_profile_container_namespace()}{_resolve_container_alias(task_id)}"
+    return f"{_profile_container_namespace()}default"
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
@@ -1436,8 +1478,10 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
         return None
     if not _docker_session_isolation_enabled():
         return config.get("host_cwd")
-    if _resolve_container_task_id(task_id) == "default":
+    if _resolve_container_task_id(task_id) == f"{_profile_container_namespace()}default":
         # Top-level CLI parent — single-session process, legacy behavior.
+        # Compare against the profile-namespaced default so this still fires
+        # for the collapsed top-level key under the multiplexer.
         return config.get("host_cwd")
     overrides = resolve_task_overrides(task_id)
     if overrides.get("cwd_source") == "process":
@@ -1461,8 +1505,12 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
+
+    Reads through ``terminal_env_get`` so the active profile scope's TERMINAL_*
+    overlay wins over process-global ``os.environ`` under the multiplexer; all
+    callers pass ``TERMINAL_*`` names.
     """
-    raw = os.getenv(name, default)
+    raw = terminal_env_get(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
@@ -1483,7 +1531,7 @@ def _safe_getcwd() -> str:
     try:
         return os.getcwd()
     except FileNotFoundError:
-        return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
+        return terminal_env_get("TERMINAL_CWD") or os.path.expanduser("~")
 
 
 def _repair_deleted_cwd() -> Optional[str]:
@@ -1499,7 +1547,7 @@ def _repair_deleted_cwd() -> Optional[str]:
     except FileNotFoundError:
         repo_root = str(Path(__file__).resolve().parents[1])
         candidates = [
-            os.getenv("TERMINAL_CWD"),
+            terminal_env_get("TERMINAL_CWD"),
             os.getenv("HERMES_CWD"),
             repo_root,
             os.path.expanduser("~"),
@@ -1613,9 +1661,9 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    env_type = terminal_env_get("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    mount_docker_cwd = terminal_env_get("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
     docker_backend = env_type == "docker"
 
@@ -1637,7 +1685,7 @@ def _get_env_config() -> Dict[str, Any]:
         docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
         docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
         docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
-        docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_shm_size = terminal_env_get("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
         docker_forward_env = []
         docker_volumes = []
@@ -1663,13 +1711,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = terminal_env_get("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = terminal_env_get("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -1687,51 +1735,51 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "modal_mode": coerce_modal_mode(terminal_env_get("TERMINAL_MODAL_MODE", "auto")),
+        "docker_image": terminal_env_get("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "singularity_image": terminal_env_get("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": terminal_env_get("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": terminal_env_get("TERMINAL_DAYTONA_IMAGE", default_image),
+        "vercel_runtime": terminal_env_get("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
+        "ssh_host": terminal_env_get("TERMINAL_SSH_HOST", ""),
+        "ssh_user": terminal_env_get("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_key": terminal_env_get("TERMINAL_SSH_KEY", ""),
         # AgentProxy-specific config (env_type="agentproxy"): run commands in
         # a Docker container on a remote AgentProxy agent, transported purely
         # over the Dashboard task API (no SSH).
-        "ap_agent_id": os.getenv("TERMINAL_AP_AGENT", "home"),
-        "ap_container": os.getenv("TERMINAL_AP_CONTAINER", "hermes-reverse"),
-        "ap_image": os.getenv("TERMINAL_AP_IMAGE", default_image),
-        "ap_cloud_url": os.getenv("TERMINAL_AP_CLOUD_URL", "https://127.0.0.1:8080"),
-        "ap_env_file": os.getenv("TERMINAL_AP_ENV_FILE", "/opt/agentproxy/.env"),
-        "ap_path_prefix": os.getenv("TERMINAL_AP_PATH_PREFIX", "/usr/local/bin"),
-        "ap_docker_run_args": os.getenv("TERMINAL_AP_DOCKER_RUN_ARGS", ""),
+        "ap_agent_id": terminal_env_get("TERMINAL_AP_AGENT", "home"),
+        "ap_container": terminal_env_get("TERMINAL_AP_CONTAINER", "hermes-reverse"),
+        "ap_image": terminal_env_get("TERMINAL_AP_IMAGE", default_image),
+        "ap_cloud_url": terminal_env_get("TERMINAL_AP_CLOUD_URL", "https://127.0.0.1:8080"),
+        "ap_env_file": terminal_env_get("TERMINAL_AP_ENV_FILE", "/opt/agentproxy/.env"),
+        "ap_path_prefix": terminal_env_get("TERMINAL_AP_PATH_PREFIX", "/usr/local/bin"),
+        "ap_docker_run_args": terminal_env_get("TERMINAL_AP_DOCKER_RUN_ARGS", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            terminal_env_get("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_persistent": terminal_env_get("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": terminal_env_get("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": terminal_env_get("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": terminal_env_get("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -3718,7 +3766,7 @@ def terminal_tool(
         #   warn (default) — return a structured degraded result the model
         #                    can act on (reason + retry hint, no traceback).
         #   fail           — preserve the historical error+traceback result.
-        degraded_mode = os.getenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
+        degraded_mode = terminal_env_get("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
         if degraded_mode == "fail":
             import traceback
             tb_str = traceback.format_exc()

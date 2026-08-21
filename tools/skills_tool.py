@@ -73,6 +73,7 @@ import threading
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
+from tools.terminal_env import terminal_env_get
 import re
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -492,7 +493,7 @@ def _is_gateway_surface() -> bool:
 
 
 def _get_terminal_backend_name() -> str:
-    return str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
+    return str(terminal_env_get("TERMINAL_ENV", "local")).strip().lower() or "local"
 
 
 def _is_env_var_persisted(

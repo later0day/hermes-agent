@@ -54,6 +54,7 @@ import functools
 import json
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import signal
 import re
 import subprocess
@@ -988,7 +989,7 @@ def _is_local_backend() -> bool:
         return False
     # When terminal runs in a container, browser on host can access
     # internal networks the terminal can't → treat as non-local.
-    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    terminal_backend = terminal_env_get("TERMINAL_ENV", "local").strip().lower()
     return terminal_backend in ("local", "")
 
 

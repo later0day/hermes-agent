@@ -33,6 +33,7 @@ import codecs
 import json
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import platform
 import shlex
 import signal
@@ -117,7 +118,7 @@ def _worker_memory_max_bytes() -> int:
     consume memory up to the enclosing user slice or host limit.
     """
     override_bound: Optional[int] = None
-    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    override = terminal_env_get("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
     if override:
         override_valid = False
         try:
@@ -1960,7 +1961,7 @@ class ProcessRegistry:
         from tools.interrupt import is_interrupted as _is_interrupted
 
         try:
-            default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+            default_timeout = int(terminal_env_get("TERMINAL_TIMEOUT", "180"))
         except (ValueError, TypeError):
             default_timeout = 180
         max_timeout = default_timeout

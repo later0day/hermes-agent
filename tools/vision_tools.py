@@ -35,6 +35,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -1839,7 +1840,7 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
 
 
 def _terminal_backend_is_local() -> bool:
-    backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    backend = terminal_env_get("TERMINAL_ENV", "local").strip().lower()
     return backend in ("", "local")
 
 

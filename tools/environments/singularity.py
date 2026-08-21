@@ -7,6 +7,7 @@ via writable overlay directories that survive across sessions.
 
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import shutil
 import subprocess
 import threading
@@ -70,7 +71,7 @@ def _save_snapshots(data: dict) -> None:
 
 
 def _get_scratch_dir() -> Path:
-    custom_scratch = os.getenv("TERMINAL_SCRATCH_DIR")
+    custom_scratch = terminal_env_get("TERMINAL_SCRATCH_DIR")
     if custom_scratch:
         scratch_path = Path(custom_scratch)
         scratch_path.mkdir(parents=True, exist_ok=True)

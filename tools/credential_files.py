@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import posixpath
 from contextvars import ContextVar
 from pathlib import Path
@@ -505,7 +506,7 @@ def from_agent_visible_cache_path(
     auto-mounted cache directory — the caller then treats a still-container
     path as "no host file" and falls back to an in-container read.
     """
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    if terminal_env_get("TERMINAL_ENV", "local") != "docker":
         return container_path
 
     path = Path(container_path)
@@ -546,7 +547,7 @@ def to_agent_visible_cache_path(
     Backend is identified by TERMINAL_ENV (same env var
     tools/terminal_tool.py reads in _get_environment_config).
     """
-    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    backend = (terminal_env_get("TERMINAL_ENV") or "local").strip().lower()
     if backend in ("docker", "modal"):
         pass  # /root/.hermes default
     elif backend in ("ssh", "daytona", "vercel_sandbox"):

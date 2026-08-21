@@ -32,6 +32,7 @@ import base64
 import json
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import platform
 import re
 import secrets
@@ -2030,7 +2031,7 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    raw = terminal_env_get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):

@@ -25,6 +25,7 @@ import re
 
 logger = logging.getLogger(__name__)
 import os
+from tools.terminal_env import terminal_env_get
 import threading
 import time
 import weakref
@@ -1256,7 +1257,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     guessing `/workspace/...` for local repo tasks.
     """
     candidates = [
-        os.getenv("TERMINAL_CWD"),
+        terminal_env_get("TERMINAL_CWD"),
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),

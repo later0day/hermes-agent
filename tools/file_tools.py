@@ -6,6 +6,7 @@ import errno
 import json
 import logging
 import os
+from tools.terminal_env import terminal_env_get
 import posixpath
 import sys
 import threading
@@ -203,9 +204,9 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
             if "daytona" in name:
                 return "daytona"
         cfg = _get_env_config()
-        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+        return str(cfg.get("env_type") or terminal_env_get("TERMINAL_ENV") or "local").lower()
     except Exception:
-        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+        return str(terminal_env_get("TERMINAL_ENV") or "local").lower()
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
@@ -252,7 +253,7 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    return _sentinel_free_abs_cwd(terminal_env_get("TERMINAL_CWD"))
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
