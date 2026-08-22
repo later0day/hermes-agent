@@ -35,7 +35,8 @@
 #
 # Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
 # step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately). hermes_cli/update_lock.py's ancestry rule lets our
+# immediately), retaining HERMES_UPDATE_STARTED_AT from the Desktop hand-off.
+# hermes_cli/update_lock.py's ancestry rule lets our
 # `hermes update` child adopt the claim; electron/update-marker.ts parks a
 # relaunched Desktop on it. Cleanup only removes the marker while WE still
 # own it (a handoff partner that rewrote it keeps its claim).
@@ -48,7 +49,8 @@ param(
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
-    [switch]$SelfTestPipeDrain
+    [switch]$SelfTestPipeDrain,
+    [switch]$SelfTestMarker
 )
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
@@ -570,6 +572,59 @@ function Start-DesktopRelaunch {
         Write-HandoffLog "WARNING: WMI relaunch failed: $($_.Exception.Message); falling back"
     }
     if (-not $spawned) {
+        # Middle rung: explorer.exe-mediated launch. On some machines
+        # Win32_Process.Create fails outright (observed ReturnValue 8,
+        # "unknown failure"), and the tethered fallback below re-attaches the
+        # Desktop to this console — its stdout then floods the console and the
+        # window can't close while the app lives. Explorer re-parents the
+        # target exactly like a normal shell launch, giving the same
+        # no-console detachment WMI would have. Explorer returns no pid, so
+        # verify by watching for a fresh Hermes process.
+        try {
+            $exeName = [System.IO.Path]::GetFileNameWithoutExtension($RelaunchExe)
+            $before = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $RelaunchExe) | Out-Null
+            $explorerDeadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $explorerDeadline) {
+                $fresh = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+                if ($fresh.Count -gt 0) {
+                    Write-HandoffLog "desktop relaunched detached via explorer (pid $($fresh[0].Id))"
+                    $spawned = $true
+                    # Same foreground hand-off as the WMI rung: the new process
+                    # starts unfocused and only the current foreground owner
+                    # (us) can delegate that right.
+                    try {
+                        if ($script:Win32) {
+                            [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$fresh[0].Id) | Out-Null
+                            $focusDeadline = (Get-Date).AddSeconds(20)
+                            while ((Get-Date) -lt $focusDeadline) {
+                                $hwnd = [System.IntPtr]::Zero
+                                try { $hwnd = (Get-Process -Id $fresh[0].Id -ErrorAction Stop).MainWindowHandle } catch { break }
+                                if ($hwnd -ne [System.IntPtr]::Zero) {
+                                    [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                                    [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+                                    Write-HandoffLog "focused relaunched desktop window"
+                                    break
+                                }
+                                Start-Sleep -Milliseconds 400
+                            }
+                        }
+                    } catch {
+                        Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
+                    }
+                    break
+                }
+                Start-Sleep -Milliseconds 400
+                if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+            }
+            if (-not $spawned) {
+                Write-HandoffLog "WARNING: explorer relaunch did not produce a $exeName process; falling back"
+            }
+        } catch {
+            Write-HandoffLog "WARNING: explorer relaunch failed: $($_.Exception.Message); falling back"
+        }
+    }
+    if (-not $spawned) {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --
             # a tethered Desktop beats no Desktop.
@@ -899,12 +954,23 @@ try {
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $startedAt = 0L
+        $hasStartedAt = [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$startedAt)
+        if (-not $hasStartedAt -or $startedAt -gt $epoch -or ($epoch - $startedAt) -gt 1200) {
+            $startedAt = $epoch
+        }
         # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
         # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
-        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
+        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$startedAt`n")
         Write-HandoffLog "claimed update marker (pid $PID)"
     } catch {
         Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
+    }
+
+    if ($SelfTestMarker) {
+        $finalCode = 0
+        $finalMsg = "marker self-test complete"
+        exit 0
     }
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
