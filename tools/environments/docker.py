@@ -114,6 +114,10 @@ def _load_hermes_env_vars() -> dict[str, str]:
 # safely through `docker ps --filter label=key=value`. Profile and task names
 # can technically contain other characters; sanitize defensively.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
+# Characters that are unsafe inside a single filesystem path segment used to
+# build docker bind-mount sources.  ``:`` in particular collides with docker's
+# ``-v host:container`` separator (exit 125); ``/`` would silently nest dirs.
+_RE_UNSAFE_PATH_SEG = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 def _sanitize_label_value(value: str) -> str:
@@ -980,7 +984,15 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            # task_id doubles as a cache key that may carry characters which are
+            # unsafe as a single filesystem path segment — notably the ``:`` in
+            # the ``session:<key>`` fallback key (upstream) and any profile
+            # namespace prefix.  A raw ``:`` collides with docker's ``-v
+            # host:container`` separator and yields exit 125 when the segment is
+            # spliced into a bind mount.  Sanitize to a path-safe segment while
+            # keeping the key itself intact for cache/label purposes elsewhere.
+            _safe_seg = _RE_UNSAFE_PATH_SEG.sub("_", task_id) or "default"
+            sandbox = get_sandbox_dir() / "docker" / _safe_seg
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
