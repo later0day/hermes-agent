@@ -367,25 +367,39 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        # A manager that doesn't own this unit still answers rc=0 with its
+        # OWN DefaultTimeoutStopSec (typically 90s) and LoadState=not-found.
+        # That happens for `--user` when a reachable user bus doesn't know
+        # our system unit: it would clobber the real system value (210s)
+        # with a phantom 90s.  Only trust a manager that has actually
+        # loaded the unit.
+        load_state: Optional[str] = None
+        candidate_us: Optional[int] = None
+        # Output: "TimeoutStopUSec=1min 30s" / "TimeoutStopUSec=90000000",
+        #         "LoadState=loaded"
         for line in result.stdout.splitlines():
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
                 # Try numeric microseconds first
                 if value.isdigit():
-                    timeout_us = int(value)
+                    candidate_us = int(value)
                 else:
-                    timeout_us = parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    break
-        if timeout_us is not None:
+                    candidate_us = parse_systemd_duration_to_us(value)
+            elif line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+        if load_state is not None and load_state != "loaded":
+            # Phantom answer from a manager that doesn't own this unit.
+            continue
+        if candidate_us is not None:
+            timeout_us = candidate_us
             break
 
     if timeout_us is None:
