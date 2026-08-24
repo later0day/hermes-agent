@@ -22,6 +22,7 @@ from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
     _popen_bash,
+    sanitize_task_id_for_path,
 )
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
@@ -114,10 +115,6 @@ def _load_hermes_env_vars() -> dict[str, str]:
 # safely through `docker ps --filter label=key=value`. Profile and task names
 # can technically contain other characters; sanitize defensively.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
-# Characters that are unsafe inside a single filesystem path segment used to
-# build docker bind-mount sources.  ``:`` in particular collides with docker's
-# ``-v host:container`` separator (exit 125); ``/`` would silently nest dirs.
-_RE_UNSAFE_PATH_SEG = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 def _sanitize_label_value(value: str) -> str:
@@ -132,6 +129,13 @@ def _sanitize_label_value(value: str) -> str:
     cleaned = _LABEL_VALUE_OK_RE.sub("_", value)
     cleaned = cleaned[:63] or "unknown"
     return cleaned
+
+
+# The task_id -> host-directory-name mapping is shared with every backend
+# that persists per-task state on the host filesystem (Singularity overlays
+# use the same helper), so the whole bug class is fixed in one place:
+# tools.environments.base.sanitize_task_id_for_path.
+_sandbox_dir_name = sanitize_task_id_for_path
 
 
 def _get_active_profile_name() -> str:
@@ -984,15 +988,9 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            # task_id doubles as a cache key that may carry characters which are
-            # unsafe as a single filesystem path segment — notably the ``:`` in
-            # the ``session:<key>`` fallback key (upstream) and any profile
-            # namespace prefix.  A raw ``:`` collides with docker's ``-v
-            # host:container`` separator and yields exit 125 when the segment is
-            # spliced into a bind mount.  Sanitize to a path-safe segment while
-            # keeping the key itself intact for cache/label purposes elsewhere.
-            _safe_seg = _RE_UNSAFE_PATH_SEG.sub("_", task_id) or "default"
-            sandbox = get_sandbox_dir() / "docker" / _safe_seg
+            # _sandbox_dir_name(): a raw session-key task_id carries colons,
+            # which `-v` reads as extra spec fields (exit 125).
+            sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
