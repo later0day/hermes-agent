@@ -4395,6 +4395,45 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+# --- DingTalk recent-image resend (fork) -----------------------------------
+# Sentinel returned by _maybe_resend_recent_image when the message is not a
+# "resend last image" request or when the platform does not support it.
+# Callers check `result is _RECENT_IMAGE_RESEND_NOT_HANDLED` to decide
+# whether to fall through to normal message handling.
+_RECENT_IMAGE_RESEND_NOT_HANDLED = object()
+
+# Patterns that signal the user wants the most recent image re-sent.
+_RESEND_IMAGE_PATTERNS = re.compile(
+    r"(?:"
+    r"图片.*重新.*发|重新.*发.*图片|刚才.*图片.*发|发.*刚才.*图片"
+    r"|resend\s+(?:the\s+)?(?:last|latest|recent)\s+image"
+    r"|send\s+(?:the\s+)?(?:last|latest|recent)\s+image"
+    r")",
+    re.IGNORECASE,
+)
+
+# Matches "[Image attached at: /some/path.png]" lines written by the gateway
+# image-attachment flow.
+_IMAGE_ATTACHED_RE = re.compile(r"\[Image attached at:\s*(.+?)\]")
+
+
+def _wants_recent_image_resend(text: str) -> bool:
+    """Return True when *text* expresses intent to re-receive the last image."""
+    return bool(_RESEND_IMAGE_PATTERNS.search(text or ""))
+
+
+def _find_latest_attached_image_path(messages: list) -> "Optional[str]":
+    """Scan *messages* newest-first and return the path of the most recent
+    existing attached image, or None if none is found."""
+    for msg in reversed(messages):
+        content = msg.get("content") or ""
+        for m in reversed(list(_IMAGE_ATTACHED_RE.finditer(content))):
+            path = m.group(1).strip()
+            if os.path.isfile(path):
+                return path
+    return None
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -4695,6 +4734,8 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # fork: per-turn editable status card (DingTalk) — resolve holder first.
+        turn_status_card = ctx.turn_status_card_holder[0]
         # Failed subagent → one clean user-facing notice. Handled FIRST,
         # before every progress-queue gate: platforms that keep
         # tool_progress off (Telegram, Slack, ...) must still hear about a
@@ -4759,10 +4800,73 @@ class TurnRunner:
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 preview_str = f' "{preview}"' if preview else ""
                 ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
-            if not ctx.progress_queue:
+            if not ctx.progress_queue and turn_status_card is None:
                 return
-        if not ctx.progress_queue or not ctx._run_still_current():
+        if not ctx._run_still_current():
             return
+
+        # fork: Stage-aware reaction hook (DingTalk + any adapter that opts
+        # in by defining ``notify_tool_started``). Runs BEFORE the existing
+        # dispatch so the user-message reaction updates even when tool
+        # progress bubbles are off and the status card is disabled.
+        if event_type in {"tool.started", "subagent.tool"} and tool_name:
+            try:
+                _stage_adapter = self._runner.adapters.get(ctx.source.platform)
+                if _stage_adapter is not None and hasattr(
+                    _stage_adapter, "notify_tool_started",
+                ):
+                    _stage_adapter.notify_tool_started(
+                        ctx.source.chat_id, tool_name, preview=preview,
+                    )
+            except Exception:
+                logger.debug(
+                    "notify_tool_started failed for %s",
+                    tool_name, exc_info=True,
+                )
+
+        if not ctx.progress_queue and turn_status_card is None:
+            return
+
+        # fork: subagent tool events map into the turn status card as ordinary
+        # tool progress so the card can render subagent tool usage.
+        if event_type in {"subagent.tool", "subagent.tool.completed"}:
+            mapped_event = (
+                "tool.completed"
+                if event_type == "subagent.tool.completed"
+                else "tool.started"
+            )
+            if turn_status_card is not None:
+                turn_status_card.on_tool_progress(
+                    mapped_event, tool_name, preview, args, **kwargs,
+                )
+                return
+            if (
+                ctx.progress_queue is not None
+                and ctx.tool_progress_enabled
+                and event_type == "subagent.tool"
+            ):
+                subagent_tool = tool_name or "subagent"
+                msg = f"\uD83D\uDD00 {subagent_tool}"
+                if preview:
+                    msg += f" \u2014 {preview}"
+                ctx.progress_queue.put(msg)
+            return
+
+        # fork: subagent lifecycle events render as card commentary.
+        if event_type in {
+            "subagent.start",
+            "subagent.complete",
+            "subagent.progress",
+            "subagent.thinking",
+        }:
+            subagent_text = preview or tool_name or ""
+            if not subagent_text:
+                return
+            if turn_status_card is not None:
+                turn_status_card.on_commentary(f"\uD83D\uDD00 {subagent_text}")
+                return
+            if ctx.progress_queue is not None:
+                ctx.progress_queue.put(f"\uD83D\uDD00 {subagent_text}")
 
         # First-touch onboarding: the first time a tool takes longer than
         # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -4771,9 +4875,17 @@ class TurnRunner:
         # before and (b) /verbose is actually usable on this platform
         # (gateway gate must be open).  The CLI has its own trigger.
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
+            if turn_status_card is not None:
+                turn_status_card.on_tool_progress(
+                    event_type, tool_name, preview, args, **kwargs,
+                )
             try:
                 duration = kwargs.get("duration") or 0
-                if duration >= ctx._LONG_TOOL_THRESHOLD_S and ctx.progress_mode == "all":
+                if (
+                    ctx.progress_queue is not None
+                    and duration >= ctx._LONG_TOOL_THRESHOLD_S
+                    and ctx.progress_mode == "all"
+                ):
                     from agent.onboarding import (
                         TOOL_PROGRESS_FLAG,
                         is_seen,
@@ -4803,6 +4915,11 @@ class TurnRunner:
                 return
             thinking_text = preview if tool_name == "_thinking" else tool_name
             msg = f"💬 {thinking_text}" if thinking_text else None
+            if turn_status_card is not None:
+                turn_status_card.on_tool_progress(
+                    event_type, tool_name, msg, args, **kwargs,
+                )
+                return
             if msg:
                 ctx.progress_queue.put(msg)
             return
@@ -4817,13 +4934,27 @@ class TurnRunner:
         }:
             return
 
-        # If tool_progress is off, only _thinking passes through (above).
-        # Regular tool calls are suppressed.
-        if not ctx.tool_progress_enabled:
+        # If tool_progress is off, only _thinking passes through (above)
+        # unless a turn status card is active.  The status card replaces
+        # noisy streaming/interim bubbles and still needs real tool
+        # lifecycle events to render progress.  (fork)
+        if not ctx.tool_progress_enabled and turn_status_card is None:
             return
 
         # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
         if event_type not in {"tool.started",}:
+            if turn_status_card is not None and event_type == "tool.completed":
+                turn_status_card.on_tool_progress(
+                    event_type, tool_name, preview, args, **kwargs,
+                )
+            return
+
+        # fork: an active turn status card consumes tool.started here and
+        # renders progress itself — no plain progress bubble is enqueued.
+        if turn_status_card is not None:
+            turn_status_card.on_tool_progress(
+                event_type, tool_name, preview, args, **kwargs,
+            )
             return
 
         # Never render a progress bubble for the clarify tool.  The
@@ -5882,7 +6013,16 @@ class TurnRunner:
         _want_stream_deltas = _streaming_enabled
         _want_interim_messages = ctx.interim_assistant_messages_enabled
         _want_interim_consumer = _want_interim_messages
-        if _want_stream_deltas or _want_interim_consumer:
+        # fork: when a per-turn editable status card (DingTalk) is active it
+        # takes over streaming/interim rendering — deltas and commentary are
+        # routed to the card instead of a GatewayStreamConsumer.
+        _turn_status_card = ctx.turn_status_card_holder[0]
+        if _turn_status_card is not None:
+            if _want_stream_deltas:
+                def _stream_delta_cb(text: str) -> None:
+                    if ctx._run_still_current():
+                        _turn_status_card.on_delta(text)
+        elif _want_stream_deltas or _want_interim_consumer:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 _adapter = self._runner._adapter_for_source(ctx.source)
@@ -5928,6 +6068,13 @@ class TurnRunner:
 
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
+                return
+            # fork: route interim commentary into the turn status card.
+            if _turn_status_card is not None:
+                if already_streamed:
+                    _turn_status_card.on_delta(None)
+                else:
+                    _turn_status_card.on_commentary(text)
                 return
             display_text = text
             if _stream_consumer is not None:
@@ -22171,6 +22318,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # DingTalk image re-send shortcut — handles "刚才那个图片发给我"
+            # style requests. Returns _RECENT_IMAGE_RESEND_NOT_HANDLED when the
+            # message is not a resend request or the platform lacks support, so
+            # normal handling continues. (fork: recent-image resend)
+            _resend_result = await self._maybe_resend_recent_image(
+                event, source, self._session_db, session_entry.session_id
+            )
+            if _resend_result is not _RECENT_IMAGE_RESEND_NOT_HANDLED:
+                if _resend_result:  # plain-text error/notice string
+                    _resend_adapter = self._adapter_for_source(source)
+                    if _resend_adapter is not None:
+                        await _resend_adapter.send(
+                            source.chat_id,
+                            _resend_result,
+                            reply_to=self._reply_anchor_for_event(event),
+                        )
+                return
+
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
             # below; a /new or another lifecycle transition may move
@@ -25801,6 +25966,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
+
+    async def _maybe_resend_recent_image(
+        self,
+        event: "MessageEvent",
+        source: "SessionSource",
+        session_db,
+        session_id: str,
+    ):
+        """Re-send the most recent attached image when the user asks for it.
+
+        Only active on DingTalk (the platform where image-file re-delivery is
+        most useful and where send_image_file is fully implemented).
+        Returns _RECENT_IMAGE_RESEND_NOT_HANDLED when:
+        - the text does not express a resend intent, or
+        - the platform adapter does not support send_image_file.
+        Returns None after a successful re-delivery, or a plain-text error
+        string when no recent image is found in the session history.
+        """
+        if not _wants_recent_image_resend(event.text or ""):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        # Only DingTalk supports the full image re-delivery flow.
+        from gateway.config import Platform as _Platform
+        if source.platform != _Platform.DINGTALK:
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+        adapter = self.adapters.get(source.platform)
+        if adapter is None or not hasattr(adapter, "send_image_file"):
+            return _RECENT_IMAGE_RESEND_NOT_HANDLED
+
+        messages = []
+        try:
+            messages = session_db.get_messages(session_id) or []
+        except Exception:
+            logger.debug("_maybe_resend_recent_image: get_messages failed", exc_info=True)
+
+        path = _find_latest_attached_image_path(messages)
+        if path is None:
+            return "没找到最近的图片，请重新上传。"
+
+        try:
+            await adapter.send_image_file(
+                chat_id=source.chat_id,
+                image_path=path,
+                caption="最近一张图片重新发给你。",
+                reply_to=event.message_id,
+                metadata=None,
+            )
+        except Exception:
+            logger.warning("_maybe_resend_recent_image: send_image_file failed", exc_info=True)
+            return "图片重发失败，请稍后再试。"
+
+        # Record the round-trip in session history so the agent stays aware.
+        try:
+            session_db.append_message(
+                session_id, "user", event.text or "", platform_message_id=event.message_id
+            )
+            session_db.append_message(
+                session_id, "assistant", f"[resent image attachment: {path}]"
+            )
+        except Exception:
+            logger.debug("_maybe_resend_recent_image: append_message failed", exc_info=True)
+
+        return None
 
 
     # ------------------------------------------------------------------
@@ -30354,13 +30581,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        # fork: per-turn editable status card (DingTalk). When the platform
+        # adapter advertises SUPPORTS_TURN_STATUS_CARD and any progress
+        # surface is requested, a single editable card replaces the noisy
+        # progress-bubble / streaming / interim rendering for the turn.
+        _scfg = getattr(getattr(self, "config", None), "streaming", None)
+        if _scfg is None:
+            from gateway.config import StreamingConfig
+            _scfg = StreamingConfig()
+        _plat_streaming = resolve_display_setting(
+            user_config, platform_key, "streaming"
+        )
+        _streaming_enabled = (
+            _scfg.enabled and _scfg.transport != "off"
+            if _plat_streaming is None
+            else bool(_plat_streaming)
+        )
+        _turn_status_adapter = self.adapters.get(source.platform)
+        _turn_status_card_enabled = bool(
+            _turn_status_adapter is not None
+            and getattr(_turn_status_adapter, "SUPPORTS_TURN_STATUS_CARD", False) is True
+            and (
+                tool_progress_enabled
+                or _thinking_enabled
+                or interim_assistant_messages_enabled
+                or _streaming_enabled
+            )
+        )
         needs_progress_queue = (
             tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
-        )
+        ) and not _turn_status_card_enabled
 
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
+        turn_status_card_holder = [None]  # fork: DingTalk turn status card
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -30436,6 +30691,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             last_was_terminal_block=last_was_terminal_block,
             repeat_count=repeat_count,
             long_tool_hint_fired=long_tool_hint_fired,
+            turn_status_card_holder=turn_status_card_holder,  # fork: DingTalk status card
             _LONG_TOOL_THRESHOLD_S=_LONG_TOOL_THRESHOLD_S,
             _cleanup_progress=_cleanup_progress,
             _cleanup_msg_ids=_cleanup_msg_ids,
@@ -30592,6 +30848,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             or _relay_prospective_thread_id
             else None
         )
+
+        # fork: construct the DingTalk turn status card coordinator.
+        if _turn_status_card_enabled and _turn_status_adapter is not None:
+            try:
+                from gateway.turn_status_card import (
+                    TurnStatusCardConfig,
+                    TurnStatusCardCoordinator,
+                )
+                _turn_preview_len = resolve_display_setting(
+                    user_config, platform_key, "tool_preview_length", 0,
+                )
+                try:
+                    _turn_preview_len = int(_turn_preview_len or 40)
+                except Exception:
+                    _turn_preview_len = 40
+                if _turn_preview_len <= 0:
+                    _turn_preview_len = 40
+                turn_status_card_holder[0] = TurnStatusCardCoordinator(
+                    adapter=_turn_status_adapter,
+                    chat_id=source.chat_id,
+                    metadata=_progress_metadata,
+                    config=TurnStatusCardConfig(
+                        edit_interval=0.5,
+                        preview_max_len=_turn_preview_len,
+                    ),
+                )
+            except Exception as _tsc_err:
+                logger.debug("Could not set up turn status card: %s", _tsc_err)
+                if progress_queue is None and (tool_progress_enabled or _thinking_enabled):
+                    progress_queue = queue.Queue()
 
         async def write_tool_log():
             """Drain log_queue and append tool-call lines to tool_calls.log.
@@ -30778,6 +31064,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         progress_task = None
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
+
+        # fork: start the turn status card coordinator's edit loop.
+        turn_status_task = None
+        if turn_status_card_holder[0] is not None:
+            turn_status_task = asyncio.create_task(turn_status_card_holder[0].run())
 
         # Start the tool-call log writer when tool_progress == "log".
         log_task = None
@@ -31755,7 +32046,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await stream_task
                         except asyncio.CancelledError:
                             pass
-            
+
+            # fork: finalize the DingTalk turn status card, then drain its
+            # edit loop so the final summary edit lands before cleanup.
+            _turn_status_card = turn_status_card_holder[0]
+            if _turn_status_card is not None:
+                try:
+                    _turn_status_card.finish()
+                except Exception:
+                    pass
+            if turn_status_task:
+                try:
+                    await asyncio.wait_for(turn_status_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    turn_status_task.cancel()
+                    try:
+                        await turn_status_task
+                    except asyncio.CancelledError:
+                        pass
+
             # Unconditional abort + bounded wait for the streaming-TTS
             # consumer (#60671 hardening).  Covers cancellation / exception
             # paths where the normal finalisation block was skipped.

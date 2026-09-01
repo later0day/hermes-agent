@@ -2461,6 +2461,9 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    # Per-attachment media resolution errors surfaced to the user (fork: DingTalk
+    # rich-media adapter reports download/parse failures here).
+    media_errors: List[str] = field(default_factory=list)
     # Per-attachment text-inlining contract. None/absent preserves the legacy
     # assumption that text/* adapters already injected content into ``text``.
     media_text_inlined: List[Optional[bool]] = field(default_factory=list)

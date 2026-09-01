@@ -54,6 +54,10 @@ class TurnContext:
     repeat_count: list = field(default_factory=lambda: [0])
     long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])
+    # Fork: per-turn editable status card (DingTalk). Holder list so the
+    # coordinator created later in _run_agent is visible to the progress
+    # callback via the shared reference.
+    turn_status_card_holder: list = field(default_factory=lambda: [None])
 
     # --- constants / cleanup bookkeeping ---------------------------------
     _LONG_TOOL_THRESHOLD_S: float = 30.0

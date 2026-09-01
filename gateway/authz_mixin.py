@@ -676,10 +676,18 @@ class GatewayAuthorizationMixin:
             except Exception:
                 pass
 
-        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true).
+        # Env var is authoritative when set (true OR false); only when it is
+        # absent/empty do we fall back to the config.yaml allow_all_users key
+        # (fork: config-side fallback, see _platform_config_allow_all_users).
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
-            return True
+        if platform_allow_all_var:
+            platform_allow_all_raw = _auth_env(platform_allow_all_var)
+            if platform_allow_all_raw and platform_allow_all_raw.strip():
+                if platform_allow_all_raw.strip().lower() in {"true", "1", "yes", "on"}:
+                    return True
+            elif self._platform_config_allow_all_users(source.platform):
+                return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
         # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.
@@ -962,6 +970,32 @@ class GatewayAuthorizationMixin:
                     check_ids.add(hex_user)
 
         return bool(check_ids & allowed_ids)
+
+    def _platform_config_allow_all_users(self, platform: "Optional[Platform]") -> bool:
+        """Whether the platform config sets allow_all_users: true in config.yaml extra.
+
+        Config-side fallback for the {PLATFORM}_ALLOW_ALL_USERS env var: reads
+        gateway.platforms.<platform>.extra.allow_all_users from the loaded config
+        so operators can grant open access from config.yaml instead of .env.
+        Called only when the env var for this platform exists in
+        platform_allow_all_map but is not set in the environment.
+        """
+        if not platform:
+            return False
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if isinstance(extra, dict):
+            val = extra.get("allow_all_users")
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.strip().lower() in {"true", "1", "yes", "on"}
+        return False
 
     def _get_unauthorized_dm_behavior(
         self,
