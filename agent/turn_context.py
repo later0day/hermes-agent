@@ -647,6 +647,39 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     agent._run_budget_started_at = (
         time.time() if getattr(agent, "run_budget_seconds", None) else None
     )
+    agent._run_budget_wrapup_injected = False
+
+    # Log conversation turn start for debugging/observability.
+    _preview_text = summarize_user_message_for_log(user_message)
+    _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
+    _msg_preview = _msg_preview.replace("\n", " ")
+    # Resolve the profile this turn actually runs as. Under multiplex
+    # (e.g. api_server's /p/<profile>/… prefix, or per-turn source→profile
+    # binding) the turn log otherwise only shows model/provider, making it
+    # impossible to confirm the request entered the intended profile scope.
+    # Reuse the same override-aware, session-db-fallback resolution as
+    # system_prompt so worker threads that lost the HERMES_HOME ContextVar
+    # (ContextVars don't propagate into threading.Thread) don't misreport
+    # as "default" (#86313 class).
+    try:
+        from agent.system_prompt import _agent_home, _profile_name_for_home
+
+        _home = _agent_home(agent)
+        if _home is not None:
+            _profile_name = _profile_name_for_home(_home)
+        else:
+            from hermes_cli.profiles import get_active_profile_name
+
+            _profile_name = str(get_active_profile_name() or "default")
+    except Exception:
+        _profile_name = "default"
+    logger.info(
+        "conversation turn: session=%s profile=%s model=%s provider=%s "
+        "platform=%s history=%d msg=%r",
+        agent.session_id or "none", _profile_name, agent.model,
+        agent.provider or "unknown", agent.platform or "unknown",
+        len(conversation_history or []), _msg_preview,
+    )
     # Reset the streaming context / think scrubbers at the top of each turn.
     for name in ("_stream_context_scrubber", "_stream_think_scrubber"):
         scrubber = getattr(agent, name, None)
