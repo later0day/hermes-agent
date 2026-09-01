@@ -204,7 +204,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
     CommandDef("agent", "Bind this chat to an agent profile", "Session",
-               args_hint="<use|clear|status> [profile]", gateway_only=True,
+               args_hint="<use|clear|status|list|create|delete> [profile]", gateway_only=True,
                busy_policy="dispatch"),
     CommandDef("journey", "Open the learning journey timeline",
                "Session", aliases=("learning", "memory-graph"), cli_only=True,
