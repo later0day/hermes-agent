@@ -142,3 +142,80 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def _install_unit(self, monkeypatch, unit="hermes-gateway.service"):
+        """Force unit-name discovery to succeed regardless of test cgroup."""
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        cgroup = f"0::/system.slice/{unit}\n"
+        import builtins
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/self/cgroup":
+                import io
+
+                return io.StringIO(cgroup)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        return unit
+
+    def test_phantom_user_manager_is_skipped_for_system_manager(
+        self, monkeypatch
+    ):
+        """A lingering --user manager answers rc=0 with a phantom default 90s
+        for a system unit it does NOT own (LoadState=stub).  We must skip it
+        and trust the system manager's real 210s → no false mismatch."""
+        self._install_unit(monkeypatch)
+
+        class _Res:
+            def __init__(self, stdout):
+                self.returncode = 0
+                self.stdout = stdout
+                self.stderr = ""
+
+        calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if "--user" in cmd:
+                # phantom: unowned unit → default 90s, LoadState != loaded
+                return _Res("TimeoutStopUSec=1min 30s\nLoadState=stub\n")
+            # system manager: real, correctly-sized unit
+            return _Res("TimeoutStopUSec=3min 30s\nLoadState=loaded\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+        assert result is not None
+        # Must have used the system (210s) value, NOT the phantom 90s.
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False
+        # And it did try --user first (proving the guard, not luck of order).
+        assert any("--user" in c for c in calls)
+
+    def test_phantom_user_default_would_have_falsely_flagged_without_guard(
+        self, monkeypatch
+    ):
+        """Sanity: if the --user manager legitimately OWNS the unit
+        (LoadState=loaded) with a too-small 90s, we DO flag the mismatch."""
+        self._install_unit(monkeypatch)
+
+        class _Res:
+            def __init__(self, stdout):
+                self.returncode = 0
+                self.stdout = stdout
+                self.stderr = ""
+
+        def fake_run(cmd, *args, **kwargs):
+            if "--user" in cmd:
+                return _Res("TimeoutStopUSec=1min 30s\nLoadState=loaded\n")
+            return _Res("TimeoutStopUSec=3min 30s\nLoadState=loaded\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+        assert result is not None
+        assert result["timeout_stop_sec"] == 90.0
+        assert result["mismatch"] is True

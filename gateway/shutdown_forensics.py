@@ -372,29 +372,50 @@ def check_systemd_timing_alignment(
     # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
     # on which manager actually owns the unit.  Try user first since
     # that's the common case for hermes.
+    #
+    # Phantom --user guard: ``systemctl --user show <unit>`` returns rc=0 even
+    # for a system unit the user manager does NOT own — it answers with a
+    # DEFAULT ``TimeoutStopUSec`` (90s).  When the gateway runs as a user whose
+    # manager lingers (e.g. root with /run/user/0), the --user branch would
+    # otherwise win first and feed that phantom 90s into the mismatch check,
+    # producing a false "Stale systemd unit" warning even though the real
+    # system unit is correctly sized.  So we co-query ``LoadState`` and only
+    # trust a manager that reports ``LoadState=loaded`` for this unit; a
+    # not-found/masked/stub answer means that manager does not own the unit —
+    # skip it and fall through to the system manager.  (Both properties come
+    # back in one call, so this adds no extra process.)
     timeout_us: Optional[int] = None
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        # Output: "TimeoutStopUSec=1min 30s\nLoadState=loaded" (order not
+        # guaranteed).  Parse both, then gate the value on LoadState.
+        candidate_us: Optional[int] = None
+        load_state: Optional[str] = None
         for line in result.stdout.splitlines():
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
                 # Try numeric microseconds first
                 if value.isdigit():
-                    timeout_us = int(value)
+                    candidate_us = int(value)
                 else:
-                    timeout_us = parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    break
-        if timeout_us is not None:
+                    candidate_us = parse_systemd_duration_to_us(value)
+            elif line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+        # Only accept a manager that actually loaded this unit.  An unowned
+        # unit answers with a phantom default; skip it.
+        if load_state != "loaded":
+            continue
+        if candidate_us is not None:
+            timeout_us = candidate_us
             break
 
     if timeout_us is None:
