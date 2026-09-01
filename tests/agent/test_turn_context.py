@@ -214,6 +214,41 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_turn_log_reports_resolved_profile_from_session_db(tmp_path, caplog):
+    """Under multiplex the turn log must name the profile the turn ran as,
+    resolved via the same session-db-fallback path system_prompt uses, so a
+    worker thread that lost the HERMES_HOME ContextVar doesn't misreport as
+    'default' (#86313 class)."""
+    import logging
+
+    # Lay out <root>/profiles/billing/state.db so _agent_home() -> that home
+    # and _profile_name_for_home() names it "billing" (not "default").
+    root = tmp_path
+    home = root / "profiles" / "billing"
+    home.mkdir(parents=True)
+    db = SessionDB(db_path=str(home / "state.db"))
+    db.create_session("sess-prof", source="cli")
+
+    agent = _FakeAgent()
+    agent._session_db = db
+    agent.session_id = "sess-prof"
+
+    # No bound HERMES_HOME override (the ContextVar-lost worker case) — the
+    # session-db fallback must carry the profile name.  Point the default
+    # root at tmp so _profile_name_for_home resolves against our layout.
+    with patch("hermes_constants.get_hermes_home_override", return_value=None), \
+         patch("hermes_constants.get_default_hermes_root", return_value=root), \
+         caplog.at_level(logging.INFO, logger="agent.turn_context"):
+        _build(agent)
+
+    turn_lines = [r.getMessage() for r in caplog.records
+                  if "conversation turn:" in r.getMessage()]
+    assert turn_lines, "expected a 'conversation turn:' log line"
+    line = turn_lines[-1]
+    assert "profile=billing" in line, line
+    assert "profile=default" not in line, line
+
+
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged oversized payload must not escape turn construction."""
     agent = _FakeAgent()
