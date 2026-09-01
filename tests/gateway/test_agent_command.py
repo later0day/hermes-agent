@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -20,24 +22,34 @@ def _make_runner(tmp_path):
     runner.config = SimpleNamespace(
         group_sessions_per_user=True,
         thread_sessions_per_user=False,
+        multiplex_profiles=True,
+        profile_routes=None,
     )
     runner._source_agent_binding_store = SourceAgentBindingStore(
         tmp_path / "bindings.sqlite"
     )
     runner._agent_audit_path = tmp_path / "agent-audit.jsonl"
+    runner._agent_delete_confirmations = {}
     runner.adapters = {}
     return runner
 
 
-def _make_event(text: str, *, raw_message=None) -> MessageEvent:
+def _make_event(
+    text: str,
+    *,
+    raw_message=None,
+    chat_id="chat-1",
+    user_id="user-1",
+    user_name="Alice",
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         source=SessionSource(
             platform=Platform.DINGTALK,
-            chat_id="chat-1",
+            chat_id=chat_id,
             chat_type="group",
-            user_id="user-1",
-            user_name="Alice",
+            user_id=user_id,
+            user_name=user_name,
         ),
         raw_message=raw_message,
     )
@@ -82,14 +94,19 @@ async def test_agent_use_status_and_clear(tmp_path, monkeypatch):
     assert "DingTalk fallback webhook: missing" in status
 
     clear = await runner._handle_agent_command(_make_event("/agent clear"))
-    assert "uses `default`" in clear
+    assert "Effective profile: `default`" in clear
     assert runner._source_agent_binding_store.get_binding(source_key) is None
 
     audit_lines = (tmp_path / "agent-audit.jsonl").read_text(encoding="utf-8").splitlines()
-    assert [json.loads(line)["action"] for line in audit_lines] == [
+    audit_events = [json.loads(line) for line in audit_lines]
+    assert [event["action"] for event in audit_events] == [
         "agent.use",
         "agent.clear",
     ]
+    assert all(event["actor_user_id"] == "user-1" for event in audit_events)
+    assert all(event["actor_user_name"] == "Alice" for event in audit_events)
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "agent-audit.jsonl").stat().st_mode) == 0o600
 
 
 @pytest.mark.asyncio
@@ -118,6 +135,118 @@ async def test_agent_webhook_stores_dingtalk_fallback(tmp_path, monkeypatch):
         "session_webhook_expired_time": 9999999999999,
     }
 
+
+@pytest.mark.asyncio
+async def test_agent_binding_commands_refuse_when_multiplex_disabled(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+    runner.config.multiplex_profiles = False
+
+    result = await runner._handle_agent_command(_make_event("/agent use worker"))
+
+    assert "Dynamic profile binding is disabled" in result
+    assert runner._source_agent_binding_store.list_bindings() == []
+
+
+@pytest.mark.asyncio
+async def test_agent_use_validates_and_canonicalizes_profile(tmp_path, monkeypatch):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+
+    missing = await runner._handle_agent_command(_make_event("/agent use missing"))
+    invalid = await runner._handle_agent_command(_make_event("/agent use ../../outside"))
+    canonical = await runner._handle_agent_command(_make_event("/agent use Worker"))
+
+    source_key = build_source_binding_key(_make_event("/agent status").source)
+    assert "does not exist" in missing
+    assert "Invalid profile" in invalid
+    assert "`worker`" in canonical
+    assert runner._source_agent_binding_store.get_binding(source_key).profile_name == "worker"
+
+
+@pytest.mark.asyncio
+async def test_agent_group_status_and_webhook_use_shared_binding(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+    old_raw = SimpleNamespace(
+        session_webhook="https://example.test/old",
+        session_webhook_expired_time=1,
+    )
+    new_raw = SimpleNamespace(
+        session_webhook="https://example.test/new",
+        session_webhook_expired_time=2,
+    )
+
+    await runner._handle_agent_command(
+        _make_event("/agent use worker", raw_message=old_raw)
+    )
+    bob_status = await runner._handle_agent_command(
+        _make_event("/agent status", user_id="user-2", user_name="Bob")
+    )
+    webhook_result = await runner._handle_agent_command(
+        _make_event(
+            "/agent webhook",
+            raw_message=new_raw,
+            user_id="user-2",
+            user_name="Bob",
+        )
+    )
+
+    alice = _make_event("/agent status").source
+    chat_key = build_source_binding_key(alice, group_sessions_per_user=False)
+    alice_key = build_source_binding_key(alice)
+    assert "Profile: `worker`" in bob_status
+    assert "Stored DingTalk fallback webhook" in webhook_result
+    assert (
+        runner._source_agent_binding_store.get_binding(chat_key)
+        .fallback_extra["session_webhook"]
+        == "https://example.test/new"
+    )
+    assert (
+        runner._source_agent_binding_store.get_binding(alice_key)
+        .fallback_extra["session_webhook"]
+        == "https://example.test/new"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_status_and_clear_report_static_route(tmp_path, monkeypatch):
+    from gateway.profile_routing import ProfileRoute
+
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    _seed_profile(root, "routed")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+    runner.config.profile_routes = [
+        ProfileRoute(
+            name="route-chat-1",
+            profile="routed",
+            platform="dingtalk",
+            chat_id="chat-1",
+        )
+    ]
+
+    before = await runner._handle_agent_command(_make_event("/agent status"))
+    await runner._handle_agent_command(_make_event("/agent use worker"))
+    cleared = await runner._handle_agent_command(_make_event("/agent clear"))
+
+    assert "No dynamic binding. Effective profile: `routed`" in before
+    assert "Effective profile: `routed`" in cleared
 
 @pytest.mark.asyncio
 async def test_agent_create_clones_profile_without_env_or_skills_by_default(tmp_path, monkeypatch):
@@ -178,6 +307,10 @@ async def test_agent_create_orchestrator_enables_kanban_toolset(tmp_path, monkey
     assert "Created agent profile `lead`" in orchestrator
     assert "kanban orchestrator tools enabled" in orchestrator
     assert lead_cfg["toolsets"] == ["hermes-cli", "kanban"]
+    assert "kanban" in lead_cfg["platform_toolsets"]["dingtalk"]
+    from hermes_cli.tools_config import _get_platform_tools
+
+    assert "kanban" in _get_platform_tools(lead_cfg, "dingtalk")
     assert [entry["profile_name"] for entry in audit_after] == ["worker", "lead"]
     assert [entry["orchestrator"] for entry in audit_after] == [False, True]
 
@@ -234,12 +367,39 @@ async def test_agent_create_from_template_requires_template_flag(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_agent_create_can_mark_template(tmp_path, monkeypatch):
+    from hermes_cli.profiles import read_profile_meta
+
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    (root / "config.yaml").write_text(
+        "model:\n  default: gpt-test\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+
+    result = await runner._handle_agent_command(
+        _make_event("/agent create starter --template")
+    )
+
+    profile_dir = root / "profiles" / "starter"
+    assert "marked as template" in result
+    assert read_profile_meta(profile_dir)["template"] is True
+
+@pytest.mark.asyncio
 async def test_agent_list_marks_template_profiles(tmp_path, monkeypatch):
     from hermes_cli.profiles import write_profile_meta
 
     root = tmp_path / "hermes-home"
     root.mkdir()
     starter_dir = _seed_profile(root, "starter")
+    (starter_dir / "config.yaml").write_text(
+        "model:\n  default: gpt-starter\n", encoding="utf-8"
+    )
+    (starter_dir / "skills" / "demo").mkdir()
+    (starter_dir / "skills" / "demo" / "SKILL.md").write_text(
+        "name: demo\n", encoding="utf-8"
+    )
     write_profile_meta(starter_dir, template=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
     runner = _make_runner(tmp_path)
@@ -247,7 +407,7 @@ async def test_agent_list_marks_template_profiles(tmp_path, monkeypatch):
     result = await runner._handle_agent_command(_make_event("/agent list"))
 
     starter_line = next(line for line in result.splitlines() if "`starter`" in line)
-    assert starter_line == "- `starter` (model unset, skills: 0, template)"
+    assert starter_line == "- `starter` (model gpt-starter, skills: 1, template)"
 
 
 @pytest.mark.asyncio
@@ -281,6 +441,46 @@ async def test_agent_delete_requires_confirmation_and_removes_profile(tmp_path, 
     assert "agent.delete.failed" in audit_actions
     assert "agent.delete" in audit_actions
 
+
+@pytest.mark.asyncio
+async def test_agent_delete_failure_preserves_bindings(tmp_path, monkeypatch):
+    import hermes_cli.profiles as profiles_mod
+
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    profile_dir = _seed_profile(root, "worker")
+    runner = _make_runner(tmp_path)
+    runner._agent_delete_code_factory = lambda: "ABC123"
+
+    await runner._handle_agent_command(_make_event("/agent use worker"))
+    await runner._handle_agent_command(_make_event("/agent delete worker"))
+
+    def _fail_delete(*args, **kwargs):
+        raise OSError("disk busy")
+
+    monkeypatch.setattr(profiles_mod, "delete_profile", _fail_delete)
+    result = await runner._handle_agent_command(
+        _make_event("/agent delete worker ABC123")
+    )
+
+    source_key = build_source_binding_key(_make_event("/agent status").source)
+    assert "Failed: disk busy" in result
+    assert profile_dir.exists()
+    assert runner._source_agent_binding_store.get_binding(source_key) is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_delete_missing_profile_does_not_issue_code(tmp_path, monkeypatch):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+
+    result = await runner._handle_agent_command(_make_event("/agent delete missing"))
+
+    assert "does not exist" in result
+    assert runner._agent_delete_confirmations == {}
 
 @pytest.mark.asyncio
 async def test_agent_delete_notifies_other_bound_im_sessions(tmp_path, monkeypatch):

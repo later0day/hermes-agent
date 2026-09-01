@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -82,6 +83,17 @@ class SourceAgentBindingStore:
             self._conn.execute("PRAGMA busy_timeout=5000")
             _execute_sqlite_init(self._conn, "PRAGMA journal_mode=WAL")
             self._ensure_schema()
+        self._secure_files()
+
+    def _secure_files(self) -> None:
+        """Keep the DB and live WAL sidecars private (webhooks are secrets)."""
+        if os.name != "posix":
+            return
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(f"{self.db_path}{suffix}").chmod(0o600)
+            except OSError:
+                pass
 
     def close(self) -> None:
         with self._lock:
@@ -215,6 +227,7 @@ class SourceAgentBindingStore:
                 ),
             )
             self._conn.commit()
+            self._secure_files()
             binding = self.get_binding(key)
             if binding is None:
                 raise RuntimeError("failed to read stored source-agent binding")
@@ -230,6 +243,7 @@ class SourceAgentBindingStore:
                 (key,),
             )
             self._conn.commit()
+            self._secure_files()
             return cur.rowcount > 0
 
     def delete_bindings_for_profile(self, profile_name: str) -> int:
@@ -242,6 +256,7 @@ class SourceAgentBindingStore:
                 (profile,),
             )
             self._conn.commit()
+            self._secure_files()
             return int(cur.rowcount or 0)
 
     def list_bindings(self, *, profile_name: str | None = None) -> list[SourceAgentBinding]:

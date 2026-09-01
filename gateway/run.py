@@ -16616,6 +16616,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 GatewayRunner.close_all_session_db_handles(self)
             except Exception as _e:
                 logger.debug("Runner SessionDB handle sweep error: %s", _e)
+            _binding_store = getattr(self, "_source_agent_binding_store", None)
+            if _binding_store is not None:
+                try:
+                    _binding_store.close()
+                except Exception as _e:
+                    logger.debug("SourceAgentBindingStore close error: %s", _e)
+                finally:
+                    self._source_agent_binding_store = None
             GatewayRunner._shutdown_executor(self)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
@@ -30262,8 +30270,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         profile_routes / the active profile rather than dropping the message.
 
         Lookup order:
-          1. Per-user key  (group_sessions_per_user=True) - exact user match.
-          2. Chat-level key (group_sessions_per_user=False) - fallback for
+          1. Exact key under the configured group/thread isolation settings.
+          2. Chat-level key (no participant suffix) - fallback for
              group members who did not run ``/agent use`` themselves.
         """
         try:
@@ -30277,25 +30285,86 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 store = SourceAgentBindingStore()
                 self._source_agent_binding_store = store
             from gateway.session import build_source_binding_key
-            # 1) per-user lookup (default)
-            binding = store.get_binding(build_source_binding_key(source))
-            if binding and binding.profile_name:
-                return binding.profile_name
-            # 2) chat-level fallback (no user_id in key)
+            from hermes_cli.profiles import (
+                normalize_profile_name,
+                profile_exists,
+                validate_profile_name,
+            )
+
+            def _valid_profile(binding, key: str) -> Optional[str]:
+                if not binding or not binding.profile_name:
+                    return None
+                try:
+                    profile = normalize_profile_name(binding.profile_name)
+                    validate_profile_name(profile)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring invalid source-agent binding %s -> %r",
+                        key,
+                        binding.profile_name,
+                    )
+                    store.delete_binding(key)
+                    return None
+                if not profile_exists(profile):
+                    logger.warning(
+                        "Ignoring stale source-agent binding %s -> %s: "
+                        "profile does not exist",
+                        key,
+                        binding.profile_name,
+                    )
+                    store.delete_binding(key)
+                    return None
+                # Canonicalize legacy/mixed-case rows. A transient migration
+                # write failure must not discard an otherwise valid binding.
+                if profile != binding.profile_name:
+                    try:
+                        store.set_binding(
+                            key,
+                            profile,
+                            agent_id=binding.agent_id,
+                            fallback_target=binding.fallback_target,
+                            fallback_extra=binding.fallback_extra,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "Could not canonicalize binding %s: %s", key, exc
+                        )
+                return profile
+
+            config = getattr(self, "config", None)
+            group_per_user = bool(
+                getattr(config, "group_sessions_per_user", True)
+            )
+            thread_per_user = bool(
+                getattr(config, "thread_sessions_per_user", False)
+            )
+            # 1) exact key matching the gateway's session-isolation settings
+            source_key = build_source_binding_key(
+                source,
+                group_sessions_per_user=group_per_user,
+                thread_sessions_per_user=thread_per_user,
+            )
+            profile = _valid_profile(store.get_binding(source_key), source_key)
+            if profile:
+                return profile
+            # 2) chat-level fallback (no user_id)
             chat_type = str(getattr(source, "chat_type", None) or "group")
             if chat_type != "dm":
                 chat_key = build_source_binding_key(
-                    source, group_sessions_per_user=False,
+                    source,
+                    group_sessions_per_user=False,
+                    thread_sessions_per_user=False,
                 )
-                binding = store.get_binding(chat_key)
-                if binding and binding.profile_name:
-                    return binding.profile_name
+                profile = _valid_profile(store.get_binding(chat_key), chat_key)
+                if profile:
+                    return profile
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "binding store lookup failed for source %s: %s",
                 getattr(source, "chat_id", "?"), exc,
             )
         return None
+
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.
 

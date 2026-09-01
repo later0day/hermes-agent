@@ -52,13 +52,17 @@ def _runner(*, multiplex, store=None, profile_routes=None):
 
 
 @pytest.fixture
-def bound_store(tmp_path: Path) -> SourceAgentBindingStore:
+def bound_store(tmp_path: Path, monkeypatch) -> SourceAgentBindingStore:
+    root = tmp_path / "hermes-home"
+    (root / "profiles" / "jb").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
     store = SourceAgentBindingStore(db_path=tmp_path / "bindings.sqlite")
     src = _source()
     from gateway.session import build_source_binding_key
 
     store.set_binding(build_source_binding_key(src), "jb")
-    return store
+    yield store
+    store.close()
 
 
 # ── _binding_profile_for_source ─────────────────────────────────────────
@@ -74,10 +78,19 @@ def test_binding_profile_none_when_unbound(bound_store):
     assert r._binding_profile_for_source(_source(chat_id="other")) is None
 
 
-def test_binding_profile_none_when_store_missing():
-    # No _source_agent_binding_store attribute at all → best-effort None.
+def test_binding_profile_none_when_store_missing(tmp_path, monkeypatch):
+    # No runner attribute: lazily open the configured store, without touching
+    # the developer's real ~/.hermes during the test.
+    store = SourceAgentBindingStore(db_path=tmp_path / "lazy.sqlite")
+    monkeypatch.setattr(
+        "gateway.source_agent_binding.SourceAgentBindingStore", lambda: store
+    )
     r = _runner(multiplex=True)
-    assert r._binding_profile_for_source(_source()) is None
+    try:
+        assert r._binding_profile_for_source(_source()) is None
+        assert r._source_agent_binding_store is store
+    finally:
+        store.close()
 
 
 def test_binding_profile_swallows_lookup_errors():
@@ -88,6 +101,58 @@ def test_binding_profile_swallows_lookup_errors():
     r = _runner(multiplex=True, store=_Boom())
     # Must not raise — routing falls through to the active profile.
     assert r._binding_profile_for_source(_source()) is None
+
+
+def test_stale_binding_is_ignored_and_removed(tmp_path, monkeypatch):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    store = SourceAgentBindingStore(db_path=tmp_path / "stale.sqlite")
+    src = _source(chat_id="stale")
+    from gateway.session import build_source_binding_key
+
+    key = build_source_binding_key(src)
+    store.set_binding(key, "missing")
+    runner = _runner(multiplex=True, store=store)
+
+    assert runner._binding_profile_for_source(src) is None
+    assert store.get_binding(key) is None
+    store.close()
+
+
+def test_invalid_binding_profile_is_ignored_before_path_resolution(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    store = SourceAgentBindingStore(db_path=tmp_path / "invalid.sqlite")
+    src = _source(chat_id="invalid")
+    from gateway.session import build_source_binding_key
+
+    key = build_source_binding_key(src)
+    store.set_binding(key, "../../outside")
+    runner = _runner(multiplex=True, store=store)
+
+    assert runner._binding_profile_for_source(src) is None
+    assert store.get_binding(key) is None
+    store.close()
+
+def test_binding_profile_name_is_canonicalized(tmp_path, monkeypatch):
+    root = tmp_path / "hermes-home"
+    (root / "profiles" / "worker").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    store = SourceAgentBindingStore(db_path=tmp_path / "canonical.sqlite")
+    src = _source(chat_id="canonical")
+    from gateway.session import build_source_binding_key
+
+    key = build_source_binding_key(src)
+    store.set_binding(key, "Worker")
+    runner = _runner(multiplex=True, store=store)
+
+    assert runner._binding_profile_for_source(src) == "worker"
+    assert store.get_binding(key).profile_name == "worker"
+    store.close()
 
 
 # ── _profile_name_for_source (ingress stamping path) ────────────────────
@@ -137,15 +202,10 @@ def test_session_key_namespace_matches_bound_profile(bound_store):
     sk = build_session_key(src, profile=src.profile)
     assert sk.split(":")[1] == "jb"
 
-    # ② turn home resolution agrees (reuses the same binding helper)
-    from unittest.mock import patch
-
-    with patch("hermes_cli.profiles.get_profile_dir",
-               return_value=Path("/hermes/profiles/jb")), \
-         patch("hermes_cli.profiles.profile_exists", return_value=True), \
-         patch("hermes_cli.profiles.get_active_profile_name", return_value="xcx"):
-        home = r._resolve_profile_home_for_source(_source())
-    assert home == Path("/hermes/profiles/jb")
+    # ② turn home resolution agrees through the real profile path.
+    home = r._resolve_profile_home_for_source(_source())
+    assert home.name == "jb"
+    assert home.parent.name == "profiles"
 
 
 def test_unbound_source_stays_in_active_namespace(bound_store):

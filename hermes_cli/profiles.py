@@ -924,8 +924,8 @@ def _profile_yaml_path(profile_dir: Path) -> Path:
 def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``<profile_dir>/profile.yaml`` and return a dict.
 
-    Returns ``{"description": "", "description_auto": False,
-    "display_name": ""}`` when the file is missing or unreadable. Never
+    Returns empty description/display-name fields plus false auto/template flags
+    when the file is missing or unreadable. Never
     raises — a corrupt profile.yaml on an unrelated profile must not
     break ``hermes profile list``.
     """
@@ -1208,6 +1208,10 @@ def create_profile(
     clone_config:
         If True, copy config files (config.yaml, .env, SOUL.md), installed
         skills, and selected profile identity files from the source profile.
+    clone_env:
+        Copy the source .env (or create the normal per-profile stub).
+    clone_skills:
+        Copy installed skills from the clone source.
     no_alias:
         If True, skip wrapper script creation.
     no_skills:
