@@ -7577,6 +7577,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        # Append-only audit trail for /agent binding actions (use/clear/...).
+        # One JSON line per action under the root Hermes dir. Best-effort;
+        # _append_agent_audit no-ops if this is unset.
+        try:
+            from hermes_constants import get_default_hermes_root
+            self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
+        except Exception:  # noqa: BLE001
+            self._agent_audit_path = None
+        # Pending /agent delete confirmation codes (phase 2 uses this).
+        self._agent_delete_confirmations: Dict[str, Any] = {}
         # When non-None, SessionDB init failed — the gateway broadcasts a
         # one-time warning to the home channel(s) after connecting, so the
         # user knows persistence is broken instead of discovering it later
@@ -17924,6 +17934,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "deny": self._handle_deny_command,
             "pause": self._handle_pause_command,
             "agents": self._handle_agents_command,
+            "agent": self._handle_agent_command,
             "bg": self._handle_background_command,
             "btw": self._handle_btw_command,
             "kanban": self._handle_kanban_command,
@@ -30240,6 +30251,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=message_type,
             )
 
+    def _binding_profile_for_source(self, source: SessionSource) -> Optional[str]:
+        """Return the profile a source->agent binding maps this source to, or None.
+
+        Single source of truth for binding-store profile resolution, shared by
+        the ingress stamping path (``_profile_name_for_source``) and the turn
+        home resolver (``_resolve_profile_home_for_source``) so both agree on
+        which profile owns a bound conversation. Best-effort: any lookup error
+        (missing store, malformed key) returns None so routing falls through to
+        profile_routes / the active profile rather than dropping the message.
+
+        Lookup order:
+          1. Per-user key  (group_sessions_per_user=True) - exact user match.
+          2. Chat-level key (group_sessions_per_user=False) - fallback for
+             group members who did not run ``/agent use`` themselves.
+        """
+        try:
+            store = getattr(self, "_source_agent_binding_store", None)
+            if store is None:
+                # Lazily construct the SQLite-backed store on first use so a
+                # gateway restart (which drops the attribute but keeps the DB)
+                # still resolves persisted bindings without needing /agent to
+                # run again first.
+                from gateway.source_agent_binding import SourceAgentBindingStore
+                store = SourceAgentBindingStore()
+                self._source_agent_binding_store = store
+            from gateway.session import build_source_binding_key
+            # 1) per-user lookup (default)
+            binding = store.get_binding(build_source_binding_key(source))
+            if binding and binding.profile_name:
+                return binding.profile_name
+            # 2) chat-level fallback (no user_id in key)
+            chat_type = str(getattr(source, "chat_type", None) or "group")
+            if chat_type != "dm":
+                chat_key = build_source_binding_key(
+                    source, group_sessions_per_user=False,
+                )
+                binding = store.get_binding(chat_key)
+                if binding and binding.profile_name:
+                    return binding.profile_name
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "binding store lookup failed for source %s: %s",
+                getattr(source, "chat_id", "?"), exc,
+            )
+        return None
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.
 
@@ -30260,6 +30316,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
+        # Our fork: the source->agent binding store (e.g. a DingTalk group bound
+        # to a profile via ``/agent use`` or the dashboard) takes precedence over
+        # static profile_routes. This is the SINGLE stamping path: whatever we
+        # return here is stamped onto ``source.profile`` at ingress, which selects
+        # BOTH the session-key namespace (``agent:<profile>``) AND the profile the
+        # turn runs under (``_resolve_profile_home_for_source``). Resolving the
+        # binding here keeps those two dimensions in agreement.
+        bound = self._binding_profile_for_source(source)
+        if bound:
+            return bound
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None

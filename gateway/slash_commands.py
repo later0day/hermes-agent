@@ -1272,6 +1272,122 @@ class GatewaySlashCommandsMixin:
             return True
         return await self._resume_target_allowed(source, sid, allow_override=False)
 
+    def _append_agent_audit(self, action, **kwargs):
+        """Best-effort append-only audit of /agent binding actions.
+
+        Writes one JSON line per action to ``self._agent_audit_path`` (set on
+        the GatewayRunner). Silently no-ops if the path was never configured,
+        so this mixin method is safe on any host object.
+        """
+        if not getattr(self, "_agent_audit_path", None):
+            return
+        import time as _time
+        import json as _json
+        entry = {"action": action, "timestamp": _time.time(), **kwargs}
+        try:
+            with open(self._agent_audit_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry) + "\n")
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _handle_agent_command(self, event) -> str:
+        """Handle /agent - bind THIS chat/source to an agent profile.
+
+        Subcommands (phase 1): use / clear / status. Binding a source routes
+        every subsequent inbound turn from that source to the named profile
+        (its own config/skills/memory/.env), while the shared gateway keeps a
+        single inbound stream. Resolution flows through
+        ``GatewayRunner._binding_profile_for_source`` so the session-key
+        namespace and the turn profile home stay in agreement.
+        """
+        from gateway.session import build_source_binding_key
+        import shlex
+
+        source = event.source
+        source_key = build_source_binding_key(source)
+
+        if not hasattr(self, "_source_agent_binding_store"):
+            from gateway.source_agent_binding import SourceAgentBindingStore
+            self._source_agent_binding_store = SourceAgentBindingStore()
+        store = self._source_agent_binding_store
+
+        text = (event.text or "").strip()
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+
+        if len(parts) < 2:
+            return "Usage: /agent <use|clear|status> ..."
+
+        action = parts[1].lower()
+        args = parts[2:]
+
+        if action == "status":
+            binding = store.get_binding(source_key)
+            if binding:
+                profile = binding.profile_name
+                fb = binding.fallback_extra or {}
+                wh = fb.get("session_webhook")
+                wh_status = "present" if wh else "missing"
+                return f"Profile: `{profile}`\nDingTalk fallback webhook: {wh_status}"
+            return "This chat uses `default`."
+
+        elif action == "clear":
+            store.delete_binding(source_key)
+            chat_type = str(getattr(source, "chat_type", None) or "group")
+            if chat_type != "dm":
+                chat_level_key = build_source_binding_key(
+                    source, group_sessions_per_user=False,
+                )
+                if chat_level_key != source_key:
+                    store.delete_binding(chat_level_key)
+            self._append_agent_audit("agent.clear", source_key=source_key)
+            return "Cleared binding. This chat now uses `default`."
+
+        elif action == "use":
+            if not args:
+                return "Usage: /agent use <profile>"
+            target = args[0]
+            fb_extra = {}
+            raw = getattr(event, "raw_message", None)
+            if raw is not None:
+                if hasattr(raw, "session_webhook"):
+                    fb_extra["session_webhook"] = raw.session_webhook
+                if hasattr(raw, "session_webhook_expired_time"):
+                    fb_extra["session_webhook_expired_time"] = raw.session_webhook_expired_time
+            store.set_binding(
+                source_key,
+                target,
+                agent_id=target,
+                fallback_target=source.to_dict(),
+                fallback_extra=fb_extra,
+            )
+            # Also create a chat-level binding (without user_id) so ALL users
+            # in this group route to the same profile, not just the person who
+            # ran /agent use. DMs already omit user_id so this only matters for
+            # group chats.
+            chat_type = str(getattr(source, "chat_type", None) or "group")
+            if chat_type != "dm":
+                chat_level_key = build_source_binding_key(
+                    source, group_sessions_per_user=False,
+                )
+                if chat_level_key != source_key:
+                    store.set_binding(
+                        chat_level_key,
+                        target,
+                        agent_id=target,
+                        fallback_target=source.to_dict(),
+                        fallback_extra=fb_extra,
+                    )
+            self._append_agent_audit("agent.use", source_key=source_key, profile=target)
+            wh_status = "present" if fb_extra.get("session_webhook") else "missing"
+            return (
+                f"Bound this chat to agent `{target}`.\n"
+                f"DingTalk fallback webhook is {wh_status}."
+            )
+
+        return "Usage: /agent <use|clear|status> ..."
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from gateway.run import _AGENT_PENDING_SENTINEL

@@ -1210,6 +1210,77 @@ def build_session_key(
 
     return ":".join(str(part) for part in key_parts)
 
+def profile_scoped_session_key(base_key: str, profile: Optional[str]) -> str:
+    """Re-scope a session key to a specific profile namespace.
+
+    ``build_session_key`` already accepts a ``profile`` argument; this helper
+    is for callers that have an existing key (e.g. from the session store) and
+    need to re-scope it to a different profile without reconstructing the
+    source.
+
+    - ``profile=None`` / ``profile=""`` / ``profile="default"`` -> returns
+      ``base_key`` unchanged (the legacy ``agent:main:`` namespace).
+    - Named profiles -> replaces the ``agent:main:`` prefix with
+      ``agent:<profile>:``.
+    """
+    if not profile or profile == "default":
+        return base_key
+    # base_key is "agent:main:<rest>" - swap the namespace slot.
+    prefix = "agent:main:"
+    if base_key.startswith(prefix):
+        return f"agent:{profile}:{base_key[len(prefix):]}"
+    # Fallback: key is already in a non-main namespace or has an unexpected
+    # format - return unchanged to avoid corrupting a key we do not understand.
+    return base_key
+
+
+def build_source_binding_key(
+    source: "SessionSource",
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
+    """Build a deterministic key for ``SourceAgentBindingStore`` lookups.
+
+    Mirrors ``build_session_key`` session-isolation semantics but uses the
+    ``source:`` namespace instead of ``agent:main:`` so binding keys never
+    collide with session keys.
+
+    - DM: ``source:{platform}:{chat_type}:{chat_id}`` - no user suffix (each
+      DM is already isolated by ``chat_id``).
+    - Group + thread (``thread_sessions_per_user=False``):
+      ``source:{platform}:{chat_type}:{chat_id}:{thread_id}`` - shared across
+      all participants in the thread.
+    - Group + thread (``thread_sessions_per_user=True``):
+      ``source:{platform}:{chat_type}:{chat_id}:{thread_id}:{user_id}``.
+    - Group + no thread (``group_sessions_per_user=True``):
+      ``source:{platform}:{chat_type}:{chat_id}:{user_id}``.
+    - Group + no thread (``group_sessions_per_user=False``):
+      ``source:{platform}:{chat_type}:{chat_id}`` - shared.
+    """
+    platform_val = (
+        source.platform.value
+        if hasattr(source.platform, "value")
+        else str(source.platform)
+    )
+    chat_type = str(source.chat_type or "group")
+    chat_id = str(source.chat_id or "")
+    user_id = str(source.user_id or "")
+    thread_id = str(getattr(source, "thread_id", None) or "")
+
+    parts = ["source", platform_val, chat_type, chat_id]
+
+    if chat_type == "dm":
+        # DMs are isolated by chat_id alone.
+        pass
+    elif thread_id:
+        parts.append(thread_id)
+        if thread_sessions_per_user and user_id:
+            parts.append(user_id)
+    elif group_sessions_per_user and user_id:
+        parts.append(user_id)
+
+    return ":".join(parts)
+
 
 class _SessionFlight:
     def __init__(self) -> None:

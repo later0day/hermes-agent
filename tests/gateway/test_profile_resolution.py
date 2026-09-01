@@ -19,6 +19,11 @@ def mock_runner():
     runner = MagicMock(spec=GatewayRunner)
     runner.config = MagicMock(profile_routes=[])
     # Bind the actual methods to the mock
+    # No source->agent binding in these route-resolution tests: the dynamic
+    # binding store takes precedence over profile_routes inside
+    # _profile_name_for_source, so return None here to exercise the static
+    # profile_routes path these tests are pinning.
+    runner._binding_profile_for_source = lambda source: None
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
     return runner
