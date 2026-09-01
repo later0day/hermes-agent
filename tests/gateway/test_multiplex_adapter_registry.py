@@ -3,6 +3,7 @@ import logging
 import asyncio
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -94,6 +95,145 @@ class TestProfileMessageHandler:
         result = await handler(_Evt())
         assert result == "ok"
         assert seen["profile"] == "coder"
+
+
+    @pytest.mark.asyncio
+    async def test_rejects_secondary_ingress_while_profile_is_being_deleted(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._profiles_being_deleted = {"coder"}
+        seen = {}
+
+        async def _fake_handle(event):
+            seen["profile"] = event.source.profile
+            seen["rejected"] = event.source.profile_route_rejected
+            return "dropped"
+
+        runner._handle_message = _fake_handle
+        handler = runner._make_profile_message_handler("coder")
+
+        class _Src:
+            profile = None
+            profile_route_rejected = False
+
+        class _Evt:
+            source = _Src()
+
+        result = await handler(_Evt())
+
+        assert result == "dropped"
+        assert seen == {"profile": "coder", "rejected": True}
+
+
+    @pytest.mark.asyncio
+    async def test_default_handler_rejects_explicit_profile_during_deletion(
+        self, tmp_path, monkeypatch
+    ):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._profiles_being_deleted = {"coder"}
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        seen = {}
+
+        async def _fake_handle(event):
+            seen["rejected"] = event.source.profile_route_rejected
+            return "dropped"
+
+        runner._handle_message = _fake_handle
+        handler = runner._make_default_profile_message_handler()
+
+        class _Src:
+            profile = "coder"
+            profile_route_rejected = False
+
+        class _Evt:
+            source = _Src()
+
+        result = await handler(_Evt())
+
+        assert result == "dropped"
+        assert seen["rejected"] is True
+
+
+    @pytest.mark.asyncio
+    async def test_busy_secondary_handler_drops_during_profile_deletion(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._profiles_being_deleted = {"coder"}
+        runner._handle_active_session_busy_message = AsyncMock()
+        handler = runner._make_profile_busy_session_handler("coder")
+
+        class _Src:
+            profile = None
+
+        class _Evt:
+            source = _Src()
+
+        result = await handler(_Evt(), "agent:coder:discord:dm:chat")
+
+        assert result is None
+        runner._handle_active_session_busy_message.assert_not_awaited()
+
+
+    @pytest.mark.asyncio
+    async def test_secondary_ingress_rejects_externally_deleted_profile(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "hermes-home"
+        root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        runner._profiles_being_deleted = set()
+        seen = {}
+
+        async def _fake_handle(event):
+            seen["rejected"] = event.source.profile_route_rejected
+            return "dropped"
+
+        runner._handle_message = _fake_handle
+        handler = runner._make_profile_message_handler("deleted")
+
+        class _Src:
+            profile = None
+            profile_route_rejected = False
+
+        class _Evt:
+            source = _Src()
+
+        result = await handler(_Evt())
+
+        assert result == "dropped"
+        assert seen["rejected"] is True
+
+
+    @pytest.mark.asyncio
+    async def test_default_handler_rejects_externally_deleted_explicit_profile(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "hermes-home"
+        root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        runner._profiles_being_deleted = set()
+        seen = {}
+
+        async def _fake_handle(event):
+            seen["rejected"] = event.source.profile_route_rejected
+            return "dropped"
+
+        runner._handle_message = _fake_handle
+        handler = runner._make_default_profile_message_handler()
+
+        class _Src:
+            profile = "deleted"
+            profile_route_rejected = False
+
+        class _Evt:
+            source = _Src()
+
+        result = await handler(_Evt())
+
+        assert result == "dropped"
+        assert seen["rejected"] is True
 
 
 class TestProfileRuntimeStatus:

@@ -24,6 +24,10 @@ def mock_runner():
     # _profile_name_for_source, so return None here to exercise the static
     # profile_routes path these tests are pinning.
     runner._binding_profile_for_source = lambda source: None
+    runner._profiles_being_deleted = set()
+    runner._profile_deletion_in_progress = (
+        GatewayRunner._profile_deletion_in_progress.__get__(runner)
+    )
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
     return runner
@@ -122,6 +126,19 @@ class TestMissingProfileWarning:
                         mock_runner._resolve_profile_home_for_source(discord_source)
 
         assert "rejecting explicitly scoped multiplex turn" in caplog.text
+
+
+    def test_existing_explicit_profile_rejected_during_deletion(
+        self, mock_runner, discord_source
+    ):
+        discord_source.profile = "worker"
+        mock_runner._profiles_being_deleted = {"worker"}
+
+        with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
+            mock_get_dir.return_value = Path("/hermes/profiles/worker")
+            with patch("hermes_cli.profiles.profile_exists", return_value=True):
+                with pytest.raises(ProfileRouteRejected):
+                    mock_runner._resolve_profile_home_for_source(discord_source)
 
 
 class TestExceptionHandling:

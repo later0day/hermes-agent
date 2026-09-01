@@ -7602,6 +7602,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Authoritative homes captured when secondary profiles are loaded.
+        # Besides avoiding repeated rediscovery, this lets ingress detect a
+        # profile deleted externally even when tests/deployments use a custom
+        # profile directory outside the canonical root.
+        self._profile_homes_by_name: Dict[str, Path] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -16516,6 +16521,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _amap.clear()
             if hasattr(self, "_profile_adapters"):
                 self._profile_adapters.clear()
+            if hasattr(self, "_profile_homes_by_name"):
+                self._profile_homes_by_name.clear()
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),
@@ -16830,6 +16837,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.config import load_gateway_config
+
+        homes = getattr(self, "_profile_homes_by_name", None)
+        if homes is None:
+            homes = {}
+            self._profile_homes_by_name = homes
+        homes[profile_name] = Path(profile_home)
 
         with _profile_runtime_scope(profile_home):
             profile_runtime_cfg = _load_gateway_runtime_config()
@@ -17288,11 +17301,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_home = None
 
         async def _handler(event):
+            reject_for_deletion = False
             try:
                 if getattr(event, "source", None) is not None and not event.source.profile:
                     event.source.profile = profile_name
+                reject_for_deletion = self._profile_unavailable_for_ingress(
+                    getattr(event.source, "profile", None)
+                )
             except Exception:
                 pass
+            if reject_for_deletion:
+                event.source.profile_route_rejected = True
+                return await self._handle_message(event)
             if profile_home is not None:
                 with _profile_runtime_scope(profile_home):
                     return await self._handle_message(event)
@@ -17306,6 +17326,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 if getattr(event, "source", None) is not None and not event.source.profile:
                     event.source.profile = profile_name
+                if self._profile_unavailable_for_ingress(
+                    getattr(event.source, "profile", None)
+                ):
+                    return None
             except Exception:
                 pass
             routed_session_key = self._session_key_for_source(event.source)
@@ -17353,6 +17377,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # routing for the same source.
                     source.profile_route_rejected = True
 
+            if self._profile_unavailable_for_ingress(
+                getattr(source, "profile", None)
+            ):
+                source.profile_route_rejected = True
+                return await self._handle_message(event)
+
             profile_home = (
                 self._resolve_profile_home_for_source(source)
                 if getattr(source, "profile", None)
@@ -17395,6 +17425,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         async def _handler(event, source):
             if getattr(source, "profile", None) is None:
                 source.profile = profile_name
+            if self._profile_unavailable_for_ingress(
+                getattr(source, "profile", None)
+            ):
+                return None
             if profile_home is not None:
                 with _profile_runtime_scope(profile_home):
                     return await self._handle_gateway_platform_event(event, source)
@@ -17407,8 +17441,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
+            from gateway.profile_routing import ProfileRouteRejected
+
             source._authorization_profile_home = default_home
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            try:
+                profile_home = self._resolve_profile_home_for_source(source)
+            except ProfileRouteRejected:
+                return None
+            with _profile_runtime_scope(profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
@@ -18250,7 +18290,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Most adapters resolve profile routes in build_source(), before they
         # hand us the event. A few internal/voice paths construct SessionSource
         # directly, so resolve those here as the shared fail-closed ingress gate
-        # before authorization, hooks, or session side effects.
+        # before authorization, hooks, or session side effects. Explicit profile
+        # sources (secondary adapters, webhook routes, queued events) must also
+        # honor the destructive deletion window instead of bypassing routing.
+        if (
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            and self._profile_unavailable_for_ingress(
+                getattr(source, "profile", None)
+            )
+        ):
+            source.profile_route_rejected = True
+
         if (
             getattr(getattr(self, "config", None), "multiplex_profiles", False)
             and not getattr(source, "profile", None)
@@ -30369,6 +30419,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return None
 
+    def _profile_deletion_in_progress(self, profile_name: Optional[str]) -> bool:
+        """Return whether this runner has closed ingress for a profile."""
+        name = str(profile_name or "").strip()
+        return bool(
+            name
+            and name in (getattr(self, "_profiles_being_deleted", set()) or set())
+        )
+
+    def _profile_unavailable_for_ingress(self, profile_name: Optional[str]) -> bool:
+        """Fail closed for explicit multiplex profiles that cannot run safely."""
+        name = str(profile_name or "").strip()
+        if not name:
+            return False
+        if self._profile_deletion_in_progress(name):
+            return True
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return False
+        try:
+            from hermes_cli.profiles import (
+                named_profile_is_deleted,
+                normalize_profile_name,
+                profile_exists,
+                validate_profile_name,
+            )
+
+            canonical = normalize_profile_name(name)
+            validate_profile_name(canonical)
+            loaded_home = (
+                getattr(self, "_profile_homes_by_name", {}) or {}
+            ).get(canonical)
+            if loaded_home is not None:
+                loaded_home = Path(loaded_home)
+                return (
+                    not loaded_home.is_dir()
+                    or named_profile_is_deleted(loaded_home)
+                )
+            return not profile_exists(canonical)
+        except Exception:  # noqa: BLE001 - ingress must fail closed
+            logger.debug(
+                "Explicit profile availability check failed for %r",
+                name,
+                exc_info=True,
+            )
+            return True
+
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.
 
@@ -30398,7 +30493,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # binding here keeps those two dimensions in agreement.
         bound = self._binding_profile_for_source(source)
         if bound:
-            if bound in (getattr(self, "_profiles_being_deleted", set()) or set()):
+            if self._profile_deletion_in_progress(bound):
                 from gateway.profile_routing import ProfileRouteRejected
 
                 raise ProfileRouteRejected(bound)
@@ -30423,9 +30518,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
         if matched:
-            if matched.profile in (
-                getattr(self, "_profiles_being_deleted", set()) or set()
-            ):
+            if self._profile_deletion_in_progress(matched.profile):
                 raise ProfileRouteRejected(matched.name)
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
@@ -30482,7 +30575,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     explicit_profile = name  # Routing explicitly set this profile
             if not name:
                 name = get_active_profile_name() or "default"
-            
+
+            if explicit_profile and self._profile_deletion_in_progress(
+                explicit_profile
+            ):
+                raise ProfileRouteRejected(explicit_profile)
+
             profile_dir = get_profile_dir(name)
             # An explicit missing profile cannot fall through to the global
             # home while multiplexing: the source was already stamped into

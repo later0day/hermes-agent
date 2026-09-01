@@ -604,6 +604,30 @@ class TestProfileScopedPlatformEventHandler:
         assert captured["profile"] == "work"
 
 
+    def test_secondary_handler_drops_event_after_external_profile_delete(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "hermes-home"
+        root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        runner = object.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        runner._profiles_being_deleted = set()
+        runner._handle_gateway_platform_event = AsyncMock()
+        handler = runner._make_profile_platform_event_handler("deleted")
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+
+        result = asyncio.run(
+            handler({"event_type": "reaction"}, source)
+        )
+
+        assert result is None
+        assert source.profile == "deleted"
+        runner._handle_gateway_platform_event.assert_not_awaited()
+
+
 class TestFixturePluginObservationPath:
     def test_reaction_reaches_real_registered_plugin_callback(self):
         """Adapter -> normalized source/envelope -> runner auth -> real plugin bus."""
