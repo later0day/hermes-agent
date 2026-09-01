@@ -226,22 +226,40 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual).
+
+    Phantom --user guard: ``systemctl --user show <unit>`` returns rc=0 even for a
+    system unit the user manager does NOT own — it answers with a default 90s. When
+    the gateway runs as a user whose manager lingers (e.g. root with /run/user/0),
+    that phantom answer would win the --user branch first and feed into the
+    mismatch check, producing a false "Stale systemd unit" warning even though the
+    real system unit is correctly sized. Co-query ``LoadState`` in the same call
+    and only trust a manager that reports ``LoadState=loaded`` for this unit.
+    """
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
+        if result.returncode != 0:
+            continue
+        # Output order not guaranteed: parse both, then gate the value on LoadState.
+        candidate_us: Optional[int] = None
+        load_state: Optional[str] = None
+        for line in result.stdout.splitlines():
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+                candidate_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+            elif line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+        if load_state != "loaded":
+            continue
+        if candidate_us is not None:
+            return candidate_us
     return None
 
 
