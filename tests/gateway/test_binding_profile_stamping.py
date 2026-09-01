@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from gateway.config import Platform
+from gateway.profile_routing import ProfileRouteRejected
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from gateway.source_agent_binding import SourceAgentBindingStore
@@ -163,6 +164,14 @@ def test_ingress_stamp_uses_binding(bound_store):
     assert r._profile_name_for_source(_source()) == "jb"
 
 
+def test_ingress_rejects_binding_while_profile_is_being_deleted(bound_store):
+    r = _runner(multiplex=True, store=bound_store)
+    r._profiles_being_deleted = {"jb"}
+
+    with pytest.raises(ProfileRouteRejected):
+        r._profile_name_for_source(_source())
+
+
 def test_ingress_stamp_none_when_multiplex_off(bound_store):
     # Byte-for-byte legacy behavior: no stamping when multiplexing is off.
     r = _runner(multiplex=False, store=bound_store)
@@ -183,6 +192,19 @@ def test_binding_takes_precedence_over_routes(bound_store):
     )
     r = _runner(multiplex=True, store=bound_store, profile_routes=[route])
     assert r._profile_name_for_source(_source()) == "jb"
+
+
+def test_ingress_rejects_static_route_while_profile_is_being_deleted(bound_store):
+    from gateway.profile_routing import ProfileRoute
+
+    route = ProfileRoute(
+        name="r1", profile="routed", platform="dingtalk", chat_id="other",
+    )
+    r = _runner(multiplex=True, store=bound_store, profile_routes=[route])
+    r._profiles_being_deleted = {"routed"}
+
+    with pytest.raises(ProfileRouteRejected):
+        r._profile_name_for_source(_source(chat_id="other"))
 
 
 # ── the ①/② agreement invariant (the whole point) ──────────────────────

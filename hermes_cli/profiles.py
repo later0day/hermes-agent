@@ -1707,11 +1707,53 @@ def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
         raise last_exc
 
 
-def delete_profile(name: str, yes: bool = False) -> Path:
-    """Delete a profile, its wrapper script, and its gateway service.
+def _cleanup_source_bindings_for_deleted_profile(profile_name: str) -> int:
+    """Best-effort cleanup of the central source-binding store.
+
+    The store is shared outside profile homes, so removing a profile directory
+    cannot remove its rows.  Open it only when it already exists: ordinary
+    profile users who never enabled dynamic gateway binding should not get a
+    new SQLite database merely because they deleted a profile.
+    """
+    try:
+        from gateway.source_agent_binding import SourceAgentBindingStore
+        from hermes_constants import get_default_hermes_root
+
+        db_path = (
+            get_default_hermes_root() / "gateway_source_agent_bindings.sqlite"
+        )
+        if not db_path.is_file():
+            return 0
+        store = SourceAgentBindingStore(db_path=db_path)
+        try:
+            return store.delete_bindings_for_profile(profile_name)
+        finally:
+            store.close()
+    except Exception as exc:
+        # The profile is already gone. Runtime resolution rejects stale rows,
+        # so cleanup failure must not turn a successful filesystem deletion
+        # into a false overall failure.
+        logger.warning(
+            "Could not clean source bindings for deleted profile %s: %s",
+            profile_name,
+            exc,
+        )
+        return 0
+
+
+def delete_profile(
+    name: str,
+    yes: bool = False,
+    *,
+    cleanup_bindings: bool = True,
+) -> Path:
+    """Delete a profile, its wrapper script, gateway service, and bindings.
 
     Stops the gateway if running. Disables systemd/launchd service first
-    to prevent auto-restart.
+    to prevent auto-restart. By default, successful deletion also removes
+    rows from the central source-to-profile binding store. Callers that need
+    to snapshot and notify bound endpoints may pass ``cleanup_bindings=False``
+    and perform that final lifecycle step themselves.
 
     Returns the path that was removed.
     """
@@ -1873,6 +1915,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+
+    if cleanup_bindings:
+        removed_bindings = _cleanup_source_bindings_for_deleted_profile(canon)
+        if removed_bindings:
+            print(f"✓ Removed {removed_bindings} source binding(s)")
 
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir

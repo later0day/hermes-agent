@@ -7587,6 +7587,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._agent_audit_path = None
         # Pending /agent delete confirmation codes (phase 2 uses this).
         self._agent_delete_confirmations: Dict[str, Any] = {}
+        # Profiles currently inside the destructive /agent delete window.
+        # Ingress rejects their new turns until the tombstone is in place,
+        # closing the check-then-delete race with the shared multiplexer.
+        self._profiles_being_deleted: set[str] = set()
         # When non-None, SessionDB init failed — the gateway broadcasts a
         # one-time warning to the home channel(s) after connecting, so the
         # user knows persistence is broken instead of discovering it later
@@ -30394,6 +30398,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # binding here keeps those two dimensions in agreement.
         bound = self._binding_profile_for_source(source)
         if bound:
+            if bound in (getattr(self, "_profiles_being_deleted", set()) or set()):
+                from gateway.profile_routing import ProfileRouteRejected
+
+                raise ProfileRouteRejected(bound)
             return bound
         routes = getattr(config, "profile_routes", None)
         if not routes:
@@ -30415,6 +30423,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
         if matched:
+            if matched.profile in (
+                getattr(self, "_profiles_being_deleted", set()) or set()
+            ):
+                raise ProfileRouteRejected(matched.name)
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
             except Exception as exc:
@@ -30472,16 +30484,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 name = get_active_profile_name() or "default"
             
             profile_dir = get_profile_dir(name)
-            # Warn if an explicit profile doesn't exist on disk
+            # An explicit missing profile cannot fall through to the global
+            # home while multiplexing: the source was already stamped into
+            # ``agent:<profile>`` and that fallback would split history and
+            # runtime state across two profiles. Legacy non-multiplex callers
+            # retain the historical best-effort fallback.
             if explicit_profile and not profile_exists(name):
+                multiplexing = bool(
+                    getattr(getattr(self, "config", None), "multiplex_profiles", False)
+                )
                 logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
+                    "Profile %r does not exist for source %s/%s (guild_id=%s); %s",
                     explicit_profile,
                     source.platform.value,
                     source.chat_id,
                     getattr(source, "guild_id", None),
+                    (
+                        "rejecting explicitly scoped multiplex turn"
+                        if multiplexing
+                        else "falling back to global HERMES_HOME"
+                    ),
                 )
+                if multiplexing:
+                    raise ProfileRouteRejected(explicit_profile)
                 return get_hermes_home()
             return profile_dir
         except ProfileRouteRejected:

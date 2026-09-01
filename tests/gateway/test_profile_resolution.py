@@ -17,7 +17,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent
 def mock_runner():
     """Create a minimal mock GatewayRunner with the methods we need."""
     runner = MagicMock(spec=GatewayRunner)
-    runner.config = MagicMock(profile_routes=[])
+    runner.config = MagicMock(profile_routes=[], multiplex_profiles=True)
     # Bind the actual methods to the mock
     # No source->agent binding in these route-resolution tests: the dynamic
     # binding store takes precedence over profile_routes inside
@@ -83,6 +83,7 @@ class TestMissingProfileWarning:
     def test_nonexistent_profile_warning(self, mock_runner, discord_source, caplog):
         """When source.profile points to a nonexistent profile, log a WARNING."""
         discord_source.profile = "nonexistent"
+        mock_runner.config.multiplex_profiles = False
         
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
             with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
@@ -105,6 +106,22 @@ class TestMissingProfileWarning:
     
     
     
+
+    def test_nonexistent_explicit_profile_rejected_when_multiplexing(
+        self, mock_runner, discord_source, caplog
+    ):
+        """Never run an agent:<missing> session under the global home."""
+        discord_source.profile = "nonexistent"
+        mock_runner.config.multiplex_profiles = True
+
+        with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
+            mock_get_dir.return_value = Path("/hermes/profiles/nonexistent")
+            with patch("hermes_cli.profiles.profile_exists", return_value=False):
+                with caplog.at_level(logging.WARNING):
+                    with pytest.raises(ProfileRouteRejected):
+                        mock_runner._resolve_profile_home_for_source(discord_source)
+
+        assert "rejecting explicitly scoped multiplex turn" in caplog.text
 
 
 class TestExceptionHandling:
@@ -144,7 +161,8 @@ class TestRoutingConsultation:
                 
                 mock_runner._profile_name_for_source = MagicMock(return_value="routed")
                 
-                mock_runner._resolve_profile_home_for_source(discord_source)
+                with patch("hermes_cli.profiles.profile_exists", return_value=True):
+                    mock_runner._resolve_profile_home_for_source(discord_source)
                 
                 # Should have called routing
                 mock_runner._profile_name_for_source.assert_called_once_with(discord_source)

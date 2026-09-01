@@ -806,27 +806,27 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone_from = "default" if clone else None
         clone_config = clone
     try:
-        path = profiles_mod.create_profile(
-            name=body.name,
-            clone_from=clone_from,
-            clone_all=body.clone_all,
-            clone_config=clone_config,
-            no_skills=body.no_skills,
-            description=body.description,
-        )
-        # Match the CLI's profile-create flow: fresh named profiles get the
-        # bundled skills installed. When cloning from default, create_profile()
-        # has already copied the source profile's skills, including any
-        # user-installed skills. When no_skills=True, create_profile() wrote
-        # the opt-out marker and seed_profile_skills() will no-op.
-        if not clone:
-            profiles_mod.seed_profile_skills(path, quiet=True)
+        def _create_profile_files():
+            path = profiles_mod.create_profile(
+                name=body.name,
+                clone_from=clone_from,
+                clone_all=body.clone_all,
+                clone_config=clone_config,
+                no_skills=body.no_skills,
+                description=body.description,
+            )
+            # Match the CLI's profile-create flow: fresh named profiles get the
+            # bundled skills installed. Clone paths already copied their source.
+            if not clone:
+                profiles_mod.seed_profile_skills(path, quiet=True)
 
-        # Match the CLI's profile-create flow: named profiles should get a
-        # wrapper in ~/.local/bin when the alias is safe to create.
-        collision = profiles_mod.check_alias_collision(body.name)
-        if not collision:
-            profiles_mod.create_wrapper_script(body.name)
+            # Named profiles get a wrapper when the alias is safe to create.
+            collision = profiles_mod.check_alias_collision(body.name)
+            if not collision:
+                profiles_mod.create_wrapper_script(body.name)
+            return path
+
+        path = await run_in_threadpool(_create_profile_files)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1038,7 +1038,7 @@ async def delete_profile_endpoint(name: str):
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
     try:
-        path = profiles_mod.delete_profile(name, yes=True)
+        path = await run_in_threadpool(profiles_mod.delete_profile, name, yes=True)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

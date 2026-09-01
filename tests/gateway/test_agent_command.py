@@ -13,7 +13,7 @@ import yaml
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_source_binding_key
+from gateway.session import SessionSource, build_session_key, build_source_binding_key
 from gateway.source_agent_binding import SourceAgentBindingStore
 
 
@@ -108,6 +108,74 @@ async def test_agent_use_status_and_clear(tmp_path, monkeypatch):
     if os.name == "posix":
         assert stat.S_IMODE((tmp_path / "agent-audit.jsonl").stat().st_mode) == 0o600
 
+
+@pytest.mark.asyncio
+async def test_agent_use_and_clear_refuse_while_group_turn_is_active(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+
+    alice = _make_event("/agent use worker", user_id="alice")
+    bob_source = _make_event("ignored", user_id="bob").source
+    bob_key = build_session_key(
+        bob_source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+        profile="default",
+    )
+    runner._running_agents = {bob_key: object()}
+
+    blocked_use = await runner._handle_agent_command(alice)
+    assert "Agent is running in this chat" in blocked_use
+    assert runner._source_agent_binding_store.list_bindings() == []
+
+    runner._running_agents = {}
+    await runner._handle_agent_command(alice)
+    runner._running_agents = {bob_key: object()}
+    blocked_clear = await runner._handle_agent_command(
+        _make_event("/agent clear", user_id="alice")
+    )
+
+    assert "Agent is running in this chat" in blocked_clear
+    assert runner._source_agent_binding_store.list_bindings()
+
+    status = await runner._handle_agent_command(_make_event("/agent status"))
+    listing = await runner._handle_agent_command(_make_event("/agent list"))
+    webhook = await runner._handle_agent_command(
+        _make_event(
+            "/agent webhook",
+            raw_message=SimpleNamespace(
+                session_webhook="https://api.dingtalk.com/session/active",
+                session_webhook_expired_time=9999999999999,
+            ),
+        )
+    )
+    assert "Profile: `worker`" in status
+    assert "`worker`" in listing
+    assert "Stored DingTalk fallback webhook" in webhook
+
+
+@pytest.mark.asyncio
+async def test_agent_binding_mutation_ignores_active_turn_in_other_chat(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+
+    other_source = _make_event("ignored", chat_id="other-chat").source
+    other_key = build_session_key(other_source, profile="default")
+    runner._running_agents = {other_key: object()}
+
+    result = await runner._handle_agent_command(_make_event("/agent use worker"))
+
+    assert "Bound this chat to agent `worker`" in result
 
 @pytest.mark.asyncio
 async def test_agent_webhook_stores_dingtalk_fallback(tmp_path, monkeypatch):
@@ -440,6 +508,58 @@ async def test_agent_delete_requires_confirmation_and_removes_profile(tmp_path, 
     assert "agent.delete.request" in audit_actions
     assert "agent.delete.failed" in audit_actions
     assert "agent.delete" in audit_actions
+
+
+@pytest.mark.asyncio
+async def test_agent_delete_refuses_profile_with_active_gateway_turn(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+    worker_source = _make_event("ignored", chat_id="worker-chat").source
+    worker_key = build_session_key(worker_source, profile="worker")
+    runner._running_agents = {worker_key: object()}
+
+    result = await runner._handle_agent_command(
+        _make_event("/agent delete worker")
+    )
+
+    assert "Cannot delete profile `worker`" in result
+    assert "1 gateway turn(s) are active" in result
+    assert runner._agent_delete_confirmations == {}
+    assert (root / "profiles" / "worker").is_dir()
+
+@pytest.mark.asyncio
+async def test_agent_delete_rechecks_after_closing_profile_ingress(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes-home"
+    root.mkdir()
+    _seed_profile(root, "worker")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path)
+    runner._agent_delete_code_factory = lambda: "ABC123"
+    worker_source = _make_event("ignored", chat_id="worker-chat").source
+    worker_key = build_session_key(worker_source, profile="worker")
+
+    await runner._handle_agent_command(_make_event("/agent delete worker"))
+
+    class _RacingDeletionSet(set):
+        def add(self, value):
+            super().add(value)
+            runner._running_agents = {worker_key: object()}
+
+    runner._profiles_being_deleted = _RacingDeletionSet()
+    result = await runner._handle_agent_command(
+        _make_event("/agent delete worker ABC123")
+    )
+
+    assert "Cannot delete profile `worker`" in result
+    assert (root / "profiles" / "worker").is_dir()
+    assert runner._profiles_being_deleted == set()
 
 
 @pytest.mark.asyncio

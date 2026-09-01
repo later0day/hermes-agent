@@ -252,7 +252,8 @@ class SourceAgentBindingStore:
             return 0
         with self._lock:
             cur = self._conn.execute(
-                "DELETE FROM source_agent_bindings WHERE profile_name = ?",
+                "DELETE FROM source_agent_bindings "
+                "WHERE profile_name = ? COLLATE NOCASE",
                 (profile,),
             )
             self._conn.commit()

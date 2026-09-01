@@ -1297,6 +1297,40 @@ class GatewaySlashCommandsMixin:
         except Exception:  # noqa: BLE001
             pass
 
+    def _active_agent_turns_for_source_binding(self, chat_level_key: str) -> list[str]:
+        """Return active turn keys whose source identity is covered by a binding.
+
+        A group-level ``/agent use`` changes routing for every participant, so
+        checking only the issuing user's exact session would still allow a
+        binding switch while another member's turn is running.  Strip the
+        profile namespace from each active session key and compare the shared
+        source identity instead.
+        """
+        source_identity = str(chat_level_key or "")
+        if source_identity.startswith("source:"):
+            source_identity = source_identity[len("source:") :]
+        if not source_identity:
+            return []
+
+        active = getattr(self, "_running_agents", {}) or {}
+        matches = []
+        for session_key in active:
+            parts = str(session_key).split(":", 2)
+            if len(parts) != 3 or parts[0] != "agent":
+                continue
+            identity = parts[2]
+            if identity == source_identity or identity.startswith(
+                f"{source_identity}:"
+            ):
+                matches.append(str(session_key))
+        return matches
+
+    def _active_agent_turns_for_profile(self, profile_name: str) -> list[str]:
+        """Return active gateway turn keys in a named profile namespace."""
+        prefix = f"agent:{profile_name}:"
+        active = getattr(self, "_running_agents", {}) or {}
+        return [str(key) for key in active if str(key).startswith(prefix)]
+
     async def _handle_agent_command(self, event) -> str:
         """Handle /agent - bind THIS chat/source to an agent profile.
 
@@ -1356,6 +1390,14 @@ class GatewaySlashCommandsMixin:
             return (
                 "Dynamic profile binding is disabled. Enable "
                 "`gateway.multiplex_profiles` first."
+            )
+
+        if action in {"use", "clear"} and self._active_agent_turns_for_source_binding(
+            chat_level_key
+        ):
+            return (
+                "Agent is running in this chat — wait for the current response "
+                "or `/stop` first before changing its profile binding."
             )
 
         if action == "status":
@@ -1570,7 +1612,8 @@ class GatewaySlashCommandsMixin:
                         return (
                             f"Profile {template_source} is not marked as a template."
                         )
-                create_profile(
+                await asyncio.to_thread(
+                    create_profile,
                     target,
                     clone_from=template_source or "default",
                     clone_env=parsed.with_env,
@@ -1670,6 +1713,13 @@ class GatewaySlashCommandsMixin:
                 return "Refusing to delete `default`."
             if not profile_exists(target):
                 return f"Profile `{target}` does not exist."
+            active_turns = self._active_agent_turns_for_profile(target)
+            if active_turns:
+                return (
+                    f"Cannot delete profile `{target}` while "
+                    f"{len(active_turns)} gateway turn(s) are active. "
+                    "Wait for them to finish before retrying."
+                )
             if not hasattr(self, "_agent_delete_confirmations"):
                 self._agent_delete_confirmations = {}
             code = args[1] if len(args) > 1 else None
@@ -1707,22 +1757,44 @@ class GatewaySlashCommandsMixin:
                 return "Code incorrect."
             self._agent_delete_confirmations.pop(source_key, None)
 
-            # Snapshot bindings for cleanup/notification, but do NOT remove
-            # them until profile deletion succeeds. A filesystem/service error
-            # must leave the still-existing profile routable.
-            bindings = store.list_bindings(profile_name=target)
-            endpoints = {
-                (
-                    (b.fallback_target or {}).get("platform"),
-                    (b.fallback_target or {}).get("chat_id"),
-                )
-                for b in bindings
-                if b.fallback_target
-                and b.fallback_target.get("platform")
-                and b.fallback_target.get("chat_id")
-            }
+            # Block new ingress for this profile before the final active-turn
+            # check. All gateway turn admission runs on the event loop, so the
+            # mark closes the check-then-delete race while filesystem work runs
+            # in a worker thread.
+            deleting_profiles = getattr(self, "_profiles_being_deleted", None)
+            if deleting_profiles is None:
+                deleting_profiles = set()
+                self._profiles_being_deleted = deleting_profiles
+            deleting_profiles.add(target)
             try:
-                delete_profile(target, yes=True)
+                active_turns = self._active_agent_turns_for_profile(target)
+                if active_turns:
+                    return (
+                        f"Cannot delete profile `{target}` while "
+                        f"{len(active_turns)} gateway turn(s) are active. "
+                        "Wait for them to finish before retrying."
+                    )
+
+                # Snapshot bindings for cleanup/notification, but do NOT remove
+                # them until profile deletion succeeds. A filesystem/service error
+                # must leave the still-existing profile routable.
+                bindings = store.list_bindings(profile_name=target)
+                endpoints = {
+                    (
+                        (b.fallback_target or {}).get("platform"),
+                        (b.fallback_target or {}).get("chat_id"),
+                    )
+                    for b in bindings
+                    if b.fallback_target
+                    and b.fallback_target.get("platform")
+                    and b.fallback_target.get("chat_id")
+                }
+                await asyncio.to_thread(
+                    delete_profile,
+                    target,
+                    yes=True,
+                    cleanup_bindings=False,
+                )
             except Exception as exc:  # noqa: BLE001
                 self._append_agent_audit(
                     "agent.delete.failed",
@@ -1731,6 +1803,8 @@ class GatewaySlashCommandsMixin:
                     actor_user_name=actor_user_name,
                 )
                 return f"Failed: {exc}"
+            finally:
+                deleting_profiles.discard(target)
 
             binding_cleanup_failed = False
             try:
