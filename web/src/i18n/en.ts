@@ -543,6 +543,19 @@ export const en: Translations = {
     },
   },
 
+  memory: {
+    memoryDescription: "The agent's own long-term notes and working memory.",
+    userDescription: "What the agent knows about you (preferences, facts, context).",
+    memoryPlaceholder: "# What this agent should remember…",
+    userPlaceholder: "# What the agent knows about the user…",
+    empty: "(empty)",
+    unsavedChanges: "Unsaved changes",
+    saved: "{doc} saved",
+    failedToSave: "Failed to save {doc}",
+    preview: "Preview",
+    edit: "Edit",
+  },
+
   env: {
     changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
     confirmClearMessage:
