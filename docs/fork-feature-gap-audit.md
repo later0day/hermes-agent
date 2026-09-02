@@ -335,9 +335,51 @@ tick（11:50:39，PID 1933784）运行完整 ~2m45s LLM turn 并 `completed`、�
 `not configured/enabled` 跳过；部署后 16:40:19 跑完 ~2m30s LLM turn，
 `last_delivery_error=None`，借用的共享 dingtalk adapter 于 16:42:47 对目标群
 实际发起 robot-native proactive send（此前从未到达 adapter）。整批 `not
-configured/enabled` 与 `No adapter configured` 归零。（16:42 的 AI Card 500
-`未知错误` 为钉钉服务端卡片 SDK 既有告警，修复前 13:56 同样出现，非投递失败，
-adapter 已回退到 robot-native `sampleMarkdown` 成功送达。）
+configured/enabled` 与 `No adapter configured` 归零。
+
+**A 组第三、第四个衍生修复（DingTalk 顶层 platform key 未桥接进 `extra`）**：
+
+追查"每次回复两次"与持续刷屏的 AI Card `500 未知错误`（此前一度误判为钉钉服务端
+既有告警——**该判断已被本次调查证伪**）时，定位到一个系统性根因：`gateway/config.py`
+的 `bridged` 白名单（顶层 `platforms.<p>` key → `PlatformConfig.extra`）只覆盖
+`require_mention` 等少数 key，**不含 DingTalk adapter 实际从 `extra` 读取的多数 key**
+（`allow_all_users`、`card_template_id`、`card_content_key`、`app_code`、`corp_id`、
+`agent_id`、`reply_at_sender`、`allowed_users`、`allowed_chats`、`free_response_chats`）。
+这些 key 只配在顶层 `dingtalk:` 块时进不了 `extra`；插件 `_apply_yaml_config` 钩子
+虽把其中部分映射进 `os.environ`，但 multiplex + installed secret-scope 下鉴权/渲染
+路径读 scope 与 `extra`、不读 `os.environ`（#72348 隔离），于是这些 key **静默失效**。
+
+两个具体故障：
+
+1. **配对（allow_all_users 失效）**：GM 等陌生 DM 路由到 xcx 后 `extra.allow_all_users`
+   为 None → 鉴权判定未授权 → 弹配对码。修复：把 `allow_all_users` 移入
+   `platforms.dingtalk.extra`，经 `_platform_config_allow_all_users`
+   （`gateway/authz_mixin.py:974`，读 `extra` 非 `os.environ`）生效。
+2. **卡片双发 + 500**：`card_template_id` 只读 `extra`（无 `load_config_readonly`
+   兜底）→ 读到空 → `_card_template_id` 掉到内置默认模板 `382e4302`
+   （其字段名 `msgContent`），而 `card_content_key` 经 fallback 读到 `content`。
+   默认模板 `382e4302` 配错配的 key `content` → 三步卡片流程的第 3 步
+   `streaming_update` 往默认模板不存在的 `content` 字段写内容 → 钉钉服务端返回
+   `500 未知错误`（create/deliver 已成功，卡片已投递可见，仅第 3 步炸）；失败后
+   降级另发 webhook/robot-native → 用户看到【空/半截卡片】+【文本】=**两条回复**。
+   修复：把 `card_template_id` + `card_content_key` 移入
+   `platforms.dingtalk.extra`，使 `_card_uses_default_template=False`、初始
+   param_map 走 `{content:""}` 正确分支、streaming key 与模板匹配。
+
+线上验证（default + xcx 两 scope；网关重启 PID 2058406，18:42:55）：
+- 两 scope `extra.allow_all_users==True`；真实 DM `msg='你好'` 直接路由 xcx 进对话
+  循环、**不再弹配对码**（18:23~ 起 0 条 `unauthorized`/`pairing code`）。
+- 两 scope `extra.card_template_id=='26e55230...'`、`_card_uses_default_template=False`；
+  启动日志 `Card SDK initialized with template: 26e55230`；重启后带时间戳的
+  AI Card 500 计数 **0**，18:43:03 出现今日 01:30 以来**首次** `AI Card
+  created+finalized` 成功，双发消失。
+
+当前修复在**线上 config**（`/root/.hermes/config.yaml` + `profiles/xcx/config.yaml`，
+非 git 追踪）。**待落地的代码级根因修复**：把上述 DingTalk key（凭据 `client_id`/
+`client_secret`/`robot_code` 除外——它们另走 secret scope + `os.getenv` 兜底）加入
+`gateway/config.py` 的 `bridged` 白名单，使顶层 `dingtalk:` 块的配置对新装用户也自动
+进入 `extra`，避免再踩同类断链。`allow_all_users` 为多平台通用 key，可在共享 loop
+中无条件桥接；card 相关 key 为 dingtalk 专属，按 `plat == Platform.DINGTALK` 条件桥接。
 
 ### B. 按官方架构重新设计
 

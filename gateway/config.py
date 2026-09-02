@@ -1720,6 +1720,40 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "send_read_receipts" in platform_cfg:
                     bridged["send_read_receipts"] = platform_cfg["send_read_receipts"]
+                # allow_all_users: open-access flag read from config.extra by
+                # the scope-aware auth path (_platform_config_allow_all_users).
+                # Multi-platform key; bridge unconditionally.  Only configuring
+                # it under a top-level block (e.g. ``dingtalk.allow_all_users``)
+                # previously left ``extra.allow_all_users`` unset — under
+                # multiplex + installed secret-scope the plugin's os.environ
+                # hook (DINGTALK_ALLOW_ALL_USERS) is invisible to _auth_env
+                # (reads scope, not os.environ; #72348), so every unrecognized
+                # DM fell through to the pairing prompt.
+                if "allow_all_users" in platform_cfg:
+                    bridged["allow_all_users"] = platform_cfg["allow_all_users"]
+                # DingTalk adapter reads these from config.extra (adapter.py
+                # __init__ / _create_and_stream_card).  Without bridging,
+                # a top-level ``dingtalk:`` block leaves extra unset:
+                # card_template_id falls back to the built-in default template
+                # (382e4302, key ``msgContent``) while card_content_key's own
+                # load_config_readonly fallback still reads the configured key
+                # → template/key mismatch → streaming_update 500 未知错误 and
+                # a webhook-fallback double-send.
+                if plat == Platform.DINGTALK:
+                    for _dt_key in (
+                        "card_template_id",
+                        "card_content_key",
+                        "app_code",
+                        "corp_id",
+                        "agent_id",
+                        "reply_at_sender",
+                        "allowed_users",
+                        "free_response_chats",
+                    ):
+                        if _dt_key in platform_cfg:
+                            bridged[_dt_key] = platform_cfg[_dt_key]
+                    if "allowed_chats" in platform_cfg:
+                        bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
