@@ -66,6 +66,38 @@ def _warn_profile_read_error(profile: str, exc: Exception) -> None:
         "errors array): %s", profile, exc,
     )
 
+
+def _audit_profile_action(
+    action: str,
+    name: str,
+    *,
+    outcome: str = "ok",
+    detail: str = "",
+) -> None:
+    """Emit a lifecycle audit line for a profile mutation.
+
+    The dashboard's profile create/delete/rename/import endpoints previously
+    left no trace of a *successful* mutation — only ``_log.exception`` on
+    failure — so there was no way to answer "who removed profile X, and when".
+    This records a single structured INFO line (parsed like the api_server
+    audit-suffix lines) to the shared ``hermes_cli.web_server`` logger, which
+    already lands in errors.log/agent.log. It carries NO secrets: only the
+    action, the profile name, the outcome, and an optional non-secret detail
+    (e.g. the rename target or import archive basename). Best-effort: any
+    logging failure is swallowed so audit never breaks the mutation itself.
+    """
+    try:
+        parts = [f"action={action!r}", f"profile={name!r}", f"outcome={outcome!r}"]
+        if detail:
+            # Single-line, bounded — mirror api_server's _clean_log_value.
+            safe = str(detail).replace("\r", " ").replace("\n", " ").strip()[:300]
+            if safe:
+                parts.append(f"detail={safe!r}")
+        _log.info("profile_audit %s", " ".join(parts))
+    except Exception:
+        pass
+
+
 sessions_router = APIRouter()
 router = APIRouter()
 
@@ -934,10 +966,18 @@ async def create_profile_endpoint(body: ProfileCreate):
 
         path = await run_in_threadpool(_create_profile_files)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
+        _audit_profile_action("create", body.name, outcome="rejected", detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         _log.exception("POST /api/profiles failed")
+        _audit_profile_action("create", body.name, outcome="error")
         raise HTTPException(status_code=500, detail=str(e))
+
+    _audit_profile_action(
+        "create",
+        body.name,
+        detail=f"clone_from={clone_from}" if clone_from else "",
+    )
 
     # Optional explicit model assignment for the new profile. Best-effort:
     # the profile already exists, so a model-write hiccup must not 500 the
@@ -1110,12 +1150,16 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     try:
         path = profiles_mod.rename_profile(name, body.new_name)
     except FileNotFoundError as e:
+        _audit_profile_action("rename", name, outcome="not_found")
         raise HTTPException(status_code=404, detail=str(e))
     except (ValueError, FileExistsError) as e:
+        _audit_profile_action("rename", name, outcome="rejected", detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         _log.exception("PATCH /api/profiles/%s failed", name)
+        _audit_profile_action("rename", name, outcome="error")
         raise HTTPException(status_code=500, detail=str(e))
+    _audit_profile_action("rename", name, detail=f"new_name={body.new_name.strip()}")
     # For the default profile the rename lands as a presentation-only
     # display_name; the canonical id ("default") is unchanged. Always
     # return the canonical id so callers keying on `name` stay correct.
@@ -1146,12 +1190,16 @@ async def delete_profile_endpoint(name: str):
     try:
         path = await run_in_threadpool(profiles_mod.delete_profile, name, yes=True)
     except FileNotFoundError as e:
+        _audit_profile_action("delete", name, outcome="not_found")
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
+        _audit_profile_action("delete", name, outcome="rejected", detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         _log.exception("DELETE /api/profiles/%s failed", name)
+        _audit_profile_action("delete", name, outcome="error")
         raise HTTPException(status_code=500, detail=str(e))
+    _audit_profile_action("delete", name)
     return {"ok": True, "path": str(path)}
 
 
@@ -1371,14 +1419,18 @@ async def import_profile_endpoint(body: ProfileImport):
             lambda: profiles_mod.import_profile(archive, name=(body.name or "").strip() or None),
         )
     except FileNotFoundError as e:
+        _audit_profile_action("import", (body.name or archive), outcome="not_found")
         raise HTTPException(status_code=404, detail=str(e))
     except (ValueError, FileExistsError) as e:
+        _audit_profile_action("import", (body.name or archive), outcome="rejected", detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         _log.exception("POST /api/profiles/import failed")
+        _audit_profile_action("import", (body.name or archive), outcome="error")
         raise HTTPException(status_code=500, detail=str(e))
 
     imported = profile_dir.name
+    _audit_profile_action("import", imported, detail=f"archive={Path(archive).name}")
     # Match the CLI import flow: create the wrapper alias when it's safe.
     try:
         if not profiles_mod.check_alias_collision(imported):
