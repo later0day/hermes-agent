@@ -11,6 +11,7 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
 function getUserKey(user: PairingUser): string {
@@ -33,6 +34,12 @@ export default function PairingPage() {
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  // Manual one-time codes typed by the operator, keyed by pending-user key.
+  // Some platforms surface a code the user relays in-DM rather than a
+  // request_id the admin can click; the backend accepts either through the
+  // same endpoint (it disambiguates by shape), so a filled code takes
+  // precedence over the request_id when approving.
+  const [manualCodes, setManualCodes] = useState<Record<string, string>>({});
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
 
@@ -52,15 +59,24 @@ export default function PairingPage() {
   }, [loadPairing]);
 
   const handleApprove = async (user: PairingUser) => {
-    if (!user.request_id) {
-      showToast("Missing pairing request", "error");
+    const key = getUserKey(user);
+    const code = (manualCodes[key] || "").trim().toUpperCase();
+    // A typed code wins; otherwise fall back to the click-to-approve
+    // request_id. One of the two must be present.
+    const approveArg = code || user.request_id;
+    if (!approveArg) {
+      showToast("Enter a pairing code or missing request", "error");
       return;
     }
-    const key = getUserKey(user);
     setApproving(key);
     try {
-      await api.approvePairing(user.platform, user.request_id);
+      await api.approvePairing(user.platform, approveArg);
       showToast(`Approved: "${getUserLabel(user)}"`, "success");
+      setManualCodes((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       loadPairing();
     } catch (e) {
       showToast(`Error: ${e}`, "error");
@@ -192,11 +208,28 @@ export default function PairingPage() {
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
+                  <Input
+                    value={manualCodes[key] || ""}
+                    onChange={(e) =>
+                      setManualCodes((prev) => ({
+                        ...prev,
+                        [key]: e.target.value,
+                      }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleApprove(user);
+                    }}
+                    placeholder="Code (optional)"
+                    className="h-8 w-32 text-xs uppercase"
+                  />
                   <Button
                     size="sm"
                     className="uppercase"
                     onClick={() => handleApprove(user)}
-                    disabled={approving === key || !user.request_id}
+                    disabled={
+                      approving === key ||
+                      (!user.request_id && !(manualCodes[key] || "").trim())
+                    }
                     prefix={
                       approving === key ? (
                         <Spinner />
