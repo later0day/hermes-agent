@@ -208,6 +208,13 @@ Fork 的 Google 风格主题没有合入。它是完全独立的视觉增强。
 Fork 有全局 `ErrorBoundary.tsx`，当前 Web Dashboard 没有明显等价的全局边界。
 属于小型前端可靠性增强。
 
+**已落地（`94668ea0f0`）：** 新增 `web/src/components/ErrorBoundary.tsx`（自包含
+class 组件，不依赖 i18n hook/数据获取/app context——因为这些正是崩溃时可能已失效
+的东西），在 `App.tsx` 里包住 routed `<Routes>` 子树。单页渲染/生命周期异常或
+chunk 加载失败不再整站白屏；`resetKeys={[pathname]}` 在导航时自动清除错误，用户
+可切到正常页面而非卡在 fallback。文案默认英文字面量，App 传入 `t.common.retry`/
+`t.common.refresh` 本地化。已构建（`index-BY8T2e6I.js`）、重启、JS 200、auth 回归干净。
+
 ### 19. Hosted Room Web 管理/观察页
 
 普通 Web Dashboard 尚缺 Hosted Room roster、event replay、authority/driver、peer grants、
@@ -411,7 +418,7 @@ configured/enabled` 与 `No adapter configured` 归零。
 5. ConfigEditors；
 6. 当前页面 i18n 补全；
 7. Google theme；
-8. ErrorBoundary；
+8. ErrorBoundary — 已落地 `94668ea0f0`；
 9. Hosted Room inspector。
 
 ## 最终判断
