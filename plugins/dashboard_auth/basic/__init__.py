@@ -106,6 +106,22 @@ _SIG_LEN = hashlib.sha256().digest_size
 
 LAST_SKIP_REASON: str = ""
 
+# Process-stable fallback signing key. When no ``secret`` is configured we
+# must still keep ONE signing key for the whole process lifetime — not a
+# fresh key per ``register()`` call. This matters because the dashboard is a
+# multiplex/per-home host: switching the management profile loads that
+# profile's per-home plugin manager, which re-runs this plugin's
+# ``register()`` and upserts the single global ``basic`` provider by name. If
+# each re-registration minted a new random ``secrets.token_bytes(32)``, the
+# signing secret would rotate on every profile switch, and the cookie a user
+# was issued at login would fail ``verify_session`` (``_unsign`` against the
+# new key) seconds later — surfacing as ``session_verify_failure:
+# no_provider_recognises`` and bouncing the user to /login mid-session. Mint
+# the fallback ONCE and reuse it so all re-registrations in this process
+# share a stable key. (An explicit configured ``secret`` bypasses this and is
+# still the right choice for restart-surviving / multi-worker sessions.)
+_FALLBACK_SECRET: Optional[bytes] = None
+
 
 # ---------------------------------------------------------------------------
 # Password hashing (stdlib scrypt)
@@ -372,14 +388,20 @@ def _resolve_secret(cfg_section: dict) -> bytes:
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section, "secret"
     )
     if not raw:
-        logger.info(
-            "dashboard-auth-basic: no 'secret' configured; generating a "
-            "random per-process signing key. Sessions will not survive a "
-            "restart or span multiple workers. Set dashboard.basic_auth."
-            "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
-            "sessions."
-        )
-        return secrets.token_bytes(32)
+        global _FALLBACK_SECRET
+        if _FALLBACK_SECRET is None:
+            logger.info(
+                "dashboard-auth-basic: no 'secret' configured; generating a "
+                "random per-process signing key. Sessions will not survive a "
+                "restart or span multiple workers. Set dashboard.basic_auth."
+                "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
+                "sessions."
+            )
+            _FALLBACK_SECRET = secrets.token_bytes(32)
+        # Reuse the same process-stable key for every re-registration (e.g.
+        # each management-profile switch re-runs register()); rotating it
+        # would invalidate live sessions mid-use. See _FALLBACK_SECRET.
+        return _FALLBACK_SECRET
     # Try base64, then hex, then fall back to the raw UTF-8 bytes.
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
