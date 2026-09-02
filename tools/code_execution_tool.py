@@ -2287,7 +2287,16 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):
             return expanded
-    here = os.getcwd()
+    # os.getcwd() raises FileNotFoundError (not "") when the process's own
+    # working directory has been removed out from under it (e.g. a session
+    # cd'd into a scratch dir that a later cleanup rmdir'd). Without this
+    # guard that exception escapes and 500s the whole execute_code call,
+    # never reaching the staging_dir last-resort fallback below. Treat a
+    # vanished cwd as "no usable cwd" and fall through.
+    try:
+        here = os.getcwd()
+    except FileNotFoundError:
+        return staging_dir
     if os.path.isdir(here):
         return here
     return staging_dir
