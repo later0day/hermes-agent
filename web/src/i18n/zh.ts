@@ -429,6 +429,8 @@ export const zh: Translations = {
     unsavedChanges: "有未保存的更改",
     saved: "{doc} 已保存",
     failedToSave: "保存 {doc} 失败",
+    preview: "预览",
+    edit: "编辑",
   },
 
   env: {

@@ -526,6 +526,9 @@ export interface Translations {
     unsavedChanges: string;
     saved: string; // "{doc} saved"
     failedToSave: string; // "Failed to save {doc}"
+    /** Edit/preview toggle — optional, English fallback. */
+    preview?: string;
+    edit?: string;
   };
 
   // ── Env / Keys page ──

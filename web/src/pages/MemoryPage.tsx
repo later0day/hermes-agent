@@ -5,8 +5,9 @@ import {
   useMemo,
   useState,
 } from "react";
-import { Brain, RotateCw, Save, User } from "lucide-react";
+import { Brain, Eye, Pencil, RotateCw, Save, User } from "lucide-react";
 import { api } from "@/lib/api";
+import { Markdown } from "@/components/Markdown";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -75,6 +76,7 @@ function MemoryEditor({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [exists, setExists] = useState(false);
+  const [preview, setPreview] = useState(false);
 
   // Localized copy for this doc; `memory` is an optional i18n section, so full
   // locales that omit it fall back to the English literals baked into DocMeta.
@@ -92,6 +94,8 @@ function MemoryEditor({
     : meta.placeholderFallback;
   const emptyLabel = mem?.empty ?? "(empty)";
   const unsavedLabel = mem?.unsavedChanges ?? "Unsaved changes";
+  const previewLabel = mem?.preview ?? "Preview";
+  const editLabel = mem?.edit ?? "Edit";
   const savedMsg = (mem?.saved ?? "{doc} saved").replace("{doc}", meta.doc);
   const failedMsg = (mem?.failedToSave ?? "Failed to save {doc}").replace(
     "{doc}",
@@ -152,21 +156,42 @@ function MemoryEditor({
             {description}
           </CardDescription>
         </div>
-        <Button
-          ghost
-          size="xs"
-          className="shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={() => load()}
-          disabled={loading || saving}
-          aria-label={t.common.refresh}
-        >
-          <RotateCw />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            ghost
+            size="xs"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => setPreview((p) => !p)}
+            disabled={loading}
+            prefix={preview ? <Pencil /> : <Eye />}
+            aria-label={preview ? editLabel : previewLabel}
+          >
+            {preview ? editLabel : previewLabel}
+          </Button>
+          <Button
+            ghost
+            size="xs"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => load()}
+            disabled={loading || saving}
+            aria-label={t.common.refresh}
+          >
+            <RotateCw />
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {loading ? (
           <div className="flex min-h-[280px] items-center justify-center">
             <Spinner />
+          </div>
+        ) : preview ? (
+          <div className="min-h-[280px] border border-input bg-transparent px-3 py-2">
+            {text.trim() ? (
+              <Markdown content={text} />
+            ) : (
+              <span className="text-sm text-muted-foreground">{emptyLabel}</span>
+            )}
           </div>
         ) : (
           <>

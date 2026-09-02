@@ -499,6 +499,8 @@ export const en: Translations = {
     unsavedChanges: "Unsaved changes",
     saved: "{doc} saved",
     failedToSave: "Failed to save {doc}",
+    preview: "Preview",
+    edit: "Edit",
   },
 
   env: {
