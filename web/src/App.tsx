@@ -107,6 +107,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function RouteFallback({ label = "Loading…" }: { label?: string }) {
   return (
@@ -773,19 +774,25 @@ export default function App() {
                 )}
               >
                 <ProfileKeyedRoutes>
-                  <Suspense fallback={<RouteFallback />}>
-                    <Routes>
-                      {routes.map(({ key, path, element }) => (
-                        <Route key={key} path={path} element={element} />
-                      ))}
-                      <Route
-                        path="*"
-                        element={
-                          <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                        }
-                      />
-                    </Routes>
-                  </Suspense>
+                  <ErrorBoundary
+                    resetKeys={[pathname]}
+                    retryLabel={t.common.retry}
+                    reloadLabel={t.common.refresh}
+                  >
+                    <Suspense fallback={<RouteFallback />}>
+                      <Routes>
+                        {routes.map(({ key, path, element }) => (
+                          <Route key={key} path={path} element={element} />
+                        ))}
+                        <Route
+                          path="*"
+                          element={
+                            <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                          }
+                        />
+                      </Routes>
+                    </Suspense>
+                  </ErrorBoundary>
                 </ProfileKeyedRoutes>
 
                 {embeddedChat &&
