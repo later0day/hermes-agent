@@ -278,6 +278,97 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Pure Ink — pure-grayscale light/dark pair adapted from the Hermes Web UI.
+// No hue at all; contrast comes entirely from value. Uses Inter/JetBrains Mono
+// with a slightly tighter base size and a touch more corner radius.
+// ---------------------------------------------------------------------------
+
+const PURE_INK_TYPOGRAPHY: ThemeTypography = {
+  fontSans: `"Inter", ${SYSTEM_SANS}`,
+  fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+  baseSize: "14px",
+  lineHeight: "1.55",
+  letterSpacing: "0",
+};
+
+const PURE_INK_LAYOUT: ThemeLayout = {
+  radius: "0.625rem",
+  density: "comfortable",
+};
+
+export const pureInkLightTheme: DashboardTheme = {
+  name: "pure-ink-light",
+  label: "Pure Ink Light",
+  description: "Pure grayscale light theme adapted from Hermes Web UI",
+  palette: {
+    background: { hex: "#fafafa", alpha: 1 },
+    midground: { hex: "#1a1a1a", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 1 },
+    warmGlow: "rgba(0, 0, 0, 0.04)",
+    noiseOpacity: 0.15,
+  },
+  typography: PURE_INK_TYPOGRAPHY,
+  layout: PURE_INK_LAYOUT,
+  colorOverrides: {
+    card: "#ffffff",
+    cardForeground: "#1a1a1a",
+    popover: "#ffffff",
+    popoverForeground: "#1a1a1a",
+    primary: "#1a1a1a",
+    primaryForeground: "#ffffff",
+    secondary: "#f5f5f5",
+    secondaryForeground: "#1a1a1a",
+    muted: "#f5f5f5",
+    mutedForeground: "#666666",
+    accent: "#f5f5f5",
+    accentForeground: "#1a1a1a",
+    destructive: "#c62828",
+    destructiveForeground: "#ffffff",
+    success: "#2e7d32",
+    warning: "#f57f17",
+    border: "#e0e0e0",
+    input: "#e0e0e0",
+    ring: "#1a1a1a",
+  },
+};
+
+export const pureInkDarkTheme: DashboardTheme = {
+  name: "pure-ink-dark",
+  label: "Pure Ink Dark",
+  description: "Pure grayscale dark theme adapted from Hermes Web UI",
+  palette: {
+    background: { hex: "#1a1a1a", alpha: 1 },
+    midground: { hex: "#f0f0f0", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(255, 255, 255, 0.06)",
+    noiseOpacity: 0.35,
+  },
+  typography: PURE_INK_TYPOGRAPHY,
+  layout: PURE_INK_LAYOUT,
+  colorOverrides: {
+    card: "#202020",
+    cardForeground: "#f0f0f0",
+    popover: "#202020",
+    popoverForeground: "#f0f0f0",
+    primary: "#f0f0f0",
+    primaryForeground: "#1a1a1a",
+    secondary: "#2a2a2a",
+    secondaryForeground: "#f0f0f0",
+    muted: "#2a2a2a",
+    mutedForeground: "#888888",
+    accent: "#2a2a2a",
+    accentForeground: "#f0f0f0",
+    destructive: "#ef5350",
+    destructiveForeground: "#1a1a1a",
+    success: "#66bb6a",
+    warning: "#ffb74d",
+    border: "#333333",
+    input: "#333333",
+    ring: "#f0f0f0",
+  },
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
@@ -288,4 +379,6 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  "pure-ink-light": pureInkLightTheme,
+  "pure-ink-dark": pureInkDarkTheme,
 };
