@@ -103,6 +103,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  "/api/messaging/weixin/onboarding",
   // OAuth/account state is profile-owned too: status, login sessions, polling,
   // cancellation, and disconnect must all follow the selected management
   // profile rather than silently targeting the dashboard process's profile.
@@ -1050,6 +1051,33 @@ export const api = {
   cancelWhatsAppOnboarding: (pairingId: string) =>
     fetchJSON<{ ok: boolean }>(
       `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
+  startWeixinOnboarding: (body: { profile?: string } = {}) =>
+    fetchJSON<WeixinOnboardingStartResponse>(
+      "/api/messaging/weixin/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getWeixinOnboardingStatus: (pairingId: string) =>
+    fetchJSON<WeixinOnboardingStatusResponse>(
+      `/api/messaging/weixin/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
+  applyWeixinOnboarding: (pairingId: string, body: { profile?: string } = {}) =>
+    fetchJSON<WeixinOnboardingApplyResponse>(
+      `/api/messaging/weixin/onboarding/${encodeURIComponent(pairingId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelWeixinOnboarding: (pairingId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/weixin/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
 
@@ -2108,6 +2136,10 @@ export interface MessagingPlatform {
     allowed_users_set?: boolean;
     home_channel_set?: boolean;
   } | null;
+  weixin_setup?: {
+    account_set?: boolean;
+    home_channel_set?: boolean;
+  } | null;
   env_vars: MessagingPlatformEnvVar[];
 }
 
@@ -2615,6 +2647,35 @@ export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
 export interface WhatsAppOnboardingApplyResponse {
   ok: boolean;
   platform: "whatsapp";
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
+}
+
+export interface WeixinOnboardingStartResponse {
+  pairing_id: string;
+  status:
+    | "starting"
+    | "waiting"
+    | "connected"
+    | "error"
+    | "expired"
+    | "cancelled";
+  scan_state?: "wait" | "scaned";
+  qr_payload?: string | null;
+  expires_at: string;
+  account_id?: string | null;
+  error?: string | null;
+}
+
+export type WeixinOnboardingStatusResponse = WeixinOnboardingStartResponse;
+
+export interface WeixinOnboardingApplyResponse {
+  ok: boolean;
+  platform: "weixin";
+  account_id?: string | null;
   needs_restart: boolean;
   restart_started?: boolean;
   restart_action?: string;

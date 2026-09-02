@@ -288,6 +288,12 @@ def _messaging_platform_payload(
             "allowed_users_set": bool(env_value("WHATSAPP_ALLOWED_USERS").strip()),
             "home_channel_set": bool(home_channel),
         }
+    if platform_id == "weixin":
+        # Fork (Weixin QR onboarding): only whether an account is linked, never the id or token itself.
+        payload["weixin_setup"] = {
+            "account_set": bool(env_value("WEIXIN_ACCOUNT_ID").strip()),
+            "home_channel_set": bool(home_channel),
+        }
     return payload
 
 
