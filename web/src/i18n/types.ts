@@ -178,6 +178,12 @@ export interface Translations {
     sourceFilter: string;
     anySource: string;
     searchPlaceholder: string;
+    /** Cmd/Ctrl+K global session-search palette — optional, English fallback. */
+    searchGlobalPlaceholder?: string;
+    searchNoRecent?: string;
+    searchHintNavigate?: string;
+    searchHintOpen?: string;
+    searchHintClose?: string;
     noSessions: string;
     noSessionsInFilter: string;
     noMatch: string;

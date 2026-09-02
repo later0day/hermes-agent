@@ -68,6 +68,7 @@ import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
+import { SessionSearchModal } from "@/components/SessionSearchModal";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -515,6 +516,20 @@ export default function App() {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
+  // Global Cmd/Ctrl+K session-search palette. Toggled from anywhere in the
+  // shell; the modal handles its own Escape/arrow keys once open.
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <ProfileProvider>
     <div
@@ -522,6 +537,8 @@ export default function App() {
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
     >
       <SelectionSwitcher />
+
+      <SessionSearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
 
       <div
         aria-hidden
