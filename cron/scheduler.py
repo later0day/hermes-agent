@@ -5155,9 +5155,21 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
     Reads the primary config.yaml directly (both the top-level and nested
     ``gateway.`` forms) instead of ``load_gateway_config()`` so no primary
     platform config leaks into this process's environment.
+
+    Two routing sources are consulted, both owned by the primary home:
+
+    1. Static ``profile_routes`` in ``config.yaml`` (the original #97476 path).
+    2. The dynamic ``source_agent_bindings`` store — the newer per-source
+       ``/agent use`` binding mechanism (#... ) where a chat/group is bound to
+       a profile at runtime rather than in config.yaml. A profile can serve
+       many bound dingtalk/etc. groups without ANY static route, so a
+       config-only check false-blocks every one of that profile's cron jobs
+       (observed: 21 xcx dingtalk bindings, 0 static routes → all jobs blocked
+       "not connected" while the primary's live adapter IS connected).
     """
     try:
         from hermes_constants import get_default_hermes_root, get_hermes_home
+        from hermes_cli.profiles import profile_matches_home
 
         primary_home = get_default_hermes_root()
         current_home = Path(get_hermes_home())
@@ -5166,35 +5178,74 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
             == current_home.expanduser().resolve(strict=False)
         ):
             return False  # this IS the primary home — nothing to consult
-        config_path = primary_home.expanduser() / "config.yaml"
-        if not config_path.exists():
-            return False
-
-        import yaml
-
-        with open(config_path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        routes_raw = raw.get("profile_routes")
-        if routes_raw is None and isinstance(raw.get("gateway"), dict):
-            routes_raw = raw["gateway"].get("profile_routes")
-        if not isinstance(routes_raw, list):
-            return False
-
-        from gateway.profile_routing import parse_profile_routes
-        from hermes_cli.profiles import profile_matches_home
 
         platform_key = platform_name.lower()
-        for route in parse_profile_routes(routes_raw):
-            if (
-                route.enabled
-                and str(route.platform).lower() == platform_key
-                and profile_matches_home(route.profile)
-            ):
-                return True
+
+        # (1) Static profile_routes in the primary config.yaml.
+        config_path = primary_home.expanduser() / "config.yaml"
+        if config_path.exists():
+            try:
+                import yaml
+
+                with open(config_path, encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                routes_raw = raw.get("profile_routes")
+                if routes_raw is None and isinstance(raw.get("gateway"), dict):
+                    routes_raw = raw["gateway"].get("profile_routes")
+                if isinstance(routes_raw, list):
+                    from gateway.profile_routing import parse_profile_routes
+
+                    for route in parse_profile_routes(routes_raw):
+                        if (
+                            route.enabled
+                            and str(route.platform).lower() == platform_key
+                            and profile_matches_home(route.profile)
+                        ):
+                            return True
+            except Exception:
+                logger.debug(
+                    "preflight: primary config.yaml profile-route lookup "
+                    "unavailable", exc_info=True,
+                )
+
+        # (2) Dynamic source_agent_bindings store (runtime /agent use). A
+        # binding key is ``source:<platform>:<type>:<chat_id>[:...]``; the
+        # platform is the second segment. If the primary routes this platform
+        # to the profile served from the current home, the primary's live
+        # adapter delivers for it — the satellite's own unconnected reading is
+        # a false block, same class as the static-route case.
+        try:
+            from gateway.source_agent_binding import (
+                SourceAgentBindingStore,
+                DEFAULT_SOURCE_AGENT_BINDINGS_DB,
+            )
+
+            if Path(DEFAULT_SOURCE_AGENT_BINDINGS_DB).exists():
+                store = SourceAgentBindingStore(
+                    db_path=DEFAULT_SOURCE_AGENT_BINDINGS_DB
+                )
+                try:
+                    for binding in store.list_bindings():
+                        parts = (binding.source_binding_key or "").split(":")
+                        if (
+                            len(parts) >= 2
+                            and parts[0] == "source"
+                            and parts[1].lower() == platform_key
+                            and profile_matches_home(binding.profile_name)
+                        ):
+                            return True
+                finally:
+                    store.close()
+        except Exception:
+            logger.debug(
+                "preflight: primary source-agent binding lookup unavailable",
+                exc_info=True,
+            )
+
         return False
     except Exception:
         logger.debug(
-            "preflight: primary-gateway profile-route lookup unavailable",
+            "preflight: primary-gateway routing lookup unavailable",
             exc_info=True,
         )
         return False

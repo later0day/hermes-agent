@@ -144,3 +144,95 @@ class TestRoutedSatellitePreflight:
             assert _delivery_platform_routed_from_primary_gateway("telegram") is False
         finally:
             reset_hermes_home_override(token)
+
+
+class TestBoundSatellitePreflight:
+    """Dynamic source_agent_bindings (runtime ``/agent use``) must ALSO rescue
+    cron preflight, not just static ``profile_routes``. A profile can serve many
+    bound dingtalk/weixin groups with ZERO static routes (observed: 21 xcx
+    dingtalk bindings, 0 routes), so a config-only check false-blocks every one
+    of that profile's cron jobs while the primary's live adapter is connected.
+    """
+
+    def _seed_binding(self, tmp_path, monkeypatch, *, key, profile,
+                      routes=None):
+        """A primary root with an empty (or ``routes``) config.yaml plus a
+        source_agent_bindings.sqlite holding ``key`` -> ``profile``.  Serves
+        the bound profile's home.  Returns (root, profile_home)."""
+        from gateway.source_agent_binding import SourceAgentBindingStore
+
+        root = tmp_path / "root"
+        profile_home = root / "profiles" / profile
+        profile_home.mkdir(parents=True)
+        cfg = {"gateway": {"multiplex_profiles": True}}
+        if routes is not None:
+            cfg["gateway"]["profile_routes"] = routes
+        (root / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+        db_path = root / "gateway_source_agent_bindings.sqlite"
+        store = SourceAgentBindingStore(db_path=db_path)
+        store.set_binding(key, profile_name=profile, agent_id="main")
+        store.close()
+
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root", lambda: root
+        )
+        # The binding-store constant is import-time; point it at our db.
+        monkeypatch.setattr(
+            "gateway.source_agent_binding.DEFAULT_SOURCE_AGENT_BINDINGS_DB",
+            db_path,
+        )
+        return root, profile_home
+
+    def test_bound_platform_passes_preflight(self, tmp_path, monkeypatch):
+        """dingtalk group bound to xcx (no static route) → xcx cron passes."""
+        _, home = self._seed_binding(
+            tmp_path, monkeypatch,
+            key="source:dingtalk:group:cidABC==:433670", profile="xcx",
+        )
+        token = set_hermes_home_override(str(home))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("dingtalk") is True
+            with patch("gateway.config.load_gateway_config",
+                       return_value=_gateway_config(set())):
+                assert _preflight_check_delivery({"deliver": "dingtalk"}) is None
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_binding_for_other_platform_does_not_rescue(self, tmp_path, monkeypatch):
+        """A weixin binding must not rescue a dingtalk deliver."""
+        _, home = self._seed_binding(
+            tmp_path, monkeypatch,
+            key="source:weixin:dm:openid@im.wechat", profile="xcx",
+        )
+        token = set_hermes_home_override(str(home))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("dingtalk") is False
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_binding_for_other_profile_does_not_rescue(self, tmp_path, monkeypatch):
+        """A dingtalk binding to profile B must not rescue profile A's home."""
+        root, _ = self._seed_binding(
+            tmp_path, monkeypatch,
+            key="source:dingtalk:group:cidABC==:1", profile="other",
+        )
+        home_a = root / "profiles" / "xcx"
+        home_a.mkdir(parents=True)
+        token = set_hermes_home_override(str(home_a))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("dingtalk") is False
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_primary_home_skips_binding_lookup(self, tmp_path, monkeypatch):
+        """Running as the primary home: no satellite rescue to consider."""
+        root, _ = self._seed_binding(
+            tmp_path, monkeypatch,
+            key="source:dingtalk:group:cidABC==:1", profile="xcx",
+        )
+        token = set_hermes_home_override(str(root))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("dingtalk") is False
+        finally:
+            reset_hermes_home_override(token)
