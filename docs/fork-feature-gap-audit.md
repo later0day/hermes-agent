@@ -241,6 +241,19 @@ Fork 有专用配置编辑组件和大量中文标签说明。**当前 `web/src/
 
 **核验（`24dff85fd8` 之后）：** ConfigPage 存在且功能完整；仅字段标签本地化是增量。
 
+**已落地（本次）：** 新增 `web/src/i18n/config-labels.ts` —— 一个按 config 点路径
+（即 AutoField 收到的 `schemaKey`）索引的本地化覆盖层，`AutoField` 通过 `useI18n()`
+读取当前 locale 后查表，命中则用 overlay 的 `label`/`description` 覆盖“从 key 反推的
+英文标签 + 后端 schema.description”，未命中则原样回退。首批填了后端 schema 里真正带
+手写用户可见说明的那批字段（model / timezone / terminal.* / browser.headed /
+display.* / proxy.* / updates.* / plugins.hook_callback_timeout 等 25 项）的简体中文。
+因为按 key 查表且只做覆盖，schema 增删字段时不会“覆盖旧文件”——失配的 key 直接走英文
+回退。另外把 `ConfigPage.prettyCategoryName` 的兜底从“仅首字母大写”改为下划线→空格
+Title Case，让尚未翻译的新分类（gateway / kanban / wake_word /
+tool_loop_guardrails …）显示为 “Wake Word” 而非 “Wake_word”，对所有 locale 生效。
+786 字段 schema 端点保持 200；`npx tsc -b` 干净、`npm run build` 通过、dashboard 重启
+正常。后续 locale 只需往 overlay 里加对应语言块即可增量扩展。
+
 ### 16. 当前页面的 i18n 补全
 
 当前已有正式多语言体系，不能说“i18n 没合”。但部分新页面仍存在硬编码英文，因此

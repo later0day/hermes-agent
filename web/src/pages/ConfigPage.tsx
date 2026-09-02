@@ -158,7 +158,11 @@ export default function ConfigPage() {
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
     if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    // Categories added after the localized set (gateway, kanban, wake_word,
+    // tool_loop_guardrails, …) have no translation yet — humanize the raw key
+    // (underscores → spaced Title Case) so they read as "Wake Word" rather than
+    // "Wake_word". Applies uniformly across every locale.
+    return cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   useEffect(() => {
