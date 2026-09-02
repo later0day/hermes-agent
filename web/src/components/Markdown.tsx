@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 /**
  * Lightweight markdown renderer for LLM output.
@@ -41,6 +41,86 @@ function StreamingCaret() {
     <span
       aria-hidden
       className="inline-block w-[0.5em] h-[1em] ml-0.5 align-[-0.15em] bg-foreground/50 animate-pulse"
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Mermaid diagrams                                                   */
+/* ------------------------------------------------------------------ */
+
+type MermaidApi = typeof import("mermaid")["default"];
+
+let mermaidPromise: Promise<MermaidApi> | null = null;
+
+/**
+ * Load + initialize mermaid on first use only. Mermaid is a large dependency
+ * (~900 KB gzip), so it is dynamically imported the first time a diagram
+ * actually needs to render instead of being pulled into the main chat bundle.
+ */
+function loadMermaid(): Promise<MermaidApi> {
+  if (!mermaidPromise) {
+    mermaidPromise = import("mermaid").then(({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        securityLevel: "loose",
+      });
+      return mermaid;
+    });
+  }
+  return mermaidPromise;
+}
+
+let mermaidSeq = 0;
+
+/**
+ * Renders a ```mermaid fenced block as an SVG diagram. While a message is
+ * still streaming the fence body is often syntactically incomplete, so a
+ * failed render silently falls back to showing the raw source in a <pre>
+ * rather than throwing / flashing an error box.
+ */
+function MermaidBlock({ code }: { code: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const el = ref.current;
+    if (!el) return;
+    const source = code.trim();
+    if (!source) return;
+
+    const id = `mermaid-${mermaidSeq++}`;
+    loadMermaid()
+      .then((mermaid) => mermaid.render(id, source))
+      .then(({ svg }) => {
+        if (cancelled || !ref.current) return;
+        ref.current.innerHTML = svg;
+        setFailed(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [code]);
+
+  if (failed) {
+    return (
+      <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+        <code>{code}</code>
+      </pre>
+    );
+  }
+
+  return (
+    <div
+      ref={ref}
+      className="mermaid-diagram flex justify-center overflow-x-auto py-2"
     />
   );
 }
@@ -167,6 +247,9 @@ function Block({
 }) {
   switch (block.type) {
     case "code":
+      if (block.lang === "mermaid") {
+        return <MermaidBlock code={block.content} />;
+      }
       return (
         <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
           <code>
