@@ -195,6 +195,24 @@ static/runtime 标签 + 等宽截断 chat id（完整值在 title），超出以
 Fork ChannelsPage 支持创建二维码、轮询扫码/确认/过期、刷新二维码，并把凭证保存到
 目标 profile。当前只有 CLI setup 流程，Dashboard 没有等价入口。
 
+**已落地（`4f70f430e0`）：** 把 CLI `qr_login()`（打印 ASCII 二维码 + 阻塞轮询循环，
+浏览器无法驱动）拆成两个 web 无关的 async 原语 `weixin_create_qr()` /
+`weixin_poll_qr()`（各只做「取二维码」「单次轮询」，循环/过期刷新/redirect host 跟随/
+持久化都由调用方负责；`qr_login()` 本身不变）。web_server 按 WhatsApp/Telegram
+onboarding 同款模式加 start/status/apply/cancel 端点 + 后台轮询线程推进服务端会话
+状态机（wait/scaned/redirect/expired/confirmed），过期时像 CLI 一样最多刷新 3 次。
+**安全：** confirmed 的 `bot_token` 只存在会话记录的私有字段里、绝不序列化——浏览器
+只看到可扫二维码串、粗粒度状态、确认后的 account_id。apply 用 `_config_profile_scope`
+把 `WEIXIN_*` 写进目标 profile 的 .env + 账号凭证文件、启用平台并重启网关；start 会
+拦截「在多路复用的从属 profile 上启用端口绑定平台」。平台 payload 加
+`weixin_setup{account_set}`（绝不含 id/token）。前端 ChannelsPage 加
+`WeixinOnboardingPanel`（镜像 WhatsApp 面板）、api client 方法 + 类型，并把
+`/weixin/onboarding` 加进 `PROFILE_SCOPED_PREFIXES` 自动带 `?profile=`。对真实 iLink
+线上验证：create QR（32 位 token + 可扫 URL）、poll→wait；端点往返
+start(200，QR 为 URL，不泄漏 token)/status(键集安全)/未确认 apply(409)/cancel(200)/
+cancel 后 status(404)；profile-scoped start；`weixin_setup` 正确暴露 account_set。
+`tsc -b` 干净、构建 `ChannelsPage-C2Dx-cHJ.js`、重启后 200，既有 30 个 weixin 单测通过。
+
 ### 14. Skill 删除 UI/API
 
 Fork Dashboard 有 skill delete/uninstall。**核验（`24dff85fd8` 之后）：后端与
@@ -435,7 +453,7 @@ configured/enabled` 与 `No adapter configured` 归零。
 
 1. MemoryPage — 已落地 `6823fbf315`；
 2. binding summary — 已落地 `dfe7224f99`；
-3. Weixin QR；
+3. Weixin QR — 已落地 `4f70f430e0`；
 4. Skill delete；
 5. ConfigEditors；
 6. 当前页面 i18n 补全；
