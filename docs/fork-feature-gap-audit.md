@@ -223,6 +223,13 @@ API client 层已就位**——`hermes_cli/web_routers/skills.py` 有
 按钮上（全文件无 uninstall 调用）。因此这不再是"没有 endpoint"，而是一个
 很窄的前端收尾——加一个按钮调用现成的 `uninstallSkillFromHub` 即可。
 
+**已落地（`87c55a7b92`）：** SkillsPage 每个 SkillRow 加了 Trash2 卸载按钮（镜像
+Edit 按钮的 hover-reveal），走共享 `useConfirmDelete` + `DeleteConfirmDialog` 的
+异步守卫流程：先乐观删行，再用一次新的 `getSkills` 对账，好让 CLI 卸载后仍存活的
+内置/在用 skill 重新出现。写入 scope 跟随侧栏 profile 切换器（`selectedProfile`），
+与本页其他写入一致。后端 `POST /api/skills/hub/uninstall` 与
+`api.uninstallSkillFromHub` 早已就位，本次只补齐前端按钮。
+
 ### 15. ConfigEditors / config labels
 
 Fork 有专用配置编辑组件和大量中文标签说明。**当前 `web/src/pages/ConfigPage.tsx`
@@ -454,7 +461,7 @@ configured/enabled` 与 `No adapter configured` 归零。
 1. MemoryPage — 已落地 `6823fbf315`；
 2. binding summary — 已落地 `dfe7224f99`；
 3. Weixin QR — 已落地 `4f70f430e0`；
-4. Skill delete；
+4. Skill delete — 已落地 `87c55a7b92`；
 5. ConfigEditors；
 6. 当前页面 i18n 补全；
 7. Google theme；
