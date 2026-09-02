@@ -1784,6 +1784,8 @@ from hermes_cli.web_models import (  # noqa: F401
     TelegramOnboardingApply,
     WhatsAppOnboardingStart,
     WhatsAppOnboardingApply,
+    WeixinOnboardingStart,
+    WeixinOnboardingApply,
     AudioTranscriptionRequest,
     ManagedFileUpload,
     ChatImageUpload,
@@ -9753,6 +9755,18 @@ def _messaging_platform_payload(
             "home_channel_set": bool(home_channel),
         }
 
+    weixin_setup = None
+    if platform_id == "weixin":
+        weixin_account = (
+            env_on_disk.get("WEIXIN_ACCOUNT_ID")
+            or ("" if scoped else os.getenv("WEIXIN_ACCOUNT_ID", ""))
+        ).strip()
+        weixin_setup = {
+            # Only whether an account is linked, never the id/token itself.
+            "account_set": bool(weixin_account),
+            "home_channel_set": bool(home_channel),
+        }
+
     payload = {
         "id": platform_id,
         "name": entry["name"],
@@ -9774,6 +9788,8 @@ def _messaging_platform_payload(
     }
     if whatsapp_setup is not None:
         payload["whatsapp_setup"] = whatsapp_setup
+    if weixin_setup is not None:
+        payload["weixin_setup"] = weixin_setup
     return payload
 
 
@@ -10272,6 +10288,372 @@ async def cancel_whatsapp_onboarding(pairing_id: str):
     if record:
         record.status = "cancelled"
         _terminate_whatsapp_pairing(record.proc)
+    return {"ok": True}
+
+
+# ─────────────────────────── Weixin QR onboarding ───────────────────────────
+# Dashboard equivalent of `hermes gateway setup`'s interactive Weixin QR login.
+# The CLI flow (gateway/platforms/weixin.py::qr_login) prints an ASCII QR and
+# blocks in a poll loop; that can't drive a browser, so this decomposes the
+# same iLink protocol into a stateless create/poll pair (weixin_create_qr /
+# weixin_poll_qr) plus a background poller that advances a session record.
+# SECURITY: the confirmed bot_token is stored ONLY in the server-side record
+# and is never returned by the status payload — the browser only ever sees the
+# scannable QR string, coarse status, and (after apply) a linked-account id.
+
+_WEIXIN_ONBOARDING_TTL_SECONDS = 480
+_WEIXIN_ONBOARDING_TERMINAL_STATUSES = {"connected", "error", "expired", "cancelled"}
+_WEIXIN_QR_MAX_REFRESH = 3
+ILINK_BASE_URL_FALLBACK = "https://ilinkai.weixin.qq.com"
+
+
+@dataclass
+class _WeixinOnboardingSession:
+    qrcode: str
+    base_url: str
+    expires_at: str
+    expires_at_ts: float
+    profile: str | None = None
+    status: str = "starting"
+    scan_state: str = "wait"  # wait | scaned (informational sub-state)
+    qr_payload: str | None = None  # scannable QR string (safe to expose)
+    refresh_count: int = 0
+    account_id: str | None = None
+    error: str | None = None
+    # Credentials captured on confirm — SERVER-SIDE ONLY, never serialized.
+    _token: str | None = None
+    _cred_base_url: str | None = None
+    _user_id: str | None = None
+
+
+_weixin_onboarding_sessions: dict[str, _WeixinOnboardingSession] = {}
+_weixin_onboarding_lock = threading.RLock()
+
+
+def _prune_weixin_onboarding_sessions() -> None:
+    now = time.time()
+    remove_ids: list[str] = []
+    for pairing_id, record in _weixin_onboarding_sessions.items():
+        if (
+            record.expires_at_ts <= now
+            and record.status not in _WEIXIN_ONBOARDING_TERMINAL_STATUSES
+        ):
+            record.status = "expired"
+            record.error = "Weixin QR setup expired. Start a new QR setup."
+        if (
+            record.status in _WEIXIN_ONBOARDING_TERMINAL_STATUSES
+            and record.expires_at_ts + 300 <= now
+        ):
+            remove_ids.append(pairing_id)
+    for pairing_id in remove_ids:
+        _weixin_onboarding_sessions.pop(pairing_id, None)
+
+
+def _weixin_onboarding_payload(
+    pairing_id: str, record: _WeixinOnboardingSession
+) -> dict[str, Any]:
+    # Deliberately omits _token/_cred_base_url/_user_id.
+    return {
+        "pairing_id": pairing_id,
+        "status": record.status,
+        "scan_state": record.scan_state,
+        "qr_payload": record.qr_payload,
+        "expires_at": record.expires_at,
+        "account_id": record.account_id,
+        "error": record.error,
+    }
+
+
+def _run_weixin_qr_poll(pairing_id: str) -> None:
+    """Background poll loop advancing one Weixin onboarding session.
+
+    Mirrors the state machine in qr_login but writes into the shared record
+    instead of printing. On ``expired`` it refreshes the QR up to
+    ``_WEIXIN_QR_MAX_REFRESH`` times (like the CLI), following any
+    ``scaned_but_redirect`` host change so later polls hit the right shard.
+    """
+    from gateway.platforms.weixin import weixin_create_qr, weixin_poll_qr
+
+    while True:
+        with _weixin_onboarding_lock:
+            record = _weixin_onboarding_sessions.get(pairing_id)
+            if not record or record.status in _WEIXIN_ONBOARDING_TERMINAL_STATUSES:
+                return
+            if record.expires_at_ts <= time.time():
+                record.status = "expired"
+                record.error = "Weixin QR setup expired. Start a new QR setup."
+                return
+            qrcode = record.qrcode
+            base_url = record.base_url
+
+        try:
+            status_resp = asyncio.run(weixin_poll_qr(qrcode, base_url=base_url))
+        except Exception as exc:  # transient transport error — keep polling
+            _log.debug("weixin onboarding poll error: %s", exc)
+            time.sleep(1.5)
+            continue
+
+        status = str(status_resp.get("status") or "wait")
+
+        if status == "wait":
+            time.sleep(1.5)
+            continue
+
+        if status == "scaned":
+            with _weixin_onboarding_lock:
+                record = _weixin_onboarding_sessions.get(pairing_id)
+                if record:
+                    record.scan_state = "scaned"
+            time.sleep(1.5)
+            continue
+
+        if status == "scaned_but_redirect":
+            redirect_host = str(status_resp.get("redirect_host") or "")
+            with _weixin_onboarding_lock:
+                record = _weixin_onboarding_sessions.get(pairing_id)
+                if record:
+                    record.scan_state = "scaned"
+                    if redirect_host:
+                        record.base_url = f"https://{redirect_host}"
+            time.sleep(1.0)
+            continue
+
+        if status == "expired":
+            with _weixin_onboarding_lock:
+                record = _weixin_onboarding_sessions.get(pairing_id)
+                if not record or record.status in _WEIXIN_ONBOARDING_TERMINAL_STATUSES:
+                    return
+                record.refresh_count += 1
+                if record.refresh_count > _WEIXIN_QR_MAX_REFRESH:
+                    record.status = "error"
+                    record.error = (
+                        "Weixin QR expired repeatedly. Start a new QR setup."
+                    )
+                    return
+            try:
+                fresh = asyncio.run(weixin_create_qr())
+            except Exception as exc:
+                with _weixin_onboarding_lock:
+                    record = _weixin_onboarding_sessions.get(pairing_id)
+                    if record and record.status not in _WEIXIN_ONBOARDING_TERMINAL_STATUSES:
+                        record.status = "error"
+                        record.error = f"Failed to refresh Weixin QR: {exc}"
+                return
+            with _weixin_onboarding_lock:
+                record = _weixin_onboarding_sessions.get(pairing_id)
+                if not record or record.status in _WEIXIN_ONBOARDING_TERMINAL_STATUSES:
+                    return
+                record.qrcode = fresh["qrcode"]
+                record.base_url = fresh.get("base_url") or ILINK_BASE_URL_FALLBACK
+                record.qr_payload = fresh.get("scan_data") or fresh["qrcode"]
+                record.scan_state = "wait"
+            time.sleep(1.0)
+            continue
+
+        if status == "confirmed":
+            account_id = str(status_resp.get("ilink_bot_id") or "")
+            token = str(status_resp.get("bot_token") or "")
+            cred_base_url = str(status_resp.get("baseurl") or "")
+            user_id = str(status_resp.get("ilink_user_id") or "")
+            with _weixin_onboarding_lock:
+                record = _weixin_onboarding_sessions.get(pairing_id)
+                if not record or record.status in _WEIXIN_ONBOARDING_TERMINAL_STATUSES:
+                    return
+                if not account_id or not token:
+                    record.status = "error"
+                    record.error = "Weixin login confirmed but credentials were incomplete."
+                    return
+                record.account_id = account_id
+                record._token = token
+                record._cred_base_url = cred_base_url or record.base_url
+                record._user_id = user_id
+                record.scan_state = "scaned"
+                record.status = "connected"
+            return
+
+        # Unknown status — keep polling until TTL.
+        time.sleep(1.5)
+
+
+def _restart_gateway_after_weixin_onboarding(
+    profile: Optional[str] = None,
+) -> dict[str, Any]:
+    try:
+        proc, reused = _spawn_gateway_restart(profile)
+    except Exception as exc:
+        _log.exception("Failed to auto-restart gateway after Weixin onboarding")
+        return {"restart_started": False, "restart_error": str(exc)}
+    if reused:
+        _log.info(
+            "Weixin onboarding: reusing in-flight gateway restart (pid %s)", proc.pid
+        )
+    return {
+        "restart_started": True,
+        "restart_action": "gateway-restart",
+        "restart_pid": proc.pid,
+    }
+
+
+@app.post("/api/messaging/weixin/onboarding/start")
+async def start_weixin_onboarding(body: WeixinOnboardingStart):
+    effective_profile = body.profile
+
+    # A secondary profile can't own the shared listener under multiplexing.
+    conflict = _multiplex_port_binding_conflict("weixin", effective_profile)
+    if conflict:
+        raise HTTPException(status_code=409, detail=conflict)
+
+    try:
+        from gateway.platforms.weixin import (
+            check_weixin_requirements,
+            weixin_create_qr,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Weixin adapter import failed: {exc}"
+        ) from exc
+    if not check_weixin_requirements():
+        raise HTTPException(
+            status_code=500,
+            detail="Weixin setup needs aiohttp and cryptography installed.",
+        )
+
+    try:
+        qr = await weixin_create_qr()
+    except Exception as exc:
+        _log.exception("Weixin onboarding: QR create failed")
+        raise HTTPException(
+            status_code=502, detail=f"Could not fetch a Weixin QR code: {exc}"
+        ) from exc
+
+    pairing_id = secrets.token_urlsafe(16)
+    expires_at_ts = time.time() + _WEIXIN_ONBOARDING_TTL_SECONDS
+    record = _WeixinOnboardingSession(
+        qrcode=qr["qrcode"],
+        base_url=qr.get("base_url") or ILINK_BASE_URL_FALLBACK,
+        expires_at=_utc_iso_from_ts(expires_at_ts),
+        expires_at_ts=expires_at_ts,
+        profile=effective_profile,
+        status="waiting",
+        qr_payload=qr.get("scan_data") or qr["qrcode"],
+    )
+    with _weixin_onboarding_lock:
+        _prune_weixin_onboarding_sessions()
+        _weixin_onboarding_sessions[pairing_id] = record
+
+    threading.Thread(
+        target=_run_weixin_qr_poll, args=(pairing_id,), daemon=True
+    ).start()
+
+    return _weixin_onboarding_payload(pairing_id, record)
+
+
+@app.get("/api/messaging/weixin/onboarding/{pairing_id}")
+async def get_weixin_onboarding_status(pairing_id: str):
+    with _weixin_onboarding_lock:
+        _prune_weixin_onboarding_sessions()
+        record = _weixin_onboarding_sessions.get(pairing_id)
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail="Weixin setup session was not found. Start a new setup.",
+            )
+        if record.status == "expired":
+            raise HTTPException(
+                status_code=410, detail=record.error or "Weixin setup expired."
+            )
+        return _weixin_onboarding_payload(pairing_id, record)
+
+
+@app.post("/api/messaging/weixin/onboarding/{pairing_id}/apply")
+async def apply_weixin_onboarding(
+    pairing_id: str, body: WeixinOnboardingApply, profile: Optional[str] = None
+):
+    with _weixin_onboarding_lock:
+        _prune_weixin_onboarding_sessions()
+        record = _weixin_onboarding_sessions.get(pairing_id)
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail="Weixin setup session was not found. Start a new setup.",
+            )
+        if record.status != "connected":
+            raise HTTPException(
+                status_code=409, detail="Weixin setup is not confirmed yet."
+            )
+        account_id = record.account_id or ""
+        token = record._token or ""
+        cred_base_url = record._cred_base_url or ""
+        user_id = record._user_id or ""
+        record_profile = record.profile
+    if not account_id or not token:
+        raise HTTPException(
+            status_code=409, detail="Weixin credentials are incomplete."
+        )
+
+    effective_profile = body.profile or profile or record_profile
+    try:
+        with _config_profile_scope(effective_profile) as scoped_dir:
+            save_env_value("WEIXIN_ACCOUNT_ID", account_id)
+            save_env_value("WEIXIN_TOKEN", token)
+            if cred_base_url:
+                save_env_value("WEIXIN_BASE_URL", cred_base_url)
+            save_env_value(
+                "WEIXIN_CDN_BASE_URL",
+                get_env_value("WEIXIN_CDN_BASE_URL")
+                or "https://novac2c.cdn.weixin.qq.com/c2c",
+            )
+            # Mirror the CLI: persist an account credential file too so the
+            # adapter's context-token store keys off a known account_id.
+            try:
+                from gateway.platforms.weixin import save_weixin_account
+                from hermes_constants import get_hermes_home
+
+                home = str(scoped_dir) if scoped_dir is not None else str(
+                    get_hermes_home()
+                )
+                save_weixin_account(
+                    home,
+                    account_id=account_id,
+                    token=token,
+                    base_url=cred_base_url or "",
+                    user_id=user_id,
+                )
+            except Exception:
+                _log.warning(
+                    "weixin onboarding: account credential file write skipped",
+                    exc_info=True,
+                )
+            _write_platform_enabled("weixin", True)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _log.exception("Weixin onboarding apply failed")
+        raise HTTPException(
+            status_code=500, detail="Failed to save Weixin setup."
+        ) from exc
+
+    with _weixin_onboarding_lock:
+        _weixin_onboarding_sessions.pop(pairing_id, None)
+
+    restart_result = _restart_gateway_after_weixin_onboarding(effective_profile)
+    return {
+        "ok": True,
+        "platform": "weixin",
+        "account_id": account_id,
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
+    }
+
+
+@app.delete("/api/messaging/weixin/onboarding/{pairing_id}")
+async def cancel_weixin_onboarding(pairing_id: str):
+    with _weixin_onboarding_lock:
+        record = _weixin_onboarding_sessions.pop(pairing_id, None)
+    if record:
+        record.status = "cancelled"
     return {"ok": True}
 
 

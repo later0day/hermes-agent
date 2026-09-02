@@ -1034,6 +1034,74 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(path, {"get_updates_buf": sync_buf})
 
 
+async def weixin_create_qr(*, bot_type: str = "3") -> Dict[str, str]:
+    """Fetch a fresh iLink login QR (stateless; for non-interactive callers).
+
+    Returns ``{"qrcode": <hex token>, "qrcode_url": <scannable liteapp URL>,
+    "scan_data": <url or token>, "base_url": <iLink base>}``. The dashboard
+    onboarding flow renders ``scan_data`` as an image and polls
+    :func:`weixin_poll_qr` with ``qrcode``. Raises on transport/protocol
+    failure so the caller can surface a precise error.
+    """
+    if not AIOHTTP_AVAILABLE:
+        raise RuntimeError("aiohttp is required for Weixin QR login")
+
+    async with aiohttp.ClientSession(
+        trust_env=True, connector=_make_ssl_connector()
+    ) as session:
+        qr_resp = await _api_get(
+            session,
+            base_url=ILINK_BASE_URL,
+            endpoint=f"{EP_GET_BOT_QR}?bot_type={bot_type}",
+            timeout_ms=QR_TIMEOUT_MS,
+        )
+    qrcode_value = str(qr_resp.get("qrcode") or "")
+    qrcode_url = str(qr_resp.get("qrcode_img_content") or "")
+    if not qrcode_value:
+        raise RuntimeError("iLink QR response missing 'qrcode'")
+    return {
+        "qrcode": qrcode_value,
+        "qrcode_url": qrcode_url,
+        # WeChat scans the full liteapp URL; fall back to the raw hex token.
+        "scan_data": qrcode_url or qrcode_value,
+        "base_url": ILINK_BASE_URL,
+    }
+
+
+async def weixin_poll_qr(
+    qrcode: str,
+    *,
+    base_url: str = ILINK_BASE_URL,
+) -> Dict[str, Any]:
+    """Poll a single iLink QR status tick (stateless; no printing/looping).
+
+    Returns the raw status dict, always carrying a normalized ``status`` in
+    ``{"wait","scaned","scaned_but_redirect","expired","confirmed"}``. On
+    ``confirmed`` the payload also carries ``ilink_bot_id``/``bot_token``/
+    ``baseurl``/``ilink_user_id``. On ``scaned_but_redirect`` it carries
+    ``redirect_host`` (the caller should re-poll against that host). The
+    caller owns the loop, refresh-on-expiry, and any credential persistence;
+    the bot token in a ``confirmed`` payload must never leave the server.
+    """
+    if not AIOHTTP_AVAILABLE:
+        raise RuntimeError("aiohttp is required for Weixin QR login")
+    if not qrcode:
+        raise ValueError("weixin_poll_qr: qrcode must not be empty")
+
+    async with aiohttp.ClientSession(
+        trust_env=True, connector=_make_ssl_connector()
+    ) as session:
+        status_resp = await _api_get(
+            session,
+            base_url=base_url or ILINK_BASE_URL,
+            endpoint=f"{EP_GET_QR_STATUS}?qrcode={qrcode}",
+            timeout_ms=QR_TIMEOUT_MS,
+        )
+    status_resp.setdefault("status", "wait")
+    status_resp["status"] = str(status_resp.get("status") or "wait")
+    return status_resp
+
+
 async def qr_login(
     hermes_home: str,
     *,

@@ -32,6 +32,7 @@ import type {
   MessagingPlatformUpdate,
   TelegramOnboardingStartResponse,
   WhatsAppOnboardingStartResponse,
+  WeixinOnboardingStartResponse,
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -123,6 +124,14 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 function isTerminalWhatsAppOnboardingError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /\b410\b/.test(message) && /\b(expired|gone)\b/i.test(message);
+}
+
+function isTerminalWeixinOnboardingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    (/\b410\b/.test(message) && /\b(expired|gone)\b/i.test(message)) ||
+    /\b404\b/.test(message)
+  );
 }
 
 function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
@@ -628,6 +637,15 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
+                {platform.id === "weixin" && (
+                  <WeixinOnboardingPanel
+                    onChanged={load}
+                    onRestartNeeded={() => setRestartNeeded(true)}
+                    platform={platform}
+                    setRestartNeeded={setRestartNeeded}
+                    showToast={showToast}
+                  />
+                )}
               </CardContent>
             </Card>
           );
@@ -1031,6 +1049,306 @@ function WhatsAppOnboardingPanel({
               {phase === "waiting" && (
                 <span className="text-center text-xs text-muted-foreground">
                   Scan with WhatsApp Linked Devices, not the camera app.
+                </span>
+              )}
+              <Button size="sm" ghost onClick={() => void cancel()}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WeixinOnboardingPanel({
+  onChanged,
+  onRestartNeeded,
+  platform,
+  setRestartNeeded,
+  showToast,
+}: {
+  onChanged: () => Promise<void>;
+  onRestartNeeded: () => void;
+  platform: MessagingPlatform;
+  setRestartNeeded: (needed: boolean) => void;
+  showToast: (message: string, type: "success" | "error") => void;
+}) {
+  const [setup, setSetup] = useState<WeixinOnboardingStartResponse | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [phase, setPhase] = useState<
+    "idle" | "starting" | "waiting" | "connected" | "applying"
+  >("idle");
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+
+  const updateQr = useCallback(async (payload?: string | null) => {
+    if (!payload) return;
+    const dataUrl = await QRCode.toDataURL(payload, {
+      errorCorrectionLevel: "M",
+      margin: 3,
+      width: 240,
+    });
+    setQrDataUrl(dataUrl);
+  }, []);
+
+  // Poll status while waiting for the scan/confirm to land.
+  useEffect(() => {
+    if (!setup || phase !== "waiting") return;
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const status = await api.getWeixinOnboardingStatus(setup.pairing_id);
+        if (cancelled) return;
+        setSetup(status);
+        if (status.qr_payload && status.qr_payload !== setup.qr_payload) {
+          // QR was refreshed server-side after expiry — re-render it.
+          await updateQr(status.qr_payload);
+        }
+        if (cancelled) return;
+        if (status.status === "connected") {
+          setPhase("connected");
+          setError("");
+          return;
+        }
+        if (status.status === "error") {
+          setError(status.error || "Weixin setup failed.");
+          setSetup(null);
+          setQrDataUrl("");
+          setPhase("idle");
+          return;
+        }
+        setError("");
+        timeout = setTimeout(poll, 1500);
+      } catch (pollError) {
+        if (cancelled) return;
+        const expiresAt = Date.parse(setup.expires_at);
+        const expired = Number.isFinite(expiresAt) && Date.now() >= expiresAt;
+        if (isTerminalWeixinOnboardingError(pollError) || expired) {
+          setSetup(null);
+          setQrDataUrl("");
+          setPhase("idle");
+          setError("Weixin QR setup expired. Start a new QR setup to try again.");
+          return;
+        }
+        setError(`Still waiting for Weixin. Retrying after: ${pollError}`);
+        timeout = setTimeout(poll, 2000);
+      }
+    };
+
+    timeout = setTimeout(poll, 1000);
+    return () => {
+      cancelled = true;
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [phase, setup, updateQr]);
+
+  useEffect(() => {
+    if (!setup) return;
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [setup]);
+
+  const resetSetup = () => {
+    setSetup(null);
+    setQrDataUrl("");
+    setPhase("idle");
+    setError("");
+  };
+
+  const start = async () => {
+    setPhase("starting");
+    setError("");
+    setQrDataUrl("");
+    try {
+      const res = await api.startWeixinOnboarding();
+      setSetup(res);
+      if (res.qr_payload) {
+        await updateQr(res.qr_payload);
+      }
+      if (res.status === "error") {
+        setError(res.error || "Weixin setup failed.");
+        setSetup(null);
+        setPhase("idle");
+      } else {
+        setPhase(res.status === "connected" ? "connected" : "waiting");
+      }
+    } catch (startError) {
+      setPhase("idle");
+      setError(String(startError));
+    }
+  };
+
+  const cancel = async () => {
+    if (setup) {
+      try {
+        await api.cancelWeixinOnboarding(setup.pairing_id);
+      } catch {
+        /* local cleanup still wins */
+      }
+    }
+    resetSetup();
+  };
+
+  const watchRestartOutcome = async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const st = await api.getActionStatus("gateway-restart", 5);
+        if (st.running) continue;
+        if (st.exit_code !== 0 && st.exit_code !== null) {
+          onRestartNeeded();
+          showToast(
+            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            "error",
+          );
+        }
+        return;
+      } catch {
+        // transient fetch error; keep polling
+      }
+    }
+  };
+
+  const apply = async () => {
+    if (!setup) return;
+    setPhase("applying");
+    setError("");
+    try {
+      const result = await api.applyWeixinOnboarding(setup.pairing_id);
+      resetSetup();
+      if (result.restart_started) {
+        showToast("Weixin saved; gateway restarting…", "success");
+        setRestartNeeded(false);
+        setTimeout(() => void onChanged(), 4000);
+        void watchRestartOutcome();
+      } else {
+        onRestartNeeded();
+        const detail = result.restart_error ? `: ${result.restart_error}` : "";
+        showToast(`Weixin saved; gateway restart failed${detail}`, "error");
+      }
+      await onChanged();
+    } catch (applyError) {
+      setPhase("connected");
+      setError(String(applyError));
+    }
+  };
+
+  const expiresIn = useMemo(
+    () => (setup ? formatExpiry(setup.expires_at) : ""),
+    // tick keeps the memo fresh without recalculating on every render branch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [setup, tick],
+  );
+  const scanned = setup?.scan_state === "scaned";
+  const setupHelp =
+    phase === "connected" || phase === "applying"
+      ? "Weixin is linked but Hermes is not listening yet. Save and restart the gateway to finish setup."
+      : scanned
+        ? "Scanned. Confirm the login inside WeChat on your phone."
+        : "Open WeChat on your phone and scan this QR code to log in. This QR is not a browser URL.";
+  const alreadyLinked = Boolean(platform.weixin_setup?.account_set);
+
+  return (
+    <div className="rounded-sm border border-border bg-background/35 p-4">
+      <div className="grid gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            className="uppercase"
+            onClick={() => void start()}
+            disabled={
+              phase === "starting" || phase === "waiting" || phase === "applying"
+            }
+            prefix={
+              phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />
+            }
+          >
+            {phase === "starting" ? "Starting…" : "Log in with QR"}
+          </Button>
+          {alreadyLinked && (
+            <span className="text-xs text-muted-foreground">
+              A Weixin account is already linked. Scanning re-links this profile.
+            </span>
+          )}
+        </div>
+
+        {error && (
+          <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        {setup && (
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="grid gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {phase === "connected" || phase === "applying" ? (
+                  <Badge tone="success">Confirmed</Badge>
+                ) : scanned ? (
+                  <Badge tone="warning">Scanned</Badge>
+                ) : (
+                  <Badge tone="warning">Waiting for scan</Badge>
+                )}
+                <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
+                  {expiresIn}
+                </Badge>
+              </div>
+
+              <div className="text-sm text-muted-foreground">{setupHelp}</div>
+
+              {(phase === "connected" || phase === "applying") && (
+                <>
+                  {setup.account_id && (
+                    <div className="text-xs text-muted-foreground">
+                      Linked account:{" "}
+                      <span className="font-mono">{setup.account_id}</span>
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      className="uppercase"
+                      onClick={() => void apply()}
+                      disabled={phase === "applying"}
+                      prefix={
+                        phase === "applying" ? (
+                          <Spinner />
+                        ) : (
+                          <Save className="h-4 w-4" />
+                        )
+                      }
+                    >
+                      {phase === "applying" ? "Saving…" : "Save & restart"}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex flex-col items-center gap-3">
+              {qrDataUrl ? (
+                <div className="flex flex-col items-center gap-2">
+                  <img
+                    alt="Weixin login QR code"
+                    className="h-60 w-60 border border-border bg-white p-2"
+                    src={qrDataUrl}
+                  />
+                </div>
+              ) : (
+                <div className="flex h-60 w-60 flex-col items-center justify-center gap-3 border border-border bg-background/50 p-4 text-center">
+                  <Spinner className="text-2xl" />
+                  <div className="text-xs text-muted-foreground">
+                    Waiting for Weixin to provide a QR code…
+                  </div>
+                </div>
+              )}
+              {phase === "waiting" && (
+                <span className="text-center text-xs text-muted-foreground">
+                  Scan with the WeChat app on your phone.
                 </span>
               )}
               <Button size="sm" ghost onClick={() => void cancel()}>
