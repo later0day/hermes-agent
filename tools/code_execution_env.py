@@ -297,7 +297,16 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             return session_cwd
     from agent.runtime_cwd import scope_terminal_cwd
     raw = scope_terminal_cwd().strip()
-    for candidate in (os.path.expanduser(raw) if raw else "", os.getcwd()):
+    # os.getcwd() raises FileNotFoundError (not "") when the process's own
+    # working directory has been removed out from under it (e.g. a session
+    # cd'd into a scratch dir that a later cleanup rmdir'd). Without this
+    # guard the exception escapes and 500s the whole execute_code call,
+    # never reaching the staging_dir last-resort below.
+    try:
+        here = os.getcwd()
+    except FileNotFoundError:
+        here = ""
+    for candidate in (os.path.expanduser(raw) if raw else "", here):
         if candidate and os.path.isdir(candidate):
             return candidate
     return staging_dir
