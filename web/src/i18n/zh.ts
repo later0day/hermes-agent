@@ -78,6 +78,7 @@ export const zh: Translations = {
       plugins: "插件管理",
       sessions: "会话",
       skills: "技能",
+      memory: "记忆",
     },
     modelToolsSheetSubtitle: "与工具",
     modelToolsSheetTitle: "模型",
@@ -412,6 +413,17 @@ export const zh: Translations = {
       discord: "Discord",
       auxiliary: "辅助",
     },
+  },
+
+  memory: {
+    memoryDescription: "代理自己的长期笔记与工作记忆。",
+    userDescription: "代理对你的了解（偏好、事实、上下文）。",
+    memoryPlaceholder: "# 这个代理应当记住的内容…",
+    userPlaceholder: "# 代理对用户的了解…",
+    empty: "（空）",
+    unsavedChanges: "有未保存的更改",
+    saved: "{doc} 已保存",
+    failedToSave: "保存 {doc} 失败",
   },
 
   env: {

@@ -82,6 +82,7 @@ export const en: Translations = {
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Skills",
+      memory: "Memory",
     },
     modelToolsSheetSubtitle: "& tools",
     modelToolsSheetTitle: "Model",
@@ -482,6 +483,17 @@ export const en: Translations = {
       discord: "Discord",
       auxiliary: "Auxiliary",
     },
+  },
+
+  memory: {
+    memoryDescription: "The agent's own long-term notes and working memory.",
+    userDescription: "What the agent knows about you (preferences, facts, context).",
+    memoryPlaceholder: "# What this agent should remember…",
+    userPlaceholder: "# What the agent knows about the user…",
+    empty: "(empty)",
+    unsavedChanges: "Unsaved changes",
+    saved: "{doc} saved",
+    failedToSave: "Failed to save {doc}",
   },
 
   env: {

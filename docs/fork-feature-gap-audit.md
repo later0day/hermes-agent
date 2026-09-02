@@ -259,6 +259,18 @@ tool_loop_guardrails …）显示为 “Wake Word” 而非 “Wake_word”，�
 当前已有正式多语言体系，不能说“i18n 没合”。但部分新页面仍存在硬编码英文，因此
 局部覆盖仍不完整。正确方式是审计当前页面，不是机械回放 Fork locale 文件。
 
+**已落地（本次）：** 审计本轮新增页面的硬编码英文，最明显的缺口是 C1 的
+`MemoryPage.tsx`（描述、占位符、`(empty)`、`Unsaved changes`、`{doc} saved`/
+`Failed to save {doc}` 全是英文字面量）。做法：在 `i18n/types.ts` 新增**可选**
+`memory` 段（可选 → 只有 `en.ts`/`zh.ts` 需要补，其余 15 个全量 locale 省略即可，
+MemoryPage 内保留英文字面量兜底），并把 nav 增加可选 `memory` 键。MemoryPage 改为
+读 `t.memory`（缺失走 DocMeta 里的英文 fallback），nav item 补 `labelKey: "memory"`，
+`resolve-page-title.ts` 的 BUILTIN 加 `/memory → memory`（配 `?? ` 兜底满足 string
+返回类型）。en/zh 都填了对应文案。`npx tsc -b` 干净、`npm run build` 通过、dashboard
+重启正常、zh 文案已进 i18n bundle。其余 platform onboarding 面板（WhatsApp/Telegram/
+Weixin）沿用既有英文字面量模式，属同类既存约定，后续可按同一“可选段 + 英文兜底”
+增量本地化，不在本次范围强行铺开。
+
 ### 17. Google Dashboard theme
 
 Fork 的 Google 风格主题没有合入。它是完全独立的视觉增强。

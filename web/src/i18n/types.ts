@@ -100,6 +100,8 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      /** Optional — falls back to English literal until translated. */
+      memory?: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
@@ -504,6 +506,20 @@ export interface Translations {
       discord: string;
       auxiliary: string;
     };
+  };
+
+  // ── Memory page (MEMORY.md / USER.md editors) ──
+  // Optional: full locales that omit it fall back to English literals baked
+  // into MemoryPage. en/zh translate it.
+  memory?: {
+    memoryDescription: string;
+    userDescription: string;
+    memoryPlaceholder: string;
+    userPlaceholder: string;
+    empty: string;
+    unsavedChanges: string;
+    saved: string; // "{doc} saved"
+    failedToSave: string; // "Failed to save {doc}"
   };
 
   // ── Env / Keys page ──

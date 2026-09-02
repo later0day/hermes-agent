@@ -33,8 +33,9 @@ interface DocMeta {
   doc: MemoryDoc;
   icon: typeof Brain;
   title: string;
-  description: string;
-  placeholder: string;
+  // Fallback English strings; localized via the optional `memory` i18n section.
+  descriptionFallback: string;
+  placeholderFallback: string;
 }
 
 const DOCS: DocMeta[] = [
@@ -42,15 +43,16 @@ const DOCS: DocMeta[] = [
     doc: "MEMORY.md",
     icon: Brain,
     title: "MEMORY.md",
-    description: "The agent's own long-term notes and working memory.",
-    placeholder: "# What this agent should remember…",
+    descriptionFallback: "The agent's own long-term notes and working memory.",
+    placeholderFallback: "# What this agent should remember…",
   },
   {
     doc: "USER.md",
     icon: User,
     title: "USER.md",
-    description: "What the agent knows about you (preferences, facts, context).",
-    placeholder: "# What the agent knows about the user…",
+    descriptionFallback:
+      "What the agent knows about you (preferences, facts, context).",
+    placeholderFallback: "# What the agent knows about the user…",
   },
 ];
 
@@ -73,6 +75,28 @@ function MemoryEditor({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [exists, setExists] = useState(false);
+
+  // Localized copy for this doc; `memory` is an optional i18n section, so full
+  // locales that omit it fall back to the English literals baked into DocMeta.
+  const mem = t.memory;
+  const isUserDoc = meta.doc === "USER.md";
+  const description = mem
+    ? isUserDoc
+      ? mem.userDescription
+      : mem.memoryDescription
+    : meta.descriptionFallback;
+  const placeholder = mem
+    ? isUserDoc
+      ? mem.userPlaceholder
+      : mem.memoryPlaceholder
+    : meta.placeholderFallback;
+  const emptyLabel = mem?.empty ?? "(empty)";
+  const unsavedLabel = mem?.unsavedChanges ?? "Unsaved changes";
+  const savedMsg = (mem?.saved ?? "{doc} saved").replace("{doc}", meta.doc);
+  const failedMsg = (mem?.failedToSave ?? "Failed to save {doc}").replace(
+    "{doc}",
+    meta.doc,
+  );
 
   const load = useCallback(() => {
     let cancelled = false;
@@ -103,9 +127,9 @@ function MemoryEditor({
       await api.updateProfileMemory(profile || "default", meta.doc, text);
       setOriginal(text);
       setExists(true);
-      showToast(`${meta.doc} saved`, "success");
+      showToast(savedMsg, "success");
     } catch {
-      showToast(`Failed to save ${meta.doc}`, "error");
+      showToast(failedMsg, "error");
     } finally {
       setSaving(false);
     }
@@ -120,12 +144,12 @@ function MemoryEditor({
             {meta.title}
             {!loading && !exists && (
               <span className="text-xs font-normal text-muted-foreground">
-                (empty)
+                {emptyLabel}
               </span>
             )}
           </CardTitle>
           <CardDescription className="text-xs">
-            {meta.description}
+            {description}
           </CardDescription>
         </div>
         <Button
@@ -152,7 +176,7 @@ function MemoryEditor({
             <textarea
               id={`memory-editor-${meta.doc}`}
               className="flex min-h-[280px] w-full border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              placeholder={meta.placeholder}
+              placeholder={placeholder}
               value={text}
               onChange={(e) => setText(e.target.value)}
               spellCheck={false}
@@ -160,7 +184,7 @@ function MemoryEditor({
             <div className="flex items-center justify-end gap-2">
               {dirty && (
                 <span className="text-xs text-muted-foreground">
-                  Unsaved changes
+                  {unsavedLabel}
                 </span>
               )}
               <Button
