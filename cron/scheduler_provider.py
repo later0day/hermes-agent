@@ -90,6 +90,105 @@ def _existing_profile_homes(profile_homes: list) -> list:
     return live
 
 
+def _bound_platforms_for_profile(profile_name: str) -> set[str]:
+    """Lowercased platform names this profile has a dynamic source binding for.
+
+    A source-agent binding (``/agent use`` or the dashboard) maps a chat/group
+    to a profile with key ``source:<platform>:<type>:<chat_id>[:...]``; the
+    platform is the second segment. The presence of such a binding is PROOF
+    that this profile's traffic on that platform arrives through — and must be
+    answered on — the primary gateway's shared adapter for that platform (the
+    same "one shared credential serves several routed runtimes" topology the
+    inbound reply path honours via ``_registered_transport_adapter``). Giving
+    the secondary its own credential for that platform is a
+    ``duplicate_credential`` fatal, so it legitimately holds no adapter of its
+    own and must borrow the shared one for cron delivery.
+
+    Best-effort: any lookup failure returns an EMPTY set, so the augmentation
+    below is skipped and the fork's strict per-profile behaviour stands — a
+    missing/corrupt store must never cause a secondary to borrow the shared bot
+    without positive binding evidence (which would be cross-tenant misdelivery
+    once real per-tenant bots exist).
+    """
+    name = str(profile_name or "").strip()
+    if not name:
+        return set()
+    try:
+        from gateway.source_agent_binding import (
+            SourceAgentBindingStore,
+            DEFAULT_SOURCE_AGENT_BINDINGS_DB,
+        )
+
+        if not Path(DEFAULT_SOURCE_AGENT_BINDINGS_DB).exists():
+            return set()
+        store = SourceAgentBindingStore(db_path=DEFAULT_SOURCE_AGENT_BINDINGS_DB)
+        try:
+            platforms: set[str] = set()
+            # Filter by profile in SQL so one tenant's bindings can never
+            # authorise another tenant's borrow.
+            for binding in store.list_bindings(profile_name=name):
+                parts = (binding.source_binding_key or "").split(":")
+                if len(parts) >= 2 and parts[0] == "source" and parts[1]:
+                    platforms.add(parts[1].lower())
+            return platforms
+        finally:
+            store.close()
+    except Exception:
+        import logging
+
+        logging.getLogger("cron.scheduler_provider").debug(
+            "binding-platform lookup for profile %r failed; "
+            "skipping shared-adapter augmentation",
+            profile_name,
+            exc_info=True,
+        )
+        return set()
+
+
+def _augment_secondary_adapters_from_shared(
+    secondary_adapters: dict,
+    *,
+    shared_adapters,
+    profile_name: str,
+) -> dict:
+    """Return a per-profile adapter map with shared adapters added ONLY for the
+    platforms this profile has dynamic bindings for (and does not already own).
+
+    Preserves the fork's core rule — a secondary with its OWN adapter for a
+    platform uses that adapter, never the shared/default one (no wrong-bot
+    cross-delivery). The single, evidence-gated exception: a platform the
+    secondary has a source binding for but holds no adapter of its own is
+    delivered through the shared adapter (the credential lives on the primary;
+    the binding proves this profile's traffic on that platform is the primary's
+    to carry). Forward-compatible with per-tenant bots: once a tenant configures
+    its own adapter for a platform, ``platform in target`` short-circuits and no
+    borrow happens.
+
+    When no platform is actually borrowed, the ORIGINAL ``secondary_adapters``
+    object is returned unchanged (identity preserved) — the fork's strict
+    per-profile behaviour is byte-for-byte intact whenever there is no binding
+    evidence to act on.
+    """
+    original = secondary_adapters or {}
+    shared = shared_adapters or {}
+    if not shared:
+        return original
+    bound_platforms = _bound_platforms_for_profile(profile_name)
+    if not bound_platforms:
+        return original
+    borrowable = {
+        platform: adapter
+        for platform, adapter in shared.items()
+        if platform not in original
+        and getattr(platform, "value", str(platform)).lower() in bound_platforms
+    }
+    if not borrowable:
+        return original
+    target = dict(original)
+    target.update(borrowable)
+    return target
+
+
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
 
@@ -735,16 +834,23 @@ class InProcessCronScheduler(CronScheduler):
                                 # Deliver each profile's cron via ITS OWN adapters.
                                 # The shared `adapters` set belongs to the default
                                 # profile only. A secondary profile uses its own map
-                                # in profile_adapters[name], which is populated only
-                                # once that profile's bot connects. A secondary must
-                                # NEVER fall back to the default profile's `adapters`
-                                # (that ships its cron output through the wrong bot),
-                                # so before its adapter connects — map absent or empty
-                                # — it simply does not deliver this tick.
+                                # in profile_adapters[name]; it must NEVER blanket-
+                                # fall-back to the default profile's `adapters` (that
+                                # ships its cron output through the wrong bot). The
+                                # one evidence-gated exception: platforms this profile
+                                # has a dynamic source binding for but holds no adapter
+                                # of its own (the credential lives on the primary; a
+                                # second copy would be a duplicate_credential fatal) —
+                                # those borrow the shared adapter, matching how the
+                                # inbound reply path answers on the receiving adapter.
                                 if _pname is None or _pname == default_profile:
                                     _tick_adapters = adapters
                                 else:
-                                    _tick_adapters = (profile_adapters or {}).get(_pname) or {}
+                                    _tick_adapters = _augment_secondary_adapters_from_shared(
+                                        (profile_adapters or {}).get(_pname) or {},
+                                        shared_adapters=adapters,
+                                        profile_name=_pname,
+                                    )
                                 cron_tick(
                                     verbose=False,
                                     adapters=_tick_adapters,

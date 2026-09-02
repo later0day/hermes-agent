@@ -302,6 +302,43 @@ satellite profile 视而不见，导致 xcx 的 dingtalk cron 任务全部被
 （`*/10 * * * *`）在修复前每次 ~80ms `failed/blocked_config`、无 LLM 调用；部署后首个
 tick（11:50:39，PID 1933784）运行完整 ~2m45s LLM turn 并 `completed`、成功投递。
 
+**A 组第二个衍生修复**：preflight 打通后，satellite（xcx）的 dingtalk cron
+任务能跑完 LLM turn，但**投递仍被静默跳过**，Dashboard 上每个任务显示
+`delivery: platform 'dingtalk' not configured/enabled`。根因是两道闸门：
+
+1. multiplex ticker 只把 default 的共享 adapter 交给 default，secondary
+   profile 用 `profile_adapters[name]`（只含它自己连上的 bot），dingtalk 的
+   凭证只在 default 上（satellite 再配一份是 `duplicate_credential` fatal），
+   所以 xcx 的 tick adapter map 里根本没有 dingtalk。
+2. 即便借到 adapter，`_deliver_result` 里 `resolve_delivery_transport` 仍会因
+   xcx 自己的 dingtalk 配置 `enabled=False` 而返回 None，触发
+   `not configured/enabled` 跳过；且 live-send 路径会重建
+   `DeliveryRouter(config, adapters)` 再解析一次，同样失败并回退到无凭证的
+   standalone 路径（`No adapter configured for dingtalk`）。
+
+修复分两半（对称于既有 relay 逃生舱、复用 preflight 的
+`_delivery_platform_routed_from_primary_gateway` 授权判定）：
+
+- `cron/scheduler_provider.py`：`_bound_platforms_for_profile` +
+  `_augment_secondary_adapters_from_shared` — 仅当该 profile 有该平台的动态
+  source binding、且自己没有该平台 adapter 时，才把共享 adapter 借入本次 tick
+  的 map（无绑定证据不借，前向兼容多租户自带 bot：一旦租户自配 adapter 即短路
+  不借，杜绝错 bot 投递）。
+- `cron/scheduler.py::_deliver_result`：satellite-borrow 逃生舱——当共享 adapter
+  在 map 中、且 primary 把该平台路由到本 profile（静态 route 或动态 binding），
+  在**本次调用的** config 副本上把该平台置 `enabled=True` 并重解析 transport，
+  使随后重建的 `DeliveryRouter` 也解析到同一借用 adapter；未路由/无 live
+  adapter 时保持 fail-closed。
+
+线上真实自然 cron tick 验证（PID 2020755，16:40）：job `3a383d1cde67`
+（`deliver=dingtalk:cidUKHyy...`）修复前每 tick 被
+`not configured/enabled` 跳过；部署后 16:40:19 跑完 ~2m30s LLM turn，
+`last_delivery_error=None`，借用的共享 dingtalk adapter 于 16:42:47 对目标群
+实际发起 robot-native proactive send（此前从未到达 adapter）。整批 `not
+configured/enabled` 与 `No adapter configured` 归零。（16:42 的 AI Card 500
+`未知错误` 为钉钉服务端卡片 SDK 既有告警，修复前 13:56 同样出现，非投递失败，
+adapter 已回退到 robot-native `sampleMarkdown` 成功送达。）
+
 ### B. 按官方架构重新设计
 
 1. AgentProxy provider 插件；

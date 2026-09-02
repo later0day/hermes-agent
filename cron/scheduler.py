@@ -3261,9 +3261,62 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         from gateway.delivery import resolve_delivery_transport
 
         transport = resolve_delivery_transport(platform, config, adapters)
+        runtime_adapter = None
+        pconfig = None
+        if transport is None:
+            # Satellite-borrow escape hatch (multiplex). Under
+            # ``gateway.multiplex_profiles`` a satellite profile's cron is ticked
+            # by the primary gateway with the primary's live adapter for a
+            # platform the satellite is BOUND to but holds no credential of its
+            # own (a second token is a ``duplicate_credential`` fatal). The
+            # multiplex ticker lends that shared adapter into this tick's
+            # ``adapters`` map (scheduler_provider._augment_secondary_adapters
+            # _from_shared), but ``resolve_delivery_transport`` still rejects it
+            # because THIS home's own config reads the platform as disabled (it
+            # legitimately has no credentials here). That is the exact shape of
+            # the relay escape hatch below: the credential lives elsewhere and
+            # the native configured/enabled gate must not veto a live transport
+            # the gateway already owns. Authorize the borrow with the SAME
+            # primary-routing predicate the preflight uses (static
+            # ``profile_routes`` OR a dynamic source binding for this profile),
+            # so an unrouted platform still fails closed and no wrong-bot
+            # cross-delivery is possible once real per-tenant bots exist.
+            _borrow_adapter = (adapters or {}).get(platform)
+            if _borrow_adapter is not None and \
+                    _delivery_platform_routed_from_primary_gateway(platform_name):
+                import dataclasses as _dataclasses
+                from gateway.config import PlatformConfig
+
+                _own_config = config.platforms.get(platform)
+                pconfig = (
+                    _dataclasses.replace(_own_config, enabled=True)
+                    if _own_config is not None
+                    else PlatformConfig(enabled=True)
+                )
+                runtime_adapter = _borrow_adapter
+                # The live-send path rebuilds a ``DeliveryRouter(config,
+                # adapters)`` and re-runs ``resolve_delivery_transport`` against
+                # THIS ``config``, so the borrow must also be reflected there or
+                # the router raises "No adapter configured for <platform>" and
+                # falls through to the standalone (credential-less) path. Enable
+                # the platform on this per-call config copy so the router
+                # resolves the same borrowed adapter. ``config`` is a per-call
+                # ``load_gateway_config()`` local (never a shared/cached object),
+                # so this mutation is scoped to this delivery only.
+                config.platforms[platform] = pconfig
+                transport = resolve_delivery_transport(platform, config, adapters)
+                logger.info(
+                    "Job '%s': delivering %s via primary gateway's shared "
+                    "adapter (satellite has no own credential; binding-routed)",
+                    job["id"], platform_name,
+                )
         if transport is not None:
             pconfig = transport.config
             runtime_adapter = transport.adapter
+        elif runtime_adapter is not None:
+            # Borrowed shared adapter resolved above — skip the standalone /
+            # relay-fronted fallbacks (they'd re-derive the disabled own config).
+            pass
         else:
             # No live transport. A relay-fronted platform's ONLY sender is the
             # gateway's live relay adapter — there is no standalone fallback
