@@ -208,6 +208,56 @@ export const nousBlueTheme: DashboardTheme = {
 };
 
 /**
+ * Google Material-inspired light theme — clean white surfaces, Google-blue
+ * (#1a73e8) accents, Roboto/Google Sans-style typography, and roomy rounded
+ * corners in the Material vein. A fully independent visual skin; the palette
+ * `midground` carries the primary accent, and `colorOverrides` pin the
+ * Material status colors (blue primary, green success, amber warning, red
+ * destructive) so cards/buttons read as Google chrome rather than the derived
+ * teal cascade.
+ */
+export const googleTheme: DashboardTheme = {
+  name: "google",
+  label: "Google",
+  description: "Material-inspired light — Google-blue accents on clean white",
+  palette: {
+    background: { hex: "#ffffff", alpha: 1 },
+    midground: { hex: "#1a73e8", alpha: 1 },
+    foreground: { hex: "#202124", alpha: 0 },
+    warmGlow: "rgba(26, 115, 232, 0.10)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Roboto", "Google Sans", ${SYSTEM_SANS}`,
+    fontMono: `"Roboto Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap",
+    letterSpacing: "0.01em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.75rem",
+  },
+  colorOverrides: {
+    primary: "#1a73e8",
+    primaryForeground: "#ffffff",
+    accent: "#1a73e8",
+    ring: "#1a73e8",
+    success: "#188038",
+    warning: "#f9ab00",
+    destructive: "#d93025",
+  },
+  terminalBackground: "#ffffff",
+  terminalForeground: "#202124",
+  seriesColors: {
+    inputTokenAccent: "#1a73e8",
+    outputTokenAccent: "#188038",
+  },
+  swatchColors: ["#202124", "#1a73e8", "#ffffff"],
+};
+
+/**
  * Same look as ``defaultTheme`` but with a larger root font size, looser
  * line-height, and ``spacious`` density so every rem-based size in the
  * dashboard scales up. For users who find the default 15px UI too dense.
@@ -232,6 +282,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
   "nous-blue": nousBlueTheme,
+  google: googleTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

@@ -275,6 +275,18 @@ Weixin）沿用既有英文字面量模式，属同类既存约定，后续可�
 
 Fork 的 Google 风格主题没有合入。它是完全独立的视觉增强。
 
+**已落地（本次）：** 当前 Dashboard 已有完整的主题体系（`web/src/themes/presets.ts`
+的 `BUILTIN_THEMES` + 后端 `_BUILTIN_DASHBOARD_THEMES` + `GET /api/dashboard/themes`
++ ThemeProvider/ThemeSwitcher），所以不是“整套主题机制缺失”，只需按现有 schema
+新增一个 Google 风格预设。新增 `googleTheme`（Material 风格浅色：白底、Google-blue
+`#1a73e8` 强调色、Roboto/Roboto Mono 字体经 `fontUrl` 注入、`0.75rem` 圆角，
+`colorOverrides` 钉住 Material 状态色 primary/success/warning/destructive），注册进
+`BUILTIN_THEMES`，并同步后端 `_BUILTIN_DASHBOARD_THEMES`（label/description）与
+`dashboard.theme` 的 schema `options`（顺带补回缺失的 `nous-blue`）。前后端主题名
+保持一致。`npx tsc -b` 干净、`npm run build` 通过、Python 导入校验 `google` 已入注册表、
+dashboard 重启后 `/api/dashboard/themes` 与 `/api/config/schema` 均 200 且 options
+含 `google`，预设已进 `themes-*.js` bundle。
+
 ### 18. Dashboard ErrorBoundary
 
 Fork 有全局 `ErrorBoundary.tsx`，当前 Web Dashboard 没有明显等价的全局边界。
