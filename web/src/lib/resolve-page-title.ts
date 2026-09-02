@@ -10,6 +10,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/skills": "skills",
   "/plugins": "plugins",
   "/profiles": "profiles",
+  "/memory": "memory",
   "/config": "config",
   "/env": "keys",
   "/docs": "documentation",
@@ -42,7 +43,7 @@ export function resolvePageTitle(
   }
   const key = BUILTIN[normalized];
   if (key) {
-    return t.app.nav[key];
+    return t.app.nav[key] ?? BUILTIN_LITERAL[normalized] ?? "Memory";
   }
   const literal = BUILTIN_LITERAL[normalized];
   if (literal) {
