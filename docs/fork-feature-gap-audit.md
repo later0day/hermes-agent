@@ -163,6 +163,17 @@ GET/PUT /api/profiles/{name}/memory/USER.md
 当前 Dashboard 可编辑 `SOUL.md`，但不能独立查看和编辑 `MEMORY.md`、`USER.md`，
 也没有 memory 文件/provider/state.db 统计页。
 
+**已落地（`6823fbf315`）：** 后端新增 `GET/PUT /api/profiles/{name}/memory/{doc}`，
+`{doc}` 用允许清单（`MEMORY.md`/`USER.md`）校验，杜绝穿越 `memories/`；`{name}` 走
+`_resolve_profile_dir`（校验名字 + 存在性）。文件缺失返回
+`{content:"", exists:false}`（沿用 SOUL.md 读取语义，编辑器可从空白起步），写入用
+`atomic_write_text` 原子替换，避免中断的保存把文档截断成空。前端新增独立
+`MemoryPage.tsx`，两个编辑器消费全局 profile scope，接入 lazy 路由 + `/memory` 导航
+（Brain 图标）；`api.getProfileMemory`/`updateProfileMemory` 镜像 SOUL 方法。线上验证
+登录 200；GET default MEMORY(空)/USER(44)、xcx MEMORY(1842)；PUT 含 unicode + 换行
+无损往返并成功还原；非法 doc 在 GET/PUT 均 404。`tsc -b` 干净、构建
+`MemoryPage-CL-pVAOh.js`、重启后资源 200。
+
 ### 12. Profile binding summary
 
 动态 binding 后端和 `/agent` 命令已经完成，但 Dashboard ProfilesPage 还不能显示
@@ -422,7 +433,7 @@ configured/enabled` 与 `No adapter configured` 归零。
 
 ### C. Dashboard 独立增强
 
-1. MemoryPage；
+1. MemoryPage — 已落地 `6823fbf315`；
 2. binding summary — 已落地 `dfe7224f99`；
 3. Weixin QR；
 4. Skill delete；
