@@ -28,6 +28,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -42,6 +43,8 @@ import type {
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -207,6 +210,33 @@ export default function SkillsPage() {
       /* non-fatal: the drawer already toasted on the failing write */
     }
   };
+
+  /* ---- Delete (uninstall) a skill ----
+   * Backend spawns `hermes skills uninstall <name> --yes` async (returns a
+   * pid). We optimistically drop the row on success, then reconcile with a
+   * fresh getSkills so a failed/partial uninstall re-appears. Scoped to the
+   * sidebar profile switcher like every other write on this page. */
+  const skillDelete = useConfirmDelete<string>({
+    onDelete: useCallback(
+      async (name: string) => {
+        try {
+          await api.uninstallSkillFromHub(name, selectedProfile || undefined);
+          setSkills((prev) => prev.filter((s) => s.name !== name));
+          showToast(`Uninstalling ${name}…`, "success");
+          // Reconcile against the real list (the CLI runs async; a builtin
+          // or in-use skill may survive, in which case it should re-appear).
+          api
+            .getSkills(selectedProfile || undefined)
+            .then(setSkills)
+            .catch(() => {});
+        } catch (e) {
+          showToast(`${t.status.error}: ${e}`, "error");
+          throw e;
+        }
+      },
+      [selectedProfile, showToast, t.status.error],
+    ),
+  });
 
   /* ---- Skill editor (create / edit SKILL.md) ---- */
   const openCreateEditor = useCallback(() => {
@@ -497,6 +527,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => skillDelete.requestDelete(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -559,6 +590,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => skillDelete.requestDelete(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -670,6 +702,14 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
+      <DeleteConfirmDialog
+        open={skillDelete.isOpen}
+        onCancel={skillDelete.cancel}
+        onConfirm={skillDelete.confirm}
+        title="Delete skill?"
+        description={`This uninstalls "${skillDelete.pendingId ?? ""}" (runs \`hermes skills uninstall\`). Built-in or in-use skills may reappear. This cannot be undone for hub- or user-installed skills.`}
+        loading={skillDelete.isDeleting}
+      />
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -738,6 +778,7 @@ function SkillRow({
   toggling,
   onToggle,
   onEdit,
+  onDelete,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -773,6 +814,16 @@ function SkillRow({
       >
         <Pencil />
       </Button>
+      <Button
+        ghost
+        size="icon"
+        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+        title="Delete skill"
+        aria-label={`Delete ${skill.name}`}
+        onClick={onDelete}
+      >
+        <Trash2 />
+      </Button>
     </div>
   );
 }
@@ -805,6 +856,7 @@ interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
   onEdit: () => void;
+  onDelete: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }
