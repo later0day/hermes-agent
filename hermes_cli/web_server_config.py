@@ -136,7 +136,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
-        "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        "Web dashboard visual theme", "default", "nous-blue", "google", "midnight", "ember", "mono", "cyberpunk", "rose"
     ),
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
