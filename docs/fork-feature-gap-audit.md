@@ -284,11 +284,23 @@ Fork 把接收循环等待从 10 分钟改为 1 分钟。当前官方发送路�
 
 ## 七、后续评估分组
 
-### A. 独立、明确
+### A. 独立、明确 — 已全部落地并线上验证
 
-1. Cron creating-chat IDOR 隔离；
-2. Shutdown phantom `systemctl --user` 修复；
-3. Turn log resolved profile。
+1. Cron creating-chat IDOR 隔离 — `213e669e30`（choke-point `_caller_may_touch_job`），
+   已用部署后的 `cronjob()` 工具跑通 13 项功能 + 8 项状态级真实用例；
+2. Shutdown phantom `systemctl --user` 修复 — `cf40701a42`，真实 systemd A/B 验证
+   （phantom 90s 被拒、真实 210s 采用）；
+3. Turn log resolved profile — `a9f0eb352a`，真实 `/p/xcx/` API 用例验证日志
+   `profile=xcx`。
+
+**A 组衍生修复**：在验证 (1) 时发现 preflight escape hatch 只看静态
+`profile_routes`，对动态 `source_agent_bindings.sqlite`（运行时 `/agent use`）绑定的
+satellite profile 视而不见，导致 xcx 的 dingtalk cron 任务全部被
+`blocked_config`（"no gateway credentials configured (not connected)"）永久拦在 LLM
+调用之前。修复 `db16a085b0`（`cron/scheduler.py::_delivery_platform_routed_from_primary_gateway`
+同时查询动态绑定 store）。线上真实自然 cron tick 验证：job `3a383d1cde67`
+（`*/10 * * * *`）在修复前每次 ~80ms `failed/blocked_config`、无 LLM 调用；部署后首个
+tick（11:50:39，PID 1933784）运行完整 ~2m45s LLM turn 并 `completed`、成功投递。
 
 ### B. 按官方架构重新设计
 
