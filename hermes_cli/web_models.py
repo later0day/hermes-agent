@@ -628,6 +628,10 @@ class ProfileSoulUpdate(BaseModel):
     content: str
 
 
+class ProfileMemoryUpdate(BaseModel):
+    content: str
+
+
 class ProfileActiveUpdate(BaseModel):
     name: str
 

@@ -749,6 +749,23 @@ export const api = {
         body: JSON.stringify({ content }),
       },
     ),
+  getProfileMemory: (name: string, doc: "MEMORY.md" | "USER.md") =>
+    fetchJSON<{ content: string; exists: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(doc)}`,
+    ),
+  updateProfileMemory: (
+    name: string,
+    doc: "MEMORY.md" | "USER.md",
+    content: string,
+  ) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(doc)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
 
   // Skills & Toolsets
   //

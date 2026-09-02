@@ -37,6 +37,7 @@ from hermes_cli.web_models import (
     ProfileImport,
     ProfileRename,
     ProfileSoulUpdate,
+    ProfileMemoryUpdate,
     ProfileDescriptionUpdate,
     ProfileModelUpdate,
     ProfileDescribeAuto,
@@ -1191,6 +1192,58 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
+    return {"ok": True}
+
+
+# Only the two canonical memory documents are editable from the dashboard.
+# MEMORY.md = the agent's own notes; USER.md = what it knows about the user
+# (see tools/memory_tool.py). The path segment is validated against this map
+# so a caller can't traverse into arbitrary files under memories/.
+_PROFILE_MEMORY_FILES = {"MEMORY.md", "USER.md"}
+
+
+@router.get("/api/profiles/{name}/memory/{doc}")
+async def get_profile_memory(name: str, doc: str):
+    """Read a profile's ``memories/<doc>`` (MEMORY.md or USER.md).
+
+    Mirrors the SOUL.md read seam: a missing file is reported as
+    ``{"content": "", "exists": False}`` rather than a 404, so the editor can
+    render an empty document the user can start filling in.
+    """
+    if doc not in _PROFILE_MEMORY_FILES:
+        raise HTTPException(status_code=404, detail="Unknown memory document")
+    mem_path = _resolve_profile_dir(name) / "memories" / doc
+    if mem_path.exists():
+        try:
+            return {"content": mem_path.read_text(encoding="utf-8"), "exists": True}
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Could not read {doc}: {e}")
+    return {"content": "", "exists": False}
+
+
+@router.put("/api/profiles/{name}/memory/{doc}")
+async def update_profile_memory(name: str, doc: str, body: ProfileMemoryUpdate):
+    """Replace a profile's ``memories/<doc>`` from the dashboard editor.
+
+    Uses the same atomic-replace discipline as SOUL.md so an interrupted save
+    can't truncate the document to empty (which the paired GET would then
+    report as "never set"). The ``memories/`` directory is created on first
+    write; MEMORY.md/USER.md are not secrets, so create_mode mirrors SOUL.md.
+    """
+    if doc not in _PROFILE_MEMORY_FILES:
+        raise HTTPException(status_code=404, detail="Unknown memory document")
+    mem_dir = _resolve_profile_dir(name) / "memories"
+    mem_path = mem_dir / doc
+    try:
+        from utils import atomic_write_text
+
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            mem_path, body.content, preserve_mode=True, create_mode=0o644
+        )
+    except OSError as e:
+        _log.exception("PUT /api/profiles/%s/memory/%s failed", name, doc)
+        raise HTTPException(status_code=500, detail=f"Could not write {doc}: {e}")
     return {"ok": True}
 
 

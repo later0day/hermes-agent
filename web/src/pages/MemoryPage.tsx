@@ -1,0 +1,223 @@
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
+import { Brain, RotateCw, Save, User } from "lucide-react";
+import { api } from "@/lib/api";
+import { useProfileScope } from "@/contexts/useProfileScope";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { useI18n } from "@/i18n";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Label } from "@nous-research/ui/ui/components/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@nous-research/ui/ui/components/card";
+
+/* ------------------------------------------------------------------ */
+/*  Memory documents                                                   */
+/* ------------------------------------------------------------------ */
+
+type MemoryDoc = "MEMORY.md" | "USER.md";
+
+interface DocMeta {
+  doc: MemoryDoc;
+  icon: typeof Brain;
+  title: string;
+  description: string;
+  placeholder: string;
+}
+
+const DOCS: DocMeta[] = [
+  {
+    doc: "MEMORY.md",
+    icon: Brain,
+    title: "MEMORY.md",
+    description: "The agent's own long-term notes and working memory.",
+    placeholder: "# What this agent should remember…",
+  },
+  {
+    doc: "USER.md",
+    icon: User,
+    title: "USER.md",
+    description: "What the agent knows about you (preferences, facts, context).",
+    placeholder: "# What the agent knows about the user…",
+  },
+];
+
+/* ------------------------------------------------------------------ */
+/*  Single memory-document editor card                                 */
+/* ------------------------------------------------------------------ */
+
+function MemoryEditor({
+  meta,
+  profile,
+  showToast,
+}: {
+  meta: DocMeta;
+  profile: string;
+  showToast: (msg: string, kind: "success" | "error") => void;
+}) {
+  const { t } = useI18n();
+  const [text, setText] = useState("");
+  const [original, setOriginal] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [exists, setExists] = useState(false);
+
+  const load = useCallback(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getProfileMemory(profile || "default", meta.doc)
+      .then((res) => {
+        if (cancelled) return;
+        setText(res.content);
+        setOriginal(res.content);
+        setExists(res.exists);
+      })
+      .catch(() => !cancelled && showToast(t.common.loading, "error"))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, meta.doc, showToast, t]);
+
+  useEffect(() => load(), [load]);
+
+  const dirty = text !== original;
+  const Icon = meta.icon;
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateProfileMemory(profile || "default", meta.doc, text);
+      setOriginal(text);
+      setExists(true);
+      showToast(`${meta.doc} saved`, "success");
+    } catch {
+      showToast(`Failed to save ${meta.doc}`, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card className="rounded-none">
+      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+        <div className="min-w-0">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Icon className="h-4 w-4 text-muted-foreground" />
+            {meta.title}
+            {!loading && !exists && (
+              <span className="text-xs font-normal text-muted-foreground">
+                (empty)
+              </span>
+            )}
+          </CardTitle>
+          <CardDescription className="text-xs">
+            {meta.description}
+          </CardDescription>
+        </div>
+        <Button
+          ghost
+          size="xs"
+          className="shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={() => load()}
+          disabled={loading || saving}
+          aria-label={t.common.refresh}
+        >
+          <RotateCw />
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <div className="flex min-h-[280px] items-center justify-center">
+            <Spinner />
+          </div>
+        ) : (
+          <>
+            <Label htmlFor={`memory-editor-${meta.doc}`} className="sr-only">
+              {meta.title}
+            </Label>
+            <textarea
+              id={`memory-editor-${meta.doc}`}
+              className="flex min-h-[280px] w-full border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              placeholder={meta.placeholder}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              spellCheck={false}
+            />
+            <div className="flex items-center justify-end gap-2">
+              {dirty && (
+                <span className="text-xs text-muted-foreground">
+                  Unsaved changes
+                </span>
+              )}
+              <Button
+                size="sm"
+                className="uppercase"
+                prefix={<Save />}
+                onClick={handleSave}
+                disabled={saving || !dirty}
+              >
+                {saving ? t.common.saving : t.common.save}
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  MemoryPage — MEMORY.md + USER.md editors for the scoped profile    */
+/* ------------------------------------------------------------------ */
+
+export default function MemoryPage() {
+  const { toast, showToast } = useToast();
+  const { setAfterTitle, setEnd } = usePageHeader();
+  const { profile: selectedProfile } = useProfileScope();
+
+  const scopeLabel = useMemo(
+    () => selectedProfile || "default",
+    [selectedProfile],
+  );
+
+  useLayoutEffect(() => {
+    setAfterTitle(
+      <span className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
+        {scopeLabel}
+      </span>,
+    );
+    return () => {
+      setAfterTitle(null);
+      setEnd(null);
+    };
+  }, [scopeLabel, setAfterTitle, setEnd]);
+
+  return (
+    <div className="mx-auto w-full max-w-3xl space-y-4 p-4">
+      {DOCS.map((meta) => (
+        <MemoryEditor
+          // Remount editors when the profile changes so state resets cleanly.
+          key={`${scopeLabel}:${meta.doc}`}
+          meta={meta}
+          profile={selectedProfile}
+          showToast={showToast}
+        />
+      ))}
+      <Toast toast={toast} />
+    </div>
+  );
+}
