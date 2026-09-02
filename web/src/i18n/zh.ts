@@ -427,6 +427,19 @@ export const zh: Translations = {
     },
   },
 
+  memory: {
+    memoryDescription: "代理自己的长期笔记与工作记忆。",
+    userDescription: "代理对你的了解（偏好、事实、上下文）。",
+    memoryPlaceholder: "# 这个代理应当记住的内容…",
+    userPlaceholder: "# 代理对用户的了解…",
+    empty: "（空）",
+    unsavedChanges: "有未保存的更改",
+    saved: "{doc} 已保存",
+    failedToSave: "保存 {doc} 失败",
+    preview: "预览",
+    edit: "编辑",
+  },
+
   env: {
     changesNote: "更改会立即保存到磁盘。活跃会话将自动获取新密钥。",
     confirmClearMessage: "该变量的已存值将从 .env 文件中删除。无法在此界面撤销。",

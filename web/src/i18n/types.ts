@@ -555,6 +555,23 @@ export interface Translations {
     };
   };
 
+  // ── Memory page (MEMORY.md / USER.md editors) ──
+  // Optional: full locales that omit it fall back to English literals baked
+  // into MemoryPage. en/zh translate it.
+  memory?: {
+    memoryDescription: string;
+    userDescription: string;
+    memoryPlaceholder: string;
+    userPlaceholder: string;
+    empty: string;
+    unsavedChanges: string;
+    saved: string; // "{doc} saved"
+    failedToSave: string; // "Failed to save {doc}"
+    /** Edit/preview toggle — optional, English fallback. */
+    preview?: string;
+    edit?: string;
+  };
+
   // ── Env / Keys page ──
   env: {
     changesNote: string;
