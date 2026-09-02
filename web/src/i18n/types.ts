@@ -105,6 +105,8 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      /** Optional — falls back to English literal until translated. */
+      memory?: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
