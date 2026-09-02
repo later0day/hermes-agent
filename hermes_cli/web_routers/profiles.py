@@ -785,6 +785,111 @@ async def list_profiles_endpoint():
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
+def _decode_source_binding_key(key: str) -> Dict[str, Any]:
+    """Best-effort decode of a ``source:<platform>:<scope>:<chat_id>`` key.
+
+    Binding keys are built by ``build_source_binding_key`` from the session
+    identity, so ``chat_id`` can itself contain ``:`` (DingTalk conversation
+    ids, Slack workspace scope, etc). We only split off the leading, fixed
+    fields (namespace, platform, scope) and keep the remainder as the raw
+    chat id — never a lossy full split. Returns a display-friendly shape; the
+    raw key is always preserved by the caller for exactness.
+    """
+    raw = str(key or "")
+    body = raw[len("source:"):] if raw.startswith("source:") else raw
+    parts = body.split(":", 2)
+    platform = parts[0] if parts else ""
+    scope = parts[1] if len(parts) > 1 else ""
+    chat_id = parts[2] if len(parts) > 2 else ""
+    # Known scope tokens today are "group" and "dm"; anything else is passed
+    # through verbatim so a future scope isn't silently mislabeled.
+    if scope not in ("group", "dm"):
+        # No recognizable scope token — treat everything after platform as the
+        # chat id so we don't drop information.
+        scope = ""
+        chat_id = body[len(platform) + 1:] if body.startswith(platform + ":") else body
+    return {"platform": platform, "scope": scope, "chat_id": chat_id}
+
+
+@router.get("/api/profiles/bindings")
+async def get_profiles_bindings():
+    """Read-only summary of which sources route to which profile.
+
+    Merges the two routing surfaces so the dashboard can show, per profile,
+    what feeds it:
+
+      * ``static`` — ``gateway.profile_routes`` from config (declarative,
+        platform + chat/guild/thread → profile).
+      * ``dynamic`` — runtime ``/agent use`` bindings from the
+        source→agent binding store (``gateway_source_agent_bindings.sqlite``).
+
+    Grouped by profile name. This is a management/observability view; it does
+    not mutate anything and never returns fallback webhook secrets (only a
+    boolean ``has_fallback_webhook`` flag).
+    """
+    def _collect() -> Dict[str, Any]:
+        by_profile: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+        def _bucket(name: str) -> Dict[str, Any]:
+            slot = by_profile.get(name)
+            if slot is None:
+                slot = {"profile": name, "static": [], "dynamic": []}
+                by_profile[name] = slot
+            return slot
+
+        # ── Static routes from config ──────────────────────────────────
+        try:
+            from gateway.config import load_gateway_config
+
+            cfg = load_gateway_config()
+            for route in getattr(cfg, "profile_routes", None) or []:
+                _bucket(route.profile)["static"].append(
+                    {
+                        "name": route.name,
+                        "platform": route.platform,
+                        "guild_id": route.guild_id,
+                        "chat_id": route.chat_id,
+                        "thread_id": route.thread_id,
+                        "enabled": route.enabled,
+                    }
+                )
+        except Exception:
+            _log.exception("GET /api/profiles/bindings: static route load failed")
+
+        # ── Dynamic runtime bindings from the store ────────────────────
+        try:
+            from gateway.source_agent_binding import SourceAgentBindingStore
+
+            store = SourceAgentBindingStore()
+            try:
+                for b in store.list_bindings():
+                    decoded = _decode_source_binding_key(b.source_binding_key)
+                    _bucket(b.profile_name)["dynamic"].append(
+                        {
+                            "source_binding_key": b.source_binding_key,
+                            "platform": decoded["platform"],
+                            "scope": decoded["scope"],
+                            "chat_id": decoded["chat_id"],
+                            "agent_id": b.agent_id,
+                            "has_fallback_webhook": bool(
+                                (b.fallback_extra or {}).get("session_webhook")
+                            ),
+                            "created_at": b.created_at,
+                            "created_by_name": b.created_by_name,
+                            "updated_at": b.updated_at,
+                            "updated_by_name": b.updated_by_name,
+                        }
+                    )
+            finally:
+                store.close()
+        except Exception:
+            _log.exception("GET /api/profiles/bindings: dynamic binding load failed")
+
+        return {"bindings": list(by_profile.values())}
+
+    return await run_in_threadpool(_collect)
+
+
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod

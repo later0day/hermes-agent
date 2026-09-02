@@ -653,6 +653,10 @@ export const api = {
   // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  getProfileBindings: () =>
+    fetchJSON<{ bindings: ProfileBindingSummary[] }>(
+      "/api/profiles/bindings",
+    ),
   getActiveProfile: () =>
     fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
   setActiveProfile: (name: string) =>
@@ -2189,6 +2193,34 @@ export interface ProfileInfo {
   distribution_version: string | null;
   distribution_source: string | null;
   has_alias: boolean;
+}
+
+export interface ProfileStaticRoute {
+  name: string;
+  platform: string;
+  guild_id: string | null;
+  chat_id: string | null;
+  thread_id: string | null;
+  enabled: boolean;
+}
+
+export interface ProfileDynamicBinding {
+  source_binding_key: string;
+  platform: string;
+  scope: string;
+  chat_id: string;
+  agent_id: string;
+  has_fallback_webhook: boolean;
+  created_at: number;
+  created_by_name: string | null;
+  updated_at: number;
+  updated_by_name: string | null;
+}
+
+export interface ProfileBindingSummary {
+  profile: string;
+  static: ProfileStaticRoute[];
+  dynamic: ProfileDynamicBinding[];
 }
 
 export interface ModelsAnalyticsModelEntry {

@@ -433,6 +433,11 @@ export interface Translations {
     actions?: string;
     manageSkills?: string;
     activeSetHint?: string;
+    boundSources?: string;
+    boundStatic?: string;
+    boundDynamic?: string;
+    boundNone?: string;
+    boundMore?: string;
   };
 
   // ── Skills page ──

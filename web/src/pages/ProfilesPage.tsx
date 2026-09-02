@@ -16,6 +16,7 @@ import {
   MoreVertical,
   Pencil,
   Package,
+  Radio,
   Sparkles,
   Terminal,
   Trash2,
@@ -25,7 +26,7 @@ import {
 import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import type { ActiveProfileInfo, ProfileInfo, ProfileBindingSummary } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -253,9 +254,113 @@ function ProfileActionsMenu({
   );
 }
 
+interface ProfileBindingsProps {
+  summary: ProfileBindingSummary | undefined;
+  labels: {
+    boundSources: string;
+    boundStatic: string;
+    boundDynamic: string;
+    boundNone: string;
+    boundMore: string;
+  };
+}
+
+/**
+ * Read-only per-profile summary of what routes to this profile: static
+ * ``gateway.profile_routes`` and runtime ``/agent use`` bindings. Chat ids
+ * can be long/opaque (DingTalk conversation ids etc.), so they're shown
+ * monospace-truncated with the full value in a title tooltip. Capped to keep
+ * cards compact; the overflow count is surfaced as a "+N more" chip.
+ */
+function ProfileBindings({ summary, labels }: ProfileBindingsProps) {
+  const MAX = 4;
+  const staticRoutes = summary?.static ?? [];
+  const dynamic = summary?.dynamic ?? [];
+  const total = staticRoutes.length + dynamic.length;
+
+  // Merge into one display list, static first (declarative), then runtime.
+  const rows: Array<{
+    key: string;
+    kind: "static" | "dynamic";
+    platform: string;
+    label: string;
+  }> = [];
+  for (const r of staticRoutes) {
+    rows.push({
+      key: `s:${r.name}:${r.platform}:${r.chat_id ?? ""}`,
+      kind: "static",
+      platform: r.platform,
+      label: r.chat_id || r.guild_id || r.name,
+    });
+  }
+  for (const b of dynamic) {
+    rows.push({
+      key: `d:${b.source_binding_key}`,
+      kind: "dynamic",
+      platform: b.platform,
+      label: b.chat_id || b.source_binding_key,
+    });
+  }
+
+  const shown = rows.slice(0, MAX);
+  const overflow = total - shown.length;
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-border/50 pt-2 text-xs">
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        <Radio className="h-3 w-3" />
+        <span className="font-mondwest text-display tracking-wider">
+          {labels.boundSources}
+        </span>
+        {total > 0 && (
+          <span className="text-muted-foreground/70">({total})</span>
+        )}
+      </div>
+
+      {total === 0 ? (
+        <span className="text-muted-foreground/60 italic">
+          {labels.boundNone}
+        </span>
+      ) : (
+        <ul className="flex flex-col gap-0.5">
+          {shown.map((row) => (
+            <li key={row.key} className="flex items-center gap-1.5">
+              <Badge
+                tone={row.kind === "static" ? "secondary" : "outline"}
+                className="shrink-0"
+              >
+                {row.platform}
+              </Badge>
+              <span className="text-muted-foreground/60">
+                {row.kind === "static"
+                  ? labels.boundStatic
+                  : labels.boundDynamic}
+              </span>
+              <span
+                className="truncate font-mono text-muted-foreground"
+                title={row.label}
+              >
+                {row.label}
+              </span>
+            </li>
+          ))}
+          {overflow > 0 && (
+            <li className="text-muted-foreground/60">
+              {labels.boundMore.replace("{n}", String(overflow))}
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function ProfilesPage() {
   const navigate = useNavigate();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [bindings, setBindings] = useState<
+    Record<string, ProfileBindingSummary>
+  >({});
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
@@ -309,6 +414,11 @@ export default function ProfilesPage() {
       activeSetHint:
         p.activeSetHint ??
         "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
+      boundSources: p.boundSources ?? "Bound sources",
+      boundStatic: p.boundStatic ?? "route",
+      boundDynamic: p.boundDynamic ?? "runtime",
+      boundNone: p.boundNone ?? "No bound sources",
+      boundMore: p.boundMore ?? "+{n} more",
     };
   }, [t.profiles]);
 
@@ -401,6 +511,17 @@ export default function ProfilesPage() {
       })
       .catch((e) => showToast(`${t.status.error}: ${e}`, "error"))
       .finally(() => setLoading(false));
+    // Bindings are a secondary, best-effort overlay: a failure here must not
+    // block the profile list from rendering, so it loads independently and
+    // swallows errors (the section simply stays empty).
+    api
+      .getProfileBindings()
+      .then((res) => {
+        const map: Record<string, ProfileBindingSummary> = {};
+        for (const b of res.bindings) map[b.profile] = b;
+        setBindings(map);
+      })
+      .catch(() => setBindings({}));
   }, [showToast, t.status.error]);
 
   useEffect(() => {
@@ -1203,6 +1324,17 @@ export default function ProfilesPage() {
                           </Badge>
                         )}
                       </div>
+
+                      <ProfileBindings
+                        summary={bindings[p.name]}
+                        labels={{
+                          boundSources: L.boundSources,
+                          boundStatic: L.boundStatic,
+                          boundDynamic: L.boundDynamic,
+                          boundNone: L.boundNone,
+                          boundMore: L.boundMore,
+                        }}
+                      />
 
                       <div className="mt-auto flex flex-col gap-0.5 pt-1 text-xs text-muted-foreground">
                         {p.model && (
