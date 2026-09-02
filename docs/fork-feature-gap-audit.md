@@ -175,13 +175,24 @@ Fork ChannelsPage 支持创建二维码、轮询扫码/确认/过期、刷新二
 
 ### 14. Skill 删除 UI/API
 
-Fork Dashboard 有 skill delete/uninstall；当前 SkillsPage 和 web router 没有明确的
-删除按钮及 DELETE endpoint。
+Fork Dashboard 有 skill delete/uninstall。**核验（`24dff85fd8` 之后）：后端与
+API client 层已就位**——`hermes_cli/web_routers/skills.py` 有
+`POST /api/skills/hub/uninstall`，`web/src/lib/api.ts:1308` 有
+`uninstallSkillFromHub(name, profile?)` 封装。**唯一缺口是前端**：
+`web/src/pages/SkillsPage.tsx` 尚未把这个已有 client 方法接到一个删除/卸载
+按钮上（全文件无 uninstall 调用）。因此这不再是"没有 endpoint"，而是一个
+很窄的前端收尾——加一个按钮调用现成的 `uninstallSkillFromHub` 即可。
 
 ### 15. ConfigEditors / config labels
 
-Fork 有专用配置编辑组件和大量中文标签说明。当前配置能力存在，但没有整体迁入这套
-UX。由于官方 config schema 已持续变化，只能按当前 schema 重做，不能覆盖旧文件。
+Fork 有专用配置编辑组件和大量中文标签说明。**当前 `web/src/pages/ConfigPage.tsx`
+（679 行）已经是 schema 驱动的分类编辑器**：支持分类导航、字段搜索、YAML
+原文模式、per-profile scope、reset-to-default。它覆盖了 Fork ConfigEditors 的
+大部分意图，因此这一项不再是"整套 UX 缺失"，剩余的只是 Fork 那批中文字段标签/
+说明尚未整体迁入。由于官方 config schema 已持续变化，只能按当前 schema 补标签，
+不能覆盖旧文件。
+
+**核验（`24dff85fd8` 之后）：** ConfigPage 存在且功能完整；仅字段标签本地化是增量。
 
 ### 16. 当前页面的 i18n 补全
 
