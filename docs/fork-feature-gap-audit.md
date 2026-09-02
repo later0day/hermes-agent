@@ -168,6 +168,17 @@ GET/PUT /api/profiles/{name}/memory/USER.md
 动态 binding 后端和 `/agent` 命令已经完成，但 Dashboard ProfilesPage 还不能显示
 某 profile 绑定了哪些来源、群或 fallback webhook。
 
+**已落地（`dfe7224f99`）：** 后端新增只读 `GET /api/profiles/bindings`，按 profile
+合并两类路由面——`static`（`gateway.profile_routes`，经 `load_gateway_config` 读到
+已解析的 `ProfileRoute`）与 `dynamic`（`SourceAgentBindingStore` 运行时 `/agent use`
+绑定，`source_binding_key` 用有界 split 解码成 platform/scope/chat_id，不破坏含 `:`
+的 chat id）。绝不返回 fallback webhook 明文，只给 `has_fallback_webhook` 布尔。
+前端 `api.getProfileBindings()` + 类型，ProfilesPage 以 best-effort overlay 加载
+（失败不阻塞 profile 列表），每卡片渲染紧凑「Bound sources」段：平台 badge +
+static/runtime 标签 + 等宽截断 chat id（完整值在 title），超出以「+N more」收起。
+线上验证 jb(static=1,dynamic=2)/xcx(dynamic=21)/reverse(dynamic=1)，
+`tsc -b` 干净、构建 `ProfilesPage-DSXl9cJI.js`、重启后资源 200。
+
 ### 13. Weixin Dashboard QR 登录
 
 Fork ChannelsPage 支持创建二维码、轮询扫码/确认/过期、刷新二维码，并把凭证保存到
@@ -412,7 +423,7 @@ configured/enabled` 与 `No adapter configured` 归零。
 ### C. Dashboard 独立增强
 
 1. MemoryPage；
-2. binding summary；
+2. binding summary — 已落地 `dfe7224f99`；
 3. Weixin QR；
 4. Skill delete；
 5. ConfigEditors；
