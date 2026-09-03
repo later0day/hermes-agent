@@ -203,8 +203,8 @@ gateway:
   room:
     error_prefix:          "⚠ room error: {error}"
     worker_unavailable:    "⚠ Group Chat worker is unavailable. Restart the Hermes gateway and try again."
-    usage:                 "Usage: /room <list|show|create|disband>\n  /room list [--all]\n  /room show <room_id>\n  /room create <room_id> <name> <profile1> <profile2> [profile3…] (2-6 members)\n  /room disband <room_id>"
-    unknown_action:        "Unknown /room action '{action}'. Try /room list, show, create, or disband."
+    usage:                 "Usage: /room <list|show|create|add|remove|disband>\n  /room list [--all]\n  /room show <room_id>\n  /room create <room_id> <name> <profile1> <profile2> [profile3…] (2-6 members)\n  /room add <room_id> <profile> [profile…]\n  /room remove <room_id> <handle-or-profile> [handle-or-profile…]\n  /room disband <room_id>"
+    unknown_action:        "Unknown /room action '{action}'. Try /room list, show, create, add, remove, or disband."
     no_rooms:              "No hosted rooms. Create one with /room create <room_id> <name> <profile1> <profile2>."
     list_header:           "🏠 **Hosted rooms** ({count})"
     list_row:              "• `{room_id}` — {name} ({members} members, seq {latest_seq})"
@@ -218,6 +218,10 @@ gateway:
     already_disbanded:     "ℹ️ Room `{room_id}` is already disbanded."
     need_room_id:          "Provide a room id. Usage: /room {action} <room_id>."
     need_create_args:      "Usage: /room create <room_id> <name> <profile1> <profile2> [profile3…] (2-6 local profiles)."
+    need_member_args:      "Usage: /room {action} <room_id> <profile-or-handle> [profile-or-handle…]."
+    members_added:         "✅ Added {changed} to room `{room_id}` — now {members} member(s)."
+    members_removed:       "✅ Removed {changed} from room `{room_id}` — now {members} member(s)."
+    no_members_matched:    "No members in room `{room_id}` matched: {members}."
     truncated_suffix:      "… (truncated)"
 
   personality:

@@ -188,8 +188,8 @@ gateway:
   room:
     error_prefix:          "⚠ 房间错误：{error}"
     worker_unavailable:    "⚠ 群聊 worker 不可用。请重启 Hermes 网关后重试。"
-    usage:                 "用法：/room <list|show|create|disband>\n  /room list [--all]\n  /room show <房间ID>\n  /room create <房间ID> <名称> <profile1> <profile2> [profile3…]（2-6 个成员）\n  /room disband <房间ID>"
-    unknown_action:        "未知的 /room 动作 '{action}'。可用：/room list、show、create、disband。"
+    usage:                 "用法：/room <list|show|create|add|remove|disband>\n  /room list [--all]\n  /room show <房间ID>\n  /room create <房间ID> <名称> <profile1> <profile2> [profile3…]（2-6 个成员）\n  /room add <房间ID> <profile> [profile…]\n  /room remove <房间ID> <handle或profile> [handle或profile…]\n  /room disband <房间ID>"
+    unknown_action:        "未知的 /room 动作 '{action}'。可用：/room list、show、create、add、remove、disband。"
     no_rooms:              "暂无托管房间。用 /room create <房间ID> <名称> <profile1> <profile2> 创建一个。"
     list_header:           "🏠 **托管房间**（共 {count} 个）"
     list_row:              "• `{room_id}` — {name}（{members} 个成员，seq {latest_seq}）"
@@ -203,6 +203,10 @@ gateway:
     already_disbanded:     "ℹ️ 房间 `{room_id}` 已经解散。"
     need_room_id:          "请提供房间 ID。用法：/room {action} <房间ID>。"
     need_create_args:      "用法：/room create <房间ID> <名称> <profile1> <profile2> [profile3…]（2-6 个本地 profile）。"
+    need_member_args:      "用法：/room {action} <房间ID> <profile或handle> [profile或handle…]。"
+    members_added:         "✅ 已将 {changed} 加入房间 `{room_id}` — 现有 {members} 个成员。"
+    members_removed:       "✅ 已将 {changed} 移出房间 `{room_id}` — 现有 {members} 个成员。"
+    no_members_matched:    "房间 `{room_id}` 中没有匹配的成员：{members}。"
     truncated_suffix:      "…（已截断）"
 
   personality:

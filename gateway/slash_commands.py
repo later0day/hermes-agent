@@ -586,6 +586,8 @@ class GatewaySlashCommandsMixin:
           /room list [--all]
           /room show <room_id>
           /room create <room_id> <name> <profile1> <profile2> [profile3…]
+          /room add <room_id> <profile> [profile…]
+          /room remove <room_id> <handle-or-profile> [handle-or-profile…]
           /room disband <room_id>
         """
         import asyncio
@@ -725,6 +727,72 @@ class GatewaySlashCommandsMixin:
                          room_id=room.get("room_id"),
                          name=room.get("name"),
                          members=len(room.get("members") or []))
+
+            if action in ("add", "remove"):
+                if len(args) < 2:
+                    return t("gateway.room.need_member_args", action=action)
+                room_id = args[0]
+                targets = args[1:]
+                service = get_hosted_room_service()
+                if service is None:
+                    return t("gateway.room.worker_unavailable")
+                try:
+                    room = room_state(db_path, room_id=room_id)
+                except HostedRoomError as exc:
+                    return t("gateway.room.error_prefix", error=exc)
+                # Start from the live roster and preserve each surviving
+                # member's identity (member_id/handle/target) verbatim so the
+                # append-only log records a precise membership delta rather than
+                # a re-keyed roster. New members are derived deterministically
+                # from the profile, matching /room create's idempotency rule.
+                current = [dict(m) for m in (room.get("members") or []) if isinstance(m, dict)]
+                if action == "add":
+                    existing_handles = {str(m.get("handle") or "") for m in current}
+                    members = list(current)
+                    added: list[str] = []
+                    for prof in targets:
+                        handle = prof
+                        suffix = 1
+                        while handle in existing_handles:
+                            suffix += 1
+                            handle = f"{prof}{suffix}"
+                        existing_handles.add(handle)
+                        members.append({
+                            "member_id": handle,
+                            "profile": prof,
+                            "handle": handle,
+                            "target": {"kind": "local", "profile": prof},
+                        })
+                        added.append(prof)
+                    changed = added
+                else:  # remove
+                    wanted = set(targets)
+                    members = []
+                    removed: list[str] = []
+                    for m in current:
+                        handle = str(m.get("handle") or "")
+                        profile = str(m.get("profile") or "")
+                        if handle in wanted or profile in wanted:
+                            removed.append(profile or handle)
+                        else:
+                            members.append(m)
+                    if not removed:
+                        return t("gateway.room.no_members_matched",
+                                 room_id=room_id, members=", ".join(targets))
+                    changed = removed
+                try:
+                    updated = service.update_members(
+                        room_id=room_id,
+                        event_id=f"members_{uuid.uuid4().hex[:16]}",
+                        members=members,
+                    )
+                except Exception as exc:
+                    return t("gateway.room.error_prefix", error=exc)
+                key = "members_added" if action == "add" else "members_removed"
+                return t(f"gateway.room.{key}",
+                         room_id=updated.get("room_id"),
+                         changed=", ".join(changed),
+                         members=len(updated.get("members") or []))
 
             if action == "disband":
                 if not args:

@@ -693,6 +693,53 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
+    def update_members(
+        self, *, room_id: str, event_id: str, members: Any
+    ) -> dict[str, Any]:
+        """Replace a locally-owned room's roster after full discussion validation.
+
+        Authority-fenced (``_owned_room``) then re-validated through the same
+        ``discussion.validate_roster`` gate ``create_room`` uses, so the 2-6
+        bound, local-profile requirement, and unique handles/targets all hold
+        for the *new* roster — not just the storage-layer shape check.
+        """
+        self._owned_room(room_id)
+        normalized = discussion.validate_roster(
+            members,
+            local_profiles=self.local_profiles(),
+        )
+        room = hosted_rooms.change_members(
+            self.db_path,
+            room_id=room_id,
+            event_id=event_id,
+            members=[
+                {
+                    "member_id": member.member_id,
+                    "profile": member.profile,
+                    "handle": member.handle,
+                    "target": dict(member.target or {}),
+                    **(
+                        {"display_name": member.display_name}
+                        if member.display_name
+                        else {}
+                    ),
+                }
+                for member in normalized
+            ],
+        )
+        binding = next(
+            (
+                candidate
+                for candidate in self.bindings()
+                if candidate.room_id == room_id
+            ),
+            None,
+        )
+        if binding is not None:
+            self.prepare_room(binding)
+        self.runtime.wakeup()
+        return room
+
     def send(
         self,
         *,
