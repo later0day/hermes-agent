@@ -3007,6 +3007,7 @@ from gateway.session_state import (
 )
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+from gateway.room_mirror_watcher import GatewayRoomMirrorMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
@@ -7441,7 +7442,7 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewayRoomMirrorMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
 
@@ -14498,6 +14499,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # subscriptions owned by the profiles whose adapters it hosts, even
         # when another gateway owns the single dispatcher.
         self._spawn_supervised(self._kanban_notifier_watcher, "kanban_notifier_watcher")
+
+        # Start background room→chat mirror (C2 outbound). Pushes hosted-room
+        # member messages to any subscribed chat group (see gateway/
+        # room_mirror_db.py). No-op until a `/room mirror` subscription exists;
+        # read-only against the room log, so it never affects the room worker.
+        self._spawn_supervised(self._room_mirror_watcher, "room_mirror_watcher")
 
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).

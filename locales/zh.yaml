@@ -188,7 +188,7 @@ gateway:
   room:
     error_prefix:          "⚠ 房间错误：{error}"
     worker_unavailable:    "⚠ 群聊 worker 不可用。请重启 Hermes 网关后重试。"
-    usage:                 "用法：/room <list|show|create|add|remove|disband>\n  /room list [--all]\n  /room show <房间ID>\n  /room create <房间ID> <名称> <profile1> <profile2> [profile3…] [--decider=<profile>]（2-6 个成员）\n  /room add <房间ID> <profile> [profile…]\n  /room remove <房间ID> <handle或profile> [handle或profile…]\n  /room disband <房间ID>"
+    usage:                 "用法：/room <list|show|create|add|remove|disband|mirror|unmirror>\n  /room list [--all]\n  /room show <房间ID>\n  /room create <房间ID> <名称> <profile1> <profile2> [profile3…] [--decider=<profile>]（2-6 个成员）\n  /room add <房间ID> <profile> [profile…]\n  /room remove <房间ID> <handle或profile> [handle或profile…]\n  /room mirror <房间ID> [platform:chat_id] [--decider-only]\n  /room unmirror <房间ID> [platform:chat_id]\n  /room disband <房间ID>"
     unknown_action:        "未知的 /room 动作 '{action}'。可用：/room list、show、create、add、remove、disband。"
     no_rooms:              "暂无托管房间。用 /room create <房间ID> <名称> <profile1> <profile2> 创建一个。"
     list_header:           "🏠 **托管房间**（共 {count} 个）"
@@ -209,6 +209,13 @@ gateway:
     members_added:         "✅ 已将 {changed} 加入房间 `{room_id}` — 现有 {members} 个成员。"
     members_removed:       "✅ 已将 {changed} 移出房间 `{room_id}` — 现有 {members} 个成员。"
     no_members_matched:    "房间 `{room_id}` 中没有匹配的成员：{members}。"
+    mirrored:              "🔊 已镜像房间 `{room_id}` → {platform}:{chat_id}。"
+    mirrored_decider:      "🔊 已镜像房间 `{room_id}`（仅决策者声音）→ {platform}:{chat_id}。"
+    unmirrored:            "🔇 已停止镜像房间 `{room_id}` → {platform}:{chat_id}。"
+    mirror_not_found:      "ℹ️ 房间 `{room_id}` → {platform}:{chat_id} 没有镜像。"
+    mirror_bad_target:     "无效的镜像目标 '{target}'。请用 platform:chat_id（例如 telegram:123456）。"
+    mirror_no_target:      "缺少镜像目标。请在某个聊天里运行 /room mirror <房间ID>，或传入 platform:chat_id。"
+    mirror_no_decider:     "房间 `{room_id}` 没有决策者；--decider-only 需要一个 decider 成员。"
     truncated_suffix:      "…（已截断）"
 
   personality:

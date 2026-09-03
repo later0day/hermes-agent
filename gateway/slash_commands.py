@@ -611,6 +611,15 @@ class GatewaySlashCommandsMixin:
         action = tokens[0].lower()
         args = tokens[1:]
 
+        # Current chat context — used by `mirror`/`unmirror` to default the
+        # delivery target to "here" when no explicit platform:chat_id is given.
+        _src = event.source
+        here_platform = (
+            _src.platform.value if _src and _src.platform else ""
+        )
+        here_chat_id = str(_src.chat_id) if _src and _src.chat_id else ""
+        here_thread_id = str(_src.thread_id) if _src and _src.thread_id else ""
+
         def _fmt_ts(value) -> str:
             try:
                 import datetime as _dt
@@ -870,6 +879,76 @@ class GatewaySlashCommandsMixin:
                 except Exception as exc:
                     return t("gateway.room.error_prefix", error=exc)
                 return t("gateway.room.disbanded", room_id=room_id, routes=routes)
+
+            if action in ("mirror", "unmirror"):
+                from gateway import room_mirror_db as _mir
+
+                if not args:
+                    return t("gateway.room.need_room_id", action=action)
+                room_id = args[0]
+                # Optional target "platform:chat_id"; defaults to the current
+                # chat. Optional --decider-only restricts the mirror to the
+                # room's single decider (the "single external voice").
+                target = ""
+                decider_only = False
+                for tok in args[1:]:
+                    if tok == "--decider-only":
+                        decider_only = True
+                    elif tok.startswith("--"):
+                        return t("gateway.room.unknown_create_flag", flag=tok)
+                    elif not target:
+                        target = tok
+                if target:
+                    platform_str, _, chat_id = target.partition(":")
+                    platform_str = platform_str.strip().lower()
+                    chat_id = chat_id.strip()
+                    thread_id = ""
+                    if not platform_str or not chat_id:
+                        return t("gateway.room.mirror_bad_target", target=target)
+                else:
+                    platform_str, chat_id, thread_id = (
+                        here_platform, here_chat_id, here_thread_id
+                    )
+                if not platform_str or not chat_id:
+                    return t("gateway.room.mirror_no_target")
+
+                if action == "unmirror":
+                    removed = _mir.remove_sub(
+                        db_path,
+                        room_id=room_id,
+                        platform=platform_str,
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                    )
+                    key = "unmirrored" if removed else "mirror_not_found"
+                    return t(f"gateway.room.{key}", room_id=room_id,
+                             platform=platform_str, chat_id=chat_id)
+
+                member_filter = None
+                if decider_only:
+                    try:
+                        room = room_state(db_path, room_id=room_id)
+                    except HostedRoomError as exc:
+                        return t("gateway.room.error_prefix", error=exc)
+                    decider = next(
+                        (m for m in (room.get("members") or [])
+                         if isinstance(m, dict) and m.get("role") == "decider"),
+                        None,
+                    )
+                    if decider is None:
+                        return t("gateway.room.mirror_no_decider", room_id=room_id)
+                    member_filter = str(decider.get("member_id") or "")
+                _mir.create_sub(
+                    db_path,
+                    room_id=room_id,
+                    platform=platform_str,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    member_filter=member_filter,
+                )
+                key = "mirrored_decider" if decider_only else "mirrored"
+                return t(f"gateway.room.{key}", room_id=room_id,
+                         platform=platform_str, chat_id=chat_id)
 
             return t("gateway.room.unknown_action", action=action)
 
