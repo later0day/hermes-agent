@@ -242,3 +242,92 @@ with real blast radius and belongs in its own slice with its own E2E proof — i
 is deliberately **not** hidden inside C4. C4's claim is precise: the DAG is now a
 faithful, wired projection of the real dispatch, surfaced to users and
 drift-free — not a decorative orphan.
+
+---
+
+## C5 — Pull-based auto-dispatch of manual DAG tasks into member turns
+
+C4 named the honest gap: a *manual* `room_task_dag` task never became a real
+member turn on its own — a human still had to `@mention` a worker. C5 closes
+exactly that loop **without touching the tested `plan_next_task` scheduler** and
+without violating any of the crown-jewel invariants (turn identity, frozen
+driver payload, reconstruction-after-restart).
+
+### The safe seam: `idle`
+
+`prepare_room` already returns `status="idle"` when the mention-driven scheduler
+has nothing to do (no queued/running/stopping task, no pending user event). That
+is the *only* place C5 acts — never competing with a real turn:
+
+1. **Sweep first** (`_sweep_completed_dag_dispatches`, called right after
+   `prune_published_terminal_tasks`, before the queued/running guard): scan the
+   log for a settled `message.member` on a `dagtask:<id>` thread and mark the
+   matching in-progress DAG task `completed` (auto-unblocking dependents). This
+   runs *before* the dispatch decision so a just-finished task's dependents are
+   claimable in the same tick.
+2. **Auto-dispatch on idle** (`_maybe_autodispatch_dag_task`, in the
+   `decision.status == "idle"` branch): pick the lowest-seq claimable task
+   (`next_claimable`), resolve **exactly one** `@handle` target from its subject
+   with the same `resolve_mentions` the scheduler routes with (ambiguous or
+   unaddressed subjects are skipped), atomically `claim_task_for_dispatch`
+   (stamping a per-task anchor thread `dagtask:<id>`), then append a
+   `message.user` anchor `@handle <subject>` on that thread. The existing
+   scheduler then routes, executes, and publishes that turn — reusing **100%** of
+   the turn-coordinate / reconstruction machinery. On append failure the claim is
+   released so it retries next tick. Both helpers are best-effort (swallow
+   exceptions) and can never break the tested path.
+
+A `runtime.wakeup()` after a successful dispatch and after each completed sweep
+keeps the loop responsive (immediate follow-up pass instead of a full poll
+interval) — the same courtesy `send` already extends.
+
+### Why this respects the invariants
+
+- **No new dispatch path.** The anchor is an ordinary `message.user` event; the
+  turn it spawns is admitted by the *unchanged* `plan_next_task` →
+  `admit_task` path, so its `turn_id`/`task_id` are derived and reconstructed
+  exactly like any human-typed `@mention`. Nothing new to round-trip on restart.
+- **Frozen driver payload untouched.** The DAG↔turn mapping lives entirely in the
+  additive store (`dispatch_thread_id` column), never in the driver payload the
+  reconstruction rejects extra keys from.
+- **Echo/double-dispatch impossible.** `claim_task_for_dispatch` is a CAS under
+  `BEGIN IMMEDIATE` (pending ∧ unowned ∧ unblocked → in_progress); a second
+  scheduler tick or process finds the task owned and dispatches nothing.
+  Completion keys on the `dagtask:` thread, so re-sweeps are idempotent.
+
+### Store additions (`gateway/room_task_dag.py`, additive)
+
+- `dispatch_thread_id TEXT` column on `room_task_dag`, added via a **guarded
+  ALTER** in `_connect` (duplicate-column-name = success) so a C3/C4 `state.db`
+  upgrades in place with no migration harness — same additive-safety posture as
+  the whole store (still invisible to `hosted_rooms._schema_is_current`).
+- `next_claimable(room_id)` — read-only peek at the next available task.
+- `claim_task_for_dispatch(room_id, task_id, owner, dispatch_thread_id)` —
+  atomic specific-claim + stamp anchor thread; returns `None` (never raises) if
+  the task is no longer available.
+- `dispatched_task_for_thread(room_id, dispatch_thread_id)` — lookup the
+  in-progress task on an anchor thread.
+- `complete_dispatched(room_id, dispatch_thread_id)` — mark that task
+  `completed` (idempotent).
+
+### Verification
+
+- **Store-level** (`tests/gateway/test_room_task_dag.py`, +10 tests → **30
+  passed**): peek-doesn't-claim, skip-blocked/owned, dispatch-claim stamps
+  thread, returns-None-when-unavailable, refuses-blocked, requires-owner+thread,
+  thread lookup, complete-and-unblock, complete idempotent, and a guarded-ALTER
+  in-place upgrade of a pre-C5 db.
+- **Service-level E2E** (`tests/tui_gateway/test_hosted_room_service.py`, +2
+  tests): the closed loop driven **purely by the runtime loop** (no manual
+  ticks) — two manual tasks (`t2` blocked by `t1`), each `@handle`-targeted,
+  end `completed` with the right owner, and the log carries the `message.user`
+  anchor + the worker's `message.member` reply on each `dagtask:` thread; plus a
+  negative test that an ambiguous / unaddressed subject is never dispatched and
+  the room stays quiet. Canonical E2E
+  (`test_create_send_drive_publish_and_replay_without_client_transport`) and the
+  restart-republish test still pass — the tested scheduler is untouched.
+
+C5's claim is precise: a manual DAG task with a single `@handle` subject now
+becomes a real member turn on its own, its completion unblocks and dispatches
+its dependents, and the whole loop runs through the shipped push-based scheduler
+with zero changes to the identity/reconstruction crown jewels.

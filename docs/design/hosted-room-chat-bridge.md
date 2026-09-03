@@ -207,3 +207,24 @@ All slices in this doc are now shipped.
       a separate future slice, not hidden here). 5 projection tests (suite 60
       passed) + E2E through the real handler; C3 store suite still 20 passed. See
       `docs/design/hosted-room-task-dag.md` §C4.
+- [x] **C5 — pull-based auto-dispatch of manual DAG tasks into member turns** —
+      C4 wired the DAG as a faithful *projection* but a *manual* `room_task_dag`
+      task still needed a human `@mention` to run. C5 closes that loop at the
+      one safe seam — `prepare_room`'s `idle` branch (no queued/running task, no
+      pending user turn) — without touching the tested `plan_next_task`
+      scheduler. A sweep (`_sweep_completed_dag_dispatches`) completes any task
+      whose worker turn settled on its `dagtask:<id>` anchor thread (unblocking
+      dependents); then `_maybe_autodispatch_dag_task` picks the lowest-seq
+      claimable task, resolves exactly one `@handle` target (skips
+      ambiguous/unaddressed), atomically `claim_task_for_dispatch` (CAS under
+      `BEGIN IMMEDIATE`, stamping the anchor thread), and appends a
+      `message.user` anchor the *unchanged* scheduler executes and publishes —
+      reusing 100% of the turn-identity/reconstruction machinery. The DAG↔turn
+      mapping lives in a new additive `dispatch_thread_id` column (guarded ALTER,
+      in-place C3/C4 upgrade, still invisible to
+      `hosted_rooms._schema_is_current`). +10 store tests (30 passed) + 2
+      service-level E2E tests proving the closed loop runs purely from the
+      runtime loop (t1 auto-dispatched → settled → completed → unblocked t2 →
+      auto-dispatched → completed) plus a negative ambiguous-subject test; the
+      canonical scheduler E2E is untouched and still passes. See
+      `docs/design/hosted-room-task-dag.md` §C5.
