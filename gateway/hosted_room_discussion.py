@@ -1546,3 +1546,139 @@ def plan_publication(
         terminal_kind=terminal_kind,
         events=tuple(effects),
     )
+
+
+@dataclass(frozen=True)
+class ProjectedTask:
+    """One decider→worker dispatch, projected from the room event log.
+
+    A ``ProjectedTask`` is not a stored row: it is computed by replaying the same
+    typed log the scheduler replays, so it can never drift from the actual
+    dispatch. ``status`` reflects the real conversation:
+
+    - ``dispatched``  — the decider @mentioned this worker on this dispatch but
+      the worker has not replied since (the turn is in flight / awaiting).
+    - ``completed``   — the worker posted a non-``(pass)`` reply after the
+      dispatch (their sub-task is done).
+
+    ``blocked_by`` lists the ``task_id`` of any earlier same-thread dispatch that
+    has not completed yet — a later-round dispatch implicitly depends on the
+    rounds before it, matching CC's shared-DAG "unresolved blockedBy cannot be
+    claimed" once the projection is exposed for pull.
+    """
+
+    task_id: str
+    thread_id: str
+    discussion_event_id: str
+    subject: str
+    owner_member_id: str
+    owner_handle: str
+    dispatcher_member_id: str
+    round_index: int
+    dispatch_seq: int
+    status: str
+    completed_seq: int | None
+    blocked_by: tuple[str, ...]
+
+
+def project_task_dag(
+    room_value: Any,
+    events: Sequence[Mapping[str, Any]],
+    *,
+    local_profiles: Iterable[str],
+    thread_id: str | None = None,
+) -> tuple[ProjectedTask, ...]:
+    """Project the live task DAG from the room log (pure, no I/O).
+
+    In a decider (star) roster every worker the decider @mentions becomes a
+    dispatched sub-task owned by that worker; the worker's next non-``(pass)``
+    reply completes it. Without a decider there is no orchestration ledger to
+    project, so an empty tuple is returned (mesh discussions coordinate purely by
+    mention/watermark and have no owner/blockedBy semantics).
+
+    The result is deterministic and ordered by dispatch sequence. It is the
+    single source of truth behind ``/room task list`` and behind any future
+    pull-based claim: because it is derived from the committed log, it always
+    matches what the scheduler actually did.
+    """
+
+    room = validate_room(room_value, local_profiles=local_profiles)
+    decider = _decider(room)
+    if decider is None:
+        return ()
+    validated = _validated_events(events, room=room)
+    member_messages = [
+        event for event in validated if event.kind == "message.member"
+    ]
+    member_messages.sort(key=lambda event: event.seq)
+
+    # Replies a worker posts after a dispatch complete it. Index each worker's
+    # reply seqs so completion is a bounded lookup, not a rescan per dispatch.
+    replies_by_member: dict[str, list[tuple[int, str]]] = {}
+    for event in member_messages:
+        speaker_id = str(event.payload["member_id"])
+        if speaker_id == decider.member_id:
+            continue
+        text = str(event.payload.get("text") or "")
+        if is_pass_text(text):
+            continue
+        replies_by_member.setdefault(speaker_id, []).append((event.seq, text))
+
+    projected: list[ProjectedTask] = []
+    open_by_thread: dict[str, list[str]] = {}
+    for event in member_messages:
+        if str(event.payload["member_id"]) != decider.member_id:
+            continue
+        ev_thread = str(event.payload.get("thread_id") or "")
+        if thread_id is not None and ev_thread != thread_id:
+            continue
+        discussion_event_id = str(event.payload.get("discussion_event_id") or "")
+        round_index = int(event.payload.get("round_index", 0))
+        dispatched = resolve_mentions(
+            (str(event.payload.get("text") or ""),),
+            room.members,
+            default_all=False,
+        )
+        # Workers mentioned in the SAME decider message are dispatched in
+        # parallel, so they never block each other. Snapshot the tasks still
+        # open from EARLIER decider messages once, before this message's
+        # mentions, and use that as the blockedBy set for all of them; only
+        # after the whole message is processed do its own still-open tasks
+        # become blockers for a later dispatch.
+        open_before = tuple(open_by_thread.get(ev_thread, ()))
+        newly_open: list[str] = []
+        for member in dispatched:
+            if member.member_id == decider.member_id:
+                continue
+            task_id = f"{discussion_event_id}:{member.member_id}:r{round_index}"
+            # Completion: the worker's first reply strictly after this dispatch.
+            completed_seq = next(
+                (
+                    seq
+                    for seq, _text in replies_by_member.get(member.member_id, ())
+                    if seq > event.seq
+                ),
+                None,
+            )
+            status = "completed" if completed_seq is not None else "dispatched"
+            projected.append(
+                ProjectedTask(
+                    task_id=task_id,
+                    thread_id=ev_thread,
+                    discussion_event_id=discussion_event_id,
+                    subject=str(event.payload.get("text") or "").strip(),
+                    owner_member_id=member.member_id,
+                    owner_handle=member.handle,
+                    dispatcher_member_id=decider.member_id,
+                    round_index=round_index,
+                    dispatch_seq=event.seq,
+                    status=status,
+                    completed_seq=completed_seq,
+                    blocked_by=open_before,
+                )
+            )
+            if status != "completed":
+                newly_open.append(task_id)
+        open_by_thread.setdefault(ev_thread, []).extend(newly_open)
+    projected.sort(key=lambda task: (task.dispatch_seq, task.owner_handle))
+    return tuple(projected)

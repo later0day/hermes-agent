@@ -1007,12 +1007,75 @@ class GatewaySlashCommandsMixin:
                         if not rest:
                             return t("gateway.room.need_room_id", action="task list")
                         room_id = rest[0]
-                        tasks = _dag.list_tasks(db_path, room_id=room_id)
-                        if not tasks:
-                            return t("gateway.room.task_none", room_id=room_id)
+                        if "--manual" in rest[1:]:
+                            # The manually-authored ledger (/room task add …).
+                            tasks = _dag.list_tasks(db_path, room_id=room_id)
+                            if not tasks:
+                                return t("gateway.room.task_none", room_id=room_id)
+                            lines = [t("gateway.room.task_header",
+                                       room_id=room_id, count=len(tasks))]
+                            lines.extend(_fmt_task(x) for x in tasks)
+                            return "\n".join(lines)
+                        # Default: the LIVE task DAG projected from the room log —
+                        # the decider's real @mention dispatch and each worker's
+                        # actual completion status. Derived from the same events
+                        # the scheduler replays, so it can never drift.
+                        from gateway import hosted_room_discussion as _disc
+                        from gateway.hosted_rooms import (
+                            HostedRoomError as _HRE,
+                            read_events as _read_events,
+                            room_state as _room_state,
+                            MAX_LOG_LIMIT as _MAXLOG,
+                        )
+                        _svc = get_hosted_room_service()
+                        if _svc is not None:
+                            _profiles = _svc.local_profiles()
+                        else:
+                            # No live service (e.g. a detached admin shell):
+                            # enumerate profiles from disk the same way the
+                            # service does, so the projection still validates.
+                            from hermes_constants import get_hermes_home
+                            _home = get_hermes_home()
+                            _root = (
+                                _home.parent.parent
+                                if _home.parent.name == "profiles"
+                                else _home
+                            )
+                            _pset = {"default"}
+                            _pdir = _root / "profiles"
+                            if _pdir.is_dir():
+                                _pset.update(
+                                    p.name for p in _pdir.iterdir() if p.is_dir()
+                                )
+                            _profiles = tuple(sorted(_pset))
+                        try:
+                            room = _room_state(db_path, room_id=room_id)
+                            evpage = _read_events(
+                                db_path, room_id=room_id, since_seq=0, limit=_MAXLOG
+                            )
+                            projected = _disc.project_task_dag(
+                                room, evpage.get("events") or [],
+                                local_profiles=_profiles,
+                            )
+                        except _HRE as exc:
+                            return t("gateway.room.error_prefix", error=exc)
+                        if not projected:
+                            return t("gateway.room.task_none_live", room_id=room_id)
                         lines = [t("gateway.room.task_header",
-                                   room_id=room_id, count=len(tasks))]
-                        lines.extend(_fmt_task(x) for x in tasks)
+                                   room_id=room_id, count=len(projected))]
+                        for pt in projected:
+                            dep = ",".join(pt.blocked_by) or "—"
+                            subj = pt.subject
+                            if len(subj) > 60:
+                                subj = subj[:57] + "…"
+                            lines.append(t(
+                                "gateway.room.task_row",
+                                task_id=f"r{pt.round_index}:@{pt.owner_handle}",
+                                status=pt.status,
+                                owner=pt.owner_handle,
+                                subject=subj,
+                                blocked_by=dep,
+                            ))
                         return "\n".join(lines)
 
                     if sub == "add":

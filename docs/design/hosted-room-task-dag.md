@@ -173,3 +173,72 @@ harness, same as C2/decider):
 - release returns to pending/unowned
 - cycle rejection (direct A→A, 2-cycle A→B→A, transitive A→B→C→A)
 - list/get surface blockedBy[] + blocks[] both directions
+
+---
+
+## C4 — Wiring the DAG into the live scheduler (the integration)
+
+C3 (above) delivered the *store* + claim mechanics + command surface. But an
+audit found the store was an **orphan**: `grep` proved `room_task_dag` was
+referenced only by `slash_commands.py` — the decider never wrote dispatched
+sub-tasks into it, and the scheduler never read from it. A parallel manual
+kanban is not "the CC shared task DAG"; the load-bearing value is the closed
+loop *decider decomposes → workers pick up → completion advances the plan*.
+
+### The architectural truth that shaped C4
+
+The shipped scheduler (`plan_next_task` + `hosted_room_service.prepare_room` +
+`hosted_room_driver`) is **push-based**, not pull-based:
+- the decider's `@mention` **is** the dispatch (assignment),
+- a worker's next non-`(pass)` reply **is** the completion,
+- watermarks (`_derive_member_watermarks`) are the "who has seen what" polling,
+- `driver` task statuses (queued/running/settled/…) are the real execution state.
+
+Forcing CC's *literal* pull-based `claim_next` into `prepare_room` would fight
+this battle-tested v1/v2 machinery and risk breaking a shipped scheduler. So C4
+takes the honest path: **project** the task DAG from the same committed event log
+the scheduler replays, instead of maintaining a second, drift-prone ledger.
+
+### `project_task_dag` (gateway/hosted_room_discussion.py)
+
+A pure function (no I/O, same contract as the rest of the module) that returns
+the live `ProjectedTask` DAG:
+- one task per decider `@mention` of a worker (`owner` = that worker),
+- `status = dispatched` until the worker replies, then `completed`,
+- `blocked_by` = still-open tasks from *earlier* decider messages in the thread
+  (later-round dispatches implicitly depend on prior rounds); workers named in
+  the **same** decider message run in parallel and never block each other,
+- deterministic, ordered by dispatch seq — so it always matches what the
+  scheduler actually did. **Zero drift is possible by construction.**
+
+Mesh rosters (no decider) have no orchestration ledger, so the projection is
+empty for them (they coordinate purely by mention/watermark).
+
+### Command surface change
+
+`/room task list <room_id>` now shows the **live projection** (the decider's
+real decomposition + each worker's real status) by default. `--manual` shows the
+hand-authored `room_task_dag` ledger (still available for explicit planning).
+This makes the DAG reflect reality out of the box rather than being a parallel
+universe.
+
+### Verification
+
+- 5 new projection tests in `tests/gateway/test_hosted_room_discussion.py`
+  (dispatch→completion, parallel dispatch not blocked, later-round blocking,
+  determinism, empty-without-decider) — full suite **60 passed**.
+- End-to-end through the real `_handle_room_command`: drove a decider discussion
+  and watched `/room task list` transition `dispatched → completed` as workers
+  replied; `--manual` ledger verified independently. C3 store suite still
+  **20 passed** (no regression).
+
+### What remains genuinely out of scope (named honestly)
+
+True *pull-based auto-claim into member turns* (a worker autonomously grabbing
+the next projected-available task and the scheduler executing it without a
+decider `@mention`) would require `prepare_room` to admit tasks from the
+projection, not just from `plan_next_task`. That is a scheduler-behavior change
+with real blast radius and belongs in its own slice with its own E2E proof — it
+is deliberately **not** hidden inside C4. C4's claim is precise: the DAG is now a
+faithful, wired projection of the real dispatch, surfaced to users and
+drift-free — not a decorative orphan.

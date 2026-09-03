@@ -970,3 +970,83 @@ def test_mesh_roster_without_decider_is_unchanged(room_db):
     first = _next_task(room, db)
     assert "Rules for this Discussion:" in first.payload["prompt"]
     assert "You are the decider" not in first.payload["prompt"]
+
+
+# ── C4: live task-DAG projection ────────────────────────────────────────────
+
+def test_project_task_dag_empty_without_decider(room_db):
+    # A mesh roster (no decider) has no orchestration ledger to project.
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="hello team")
+    _settle_next(room, db, text="hi")
+    assert discussion.project_task_dag(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    ) == ()
+
+
+def test_project_task_dag_dispatch_then_completion(decider_room_db):
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship the release.")
+    # Decider dispatches one worker.
+    _settle_next(room, db, text="@build please build the API.")
+    tasks = discussion.project_task_dag(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    )
+    assert len(tasks) == 1
+    (task,) = tasks
+    assert task.owner_handle == "build"
+    assert task.status == "dispatched"
+    assert task.completed_seq is None
+    assert task.blocked_by == ()
+
+    # The worker replies → the task completes.
+    _settle_next(room, db, text="Built it. @research done.")
+    tasks = discussion.project_task_dag(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    )
+    build_task = next(t for t in tasks if t.owner_handle == "build")
+    assert build_task.status == "completed"
+    assert build_task.completed_seq is not None
+
+
+def test_project_task_dag_parallel_dispatch_is_not_blocked(decider_room_db):
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship it.")
+    # Two workers mentioned in ONE decider message run in parallel.
+    _settle_next(room, db, text="@build build it and @review review it.")
+    tasks = discussion.project_task_dag(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    )
+    assert len(tasks) == 2
+    assert all(t.blocked_by == () for t in tasks), tasks
+    assert {t.owner_handle for t in tasks} == {"build", "review"}
+
+
+def test_project_task_dag_later_round_blocks_on_open_earlier_task(decider_room_db):
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship it.")
+    # Round 0: decider dispatches build.
+    _settle_next(room, db, text="@build build the API.")
+    # build reports back and pulls the decider in again.
+    _settle_next(room, db, text="Building… @research need a decision.")
+    # Round 1: decider dispatches review while build is still open? build已完成
+    # (it posted a reply), so simulate a still-open second dispatch instead:
+    _settle_next(room, db, text="@review please review while build continues.")
+    tasks = discussion.project_task_dag(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    )
+    review = next(t for t in tasks if t.owner_handle == "review")
+    build = next(t for t in tasks if t.owner_handle == "build")
+    # build completed (it replied); review is a later dispatch. Since build is
+    # already complete it must NOT be a blocker of review.
+    assert build.status == "completed"
+    assert build.task_id not in review.blocked_by
+
+
+def test_project_task_dag_is_deterministic(decider_room_db):
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship it.")
+    _settle_next(room, db, text="@build build and @review review.")
+    a = discussion.project_task_dag(room, _events(db), local_profiles=LOCAL_PROFILES)
+    b = discussion.project_task_dag(room, _events(db), local_profiles=LOCAL_PROFILES)
+    assert a == b
