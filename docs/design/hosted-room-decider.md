@@ -277,16 +277,24 @@ Mined from the native binary's embedded JS + real system-prompt text. See
 `claude-agent-team-reference.md` Appendix A for the full extract. The five
 findings that directly change how we build the decider:
 
-### F1 — "Schedule-only" is enforced by TOOL-FILTERING, not by prompt
-CC's coordinator runs through `applyCoordinatorToolFilter` +
-`COORDINATOR_MODE_ALLOWED_TOOLS` — the lead literally cannot call the edit/write
-tools ("Forking is not available in coordinator sessions"). **Implication for
-Hermes:** decider decision #3 ("only schedules, never does work") should not rely
-on prompt-only ("do not write code"). The Hermes analogue of a tool filter is the
-**profile** the decider member runs as: point `--decider` at a coordinator-shaped
-profile (read-only / no code tools) rather than a full engineer profile. This is
-a *config* choice (which profile), NOT a discussion-policy change — zero code in
-`hosted_room_discussion.py`. **Add to v1: docs + a recommended decider profile.**
+### F1 — "Schedule-only" is a hard TOOL WHITELIST, not a prompt (orchestration-only)
+CC's coordinator runs through `applyCoordinatorToolFilter`. The whitelist,
+decoded from the binary, is exactly six tools:
+`COORDINATOR_MODE_ALLOWED_TOOLS = new Set([Agent, SendMessage, ListAgents,
+Workflow, TaskStop, StructuredOutput])`. **Note what is absent: not just no
+Edit/Write — there is no `Read`, no `Bash`, no `Grep` either.** The coordinator is
+*orchestration-only*: it can delegate (`Agent`), talk to members (`SendMessage`,
+`ListAgents`), orchestrate (`Workflow`), stop tasks (`TaskStop`), and emit
+structured output — nothing else. Forking is refused (`COORDINATOR_FORK_REFUSAL`).
+**Implication for Hermes:** decider decision #3 ("only schedules, never does
+work") should not rely on prompt-only. The Hermes analogue is the **profile** the
+decider member runs as: point `--decider` at an *orchestration-only* profile
+(tools limited to messaging/delegation — NOT merely "read-only") rather than a
+full engineer profile. This is a *config* choice (which profile), NOT a
+discussion-policy change — zero code in `hosted_room_discussion.py`. **Add to v1:
+docs + a recommended orchestration-only decider profile.** (Correction: an earlier
+draft called this "read-only"; the binary whitelist has no Read tool — it is
+strictly stronger than read-only.)
 
 ### F2 — No status poller; react to terminal events (we already do this)
 CC does NOT background-poll teammate status. Teammates PUSH idle/terminal
@@ -325,7 +333,7 @@ synthesize, not as instructions to obey — one sentence in the decider prompt.
 ### Minimal-impact placement in Hermes (the bottom line)
 | CC mechanism | Hermes minimal-impact realization | Code touched |
 |---|---|---|
-| coordinator tool-filter (F1) | run decider as a read-only *profile* (config) | **none** — profile choice + docs |
+| coordinator tool-filter (F1) | run decider as an *orchestration-only* profile (config) | **none** — profile choice + docs |
 | no poller, event-driven (F2) | reuse `plan_next_task` replay on `turn.settled` | **none** — existing loop |
 | self-claim task table (F3) | deferred to C3 | none in decider |
 | understand-before-delegate (F4) | decider prompt injection text | `_build_prompt` branch (already listed) |
@@ -335,9 +343,10 @@ synthesize, not as instructions to obey — one sentence in the decider prompt.
 **Conclusion:** the deep dive REDUCES the decider's footprint rather than growing
 it. Three of CC's five mechanisms map to *config or prompt text*, not code; one
 (F2) is already satisfied by the existing loop; one (F3) is C3. The v1 code change
-set is unchanged from above — the deep dive just (a) adds a recommended read-only
-decider profile (config + docs, no code) and (b) sharpens the `_build_prompt`
-decider prompt with F4+F5. **No new modules, no new loops, no schema change.**
+set is unchanged from above — the deep dive just (a) adds a recommended
+orchestration-only decider profile (config + docs, no code) and (b) sharpens the
+`_build_prompt` decider prompt with F4+F5. **No new modules, no new loops, no
+schema change.**
 
 ## Verification (same discipline as C1)
 Real E2E against a live bound `HostedRoomService` on a COPY of prod `state.db`
@@ -345,6 +354,6 @@ with real profile names (never the live DB — the prod worker drives all
 local-authority rooms). Assert the full chain: user msg → only decider speaks r0
 → decider `@worker` → worker runs r1 → worker `@decider` → decider summarizes r2.
 Back-compat: rooms without a decider keep today's mesh @-mention behavior.
-Additionally assert F1: a decider bound to a read-only profile cannot emit a
-member turn that performs writes (the profile's tool set, not the room, enforces
+Additionally assert F1: a decider bound to an orchestration-only profile cannot
+emit a member turn that performs writes (the profile's tool set, not the room, enforces
 it) — confirming schedule-only is a profile property, not a policy hack.
