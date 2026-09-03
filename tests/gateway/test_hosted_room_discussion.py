@@ -747,3 +747,162 @@ def test_malformed_log_and_task_reconstruction_fail_closed(
             malformed,
             local_profiles=LOCAL_PROFILES,
         )
+
+
+# ── Decider (star roster) role ───────────────────────────────────────────────
+
+DECIDER_MEMBERS = [
+    {
+        "member_id": "member-research",
+        "profile": "research",
+        "handle": "research",
+        "display_name": "Research",
+        "role": "decider",
+    },
+    {
+        "member_id": "member-build",
+        "profile": "build",
+        "handle": "build",
+        "display_name": "Build",
+    },
+    {
+        "member_id": "member-review",
+        "profile": "review",
+        "handle": "review",
+        "display_name": "Review",
+    },
+]
+
+
+@pytest.fixture
+def decider_room_db(tmp_path: Path) -> tuple[Path, dict]:
+    db = tmp_path / "state.db"
+    room = hosted_rooms.create_room(
+        db,
+        room_id=ROOM_ID,
+        name="Release",
+        members=DECIDER_MEMBERS,
+        authority_gateway_id=GATEWAY_ID,
+        now=1,
+    )
+    return db, room
+
+
+def test_roster_role_defaults_to_worker_and_persists_decider():
+    members = discussion.validate_roster(
+        DECIDER_MEMBERS, local_profiles=LOCAL_PROFILES
+    )
+    assert members[0].role == discussion.DECIDER_ROLE
+    assert members[1].role == discussion.WORKER_ROLE
+    assert members[2].role == discussion.WORKER_ROLE
+
+
+@pytest.mark.parametrize(
+    "members, match",
+    [
+        (
+            [
+                {**DECIDER_MEMBERS[0]},
+                {**DECIDER_MEMBERS[1], "role": "decider"},
+            ],
+            "at most one decider",
+        ),
+        (
+            [
+                {**DECIDER_MEMBERS[0], "role": "boss"},
+                {**DECIDER_MEMBERS[1]},
+            ],
+            "role must be one of",
+        ),
+    ],
+)
+def test_invalid_decider_rosters_are_rejected(members: list[dict], match: str):
+    with pytest.raises(discussion.DiscussionValidationError, match=match):
+        discussion.validate_roster(members, local_profiles=LOCAL_PROFILES)
+
+
+def test_decider_must_be_local():
+    remote_decider = [
+        {
+            "member_id": "member-remote",
+            "profile": "research",
+            "handle": "research",
+            "role": "decider",
+            "target": {
+                "kind": "peer",
+                "peer_id": "peer-1",
+                "installation_id": "inst-1",
+                "profile": "research",
+                "capability_digest": "a" * 64,
+            },
+        },
+        {**DECIDER_MEMBERS[1]},
+    ]
+    with pytest.raises(
+        discussion.DiscussionValidationError, match="decider must be local"
+    ):
+        discussion.validate_roster(remote_decider, local_profiles=LOCAL_PROFILES)
+
+
+def test_decider_answers_opening_round_alone(decider_room_db):
+    db, room = decider_room_db
+    # No @mention: a mesh roster would wake everyone; the decider roster does not.
+    _append_user(db, event_id="user-1", text="Ship the release.")
+    first = _next_task(room, db)
+    assert first.member.profile == "research"
+    assert first.round_index == 0
+    assert "You are the decider" in first.payload["prompt"]
+
+
+def test_decider_dispatches_worker_who_reports_back(decider_room_db):
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship the release.")
+    # Decider dispatches the build worker with a concrete sub-task.
+    first = _settle_next(
+        room, db, text="@build implement the API in server.py, return a summary."
+    )
+    assert first.member.profile == "research"
+
+    worker = _next_task(room, db)
+    assert worker.member.profile == "build"
+    assert worker.round_index == 1
+    # Worker prompt should route its report back to the decider.
+    assert "@research" in worker.payload["prompt"]
+    assert "You are the decider" not in worker.payload["prompt"]
+
+
+def test_worker_to_worker_mention_does_not_break_the_star(decider_room_db):
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship the release.")
+    _settle_next(room, db, text="@build please build it.")
+    # The build worker tries to hand off to review directly (worker->worker).
+    _settle_next(room, db, text="@review take it from here.")
+    decision = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=LOCAL_PROFILES,
+    )
+    # review must NOT be pulled in by a worker; only decider edges carry turns.
+    assert decision.status != "task" or decision.task.member.profile != "review"
+
+
+def test_worker_can_pull_the_decider_back(decider_room_db):
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship the release.")
+    _settle_next(room, db, text="@build please build it.")
+    # Build reports back and re-mentions the decider.
+    handoff = _settle_next(room, db, text="Done. @research please review and wrap up.")
+    assert handoff.member.profile == "build"
+    back = _next_task(room, db)
+    assert back.member.profile == "research"
+    assert back.round_index == 1
+
+
+def test_mesh_roster_without_decider_is_unchanged(room_db):
+    # Baseline: the default fixture roster has no decider, so the opening round
+    # still wakes everyone (mesh behavior) and uses the mesh prompt.
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="hello team")
+    first = _next_task(room, db)
+    assert "Rules for this Discussion:" in first.payload["prompt"]
+    assert "You are the decider" not in first.payload["prompt"]

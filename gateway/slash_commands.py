@@ -693,7 +693,26 @@ class GatewaySlashCommandsMixin:
                 if len(args) < 4:
                     return t("gateway.room.need_create_args")
                 room_id, name = args[0], args[1]
-                profiles = args[2:]
+                # Optional --decider=<profile> marks one local member as the
+                # orchestration-only decider (star roster). Everything else is a
+                # bare profile name. Unknown flags are rejected so a typo never
+                # silently becomes a profile.
+                decider_profile = ""
+                profiles = []
+                for tok in args[2:]:
+                    if tok.startswith("--decider="):
+                        decider_profile = tok[len("--decider="):].strip()
+                        continue
+                    if tok.startswith("--"):
+                        return t("gateway.room.unknown_create_flag", flag=tok)
+                    profiles.append(tok)
+                if not profiles:
+                    return t("gateway.room.need_create_args")
+                if decider_profile and decider_profile not in profiles:
+                    return t(
+                        "gateway.room.decider_not_a_member",
+                        profile=decider_profile,
+                    )
                 service = get_hosted_room_service()
                 if service is None:
                     return t("gateway.room.worker_unavailable")
@@ -711,12 +730,21 @@ class GatewaySlashCommandsMixin:
                         handle = f"{handle}{seen_handles[handle]}"
                     else:
                         seen_handles[handle] = 1
-                    members.append({
+                    member = {
                         "member_id": handle,
                         "profile": prof,
                         "handle": handle,
                         "target": {"kind": "local", "profile": prof},
-                    })
+                    }
+                    # Only the first member matching --decider is promoted, so a
+                    # duplicated profile keeps the roster's one-decider rule.
+                    if (
+                        decider_profile
+                        and prof == decider_profile
+                        and not any(m.get("role") == "decider" for m in members)
+                    ):
+                        member["role"] = "decider"
+                    members.append(member)
                 try:
                     room = service.create_room(room_id=room_id, name=name, members=members)
                 except Exception as exc:
