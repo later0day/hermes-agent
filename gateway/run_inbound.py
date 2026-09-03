@@ -1322,6 +1322,16 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if _handled:
             return _result
 
+        # Hosted-room inbound routing (C2 slice 2, opt-in per binding): plain text from a chat bound to a room
+        # with inbound enabled lands in the room as message.user instead of running the local agent. Commands
+        # still dispatch locally; echo is impossible (inbound writes message.user, the mirror forwards only
+        # message.member); idempotent on the IM message id. See gateway/room_mirror_watcher.py.
+        if not is_internal and not event.get_command() and (event.text or "").strip():
+            from gateway.room_mirror_watcher import INBOUND_ROOM_NOT_ROUTED
+            _room_reply = await self._maybe_route_inbound_to_room(event, source)
+            if _room_reply is not INBOUND_ROOM_NOT_ROUTED:
+                return _room_reply
+
         # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
         # conversational "yes" would execute a dangerous command.
         if not is_internal:

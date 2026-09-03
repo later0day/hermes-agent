@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS room_notify_subs (
     member_filter  TEXT,
     notifier_profile TEXT,
     delivery_metadata TEXT,
+    inbound        INTEGER NOT NULL DEFAULT 0,
     created_at     REAL NOT NULL,
     PRIMARY KEY (room_id, platform, chat_id, thread_id)
 )
@@ -54,6 +55,32 @@ CREATE TABLE IF NOT EXISTS room_notify_subs (
 _CREATE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_room_notify_room ON room_notify_subs(room_id)
 """
+# Opt-in inbound (C2 slice 2): auto-route group messages on this binding into
+# the room as message.user. Added to an existing table via a guarded ALTER so a
+# state.db written by slice 1 upgrades in place without a migration harness.
+_ADD_INBOUND_COLUMN = "ALTER TABLE room_notify_subs ADD COLUMN inbound INTEGER NOT NULL DEFAULT 0"
+
+
+def _ensure_inbound_column(conn: sqlite3.Connection) -> None:
+    """Add the ``inbound`` column if this db predates C2 slice 2.
+
+    ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so a state.db
+    first written by slice 1 lacks ``inbound``. Detect and add it idempotently;
+    a concurrent adder losing the race raises "duplicate column name", which we
+    treat as success.
+    """
+
+    cols = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(room_notify_subs)").fetchall()
+    }
+    if "inbound" in cols:
+        return
+    try:
+        conn.execute(_ADD_INBOUND_COLUMN)
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
 
 
 def _connect(db_path: Path | str) -> sqlite3.Connection:
@@ -77,6 +104,7 @@ def _connect(db_path: Path | str) -> sqlite3.Connection:
                 time.sleep(0.01 * (2**attempt))
         conn.execute(_CREATE_TABLE)
         conn.execute(_CREATE_INDEX)
+        _ensure_inbound_column(conn)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -106,12 +134,19 @@ def create_sub(
     member_filter: str | None = None,
     notifier_profile: str | None = None,
     delivery_metadata: dict[str, Any] | None = None,
+    inbound: bool | None = None,
 ) -> dict[str, Any]:
     """Create or update a room→chat mirror subscription (idempotent).
 
     A duplicate ``(room_id, platform, chat_id, thread_id)`` refreshes the
     ``member_filter`` / routing anchor without rewinding ``last_event_seq`` so
     re-running the command never replays already-delivered messages.
+
+    ``inbound`` opts this binding into full-duplex (C2 slice 2): when true, the
+    gateway auto-routes group messages on this binding into the room as
+    ``message.user``. ``None`` leaves an existing row's flag untouched (so
+    ``/room mirror`` refreshing an inbound binding does not silently disable it);
+    a fresh row defaults to outbound-only (0).
     """
 
     metadata_json = (
@@ -119,6 +154,7 @@ def create_sub(
         if delivery_metadata
         else None
     )
+    inbound_int = None if inbound is None else (1 if inbound else 0)
     conn = _connect(db_path)
     try:
         with _write_txn(conn):
@@ -127,8 +163,8 @@ def create_sub(
                 INSERT INTO room_notify_subs (
                     room_id, platform, chat_id, thread_id,
                     last_event_seq, member_filter, notifier_profile,
-                    delivery_metadata, created_at
-                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
+                    delivery_metadata, inbound, created_at
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                 ON CONFLICT(room_id, platform, chat_id, thread_id) DO UPDATE SET
                     member_filter = excluded.member_filter,
                     notifier_profile = COALESCE(
@@ -136,11 +172,13 @@ def create_sub(
                     ),
                     delivery_metadata = COALESCE(
                         excluded.delivery_metadata, room_notify_subs.delivery_metadata
-                    )
+                    ),
+                    inbound = COALESCE(?, room_notify_subs.inbound)
                 """,
                 (
                     room_id, platform, chat_id, thread_id or "",
-                    member_filter, notifier_profile, metadata_json, time.time(),
+                    member_filter, notifier_profile, metadata_json,
+                    (inbound_int or 0), time.time(), inbound_int,
                 ),
             )
             row = conn.execute(
@@ -162,6 +200,44 @@ def list_subs(db_path: Path | str) -> list[dict[str, Any]]:
             "SELECT * FROM room_notify_subs ORDER BY room_id, platform, chat_id"
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def inbound_binding_for_source(
+    db_path: Path | str,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: str = "",
+) -> dict[str, Any] | None:
+    """Return the inbound-enabled subscription bound to a chat source, if any.
+
+    This is the hot-path lookup ``_handle_message`` (C2 slice 2) uses to decide
+    whether an incoming group message should be routed into a hosted room
+    instead of the local agent. Only rows with ``inbound=1`` are returned, so a
+    read-only mirror never starts ingesting chatter. Matches exact
+    ``(platform, chat_id, thread_id)``; a thread-less binding uses ``''``.
+
+    Returns ``None`` (never raises) when the table is missing, empty, or no
+    binding matches — the caller must fall through to normal dispatch, so a
+    lookup failure can never swallow a user's message.
+    """
+
+    try:
+        conn = _connect(db_path)
+    except Exception:
+        return None
+    try:
+        row = conn.execute(
+            """SELECT * FROM room_notify_subs
+               WHERE platform=? AND chat_id=? AND thread_id=? AND inbound=1
+               LIMIT 1""",
+            (platform, chat_id, thread_id or ""),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    except Exception:
+        return None
     finally:
         conn.close()
 
