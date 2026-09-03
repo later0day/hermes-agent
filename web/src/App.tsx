@@ -35,6 +35,7 @@ import {
   FileText,
   Globe,
   Heart,
+  Home,
   KeyRound,
   Menu,
   MessageSquare,
@@ -90,6 +91,7 @@ const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
 const CronPage = lazy(() => import("@/pages/CronPage"));
 const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
 const MemoryPage = lazy(() => import("@/pages/MemoryPage"));
+const RoomsPage = lazy(() => import("@/pages/RoomsPage"));
 const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
 const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
 const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
@@ -175,6 +177,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/profiles": ProfilesPage,
   "/profiles/new": ProfileBuilderPage,
   "/memory": MemoryPage,
+  "/rooms": RoomsPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -218,6 +221,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/memory", labelKey: "memory", label: "Memory", icon: Brain },
+  { path: "/rooms", labelKey: "rooms", label: "Rooms", icon: Home },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/system", label: "System", icon: Wrench },

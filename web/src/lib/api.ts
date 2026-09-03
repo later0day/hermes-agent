@@ -1233,6 +1233,16 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+
+  // ── Hosted rooms: read-only inspector ───────────────────────────────
+  listRooms: (all = false) =>
+    fetchJSON<RoomListResponse>(`/api/rooms${all ? "?all=true" : ""}`),
+  getRoom: (roomId: string) =>
+    fetchJSON<RoomDetailResponse>(`/api/rooms/${encodeURIComponent(roomId)}`),
+  getRoomLog: (roomId: string, sinceSeq = 0, limit = 100) =>
+    fetchJSON<RoomLogResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/log?since_seq=${sinceSeq}&limit=${limit}`,
+    ),
   getMemoryProviderConfig: (provider: string) =>
     fetchJSON<MemoryProviderConfig>(
       `/api/memory/providers/${encodeURIComponent(provider)}/config`,
@@ -1411,6 +1421,66 @@ export interface AuthMeResponse {
   org_id: string;
   provider: string;
   expires_at: number;
+}
+
+export interface RoomMember {
+  member_id?: string;
+  profile?: string;
+  handle?: string;
+  display_name?: string;
+  target?: { kind?: string; profile?: string } | null;
+}
+
+export interface RoomSummary {
+  room_id: string;
+  name: string;
+  members: RoomMember[];
+  revision: number;
+  latest_seq: number;
+  authority_epoch: number;
+  authority_gateway_id?: string | null;
+  created_at?: number | null;
+  updated_at?: number | null;
+  disbanded_at?: number | null;
+}
+
+export interface RoomListResponse {
+  rooms: RoomSummary[];
+}
+
+export interface RoomDriverStatus {
+  running?: boolean;
+  working?: boolean;
+  blocked?: boolean;
+  counts?: Record<string, number>;
+  pending_actions?: Array<Record<string, unknown>>;
+  peer_routes?: unknown;
+}
+
+export interface RoomDetailResponse {
+  room: RoomSummary & {
+    authority_claim?: Record<string, unknown>;
+  };
+  driver_status: RoomDriverStatus | null;
+}
+
+export interface RoomEvent {
+  room_id: string;
+  seq: number;
+  event_id: string;
+  kind: string;
+  actor: { kind?: string; id?: string } & Record<string, unknown>;
+  authority_epoch: number | null;
+  payload: Record<string, unknown>;
+  created_at: number;
+}
+
+export interface RoomLogResponse {
+  events: RoomEvent[];
+  cursor: number;
+  latest_seq: number;
+  has_more: boolean;
+  authority: { gateway_id?: string | null; epoch?: number | null };
 }
 
 export interface ActionResponse {

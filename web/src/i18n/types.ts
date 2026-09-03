@@ -102,6 +102,8 @@ export interface Translations {
       skills: string;
       /** Optional — falls back to English literal until translated. */
       memory?: string;
+      /** Optional — falls back to English literal until translated. */
+      rooms?: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
@@ -529,6 +531,36 @@ export interface Translations {
     /** Edit/preview toggle — optional, English fallback. */
     preview?: string;
     edit?: string;
+  };
+
+  // ── Rooms page (hosted-room read-only inspector) ──
+  // Optional: full locales that omit it fall back to English literals baked
+  // into RoomsPage. en/zh translate it.
+  rooms?: {
+    title: string;
+    description: string;
+    empty: string;
+    showDisbanded: string;
+    members: string;
+    revision: string;
+    latestSeq: string;
+    authorityEpoch: string;
+    authorityGateway: string;
+    created: string;
+    updated: string;
+    disbanded: string;
+    driver: string;
+    running: string;
+    working: string;
+    blocked: string;
+    idle: string;
+    eventLog: string;
+    seq: string;
+    kind: string;
+    actor: string;
+    noEvents: string;
+    loadMore: string;
+    selectRoom: string;
   };
 
   // ── Env / Keys page ──
