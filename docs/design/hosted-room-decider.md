@@ -24,12 +24,68 @@ This is a shift from **GroupChat (mesh)** to **Orchestrator-Worker (star)**.
 
 | Framework | Topology | Context | Worker↔worker | Coordinator |
 |---|---|---|---|---|
-| **Claude Code** (`Task`, `--agents`, `--teammate-mode`) | star | **isolated** (subagent own context; returns a summary) | ❌ | main agent spawns fire-and-forget subagents |
+| **Claude Code — subagents** | star | **isolated** (subagent own context window; returns a summary to caller) | named subagents can `SendMessage` each other | main agent delegates & collects results in one session |
+| **Claude Code — agent teams** (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) | **mesh + shared task list** | each teammate fully independent context | ✅ direct `SendMessage` via per-agent JSON mailbox | `team-lead` session assigns/synthesizes; teammates self-claim tasks (file-locked) |
+| **Claude Code — dynamic workflows** (`/workflows`) | star (script-driven) | script variables hold intermediate results | via the script | a JS script holds the plan (agent()/parallel()/pipeline()/phase()), not turn-by-turn judgment |
 | **LangGraph supervisor** | star | shared state, scoped reads | ❌ (edges only to supervisor) | supervisor node routes `next: worker \| FINISH` |
 | **CrewAI hierarchical** | star | shared | ❌ | auto-manager: delegate → review → re-delegate/accept; role/goal/backstory injected |
 | **OpenAI Swarm** | mesh | shared | via handoff (control transfer) | none — each agent hands off |
 | **AutoGen GroupChat** | mesh | shared | ✅ | `GroupChatManager` next-speaker: round_robin/auto/manual |
 | **Hermes rooms (today)** | mesh | shared | ✅ (@mentions) | none |
+
+> **Correction (real-source mining, CC v2.1.226 npm + docs.claude.com).** CC is
+> not one topology. It offers a *spectrum*: (1) **subagents** — closest to a star,
+> workers return summaries to the caller, but named subagents can `SendMessage`
+> each other (not pure fire-and-forget as an earlier draft claimed); (2) **agent
+> teams** — an explicit **mesh** with a `team-lead`, a **shared task list with a
+> dependency DAG** (blocks/blockedBy, file-locked self-claim), and a **mailbox**
+> (`~/.claude/teams/{team}/inboxes/{agent}.json`) for direct agent↔agent messages;
+> (3) **dynamic workflows** — the plan moves *out* of the model into a rerunnable
+> JS script. Our decider blueprint is still **LangGraph-supervisor star + CrewAI
+> role injection** (single external voice = "expose only the decider"), which none
+> of CC's three modes gives directly — CC's team-lead does not hide teammates from
+> the user (you can `@`-message any teammate). But CC's **Task dependency DAG** is
+> the reference model for our C3 (Room↔Kanban), and its **hooks quality gates**
+> (`TeammateIdle`/`TaskCreated`/`TaskCompleted`, exit-2 to block+feedback) are the
+> reference for enforcing "decider must dispatch or answer, never (pass)" (risk D).
+
+### Claude Code deep mining (what we can actually borrow)
+
+Sources: `@anthropic-ai/claude-code@2.1.226` npm `sdk-tools.d.ts`, and the
+`docs.claude.com/en/docs/claude-code/{sub-agents,agent-teams,agents,workflows,
+agent-view,cross-session-messaging,worktrees}.md` pages.
+
+- **`Agent` tool input** (`AgentInput`): `description`, `prompt`, `subagent_type`
+  (built-ins `Explore`/`Plan`/`general-purpose`/`claude`, or a user/project
+  subagent name, or `"fork"` to inherit parent context), `model`
+  (sonnet/opus/haiku, or a `fable`), `run_in_background`, `name` (makes the agent
+  addressable via `SendMessage({to:name})`), `isolation` (`"worktree"|"remote"`).
+  `team_name`/`mode` are DEPRECATED — "the session has a single implicit team".
+- **`AgentOutput`** has 3 states: `completed` (with usage/toolStats/worktreePath),
+  `async_launched` (agentId/outputFile), `remote_launched` (taskId/sessionUrl).
+- **Task tools** (`TaskCreate/Get/Update/List/Stop`) = a **dependency DAG**:
+  status pending/in_progress/completed(/deleted), `blocks[]`/`blockedBy[]`,
+  auto-unblock on dependency completion, file-locked claim. → **C3 reference.**
+- **Workflow DSL** (`WorkflowInput`): script must begin with
+  `export const meta = {name, description, phases}` then
+  `agent()/parallel()/pipeline()/phase()`; `resumeFromRunId` caches completed
+  `agent()` calls; `scriptPath` persists for iteration. → far heavier than what a
+  room needs, but validates "plan-as-code" as the ceiling above turn-by-turn.
+- **Agent teams mechanics**: `team-lead` + teammates; shared task list at
+  `~/.claude/tasks/{team}/` (persists across resume); mailbox JSON at
+  `~/.claude/teams/{team}/inboxes/{agent}.json` (validated per-entry, malformed
+  entries dropped); config at `~/.claude/teams/{team}/config.json` `members[]`
+  (each has name + agent type; lead's type is `team-lead`); subagent definitions
+  reusable as teammate roles (tools/model/body/mcpServers applied per display
+  mode). **Key contrast with our design: CC does NOT hide teammates** — the user
+  can arrow-select and directly message any teammate; our decider is the *single*
+  external voice, which is the deliberate delta.
+- **Hooks as quality gates**: `TeammateIdle` (exit 2 → keep working),
+  `TaskCreated`/`TaskCompleted` (exit 2 → block + feedback). → the enforcement
+  pattern for our risk D ("decider must never `(pass)`").
+- **What CC does NOT give us**: a coordinator that is the sole voice to an
+  *external* chat surface. CC's lead is a coordinator *for the user*, not a proxy
+  that hides workers from a downstream group. That gap is exactly our decider.
 
 **Chosen blueprint: LangGraph-supervisor topology + CrewAI role injection**,
 implemented on Hermes' existing serial driver. The decider is the star hub;
