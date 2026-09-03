@@ -150,7 +150,7 @@ it).
 | # | Risk | Mitigation |
 |---|---|---|
 | A | `_exact_fields` rejects unknown fields → `role` must be registered | add `"role"` to `validate_roster` optional set (1 line) |
-| B | round cap is hard-coded in `_TURN_ID_RE` (`r(?P<round>[0-2])`) | v1 keeps 3 rounds (parallel dispatch) → does not touch regex |
+| B | round cap is hard-coded in `_TURN_ID_RE` (`r(?P<round>[0-4])` since v2) | v1 kept 3 rounds (parallel dispatch); v2 widened the regex + constant to 5 |
 | C | round-0 change touches core policy `plan_next_task` | `if has-decider → decider only; else → existing logic` (back-compat), pure fn, fully E2E-able |
 | D | `(pass)` semantics: a near-empty decider turn could trigger `silent_round` → room settles before workers run | decider prompt forbids `(pass)`; must always emit an explicit dispatch or final answer |
 | E | star topology needs `_unaddressed_member_mentions` to be role-aware (a worker's `@` must NOT pull another worker) | filter mentions: worker `@` only resolves to the decider; decider `@` resolves to any worker |
@@ -191,7 +191,7 @@ coordinate". This unlocks CrewAI-style serial dispatch / review-and-redo.
 mention filter + decider prompt injection (role awareness, no-pass, review
 language) + shared context + 3-round parallel dispatch + mirror-only-decider.
 
-**v2 (medium risk)** — 5-round serial iteration (regex + crash-recovery E2E) =
+**v2 (medium risk) — SHIPPED** — 5-round serial iteration (regex + crash-recovery E2E) =
 CrewAI-style review loop.
 
 **v3 (optimization)** — worker context isolation (localized to `_build_prompt`)
@@ -245,9 +245,12 @@ testable via the event log, but its headline product promise is coupled to C2.
   `plan_publication` (1292) already isolates the outbound unit — `message.member`
   payload carries `member_id` + actor.profile (1345/1363), so a C2 bridge can emit
   ONLY `member_id == <decider>`. Precise filter point confirmed.
-- **v2 (5-round serial)** — 2 edits (constant 31 + regex 46 `[0-2]→[0-4]`);
-  `_zero_based_int` bound (649) auto-follows. Only crash-recovery
-  (`reconstruct_task_plan`, 1214) needs a dedicated E2E.
+- **v2 (5-round serial)** — SHIPPED. 2 edits (constant `MAX_DISCUSSION_ROUNDS`
+  line 31 + `_TURN_ID_RE` round group line 53 `[0-2]→[0-4]`); the `range(...)`
+  loop, the `MAX_DISCUSSION_ROUNDS - 1` bound and `_zero_based_int` maximum all
+  auto-follow the constant. Only crash-recovery (`reconstruct_task_plan`, ~1301)
+  needed a dedicated E2E — see `test_later_round_task_reconstructs_after_restart`
+  and `test_five_round_bound`.
 - **v3 (context isolation)** — localized to `_build_prompt`; must not disturb
   `_derive_member_watermarks` (795, crash-recovery depends on watermark advance).
 

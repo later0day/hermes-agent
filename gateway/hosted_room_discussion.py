@@ -24,7 +24,7 @@ from gateway.hosted_rooms_common import compact_json
 
 MAX_DISCUSSION_MEMBERS = 6
 MIN_DISCUSSION_MEMBERS = 2
-MAX_DISCUSSION_ROUNDS = 3
+MAX_DISCUSSION_ROUNDS = 5
 MAX_DISCUSSION_MESSAGES = 10
 MAX_DISCUSSION_DELTA_LINES = 24
 MAX_USER_TEXT_BYTES = 64 * 1024
@@ -54,7 +54,7 @@ _MEMBER_CONTROL_FRAME_RE = re.compile(
 )
 _MEMBER_CONTROL_FRAME_RELABEL = "[member-quoted "
 _TURN_ID_RE = re.compile(
-    r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
+    r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-4])\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
     r"m(?P<member>[0-9a-f]{24})$")
 
