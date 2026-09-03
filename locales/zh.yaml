@@ -185,6 +185,25 @@ gateway:
       review_detail:       "评审反馈: {reason}\n请检查现有卡片及其当前评审运行；将工作返回同一实现任务。不要把此 BLOCK 视为批准，也不要创建重复任务。"
       guidance:            "这是自动任务状态通知，不是再次分解任务的请求。创建后续任务前请先检查当前看板；不要重复创建已存在的任务或任务图。"
 
+  room:
+    error_prefix:          "⚠ 房间错误：{error}"
+    worker_unavailable:    "⚠ 群聊 worker 不可用。请重启 Hermes 网关后重试。"
+    usage:                 "用法：/room <list|show|create|disband>\n  /room list [--all]\n  /room show <房间ID>\n  /room create <房间ID> <名称> <profile1> <profile2> [profile3…]（2-6 个成员）\n  /room disband <房间ID>"
+    unknown_action:        "未知的 /room 动作 '{action}'。可用：/room list、show、create、disband。"
+    no_rooms:              "暂无托管房间。用 /room create <房间ID> <名称> <profile1> <profile2> 创建一个。"
+    list_header:           "🏠 **托管房间**（共 {count} 个）"
+    list_row:              "• `{room_id}` — {name}（{members} 个成员，seq {latest_seq}）"
+    show_header:           "🏠 **{name}**（`{room_id}`）"
+    show_members:          "成员（{count}）：{handles}"
+    show_meta:             "创建于：{created}  ·  修订：{revision}  ·  日志 seq：{latest_seq}  ·  authority epoch：{epoch}"
+    show_running:          "驱动状态：{status}"
+    created:               "✅ 已创建房间 `{room_id}` — {name}，含 {members} 个成员。"
+    created_idempotent:    "ℹ️ 房间 `{room_id}` 已存在（未改动）。"
+    disbanded:             "🗑️ 已解散房间 `{room_id}`（撤销了 {routes} 条路由）。"
+    need_room_id:          "请提供房间 ID。用法：/room {action} <房间ID>。"
+    need_create_args:      "用法：/room create <房间ID> <名称> <profile1> <profile2> [profile3…]（2-6 个本地 profile）。"
+    truncated_suffix:      "…（已截断）"
+
   personality:
     none_configured:       "`{path}/config.yaml` 中未配置人格设定"
     header:                "🎭 **可用人格**\n"

@@ -17990,6 +17990,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "bg": self._handle_background_command,
             "btw": self._handle_btw_command,
             "kanban": self._handle_kanban_command,
+            "room": self._handle_room_command,
             "subgoal": self._handle_subgoal_command,
             "heartbeat": self._handle_heartbeat_command,
             "busy": self._handle_busy_command,

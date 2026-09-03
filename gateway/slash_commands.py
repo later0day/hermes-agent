@@ -572,6 +572,217 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_room_command(self, event: MessageEvent) -> str:
+        """Handle /room — thin adapter over the hosted-room service.
+
+        Read/mutate hosted rooms from a messaging platform by delegating to
+        the process-owned :class:`HostedRoomService` and the durable
+        ``gateway.hosted_rooms`` store. The gateway run process always starts
+        the room worker (see ``_ensure_hosted_room_worker``), so the service
+        is reachable in-process. Kept deliberately thin: parsing + rendering
+        only, no room identity/log/runner logic (that lives in the backend).
+
+        Subcommands:
+          /room list [--all]
+          /room show <room_id>
+          /room create <room_id> <name> <profile1> <profile2> [profile3…]
+          /room disband <room_id>
+        """
+        import asyncio
+        import shlex
+        import uuid
+
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("room"):
+            text = text[len("room"):].lstrip()
+
+        try:
+            tokens = shlex.split(text) if text else []
+        except ValueError:
+            tokens = text.split()
+
+        if not tokens:
+            return t("gateway.room.usage")
+
+        action = tokens[0].lower()
+        args = tokens[1:]
+
+        def _fmt_ts(value) -> str:
+            try:
+                import datetime as _dt
+                return _dt.datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return str(value or "")
+
+        def _member_handles(members) -> str:
+            out = []
+            for m in members or []:
+                if not isinstance(m, dict):
+                    continue
+                handle = str(m.get("handle") or "")
+                profile = str(m.get("profile") or "")
+                out.append(f"@{handle} ({profile})" if handle else profile)
+            return ", ".join(out) if out else "—"
+
+        def _run():
+            from tui_gateway.methods_groups import get_hosted_room_service
+            from gateway.hosted_rooms import (
+                AuthorityConflictError,
+                HostedRoomError,
+                RoomHistoryExpiredError,
+                RoomNotFoundError,
+                default_db_path,
+                disband_room,
+                list_rooms,
+                local_authority_gateway_id,
+                room_state,
+            )
+
+            db_path = default_db_path()
+
+            if action == "list":
+                include_disbanded = "--all" in args
+                rooms = list_rooms(db_path, include_disbanded=include_disbanded)
+                if not rooms:
+                    return t("gateway.room.no_rooms")
+                lines = [t("gateway.room.list_header", count=len(rooms))]
+                for r in rooms:
+                    lines.append(t(
+                        "gateway.room.list_row",
+                        room_id=r.get("room_id"),
+                        name=r.get("name"),
+                        members=len(r.get("members") or []),
+                        latest_seq=r.get("latest_seq", 0),
+                    ))
+                return "\n".join(lines)
+
+            if action == "show":
+                if not args:
+                    return t("gateway.room.need_room_id", action="show")
+                room_id = args[0]
+                try:
+                    room = room_state(db_path, room_id=room_id, include_disbanded=True)
+                except HostedRoomError as exc:
+                    return t("gateway.room.error_prefix", error=exc)
+                lines = [
+                    t("gateway.room.show_header", name=room.get("name"), room_id=room.get("room_id")),
+                    t("gateway.room.show_members",
+                      count=len(room.get("members") or []),
+                      handles=_member_handles(room.get("members"))),
+                    t("gateway.room.show_meta",
+                      created=_fmt_ts(room.get("created_at")),
+                      revision=room.get("revision", 0),
+                      latest_seq=room.get("latest_seq", 0),
+                      epoch=room.get("authority_epoch", 0)),
+                ]
+                service = get_hosted_room_service()
+                if service is not None and room.get("disbanded_at") is None:
+                    try:
+                        status = service.status(str(room.get("room_id")))
+                        running = status.get("running") if isinstance(status, dict) else status
+                        lines.append(t("gateway.room.show_running", status=running))
+                    except Exception:
+                        pass
+                return "\n".join(lines)
+
+            if action == "create":
+                if len(args) < 4:
+                    return t("gateway.room.need_create_args")
+                room_id, name = args[0], args[1]
+                profiles = args[2:]
+                service = get_hosted_room_service()
+                if service is None:
+                    return t("gateway.room.worker_unavailable")
+                # Map bare profile names to local members. member_id is a
+                # stable per-room slug; handle defaults to the profile name.
+                seen_handles: dict[str, int] = {}
+                members = []
+                for prof in profiles:
+                    handle = prof
+                    if handle in seen_handles:
+                        seen_handles[handle] += 1
+                        handle = f"{handle}{seen_handles[handle]}"
+                    else:
+                        seen_handles[handle] = 1
+                    members.append({
+                        "member_id": f"m_{uuid.uuid4().hex[:16]}",
+                        "profile": prof,
+                        "handle": handle,
+                        "target": {"kind": "local", "profile": prof},
+                    })
+                try:
+                    room = service.create_room(room_id=room_id, name=name, members=members)
+                except Exception as exc:
+                    return t("gateway.room.error_prefix", error=exc)
+                if room.get("idempotent"):
+                    return t("gateway.room.created_idempotent", room_id=room.get("room_id"))
+                return t("gateway.room.created",
+                         room_id=room.get("room_id"),
+                         name=room.get("name"),
+                         members=len(room.get("members") or []))
+
+            if action == "disband":
+                if not args:
+                    return t("gateway.room.need_room_id", action="disband")
+                room_id = args[0]
+                service = get_hosted_room_service()
+                if service is None:
+                    return t("gateway.room.worker_unavailable")
+
+                def _disband_tombstone(state: dict | None = None) -> dict:
+                    local_gateway_id = local_authority_gateway_id()
+                    if state is not None and (
+                        str(state["authority_gateway_id"]) != local_gateway_id
+                    ):
+                        raise AuthorityConflictError(
+                            "This room is managed by another gateway."
+                        )
+                    return disband_room(
+                        service.db_path,
+                        room_id=room_id,
+                        expected_gateway_id=str(local_gateway_id),
+                        expected_epoch=int(
+                            state["authority_epoch"] if state is not None else 1
+                        ),
+                    )
+
+                try:
+                    try:
+                        existing = room_state(
+                            service.db_path, room_id=room_id, include_disbanded=True
+                        )
+                    except RoomHistoryExpiredError:
+                        _disband_tombstone()
+                        return t("gateway.room.disbanded", room_id=room_id, routes=0)
+                    if existing.get("disbanded_at") is not None:
+                        _disband_tombstone(existing)
+                        return t("gateway.room.created_idempotent", room_id=room_id)
+                    service.stop_room(
+                        room_id,
+                        cancel_id=f"disband_{uuid.uuid4().hex[:16]}",
+                        require_acknowledged=True,
+                    )
+                    routes = service.revoke_room_routes(room_id)
+                    _disband_tombstone(existing)
+                except (HostedRoomError, RoomNotFoundError) as exc:
+                    return t("gateway.room.error_prefix", error=exc)
+                except Exception as exc:
+                    return t("gateway.room.error_prefix", error=exc)
+                return t("gateway.room.disbanded", room_id=room_id, routes=routes)
+
+            return t("gateway.room.unknown_action", action=action)
+
+        try:
+            output = await asyncio.to_thread(_run)
+        except Exception as exc:  # pragma: no cover - defensive
+            return t("gateway.room.error_prefix", error=exc)
+
+        if output and len(output) > 3800:
+            output = output[:3800] + "\n" + t("gateway.room.truncated_suffix")
+        return output or t("gateway.room.usage")
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
