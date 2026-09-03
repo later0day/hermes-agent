@@ -326,7 +326,9 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
         agent = sess["agent"]
         try:
             with _session_profile_runtime_scope(sess):
-                enabled = _load_enabled_toolsets(getattr(agent, "platform", None))
+                # Re-apply the hosted-room decider whitelist (F1): a config-driven refresh must not hand a
+                # decider back the full toolset it was stripped of at build time.
+                enabled = _room_decider_toolset_filter(sess, _load_enabled_toolsets(getattr(agent, "platform", None)))
                 disabled = _load_disabled_toolsets()
                 refresh(agent, enabled_override=enabled, disabled_override=disabled,
                         quiet_mode=True, preserve_prefix=preserve_prefix)

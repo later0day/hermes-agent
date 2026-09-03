@@ -2548,6 +2548,43 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
         raise
 
 
+def _room_decider_toolset_filter(session: dict | None, base_toolsets: list[str] | None) -> list[str] | None:
+    """Enforce the decider's orchestration-only tool whitelist at build time.
+
+    Hermes' equivalent of Claude Code's ``applyCoordinatorToolFilter``: a hosted-room *decider* schedules and
+    synthesizes, it never does the work itself. The decider prompt asks it to orchestrate, but a prompt is not
+    enforcement -- a decider bound to a full engineer profile could still Read/Bash/Edit. Here the decider
+    member's toolset is intersected with the orchestration-only allow-set (bot_room / delegation / todo /
+    clarify), always retaining ``bot_room`` so it can still @mention and speak the single external voice.
+    Workers are untouched.
+
+    Keyed on the room roster's persisted ``role`` (a decider is always local and owns a unique local profile),
+    resolved from the ``Group: <room_id>`` room session this agent is being built for. Fails OPEN for anything
+    that is not a positively-identified decider so a normal chat/worker turn is never over-restricted.
+    """
+    if not session or _session_source(session) != "bot_room":
+        return base_toolsets
+    title = str(session.get("title") or "")
+    if not title.startswith("Group: ") or not (room_id := title.removeprefix("Group: ").strip()):
+        return base_toolsets
+    try:
+        from gateway.hosted_room_execution_policy import orchestration_only_toolsets
+        from gateway.hosted_rooms import default_db_path, room_state
+        from hermes_constants import profile_name_for_home
+
+        # profile_name_for_home maps the default home to "default" (its basename is ".hermes").
+        profile_name = profile_name_for_home(session.get("profile_home")) or _current_profile_name()
+        for member in room_state(default_db_path(), room_id=room_id).get("members") or []:
+            if not isinstance(member, dict) or str(member.get("profile") or "") != str(profile_name or ""):
+                continue
+            if str(member.get("role") or "worker") == "decider":
+                return orchestration_only_toolsets(base_toolsets)
+            return base_toolsets
+    except Exception:
+        logger.debug("decider toolset filter skipped for %s", title, exc_info=True)
+    return base_toolsets
+
+
 def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:
     """(model, runtime) for a new agent; a per-session override (/model switch or a resumed row's persisted
     runtime) wins over global config/env. Older rows stored the resolved provider "custom" (no named entry
@@ -2682,6 +2719,10 @@ def _make_agent(
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)
+    # Decider members run orchestration-only: intersect the profile's toolset with the coordinator allow-set
+    # BEFORE the agent snapshots its tools (hard build-time enforcement, the analogue of CC's
+    # applyCoordinatorToolFilter).
+    room_enabled_toolsets = _room_decider_toolset_filter(session, _load_enabled_toolsets(platform))
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
@@ -2692,7 +2733,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_load_enabled_toolsets(platform),
+        enabled_toolsets=room_enabled_toolsets,
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),

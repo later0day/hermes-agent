@@ -207,7 +207,8 @@ All slices in this doc are now shipped.
       a separate future slice, not hidden here). 5 projection tests (suite 60
       passed) + E2E through the real handler; C3 store suite still 20 passed. See
       `docs/design/hosted-room-task-dag.md` §C4.
-- [x] **C5 — pull-based auto-dispatch of manual DAG tasks into member turns** —
+- [x] **C5 — scheduler-mediated auto-dispatch of manual DAG tasks into member
+      turns** —
       C4 wired the DAG as a faithful *projection* but a *manual* `room_task_dag`
       task still needed a human `@mention` to run. C5 closes that loop at the
       one safe seam — `prepare_room`'s `idle` branch (no queued/running task, no
@@ -228,3 +229,25 @@ All slices in this doc are now shipped.
       auto-dispatched → completed) plus a negative ambiguous-subject test; the
       canonical scheduler E2E is untouched and still passes. See
       `docs/design/hosted-room-task-dag.md` §C5.
+- [x] **F1 — decider orchestration-only tool whitelist (hard enforcement)** — an
+      audit found the decider's "only schedules, never does work" contract was
+      **prompt-only** (F4/F5 language in `_build_prompt`); a decider bound to a
+      full engineer profile could still Read/Bash/Edit. F1 makes it a hard
+      build-time boundary — the Hermes analogue of CC's
+      `applyCoordinatorToolFilter` / `COORDINATOR_MODE_ALLOWED_TOOLS`.
+      `gateway/hosted_room_execution_policy.py` gains
+      `ORCHESTRATION_ONLY_TOOLSETS = {bot_room, delegation, todo, clarify}` +
+      `orchestration_only_toolsets(base)` (intersect, always force `bot_room`);
+      `tui_gateway/server._room_decider_toolset_filter` applies it at
+      `_make_agent` for exactly the room member whose persisted `role ==
+      "decider"` (a decider is always local with a unique local profile, so the
+      `Group:<room_id>` session + profile identifies it), stripping
+      file/terminal/code_execution/browser before the agent snapshots its tools.
+      Fails open for anything not a positively-identified decider (workers/normal
+      chats untouched). This also fixed a latent bug: `HostedRoomService`
+      `create_room`/`update_members` were **dropping** the roster `role` field,
+      so the decider role never reached the stored room — the scheduler and the
+      filter both read it back now. +1 E2E test
+      (`test_f1_decider_member_is_restricted_to_orchestration_only_tools`), DAG
+      suite 30 passed, discussion suite 60 passed, canonical + C5 E2E still pass.
+      See `docs/design/hosted-room-decider.md` §F1.

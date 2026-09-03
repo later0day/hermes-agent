@@ -290,14 +290,26 @@ Edit/Write — there is no `Read`, no `Bash`, no `Grep` either.** The coordinato
 `ListAgents`), orchestrate (`Workflow`), stop tasks (`TaskStop`), and emit
 structured output — nothing else. Forking is refused (`COORDINATOR_FORK_REFUSAL`).
 **Implication for Hermes:** decider decision #3 ("only schedules, never does
-work") should not rely on prompt-only. The Hermes analogue is the **profile** the
-decider member runs as: point `--decider` at an *orchestration-only* profile
-(tools limited to messaging/delegation — NOT merely "read-only") rather than a
-full engineer profile. This is a *config* choice (which profile), NOT a
-discussion-policy change — zero code in `hosted_room_discussion.py`. **Add to v1:
-docs + a recommended orchestration-only decider profile.** (Correction: an earlier
-draft called this "read-only"; the binary whitelist has no Read tool — it is
-strictly stronger than read-only.)
+work") should not rely on prompt-only. **Shipped (hard enforcement):** the
+decider member's local `bot_room` agent is built with its toolset *intersected*
+against an orchestration-only allow-set — the Hermes analogue of
+`applyCoordinatorToolFilter`. `gateway/hosted_room_execution_policy.py` defines
+`ORCHESTRATION_ONLY_TOOLSETS = {bot_room, delegation, todo, clarify}` and
+`orchestration_only_toolsets(base)` (intersect-then-force-`bot_room`);
+`tui_gateway/server._room_decider_toolset_filter` applies it at
+`_make_agent` for exactly the room member whose persisted `role == "decider"`
+(a decider is always local and owns a unique local profile, so the room session
+`Group:<room_id>` + profile identifies it). A decider bound to a full engineer
+profile (file/terminal/code_execution/web/browser) therefore *cannot* Read/Bash/
+Edit/Write — those toolsets are stripped before the agent snapshots its tools;
+`bot_room` is always retained so it can still `@mention` and speak. Workers are
+untouched (fail-open for anything not a positively-identified decider). This is
+enforcement, not a prompt: pointing `--decider` at an orchestration-only profile
+is still the *recommended* config, but a mis-pointed decider is now narrowed
+regardless. (Correction: an earlier draft called this "read-only"; the binary
+whitelist has no Read tool — it is strictly stronger than read-only. A second
+earlier draft claimed this was "config + docs, no code"; the hard filter above
+supersedes that — a prompt cannot enforce a tool boundary.)
 
 ### F2 — No status poller; react to terminal events (we already do this)
 CC does NOT background-poll teammate status. Teammates PUSH idle/terminal
@@ -336,20 +348,23 @@ synthesize, not as instructions to obey — one sentence in the decider prompt.
 ### Minimal-impact placement in Hermes (the bottom line)
 | CC mechanism | Hermes minimal-impact realization | Code touched |
 |---|---|---|
-| coordinator tool-filter (F1) | run decider as an *orchestration-only* profile (config) | **none** — profile choice + docs |
+| coordinator tool-filter (F1) | intersect the decider agent's toolset with an orchestration-only allow-set at build (`applyCoordinatorToolFilter` analogue); recommend an orchestration-only profile | `hosted_room_execution_policy.orchestration_only_toolsets` + `server._room_decider_toolset_filter` (+ role now persisted by `service.create_room`) |
 | no poller, event-driven (F2) | reuse `plan_next_task` replay on `turn.settled` | **none** — existing loop |
 | self-claim task table (F3) | deferred to C3 | none in decider |
 | understand-before-delegate (F4) | decider prompt injection text | `_build_prompt` branch (already listed) |
 | untrusted-peer framing (F5) | one line in decider prompt | `_build_prompt` branch (already listed) |
 | single external voice | C2 mirror `member_filter=<decider>` | C2, not decider |
 
-**Conclusion:** the deep dive REDUCES the decider's footprint rather than growing
-it. Three of CC's five mechanisms map to *config or prompt text*, not code; one
-(F2) is already satisfied by the existing loop; one (F3) is C3. The v1 code change
-set is unchanged from above — the deep dive just (a) adds a recommended
-orchestration-only decider profile (config + docs, no code) and (b) sharpens the
-`_build_prompt` decider prompt with F4+F5. **No new modules, no new loops, no
-schema change.**
+**Conclusion:** the deep dive keeps the decider's footprint small. Of CC's five
+mechanisms: F2 is already satisfied by the existing loop; F3 is C3; F4/F5 are
+`_build_prompt` text; the "single external voice" is C2's `member_filter`. F1 is
+the one that needs real (small) code — the orchestration-only tool filter is a
+hard build-time boundary (`orchestration_only_toolsets` +
+`_room_decider_toolset_filter`), not prompt text, because a prompt cannot
+enforce a tool boundary. **No new modules, no new loops, no schema change** —
+F1 reuses the existing toolset-authority module and the `_make_agent` seam, and
+the decider `role` is now persisted by `service.create_room`/`update_members`
+(previously dropped) so both the scheduler and the filter can read it back.
 
 ## Verification (same discipline as C1)
 Real E2E against a live bound `HostedRoomService` on a COPY of prod `state.db`
@@ -357,6 +372,9 @@ with real profile names (never the live DB — the prod worker drives all
 local-authority rooms). Assert the full chain: user msg → only decider speaks r0
 → decider `@worker` → worker runs r1 → worker `@decider` → decider summarizes r2.
 Back-compat: rooms without a decider keep today's mesh @-mention behavior.
-Additionally assert F1: a decider bound to an orchestration-only profile cannot
-emit a member turn that performs writes (the profile's tool set, not the room, enforces
-it) — confirming schedule-only is a profile property, not a policy hack.
+Additionally assert F1 (shipped as
+`test_f1_decider_member_is_restricted_to_orchestration_only_tools`): a decider
+member bound to a full engineer profile is built with its toolset intersected
+down to the orchestration-only allow-set (no file/terminal/code_execution/
+browser; `bot_room` retained), while a worker in the same room keeps its full
+toolset — confirming schedule-only is a hard tool boundary, not a prompt hack.
