@@ -2190,3 +2190,100 @@ def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
     assert recovered["task_id"] == "task-1"
     assert recovered["execution_generation"] == 1
     assert recovered["prompt"] == "Recover the accepted review."
+
+
+def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
+    tmp_path: Path, monkeypatch
+):
+    """A decider member's live agent is built with orchestration-only tools.
+
+    This is the hard, build-time enforcement of the decider's "schedule-only"
+    contract — the Hermes analogue of Claude Code's applyCoordinatorToolFilter.
+    A decider bound to a full engineer profile (file/terminal/code_execution/
+    web/browser) has those stripped down to the orchestration allow-set
+    (bot_room/delegation/todo/clarify), always retaining bot_room so it can
+    still @mention and speak. A worker in the same room keeps its full toolset.
+    """
+
+    from tui_gateway import server as tui_server
+
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.local_profiles = lambda: ("lead", "backend")
+    service.create_room(
+        room_id="room-1",
+        name="Decider room",
+        members=[
+            {
+                "member_id": "lead",
+                "profile": "lead",
+                "handle": "lead",
+                "role": "decider",
+            },
+            {"member_id": "backend", "profile": "backend", "handle": "backend"},
+        ],
+    )
+
+    # The build seam reads the authority DB via default_db_path(); point it at
+    # this room's DB so the filter resolves the real persisted roster + roles.
+    monkeypatch.setattr(
+        "gateway.hosted_rooms.default_db_path", lambda: db
+    )
+
+    full_engineer = [
+        "bot_room",
+        "browser",
+        "clarify",
+        "code_execution",
+        "delegation",
+        "file",
+        "terminal",
+        "todo",
+        "web",
+    ]
+
+    def _room_session(profile: str) -> dict:
+        return {
+            "source": "bot_room",
+            "title": "Group: room-1",
+            "profile_home": str(tmp_path / "profiles" / profile),
+        }
+
+    # Decider: intersected with the orchestration-only allow-set — the write /
+    # execution / browsing toolsets are gone, the room voice survives.
+    decider_tools = tui_server._room_decider_toolset_filter(
+        _room_session("lead"), list(full_engineer)
+    )
+    assert decider_tools == ["bot_room", "clarify", "delegation", "todo"]
+    assert "file" not in decider_tools
+    assert "terminal" not in decider_tools
+    assert "code_execution" not in decider_tools
+    assert "browser" not in decider_tools
+    assert "bot_room" in decider_tools
+
+    # Worker: untouched — the same full engineer toolset passes through.
+    worker_tools = tui_server._room_decider_toolset_filter(
+        _room_session("backend"), list(full_engineer)
+    )
+    assert worker_tools == full_engineer
+
+    # A decider bound to "every toolset enabled" (base None) still collapses to
+    # exactly the orchestration allow-set — it can never gain write tools.
+    decider_from_all = tui_server._room_decider_toolset_filter(
+        _room_session("lead"), None
+    )
+    assert decider_from_all == ["bot_room", "clarify", "delegation", "todo"]
+
+    # Non-room sessions and non-Group titles fail open (never over-restricted).
+    assert (
+        tui_server._room_decider_toolset_filter(
+            {"source": "desktop", "title": "Group: room-1"}, list(full_engineer)
+        )
+        == full_engineer
+    )
+    assert (
+        tui_server._room_decider_toolset_filter(
+            {"source": "bot_room", "title": "Untitled"}, list(full_engineer)
+        )
+        == full_engineer
+    )

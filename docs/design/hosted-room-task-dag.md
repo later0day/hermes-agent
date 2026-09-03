@@ -80,6 +80,10 @@ room_task_dag (
     seq         INTEGER NOT NULL,   -- monotonic creation order → lowest-id tie-break
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
+    dispatch_thread_id TEXT,        -- C5: the `dagtask:<id>` anchor thread a
+                                    -- claimed task's auto-dispatched member turn
+                                    -- runs on; NULL until claim_task_for_dispatch
+                                    -- stamps it (added by a guarded ALTER, see §C5)
     PRIMARY KEY (room_id, task_id)
 )
 room_task_deps (
@@ -245,7 +249,18 @@ drift-free — not a decorative orphan.
 
 ---
 
-## C5 — Pull-based auto-dispatch of manual DAG tasks into member turns
+## C5 — Scheduler-mediated auto-dispatch of manual DAG tasks into member turns
+
+> **Naming note (honest framing).** CC's F3 is a *worker* **pull self-claim**:
+> an idle teammate autonomously grabs the next available task. C5 is **not**
+> that. C5 keeps the shipped **push-based, scheduler-mediated** model: the
+> service — at the `idle` seam — claims the next available manual task on the
+> worker's behalf and dispatches it by appending an ordinary `@mention` anchor
+> the *existing* scheduler executes. The DAG claim (`claim_task_for_dispatch`)
+> is CC-shaped (pending ∧ unowned ∧ unblocked, lowest-seq, CAS under
+> `BEGIN IMMEDIATE`), but the *actor* is the scheduler, not a self-directed
+> worker turn. True worker-initiated pull-into-turns remains the named future
+> slice below (§"genuinely out of scope").
 
 C4 named the honest gap: a *manual* `room_task_dag` task never became a real
 member turn on its own — a human still had to `@mention` a worker. C5 closes
@@ -305,8 +320,12 @@ interval) — the same courtesy `send` already extends.
 - `claim_task_for_dispatch(room_id, task_id, owner, dispatch_thread_id)` —
   atomic specific-claim + stamp anchor thread; returns `None` (never raises) if
   the task is no longer available.
-- `dispatched_task_for_thread(room_id, dispatch_thread_id)` — lookup the
-  in-progress task on an anchor thread.
+- `dispatched_task_for_thread(room_id, dispatch_thread_id)` — read-only lookup
+  of the in-progress task on an anchor thread. `_sweep_completed_dag_dispatches`
+  uses it as a **cheap pre-check** on every `prepare_room` cycle: a re-sweep of
+  an already-completed `dagtask:` thread returns `None` here and skips the
+  `BEGIN IMMEDIATE` write in `complete_dispatched` entirely, so only a still-
+  in-progress dispatch ever pays for the write.
 - `complete_dispatched(room_id, dispatch_thread_id)` — mark that task
   `completed` (idempotent).
 

@@ -777,6 +777,19 @@ class HostedRoomService:
             settled_threads.add(thread_id)
         for thread_id in settled_threads:
             try:
+                # Cheap read-only pre-check first: prepare_room re-runs this
+                # sweep every cycle, so most settled `dagtask:` threads already
+                # have their task completed from a prior sweep. Skipping those
+                # here avoids taking a BEGIN IMMEDIATE write lock (in
+                # complete_dispatched) for a no-op — only a still-in_progress
+                # dispatch pays for the write.
+                if (
+                    _dag.dispatched_task_for_thread(
+                        self.db_path, room_id=room_id, dispatch_thread_id=thread_id
+                    )
+                    is None
+                ):
+                    continue
                 completed = _dag.complete_dispatched(
                     self.db_path, room_id=room_id, dispatch_thread_id=thread_id
                 )
@@ -815,6 +828,15 @@ class HostedRoomService:
                         if member.display_name
                         else {}
                     ),
+                    # Persist the orchestration role so both the scheduler
+                    # (plan_next_task reads it back off the stored roster) and
+                    # the decider tool-whitelist (F1) see the decider. Omitted
+                    # for plain workers so mesh rooms stay byte-identical.
+                    **(
+                        {"role": member.role}
+                        if member.role != discussion.WORKER_ROLE
+                        else {}
+                    ),
                 }
                 for member in normalized
             ],
@@ -851,6 +873,11 @@ class HostedRoomService:
                     **(
                         {"display_name": member.display_name}
                         if member.display_name
+                        else {}
+                    ),
+                    **(
+                        {"role": member.role}
+                        if member.role != discussion.WORKER_ROLE
                         else {}
                     ),
                 }

@@ -8938,6 +8938,60 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _room_decider_toolset_filter(
+    session: dict | None,
+    base_toolsets: list[str] | None,
+) -> list[str] | None:
+    """Enforce the decider's orchestration-only tool whitelist at build time.
+
+    This is Hermes' equivalent of Claude Code's ``applyCoordinatorToolFilter``:
+    a hosted-room *decider* schedules and synthesizes, it never does the work
+    itself. The v1 decider prompt (F4/F5 language in ``_build_prompt``) asks it
+    to orchestrate, but a prompt is not enforcement — a decider bound to a full
+    engineer profile could still Read/Bash/Edit. Here we intersect the decider
+    member's toolset with the orchestration-only allow-set (bot_room / delegation
+    / todo / clarify), always retaining ``bot_room`` so it can still @mention and
+    speak the single external voice. Workers are untouched.
+
+    Keyed on the room roster's persisted ``role`` (a decider is always local and
+    owns a unique local profile), resolved from the ``Group: <room_id>`` room
+    session this agent is being built for. Fails OPEN for anything that is not a
+    positively-identified decider so a normal chat/worker turn is never
+    over-restricted; only a confirmed decider is narrowed.
+    """
+
+    if not session or _session_source(session) != "bot_room":
+        return base_toolsets
+    title = str(session.get("title") or "")
+    if not title.startswith("Group: "):
+        return base_toolsets
+    room_id = title.removeprefix("Group: ").strip()
+    if not room_id:
+        return base_toolsets
+    try:
+        from gateway.hosted_room_execution_policy import orchestration_only_toolsets
+        from gateway.hosted_rooms import default_db_path, room_state
+
+        profile_home = session.get("profile_home")
+        profile_name = (
+            Path(profile_home).name if profile_home else _current_profile_name()
+        )
+        room = room_state(default_db_path(), room_id=room_id)
+        for member in room.get("members") or []:
+            if not isinstance(member, dict):
+                continue
+            if str(member.get("profile") or "") != str(profile_name or ""):
+                continue
+            if str(member.get("role") or "worker") == "decider":
+                return orchestration_only_toolsets(base_toolsets)
+            return base_toolsets
+    except Exception:
+        logger.debug(
+            "decider toolset filter skipped for %s", title, exc_info=True
+        )
+    return base_toolsets
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -9078,6 +9132,16 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    # Decider members run orchestration-only: intersect the profile's toolset
+    # with the coordinator allow-set BEFORE the agent snapshots its tools. This
+    # is the hard, build-time enforcement of "the decider only schedules, never
+    # does the work" — the Hermes analogue of CC's applyCoordinatorToolFilter.
+    with _sessions_lock:
+        _build_session = _sessions.get(sid)
+    _room_enabled_toolsets = _room_decider_toolset_filter(
+        _build_session,
+        _load_enabled_toolsets(_resolve_agent_platform(platform_override)),
+    )
     agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -9104,7 +9168,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
-        enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
+        enabled_toolsets=_room_enabled_toolsets,
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.

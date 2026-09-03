@@ -7,13 +7,55 @@ import json
 import re
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 
 POLICY_VERSION = 1
 MAX_POLICY_TOOLSETS = 128
 MAX_POLICY_ITERATIONS = (1 << 53) - 1
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+# The Hermes analogue of Claude Code's ``COORDINATOR_MODE_ALLOWED_TOOLS``
+# (decoded from the binary: ``{Agent, SendMessage, ListAgents, Workflow,
+# TaskStop, StructuredOutput}``). CC runs its coordinator through
+# ``applyCoordinatorToolFilter`` — a runtime *intersection* of the session's
+# tools with this allow-set, so the coordinator is *orchestration-only*: it can
+# delegate, message teammates, orchestrate and stop tasks, and NOTHING else (no
+# Read/Bash/Grep/Edit/Write — strictly stronger than read-only). Our decider is
+# the same role, so its member turn is restricted to the messaging/delegation/
+# orchestration toolsets below and can never touch the filesystem, a terminal,
+# code execution, a browser, or computer-use. ``bot_room`` (the room voice) is
+# mandatory — it is the SendMessage analogue that lets the decider @mention
+# teammates and speak the single external voice, and dispatch is expressed by
+# that message, not by a write tool.
+ORCHESTRATION_ONLY_TOOLSETS = frozenset(
+    {
+        "bot_room",  # SendMessage — the room voice; @mentions ARE the dispatch
+        "delegation",  # Agent — delegate_task
+        "todo",  # Workflow — plan/track the orchestration
+        "clarify",  # steer teammates with clarifying questions
+    }
+)
+
+
+def orchestration_only_toolsets(base: Iterable[str] | None) -> list[str]:
+    """Intersect a member's toolset with the orchestration-only allow-set.
+
+    Faithful to CC's ``applyCoordinatorToolFilter``: a decider keeps only the
+    orchestration toolsets it already had (never gaining new ones), and always
+    retains ``bot_room`` so it can still speak/@mention. ``base is None`` means
+    "every toolset enabled", which collapses to exactly the allow-set.
+    """
+
+    if base is None:
+        selected = set(ORCHESTRATION_ONLY_TOOLSETS)
+    else:
+        selected = {
+            str(name) for name in base if str(name) in ORCHESTRATION_ONLY_TOOLSETS
+        }
+    selected.add("bot_room")
+    return sorted(selected)
 
 
 class RoomExecutionPolicyError(ValueError):
@@ -180,11 +222,13 @@ def current_room_execution_policy() -> RoomExecutionPolicy | None:
 
 __all__ = [
     "MAX_POLICY_ITERATIONS",
+    "ORCHESTRATION_ONLY_TOOLSETS",
     "POLICY_VERSION",
     "RoomExecutionPolicy",
     "RoomExecutionPolicyError",
     "bind_room_execution_policy",
     "current_room_execution_policy",
     "execution_policy_mapping",
+    "orchestration_only_toolsets",
     "reset_room_execution_policy",
 ]
