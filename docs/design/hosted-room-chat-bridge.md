@@ -192,3 +192,18 @@ the codebase and this doc stay in lockstep.
 
 Sequencing realized: decider v1 → C2 mirror → C2 inbound → decider v2 → C3.
 All slices in this doc are now shipped.
+
+- [x] **C4 — wire the task DAG into the live scheduler** — an audit found the
+      C3 store was an orphan (referenced only by `slash_commands.py`; the decider
+      never wrote to it and the scheduler never read it). C4 closes the loop the
+      honest way: `project_task_dag` (pure function in `hosted_room_discussion.py`)
+      derives the live task DAG from the same committed event log the scheduler
+      replays — the decider's `@mention` is the dispatch, a worker's reply is the
+      completion — so it can never drift from real dispatch. `/room task list`
+      now shows this live projection by default (`--manual` shows the
+      hand-authored ledger). The shipped push-based scheduler is left untouched
+      (forcing CC's literal pull-`claim_next` into `prepare_room` would fight the
+      battle-tested v1/v2 machinery; true auto-claim into member turns is named as
+      a separate future slice, not hidden here). 5 projection tests (suite 60
+      passed) + E2E through the real handler; C3 store suite still 20 passed. See
+      `docs/design/hosted-room-task-dag.md` §C4.
