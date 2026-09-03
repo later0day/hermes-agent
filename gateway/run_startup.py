@@ -1560,6 +1560,9 @@ class GatewayStartupMixin:
     _PRE_RECONNECT_WATCHERS = (
         "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
+        # Hosted-room -> chat mirror (C2 outbound): no-op until a `/room mirror` subscription exists; read-only
+        # against the room log, so it never affects the room worker.
+        "_room_mirror_watcher",
     )
     _POST_RECONNECT_WATCHERS = (
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
