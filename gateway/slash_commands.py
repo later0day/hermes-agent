@@ -889,11 +889,16 @@ class GatewaySlashCommandsMixin:
                 # Optional target "platform:chat_id"; defaults to the current
                 # chat. Optional --decider-only restricts the mirror to the
                 # room's single decider (the "single external voice").
+                # Optional --inbound also opts this binding into full-duplex:
+                # plain chat messages route into the room as message.user.
                 target = ""
                 decider_only = False
+                inbound = False
                 for tok in args[1:]:
                     if tok == "--decider-only":
                         decider_only = True
+                    elif tok == "--inbound":
+                        inbound = True
                     elif tok.startswith("--"):
                         return t("gateway.room.unknown_create_flag", flag=tok)
                     elif not target:
@@ -945,8 +950,12 @@ class GatewaySlashCommandsMixin:
                     chat_id=chat_id,
                     thread_id=thread_id,
                     member_filter=member_filter,
+                    inbound=True if inbound else None,
                 )
-                key = "mirrored_decider" if decider_only else "mirrored"
+                if inbound:
+                    key = "mirrored_inbound"
+                else:
+                    key = "mirrored_decider" if decider_only else "mirrored"
                 return t(f"gateway.room.{key}", room_id=room_id,
                          platform=platform_str, chat_id=chat_id)
 

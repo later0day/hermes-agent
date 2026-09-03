@@ -180,3 +180,117 @@ def test_remove_sub(room_db):
         db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
     )
     assert mirror.list_subs(db) == []
+
+
+# ── C2 slice 2: full-duplex inbound ────────────────────────────────────────
+
+def test_inbound_defaults_off_and_lookup_ignores_outbound_only(room_db):
+    db, _ = room_db
+    # An outbound-only mirror (the slice-1 default) must never be treated as an
+    # inbound binding — a read-only mirror can't silently start ingesting.
+    row = mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
+    assert row["inbound"] == 0
+    assert (
+        mirror.inbound_binding_for_source(
+            db, platform="telegram", chat_id="c1"
+        )
+        is None
+    )
+
+
+def test_inbound_flag_enables_binding_lookup(room_db):
+    db, _ = room_db
+    mirror.create_sub(
+        db, room_id=ROOM_ID, platform="telegram", chat_id="c1", inbound=True
+    )
+    binding = mirror.inbound_binding_for_source(
+        db, platform="telegram", chat_id="c1"
+    )
+    assert binding is not None
+    assert binding["room_id"] == ROOM_ID
+    assert binding["inbound"] == 1
+    # A different chat must not match.
+    assert (
+        mirror.inbound_binding_for_source(
+            db, platform="telegram", chat_id="other"
+        )
+        is None
+    )
+
+
+def test_inbound_none_preserves_existing_flag(room_db):
+    db, _ = room_db
+    mirror.create_sub(
+        db, room_id=ROOM_ID, platform="telegram", chat_id="c1", inbound=True
+    )
+    # Refreshing the mirror (e.g. to set member_filter) with inbound=None must
+    # NOT disable the already-enabled inbound routing.
+    mirror.create_sub(
+        db, room_id=ROOM_ID, platform="telegram", chat_id="c1",
+        member_filter="m-plan", inbound=None,
+    )
+    binding = mirror.inbound_binding_for_source(
+        db, platform="telegram", chat_id="c1"
+    )
+    assert binding is not None and binding["inbound"] == 1
+    assert binding["member_filter"] == "m-plan"
+
+
+def test_inbound_false_disables_routing(room_db):
+    db, _ = room_db
+    mirror.create_sub(
+        db, room_id=ROOM_ID, platform="telegram", chat_id="c1", inbound=True
+    )
+    mirror.create_sub(
+        db, room_id=ROOM_ID, platform="telegram", chat_id="c1", inbound=False
+    )
+    assert (
+        mirror.inbound_binding_for_source(
+            db, platform="telegram", chat_id="c1"
+        )
+        is None
+    )
+
+
+def test_inbound_lookup_on_missing_db_is_none(tmp_path: Path):
+    # Fail-open: a lookup against a db that has never been created returns None
+    # rather than raising, so a bridge hiccup can't swallow a user's message.
+    missing = tmp_path / "does-not-exist.db"
+    assert (
+        mirror.inbound_binding_for_source(
+            missing, platform="telegram", chat_id="c1"
+        )
+        is None
+    )
+
+
+def test_inbound_column_added_to_legacy_slice1_db(tmp_path: Path):
+    import sqlite3
+
+    db = tmp_path / "state.db"
+    # Hand-build a slice-1 table WITHOUT the inbound column, with a live cursor.
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE room_notify_subs (
+            room_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL DEFAULT '',
+            last_event_seq INTEGER NOT NULL DEFAULT 0,
+            member_filter TEXT, notifier_profile TEXT, delivery_metadata TEXT,
+            created_at REAL NOT NULL,
+            PRIMARY KEY (room_id, platform, chat_id, thread_id))"""
+    )
+    conn.execute(
+        "INSERT INTO room_notify_subs "
+        "(room_id, platform, chat_id, thread_id, last_event_seq, created_at) "
+        "VALUES ('r', 'telegram', 'c1', '', 9, 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    # First access through room_mirror_db must add the column in place, default
+    # 0, and preserve the existing cursor (no migration harness, no data loss).
+    subs = mirror.list_subs(db)
+    assert len(subs) == 1
+    assert subs[0]["inbound"] == 0
+    assert subs[0]["last_event_seq"] == 9
+

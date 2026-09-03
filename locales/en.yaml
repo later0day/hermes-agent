@@ -203,7 +203,7 @@ gateway:
   room:
     error_prefix:          "⚠ room error: {error}"
     worker_unavailable:    "⚠ Group Chat worker is unavailable. Restart the Hermes gateway and try again."
-    usage:                 "Usage: /room <list|show|create|add|remove|disband|mirror|unmirror>\n  /room list [--all]\n  /room show <room_id>\n  /room create <room_id> <name> <profile1> <profile2> [profile3…] [--decider=<profile>] (2-6 members)\n  /room add <room_id> <profile> [profile…]\n  /room remove <room_id> <handle-or-profile> [handle-or-profile…]\n  /room mirror <room_id> [platform:chat_id] [--decider-only]\n  /room unmirror <room_id> [platform:chat_id]\n  /room disband <room_id>"
+    usage:                 "Usage: /room <list|show|create|add|remove|disband|mirror|unmirror>\n  /room list [--all]\n  /room show <room_id>\n  /room create <room_id> <name> <profile1> <profile2> [profile3…] [--decider=<profile>] (2-6 members)\n  /room add <room_id> <profile> [profile…]\n  /room remove <room_id> <handle-or-profile> [handle-or-profile…]\n  /room mirror <room_id> [platform:chat_id] [--decider-only] [--inbound]\n  /room unmirror <room_id> [platform:chat_id]\n  /room disband <room_id>"
     unknown_action:        "Unknown /room action '{action}'. Try /room list, show, create, add, remove, or disband."
     no_rooms:              "No hosted rooms. Create one with /room create <room_id> <name> <profile1> <profile2>."
     list_header:           "🏠 **Hosted rooms** ({count})"
@@ -226,11 +226,13 @@ gateway:
     no_members_matched:    "No members in room `{room_id}` matched: {members}."
     mirrored:              "🔊 Mirroring room `{room_id}` → {platform}:{chat_id}."
     mirrored_decider:      "🔊 Mirroring room `{room_id}` (decider voice only) → {platform}:{chat_id}."
+    mirrored_inbound:      "🔊↔️ Mirroring room `{room_id}` ⇄ {platform}:{chat_id} (full-duplex: messages here route into the room)."
     unmirrored:            "🔇 Stopped mirroring room `{room_id}` → {platform}:{chat_id}."
     mirror_not_found:      "ℹ️ No mirror for room `{room_id}` → {platform}:{chat_id}."
     mirror_bad_target:     "Invalid mirror target '{target}'. Use platform:chat_id (e.g. telegram:123456)."
     mirror_no_target:      "No mirror target. Run /room mirror <room_id> from a chat, or pass platform:chat_id."
     mirror_no_decider:     "Room `{room_id}` has no decider; --decider-only needs a decider member."
+    inbound_failed:        "⚠️ Couldn't deliver your message to room `{room_id}` just now — please resend in a moment."
     truncated_suffix:      "… (truncated)"
 
   personality:

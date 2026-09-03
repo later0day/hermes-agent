@@ -3008,6 +3008,12 @@ from gateway.session_state import (
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.room_mirror_watcher import GatewayRoomMirrorMixin
+
+# Sentinel distinguishing "inbound message was NOT routed to a hosted room"
+# (fall through to normal dispatch) from a routing result of ``None`` (routed,
+# no textual reply to the chat). A plain ``None`` return would otherwise be
+# ambiguous with the many handlers that legitimately return ``None``.
+_INBOUND_ROOM_NOT_ROUTED = object()
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
@@ -18263,6 +18269,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_loop_command(event)
         return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
 
+    async def _maybe_route_inbound_to_room(self, event: MessageEvent, source: Any):
+        """Route an inbound chat message into a bound hosted room, if any.
+
+        Returns :data:`_INBOUND_ROOM_NOT_ROUTED` when the source is not bound to
+        an inbound-enabled room (the caller then falls through to normal agent
+        dispatch). When the source IS bound, appends the text to the room as a
+        ``message.user`` event (server-owned actor id = the IM user id) and
+        returns a short confirmation string (or ``None`` for a silent ack).
+
+        Design invariants (see docs/design/hosted-room-chat-bridge.md slice 2):
+          * Opt-in: only rows with ``inbound=1`` match, so a read-only mirror
+            never starts ingesting.
+          * Idempotent: the event id is derived from the IM ``message_id`` via
+            the room's ``user_event_id`` namespace, so a redelivered message
+            never double-appends.
+          * Echo-safe: this only ever writes ``message.user``; the outbound
+            mirror only forwards ``message.member`` — the loop is structurally
+            impossible.
+          * Fail-open: any lookup/dispatch error falls through to normal
+            handling so a bridge hiccup can never swallow a user's message.
+        """
+
+        try:
+            from gateway import room_mirror_db as _mir
+            from gateway.hosted_rooms import default_db_path, user_event_id
+        except Exception:
+            return _INBOUND_ROOM_NOT_ROUTED
+
+        platform = source.platform.value if getattr(source, "platform", None) else ""
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        if not platform or not chat_id:
+            return _INBOUND_ROOM_NOT_ROUTED
+
+        db_path = default_db_path()
+        try:
+            binding = await asyncio.to_thread(
+                _mir.inbound_binding_for_source,
+                db_path,
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id,
+            )
+        except Exception:
+            logger.debug("room inbound: binding lookup failed", exc_info=True)
+            return _INBOUND_ROOM_NOT_ROUTED
+        if binding is None:
+            return _INBOUND_ROOM_NOT_ROUTED
+
+        room_id = str(binding.get("room_id") or "")
+        text = (event.text or "").strip()
+        if not room_id or not text:
+            return _INBOUND_ROOM_NOT_ROUTED
+
+        # Per-user actor identity: the IM user id, verbatim, into the log's
+        # existing {kind:user, id} actor schema. Falls back to "desktop" (the
+        # historical default) when the platform gives us no stable user id.
+        actor_id = str(getattr(source, "user_id", "") or "").strip() or "desktop"
+
+        # Idempotency key: bind the room's user-event namespace to the IM
+        # message id so PTB/webhook redelivery of the same message is a no-op.
+        # Fall back to a per-(source,text) key when the platform gives no id.
+        raw_msg_id = str(getattr(event, "message_id", "") or "").strip()
+        if raw_msg_id:
+            client_key = f"{platform}:{chat_id}:{thread_id}:{raw_msg_id}"
+        else:
+            import hashlib as _hashlib
+            digest = _hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+            client_key = f"{platform}:{chat_id}:{thread_id}:t:{digest}"
+
+        def _send() -> dict:
+            from tui_gateway.methods_groups import get_hosted_room_service
+            service = get_hosted_room_service()
+            if service is None:
+                raise RuntimeError("hosted room worker unavailable")
+            return service.send(
+                room_id=room_id,
+                event_id=user_event_id(client_key),
+                payload={"text": text},
+                actor_id=actor_id,
+            )
+
+        try:
+            await asyncio.to_thread(_send)
+        except Exception as exc:
+            logger.warning(
+                "room inbound: failed to route message to room %s: %s",
+                room_id, exc,
+            )
+            # Fail-open would silently drop the message into the agent path,
+            # which is wrong for a bound room; instead tell the user it didn't
+            # land so they can retry, without leaking internals.
+            return t("gateway.room.inbound_failed", room_id=room_id)
+
+        logger.info(
+            "room inbound: routed message from %s:%s → room %s (actor=%s)",
+            platform, chat_id, room_id, actor_id,
+        )
+        # Silent ack: the member reply comes back through the outbound mirror,
+        # so a confirmation echo here would be noise. Return None (routed).
+        return None
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -19787,6 +19895,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # ── Hosted-room inbound routing (C2 slice 2, full-duplex) ─────────
+        # If this chat source is bound to a hosted room with inbound enabled,
+        # route plain text into the room as message.user instead of running the
+        # local agent. This is the ONE hot-path edit the C2 bridge needs.
+        #   * Only plain text (`not command`): slash commands, skills, and
+        #     bundles still dispatch locally so /room, /status, etc. keep
+        #     working inside a bound chat.
+        #   * Only non-internal, non-empty text: system events and media-only
+        #     messages fall through to normal handling.
+        #   * The binding must have inbound=1 (opt-in) — a read-only mirror
+        #     never starts ingesting chatter.
+        #   * Echo-loop is impossible by construction: inbound writes only
+        #     message.user; the outbound mirror forwards only message.member.
+        #   * Idempotency reuses the room's user_event_id namespace keyed on the
+        #     IM message id, so a redelivered group message never double-appends.
+        # Any lookup/dispatch failure falls through to normal handling so a
+        # bridge hiccup can never swallow a user's message.
+        if (
+            not is_internal
+            and not command
+            and (event.text or "").strip()
+        ):
+            _room_reply = await self._maybe_route_inbound_to_room(event, source)
+            if _room_reply is not _INBOUND_ROOM_NOT_ROUTED:
+                return _room_reply
 
         if not is_internal and await asyncio.to_thread(
             self._is_telegram_topic_root_lobby, source

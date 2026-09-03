@@ -746,6 +746,7 @@ class HostedRoomService:
         room_id: str,
         event_id: str,
         payload: Any,
+        actor_id: str = "desktop",
     ) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         room = self._owned_room(room_id)
@@ -754,7 +755,7 @@ class HostedRoomService:
             room_id=room_id,
             event_id=event_id,
             kind="message.user",
-            actor={"kind": "user", "id": "desktop"},
+            actor={"kind": "user", "id": actor_id or "desktop"},
             payload=normalized,
             authority_gateway_id=str(room["authority_gateway_id"]),
             authority_epoch=int(room["authority_epoch"]),

@@ -63,18 +63,26 @@ outbound needs — reuse its proven pattern rather than invent one:
   additive.
 
 ### Inbound (full-duplex) — fit: MEDIUM
-- **Entry point exists**: `HostedRoomService.send` (hosted_room_service.py:743)
-  appends `message.user` (server-owned actor `{kind:user, id:desktop}`), then
-  `prepare_room` + `wakeup`. `groups.send` RPC (methods_groups.py:564) already
-  wraps it with `user_event_id` idempotency.
+- **Entry point exists**: `HostedRoomService.send`
+  (`tui_gateway/hosted_room_service.py:743`) appends `message.user` (server-owned
+  actor `{kind:user, id:desktop}`), then `prepare_room` + `wakeup`. `groups.send`
+  RPC (`tui_gateway/methods_groups.py:564`) already wraps it with `user_event_id`
+  idempotency (`hosted_rooms.user_event_id`, hosted_rooms.py:316).
 - **What's missing (the medium-risk work)**:
-  1. **Routing**: `stream_dispatch.py` must recognize "this (platform,chat_id,
-     thread_id) is bound to room X" and call `service.send` instead of the normal
-     agent path. New binding lookup keyed on the same `room_notify_subs` row.
-  2. **Actor identity**: today the actor is hard-coded `id:desktop`. Real group
-     users need a stable per-user actor id (the log's actor schema already carries
-     `{kind:user, id}` — the id just needs to become the IM user id, verbatim, no
-     new field).
+  1. **Routing** (corrected): the inbound entry is NOT `stream_dispatch.py` — that
+     module is the *outbound* stream-event renderer (agent→chat) and has zero room
+     references (grep=0). The real hot path is `GatewayRunner._handle_message`
+     (`gateway/run.py:18266`), which today always routes an inbound message to the
+     agent. The full-duplex slice inserts ONE early guarded check there: if the
+     source `(platform, chat_id, thread_id)` matches an *inbound-enabled* binding,
+     call `service.send` and return instead of running the local agent. Binding
+     lookup is keyed on the same `room_notify_subs` row, gated behind an explicit
+     `inbound` flag (mirroring output must never silently start ingesting chatter).
+  2. **Actor identity**: today `service.send` hard-codes `actor={"kind":"user",
+     "id":"desktop"}` (`hosted_room_service.py:757`). Real group users need a stable
+     per-user actor id; the log's actor schema already carries `{kind:user, id}`,
+     so `send` gains an optional `actor_id` param (default `"desktop"`, so existing
+     callers are unchanged) — a value change, not a schema change.
   3. **Echo loop**: the mirror must NOT re-mirror a message that originated from
      the same chat group. Guard by actor kind: only mirror `message.member`
      (never `message.user`), which the outbound filter already does — so the loop
@@ -95,13 +103,16 @@ outbound needs — reuse its proven pattern rather than invent one:
   discipline — all reused, not forked.
 
 ### Full-duplex (slice 2) — touches the hot path
-- **modified**: `stream_dispatch.py` gains a room-binding check before normal
-  dispatch (the ONE hot-path edit); actor id in `service.send` becomes the IM
-  user id.
+- **modified**: `GatewayRunner._handle_message` (gateway/run.py:18266) gains a
+  room-binding check before normal agent dispatch (the ONE hot-path edit —
+  corrected from an earlier draft that mislabeled it `stream_dispatch.py`, which
+  is the outbound renderer); `service.send` (hosted_room_service.py:743) gains an
+  optional per-user `actor_id`.
 - **risk controls**: echo-loop avoided by construction (inbound writes only
   `message.user`, outbound mirrors only `message.member`); idempotency via
   existing `user_event_id`; per-user actor mapping is a value change, not a
-  schema change.
+  schema change; inbound is opt-in per subscription (`inbound` flag) so a
+  read-only mirror never starts ingesting.
 
 ## Interaction with the decider
 
@@ -143,10 +154,17 @@ the codebase and this doc stay in lockstep.
       single-voice, member_id→handle resolution, 12-failure budget). Slash:
       `/room mirror … [--decider-only]` / `/room unmirror`. Never mirrors
       `message.user` (echo-loop avoided by construction).
-- [ ] **C2 slice 2 — full-duplex inbound** — auto-route group messages →
-      `message.user` on a bound `(platform, chat_id)`; touches the
-      `stream_dispatch.py` hot path. Echo-loop stays impossible because inbound
-      writes only `message.user` and outbound mirrors only `message.member`.
+- [x] **C2 slice 2 — full-duplex inbound** — auto-routes plain-text group
+      messages on an `inbound`-enabled binding → `message.user` on the bound
+      room. ONE hot-path edit in `GatewayRunner._handle_message`
+      (`_maybe_route_inbound_to_room`, gated on `not command` so slash/skills
+      still dispatch locally); `room_notify_subs` gains an `inbound` column
+      (in-place ALTER upgrades a slice-1 db, no migration harness);
+      `service.send` gains an optional per-user `actor_id` (default `"desktop"`,
+      existing callers unchanged); idempotency reuses the room's
+      `user_event_id` namespace keyed on the IM message id. Slash:
+      `/room mirror … --inbound`. Echo-loop stays impossible: inbound writes
+      only `message.user`, outbound mirrors only `message.member`.
 - [ ] **Decider v2** — 5-round discussions (`MAX_DISCUSSION_ROUNDS` 3→5 +
       `turn_id` regex `[0-2]`→`[0-4]`), set `member_filter=<decider member_id>`
       by default when a room has a decider.
@@ -154,4 +172,4 @@ the codebase and this doc stay in lockstep.
       `owner`/`blockedBy` (CC's `withQueueFileLock` pull-based self-claim, F3).
 
 Sequencing realized so far matches the recommendation above: decider v1 →
-C2 mirror. Next per plan: C2 inbound (slice 2), then decider v2, then C3.
+C2 mirror → C2 inbound. Next per plan: decider v2, then C3.
