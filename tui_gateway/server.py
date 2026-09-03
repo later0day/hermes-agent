@@ -2564,7 +2564,9 @@ def _room_decider_toolset_filter(session: dict | None, base_toolsets: list[str] 
     """
     if not session or _session_source(session) != "bot_room":
         return base_toolsets
-    title = str(session.get("title") or "")
+    # ``session.create`` stashes the room name under ``pending_title`` (the DB row, and its persisted ``title``,
+    # is created lazily on the first prompt), so read it first or the whitelist falls open on turn one.
+    title = str(session.get("pending_title") or session.get("title") or "")
     if not title.startswith("Group: ") or not (room_id := title.removeprefix("Group: ").strip()):
         return base_toolsets
     try:
