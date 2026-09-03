@@ -197,6 +197,71 @@ CrewAI-style review loop.
 **v3 (optimization)** — worker context isolation (localized to `_build_prompt`)
 = Claude-Code-style token savings.
 
+## Fit with hermes-agent + blast radius (verified against source 2026-09-03)
+
+Every claim below was re-read from source this session, not carried over.
+
+### Data-flow reality check (the load-bearing correction)
+There is **no automatic room→chat-group bridge today**. A hosted room is a pure
+append-only event log:
+- **Inbound** (chat → room): manual only — `groups.send` RPC (methods_groups.py:564,
+  server-owned actor, accepts only inert `message.user`) and `/room`
+  (slash_commands.py:575). `HostedRoomService.send` (hosted_room_service.py:743)
+  appends `message.user` then `prepare_room` + `wakeup`.
+- **Worker turn** (the loop): `prepare_room` (599) → serial guard (refuses new task
+  while any queued/running/stopping exists, 617-625) → `plan_next_task` (626).
+- **Outbound** (room → chat): **does not exist**. `_publish_terminal_tasks` (529)
+  only `_append_plan`s the member message back into the *same event log*. The only
+  ways a human sees member output are the Web **read-only inspector**
+  (`GET /api/rooms/{id}/log`, commit 233f4e497b) and `groups.log`.
+
+**Consequence for the decider:** "expose only the decider to the chat group" has
+**no filter target until an outbound bridge (C2) exists** — today nothing is pushed
+outward, so there is nothing to hide. So the sequencing is: **C2 outbound bridge
+must precede (or ship with) the decider's "single voice" property.** The decider's
+*internal* star scheduling (round-0, mention filter) is independently shippable and
+testable via the event log, but its headline product promise is coupled to C2.
+
+### Fit: high (the primitives line up)
+| Decider need | hermes-agent primitive (verified) | Fit |
+|---|---|---|
+| role field on member | `_validate_members` keeps dicts verbatim; only `validate_roster` `_exact_fields` gates (discussion.py:392, required={member_id,profile,handle}, optional={display_name,target}) | add `"role"` to optional set = 1 line |
+| role must not corrupt replay | events store only member_id/profile/handle (not the member object); `_member_digest` (839) hashes member_id/profile/handle/target — **not role** | zero idempotency impact |
+| decider must be local | `validate_roster(local_profiles=…)`; `_REMOTE_MEMBER_FIELDS` (58) rejects cross-gateway fields; `role` not among them | orthogonal to peer/local |
+| serial, no write races | `prepare_room` serial guard (617-625) → one member at a time | no worktrees needed |
+| turn_id opacity | driver validates via generic `_IDENTIFIER_RE=^[A-Za-z0-9][A-Za-z0-9._:-]*$` (driver.py:53/158), **not** structural; UNIQUE(room_id,thread_id,turn_id) at 347. Only structural parse of `_TURN_ID_RE` is discussion.py:1214 | round-count changes need no schema/migration |
+| C3 (Room↔Kanban) | `kanban_watchers.py` has **zero** references to hosted_room/room_id (grep=0) | fully decoupled → C3 is greenfield glue, mirrors CC's Task DAG |
+
+### Blast radius by version
+- **decider v1 (internal star)** — touches ONLY `hosted_room_discussion.py`
+  (pure functions, fully E2E-able off the live loop): `DiscussionMember.role`;
+  `validate_roster` (role∈{decider,worker}, exactly-one-decider, decider local);
+  `plan_next_task` round-0 branch (1120: `resolve_mentions` → decider-only when
+  present); role-aware `_unaddressed_member_mentions` (517: worker `@` must not
+  pull another worker); `_build_prompt` (883) decider system-prompt injection.
+  Plus 1 line in `hosted_room_service.update_members`/`create_room` roster path,
+  `slash_commands.py` `--decider=` parse, i18n. **hosted_rooms.py: untouched.**
+- **decider "single voice" (product promise)** — requires C2 outbound bridge:
+  `plan_publication` (1292) already isolates the outbound unit — `message.member`
+  payload carries `member_id` + actor.profile (1345/1363), so a C2 bridge can emit
+  ONLY `member_id == <decider>`. Precise filter point confirmed.
+- **v2 (5-round serial)** — 2 edits (constant 31 + regex 46 `[0-2]→[0-4]`);
+  `_zero_based_int` bound (649) auto-follows. Only crash-recovery
+  (`reconstruct_task_plan`, 1214) needs a dedicated E2E.
+- **v3 (context isolation)** — localized to `_build_prompt`; must not disturb
+  `_derive_member_watermarks` (795, crash-recovery depends on watermark advance).
+
+### Net assessment
+- **Well-fitted, low-risk core**: role field + internal star scheduling. The
+  append-only log + serial guard + opaque turn_id + verbatim member dicts all
+  cooperate; no schema/migration, no driver change, one storage-untouched path.
+- **Coupled dependency**: the user-facing "only the decider is exposed" promise
+  is a C2 concern, not a discussion-policy concern. Recommend **C2 outbound
+  bridge first (or jointly)**, since the decider without it schedules correctly
+  but its output still only lands in the log/inspector, same as any room today.
+- **C3** is independent greenfield (kanban↔room grep=0), and CC's Task
+  dependency DAG is the ready-made reference.
+
 ## Change set (v1)
 - `hosted_room_discussion.py`: `DiscussionMember.role`; `validate_roster` (role
   in optional, role ∈ {decider,worker}, exactly-one-decider, decider must be
