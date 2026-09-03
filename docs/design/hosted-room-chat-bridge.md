@@ -125,3 +125,33 @@ Real E2E against a live bound `HostedRoomService` on a COPY of prod `state.db`:
 - **Inbound** (slice 2): stub an IM group message on a bound (platform,chat_id)
   → assert it becomes exactly one `message.user` (idempotent on redelivery) with
   actor id = IM user id → assert it is never mirrored back (no echo).
+
+## Build status (this doc ↔ commits)
+This design is the construction plan; each slice below maps to a real commit so
+the codebase and this doc stay in lockstep.
+
+- [x] **Decider v1** (internal star scheduling) — `a6466a91a7`
+      `feat(rooms)`. Role-aware `plan_next_task` / `_build_prompt` /
+      `_unaddressed_member_mentions`; roster gains a `role` field; at most one
+      decider; `hosted_rooms.py` untouched.
+- [x] **C2 slice 1 — read-only outbound mirror** — `27c80c0891`
+      `feat(rooms): C2 read-only room→chat mirror (outbound)`. New
+      `gateway/room_mirror_db.py` (`room_notify_subs` cursor table, additive to
+      `state.db`, invisible to `hosted_rooms._schema_is_current`) +
+      `gateway/room_mirror_watcher.py` (`_spawn_supervised` sibling of the kanban
+      notifier: claim/advance/rewind under `BEGIN IMMEDIATE`, `member_filter`
+      single-voice, member_id→handle resolution, 12-failure budget). Slash:
+      `/room mirror … [--decider-only]` / `/room unmirror`. Never mirrors
+      `message.user` (echo-loop avoided by construction).
+- [ ] **C2 slice 2 — full-duplex inbound** — auto-route group messages →
+      `message.user` on a bound `(platform, chat_id)`; touches the
+      `stream_dispatch.py` hot path. Echo-loop stays impossible because inbound
+      writes only `message.user` and outbound mirrors only `message.member`.
+- [ ] **Decider v2** — 5-round discussions (`MAX_DISCUSSION_ROUNDS` 3→5 +
+      `turn_id` regex `[0-2]`→`[0-4]`), set `member_filter=<decider member_id>`
+      by default when a room has a decider.
+- [ ] **C3 — Room↔Kanban task DAG** — the explicit task table with
+      `owner`/`blockedBy` (CC's `withQueueFileLock` pull-based self-claim, F3).
+
+Sequencing realized so far matches the recommendation above: decider v1 →
+C2 mirror. Next per plan: C2 inbound (slice 2), then decider v2, then C3.
