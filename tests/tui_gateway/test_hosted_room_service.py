@@ -2287,3 +2287,30 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
         )
         == full_engineer
     )
+
+    # Regression (real-E2E): ``session.create`` stashes the room name under
+    # ``pending_title`` — not ``title`` — because no DB row exists yet at the
+    # ``_make_agent`` build seam (the row is created lazily on the first
+    # prompt). An earlier revision read only ``title``, so the decider's first
+    # LIVE turn fell open and received the FULL engineer toolset (file /
+    # terminal / code_execution). The filter must bind off ``pending_title``
+    # too, or F1 silently no-ops on turn one. This is exactly the seam that a
+    # real qwen-plus room run exposed.
+    decider_pending = tui_server._room_decider_toolset_filter(
+        {
+            "source": "bot_room",
+            "pending_title": "Group: room-1",
+            "profile_home": str(tmp_path / "profiles" / "lead"),
+        },
+        list(full_engineer),
+    )
+    assert decider_pending == ["bot_room", "clarify", "delegation", "todo"]
+    worker_pending = tui_server._room_decider_toolset_filter(
+        {
+            "source": "bot_room",
+            "pending_title": "Group: room-1",
+            "profile_home": str(tmp_path / "profiles" / "backend"),
+        },
+        list(full_engineer),
+    )
+    assert worker_pending == full_engineer

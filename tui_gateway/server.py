@@ -8962,7 +8962,12 @@ def _room_decider_toolset_filter(
 
     if not session or _session_source(session) != "bot_room":
         return base_toolsets
-    title = str(session.get("title") or "")
+    # ``session.create`` stashes the room name under ``pending_title`` (no DB row
+    # exists yet at build time — it is created lazily on the first prompt), so at
+    # this seam the persisted ``title`` key is still empty. Read ``pending_title``
+    # first and fall back to ``title`` so the decider whitelist binds on the very
+    # first turn, not only after the row (and its ``title``) is materialized.
+    title = str(session.get("pending_title") or session.get("title") or "")
     if not title.startswith("Group: "):
         return base_toolsets
     room_id = title.removeprefix("Group: ").strip()
