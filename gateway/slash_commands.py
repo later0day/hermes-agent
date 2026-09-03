@@ -695,8 +695,11 @@ class GatewaySlashCommandsMixin:
                 service = get_hosted_room_service()
                 if service is None:
                     return t("gateway.room.worker_unavailable")
-                # Map bare profile names to local members. member_id is a
-                # stable per-room slug; handle defaults to the profile name.
+                # Map bare profile names to local members. Both handle and
+                # member_id are derived deterministically from the profile so
+                # that re-running the same /room create is idempotent (a random
+                # member_id would make the roster differ and the backend would
+                # reject it as a conflicting room_id).
                 seen_handles: dict[str, int] = {}
                 members = []
                 for prof in profiles:
@@ -707,7 +710,7 @@ class GatewaySlashCommandsMixin:
                     else:
                         seen_handles[handle] = 1
                     members.append({
-                        "member_id": f"m_{uuid.uuid4().hex[:16]}",
+                        "member_id": handle,
                         "profile": prof,
                         "handle": handle,
                         "target": {"kind": "local", "profile": prof},
@@ -758,7 +761,7 @@ class GatewaySlashCommandsMixin:
                         return t("gateway.room.disbanded", room_id=room_id, routes=0)
                     if existing.get("disbanded_at") is not None:
                         _disband_tombstone(existing)
-                        return t("gateway.room.created_idempotent", room_id=room_id)
+                        return t("gateway.room.already_disbanded", room_id=room_id)
                     service.stop_room(
                         room_id,
                         cancel_id=f"disband_{uuid.uuid4().hex[:16]}",

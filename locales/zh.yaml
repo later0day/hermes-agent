@@ -200,6 +200,7 @@ gateway:
     created:               "✅ 已创建房间 `{room_id}` — {name}，含 {members} 个成员。"
     created_idempotent:    "ℹ️ 房间 `{room_id}` 已存在（未改动）。"
     disbanded:             "🗑️ 已解散房间 `{room_id}`（撤销了 {routes} 条路由）。"
+    already_disbanded:     "ℹ️ 房间 `{room_id}` 已经解散。"
     need_room_id:          "请提供房间 ID。用法：/room {action} <房间ID>。"
     need_create_args:      "用法：/room create <房间ID> <名称> <profile1> <profile2> [profile3…]（2-6 个本地 profile）。"
     truncated_suffix:      "…（已截断）"

@@ -215,6 +215,7 @@ gateway:
     created:               "✅ Created room `{room_id}` — {name} with {members} member(s)."
     created_idempotent:    "ℹ️ Room `{room_id}` already exists (unchanged)."
     disbanded:             "🗑️ Disbanded room `{room_id}` (cancelled {routes} route(s))."
+    already_disbanded:     "ℹ️ Room `{room_id}` is already disbanded."
     need_room_id:          "Provide a room id. Usage: /room {action} <room_id>."
     need_create_args:      "Usage: /room create <room_id> <name> <profile1> <profile2> [profile3…] (2-6 local profiles)."
     truncated_suffix:      "… (truncated)"
