@@ -175,8 +175,20 @@ the codebase and this doc stay in lockstep.
       raise), covered by `test_later_round_task_reconstructs_after_restart`;
       `test_five_round_bound` pins the new cap. Enables CrewAI-style
       review-and-redo serial iteration.
-- [ ] **C3 — Room↔Kanban task DAG** — the explicit task table with
-      `owner`/`blockedBy` (CC's `withQueueFileLock` pull-based self-claim, F3).
+- [x] **C3 — Room↔task DAG** — the explicit shared task ledger with
+      `owner`/`blockedBy` (CC's F3 pull-based self-claim). New
+      `gateway/room_task_dag.py`: additive `room_task_dag` + `room_task_deps`
+      tables in the same `state.db` (invisible to
+      `hosted_rooms._schema_is_current`'s subset checks — same proven pattern as
+      `room_notify_subs`, no migration). `claim_next` picks the lowest-`seq`
+      task that is `pending ∧ unowned ∧ every blockedBy completed` under
+      `BEGIN IMMEDIATE`, so a 10-way claim race never double-claims (verified);
+      `assign_task` is the decider's push branch; completion auto-unblocks
+      dependents implicitly (no stored blocked flag → no unblock-loop bug);
+      cycle-rejection via in-txn DFS keeps the graph a DAG. Slash:
+      `/room task <list|add|dep|claim|assign|done|release>`. Full design in
+      `docs/design/hosted-room-task-dag.md`. `hosted_rooms.py`,
+      `hosted_room_discussion.py`, the driver and `kanban_db.py` all untouched.
 
-Sequencing realized so far matches the recommendation above: decider v1 →
-C2 mirror → C2 inbound → decider v2. Next per plan: C3.
+Sequencing realized: decider v1 → C2 mirror → C2 inbound → decider v2 → C3.
+All slices in this doc are now shipped.

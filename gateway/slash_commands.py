@@ -589,6 +589,12 @@ class GatewaySlashCommandsMixin:
           /room add <room_id> <profile> [profile…]
           /room remove <room_id> <handle-or-profile> [handle-or-profile…]
           /room disband <room_id>
+          /room task list <room_id>
+          /room task add <room_id> <subject…> [--desc=…] [--after=id,…]
+          /room task dep <room_id> <task_id> --after=id,…
+          /room task claim <room_id> <handle> [task_id]
+          /room task assign <room_id> <task_id> <handle>
+          /room task done|release <room_id> <task_id>
         """
         import asyncio
         import shlex
@@ -958,6 +964,153 @@ class GatewaySlashCommandsMixin:
                     key = "mirrored_decider" if decider_only else "mirrored"
                 return t(f"gateway.room.{key}", room_id=room_id,
                          platform=platform_str, chat_id=chat_id)
+
+            if action == "task":
+                # Shared task DAG (C3): the coordination ledger a room's
+                # members self-claim work from. Thin parse/render over
+                # gateway.room_task_dag; --after=<id>[,<id>…] is a blockedBy
+                # edge ("do this after …").
+                from gateway import room_task_dag as _dag
+
+                if not args:
+                    return t("gateway.room.task_usage")
+                sub = args[0].lower()
+                rest = args[1:]
+
+                def _split_after(tokens):
+                    """Return (positional[], blocked_by[]) splitting --after=…."""
+                    positional: list[str] = []
+                    after: list[str] = []
+                    for tok in tokens:
+                        if tok.startswith("--after="):
+                            after.extend(
+                                x for x in tok[len("--after="):].split(",") if x
+                            )
+                        else:
+                            positional.append(tok)
+                    return positional, after
+
+                def _fmt_task(task) -> str:
+                    owner = task.get("owner") or "—"
+                    dep = ",".join(task.get("blockedBy") or []) or "—"
+                    return t(
+                        "gateway.room.task_row",
+                        task_id=task.get("task_id"),
+                        status=task.get("status"),
+                        owner=owner,
+                        subject=task.get("subject"),
+                        blocked_by=dep,
+                    )
+
+                try:
+                    if sub == "list":
+                        if not rest:
+                            return t("gateway.room.need_room_id", action="task list")
+                        room_id = rest[0]
+                        tasks = _dag.list_tasks(db_path, room_id=room_id)
+                        if not tasks:
+                            return t("gateway.room.task_none", room_id=room_id)
+                        lines = [t("gateway.room.task_header",
+                                   room_id=room_id, count=len(tasks))]
+                        lines.extend(_fmt_task(x) for x in tasks)
+                        return "\n".join(lines)
+
+                    if sub == "add":
+                        if len(rest) < 2:
+                            return t("gateway.room.task_need_add")
+                        room_id = rest[0]
+                        positional, after = _split_after(rest[1:])
+                        desc = ""
+                        subject_toks = []
+                        for tok in positional:
+                            if tok.startswith("--desc="):
+                                desc = tok[len("--desc="):]
+                            else:
+                                subject_toks.append(tok)
+                        subject = " ".join(subject_toks).strip()
+                        if not subject:
+                            return t("gateway.room.task_need_add")
+                        task = _dag.create_task(
+                            db_path, room_id=room_id, subject=subject,
+                            description=desc, blocked_by=tuple(after),
+                        )
+                        return t("gateway.room.task_added",
+                                 room_id=room_id, task_id=task["task_id"],
+                                 subject=task["subject"])
+
+                    if sub == "dep":
+                        positional, after = _split_after(rest)
+                        if len(positional) < 1 or not after:
+                            return t("gateway.room.task_need_dep")
+                        room_id = positional[0]
+                        task_id = positional[1] if len(positional) > 1 else None
+                        if not task_id:
+                            return t("gateway.room.task_need_dep")
+                        for dep in after:
+                            _dag.add_dependency(
+                                db_path, room_id=room_id,
+                                task_id=task_id, blocked_by=dep,
+                            )
+                        return t("gateway.room.task_dep_added",
+                                 task_id=task_id,
+                                 blocked_by=",".join(after))
+
+                    if sub == "claim":
+                        if len(rest) < 2:
+                            return t("gateway.room.task_need_claim")
+                        room_id, owner = rest[0], rest[1]
+                        task_id = rest[2] if len(rest) > 2 else None
+                        if task_id:
+                            task = _dag.claim_task(
+                                db_path, room_id=room_id,
+                                task_id=task_id, owner=owner,
+                            )
+                        else:
+                            task = _dag.claim_next(
+                                db_path, room_id=room_id, owner=owner,
+                            )
+                            if task is None:
+                                return t("gateway.room.task_none_available",
+                                         room_id=room_id)
+                        return t("gateway.room.task_claimed",
+                                 task_id=task["task_id"], owner=task["owner"],
+                                 subject=task["subject"])
+
+                    if sub == "assign":
+                        if len(rest) < 3:
+                            return t("gateway.room.task_need_assign")
+                        room_id, task_id, owner = rest[0], rest[1], rest[2]
+                        task = _dag.assign_task(
+                            db_path, room_id=room_id,
+                            task_id=task_id, owner=owner,
+                        )
+                        return t("gateway.room.task_assigned",
+                                 task_id=task["task_id"], owner=task["owner"],
+                                 subject=task["subject"])
+
+                    if sub == "done":
+                        if len(rest) < 2:
+                            return t("gateway.room.need_room_id", action="task done")
+                        room_id, task_id = rest[0], rest[1]
+                        task = _dag.complete_task(
+                            db_path, room_id=room_id, task_id=task_id,
+                        )
+                        return t("gateway.room.task_done",
+                                 task_id=task["task_id"], subject=task["subject"])
+
+                    if sub == "release":
+                        if len(rest) < 2:
+                            return t("gateway.room.need_room_id", action="task release")
+                        room_id, task_id = rest[0], rest[1]
+                        task = _dag.release_task(
+                            db_path, room_id=room_id, task_id=task_id,
+                        )
+                        return t("gateway.room.task_released",
+                                 task_id=task["task_id"], subject=task["subject"])
+
+                    return t("gateway.room.task_usage")
+                except _dag.RoomTaskError as exc:
+                    return t("gateway.room.task_error", error=exc)
 
             return t("gateway.room.unknown_action", action=action)
 
