@@ -165,11 +165,18 @@ the codebase and this doc stay in lockstep.
       `user_event_id` namespace keyed on the IM message id. Slash:
       `/room mirror … --inbound`. Echo-loop stays impossible: inbound writes
       only `message.user`, outbound mirrors only `message.member`.
-- [ ] **Decider v2** — 5-round discussions (`MAX_DISCUSSION_ROUNDS` 3→5 +
-      `turn_id` regex `[0-2]`→`[0-4]`), set `member_filter=<decider member_id>`
-      by default when a room has a decider.
+- [x] **Decider v2** — 5-round discussions. Two hard edits in
+      `hosted_room_discussion.py`: `MAX_DISCUSSION_ROUNDS` 3→5 (line 31) and the
+      `_TURN_ID_RE` round group `[0-2]`→`[0-4]` (line 53). The `range(...)`
+      loop, the `MAX_DISCUSSION_ROUNDS - 1` bound check and the
+      `_zero_based_int` maximum all auto-follow the constant; turn_id is opaque
+      to the driver so there is NO schema/migration change. Crash-recovery is
+      the load-bearing path (an in-flight r3/r4 turn_id must reconstruct, not
+      raise), covered by `test_later_round_task_reconstructs_after_restart`;
+      `test_five_round_bound` pins the new cap. Enables CrewAI-style
+      review-and-redo serial iteration.
 - [ ] **C3 — Room↔Kanban task DAG** — the explicit task table with
       `owner`/`blockedBy` (CC's `withQueueFileLock` pull-based self-claim, F3).
 
 Sequencing realized so far matches the recommendation above: decider v1 →
-C2 mirror → C2 inbound. Next per plan: decider v2, then C3.
+C2 mirror → C2 inbound → decider v2. Next per plan: C3.

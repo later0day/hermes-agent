@@ -28,7 +28,7 @@ from gateway import hosted_rooms
 
 MAX_DISCUSSION_MEMBERS = 6
 MIN_DISCUSSION_MEMBERS = 2
-MAX_DISCUSSION_ROUNDS = 3
+MAX_DISCUSSION_ROUNDS = 5
 MAX_DISCUSSION_MESSAGES = 10
 MAX_DISCUSSION_DELTA_LINES = 24
 MAX_USER_TEXT_BYTES = 64 * 1024
@@ -50,7 +50,7 @@ TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
 _TURN_ID_RE = re.compile(
-    r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
+    r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-4])\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
     r"m(?P<member>[0-9a-f]{24})$"
 )

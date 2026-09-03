@@ -587,31 +587,95 @@ def test_oversized_member_reply_is_truncated_and_next_turn_stays_serviceable(
     assert "Earlier content omitted" in followup.payload["prompt"]
 
 
-def test_three_round_bound(room_db: tuple[Path, dict]):
+def test_five_round_bound(room_db: tuple[Path, dict]):
     db, room = room_db
     room["members"] = MEMBERS[:2]
-    _append_user(db, event_id="user-1", text="Discuss.")
+    # Address ONE member at round 0 (`@research`) so the opening round has a
+    # single responder; the ping-pong `@`-citations then carry the discussion
+    # forward. This reaches the round cap at r4 with 9 member messages — under
+    # MAX_DISCUSSION_MESSAGES (10) — so the bound we assert is max_rounds and
+    # not the message cap intercepting first. Under the old 3-round cap this
+    # same drive bounded two rounds earlier, so the test pins the v2 extension.
+    _append_user(db, event_id="user-1", text="@research Discuss.")
 
-    for index in range(6):
-        task = _next_task(room, db)
+    settled = 0
+    decision = discussion.plan_next_task(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    )
+    while decision.status == "task":
+        task = decision.task
         peer = "build" if task.member.profile == "research" else "research"
         publication = discussion.plan_publication(
             room,
             _events(db),
             task,
             status="settled",
-            result={"text": f"Reply {index}. @{peer}"},
+            result={"text": f"Reply {settled}. @{peer}"},
             local_profiles=LOCAL_PROFILES,
         )
         _append_publication(db, publication)
+        settled += 1
+        assert settled <= discussion.MAX_DISCUSSION_MESSAGES, "did not bound"
+        decision = discussion.plan_next_task(
+            room, _events(db), local_profiles=LOCAL_PROFILES
+        )
 
-    decision = discussion.plan_next_task(
-        room,
-        _events(db),
-        local_profiles=LOCAL_PROFILES,
-    )
     assert decision.status == "bounded"
     assert decision.reason == "max_rounds"
+    # A 3-round cap would have bounded before a 5th round could accrue this many
+    # turns; hitting max_rounds here after >6 messages proves rounds 3 and 4 ran.
+    assert settled > 2 * discussion.MAX_DISCUSSION_ROUNDS // 3
+
+
+def test_later_round_task_reconstructs_after_restart(
+    room_db: tuple[Path, dict],
+):
+    # The load-bearing v2 (5-round) recovery path: an in-flight task from a
+    # round >2 has a turn_id like `d1.r3.…` / `d1.r4.…`. Before widening the
+    # `_TURN_ID_RE` round group from [0-2] to [0-4], reconstruct_task_plan would
+    # raise "turn_id is not a Discussion coordinate" on restart, losing the task.
+    # Drive a serial ping-pong until a task lands in round >= 3, admit it, then
+    # reconstruct it from a fresh read of the log (simulating a gateway restart).
+    db, room = room_db
+    room["members"] = MEMBERS[:2]
+    _append_user(db, event_id="user-1", text="@research Discuss.")
+
+    late_task = None
+    decision = discussion.plan_next_task(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    )
+    while decision.status == "task":
+        task = decision.task
+        match = discussion._TURN_ID_RE.fullmatch(task.identity.turn_id)
+        assert match is not None, task.identity.turn_id
+        if int(match.group("round")) >= 3:
+            late_task = task
+            break
+        peer = "build" if task.member.profile == "research" else "research"
+        publication = discussion.plan_publication(
+            room,
+            _events(db),
+            task,
+            status="settled",
+            result={"text": f"Reply. @{peer}"},
+            local_profiles=LOCAL_PROFILES,
+        )
+        _append_publication(db, publication)
+        decision = discussion.plan_next_task(
+            room, _events(db), local_profiles=LOCAL_PROFILES
+        )
+
+    assert late_task is not None, "expected a task in round >= 3"
+
+    # Admit it to the driver, then reconstruct from a fresh log read (restart).
+    driver.admit_task(db, late_task.identity, payload=late_task.payload, clock=time.time)
+    reconstructed = discussion.reconstruct_task_plan(
+        room,
+        _events(db),
+        driver.get_task(db, late_task.identity),
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert reconstructed == late_task
 
 
 def test_ten_message_bound(tmp_path: Path):
