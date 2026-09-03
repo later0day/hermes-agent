@@ -65,6 +65,28 @@ _CREATE_DEPS_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_room_task_deps_blocker
     ON room_task_deps(room_id, blocked_by)
 """
+# C5 auto-dispatch: records the message.user anchor thread the scheduler is
+# executing this task under, so a later prepare_room can detect the worker's
+# settled reply and complete the task. NULL = not auto-dispatched (a purely
+# manual /room task, or not yet dispatched). Added to an existing table via a
+# guarded ALTER so a C3/C4 state.db upgrades in place without a migration.
+_ADD_DISPATCH_COLUMN = (
+    "ALTER TABLE room_task_dag ADD COLUMN dispatch_thread_id TEXT"
+)
+
+
+def _ensure_dispatch_column(conn: sqlite3.Connection) -> None:
+    cols = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(room_task_dag)").fetchall()
+    }
+    if "dispatch_thread_id" in cols:
+        return
+    try:
+        conn.execute(_ADD_DISPATCH_COLUMN)
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
 
 
 class RoomTaskError(Exception):
@@ -94,6 +116,7 @@ def _connect(db_path: Path | str) -> sqlite3.Connection:
         conn.execute(_CREATE_DEPS_TABLE)
         conn.execute(_CREATE_SEQ_INDEX)
         conn.execute(_CREATE_DEPS_INDEX)
+        _ensure_dispatch_column(conn)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -220,6 +243,11 @@ def _hydrate(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "seq": int(row["seq"]),
         "created_at": float(row["created_at"]),
         "updated_at": float(row["updated_at"]),
+        "dispatch_thread_id": (
+            row["dispatch_thread_id"]
+            if "dispatch_thread_id" in row.keys()
+            else None
+        ),
         "blockedBy": sorted(blocked_by),
         "blocks": sorted(blocks),
     }
@@ -530,5 +558,144 @@ def list_tasks(db_path: Path | str, *, room_id: str) -> list[dict[str, Any]]:
             (room_id,),
         ).fetchall()
         return [_hydrate(conn, row) for row in rows]
+    finally:
+        conn.close()
+
+
+# ── C5 auto-dispatch integration ────────────────────────────────────────────
+
+def next_claimable(
+    db_path: Path | str, *, room_id: str
+) -> dict[str, Any] | None:
+    """Peek the next available task without claiming it (read-only).
+
+    Availability is the same predicate as :func:`claim_next` (pending ∧ unowned
+    ∧ every blockedBy completed, lowest seq). The caller resolves an auto-dispatch
+    target from the task subject and then atomically claims the specific task via
+    :func:`claim_task_for_dispatch`, so a peek that loses a race simply claims
+    nothing.
+    """
+
+    conn = _connect(db_path)
+    try:
+        candidates = conn.execute(
+            """SELECT * FROM room_task_dag
+               WHERE room_id=? AND status='pending' AND owner IS NULL
+               ORDER BY seq ASC""",
+            (room_id,),
+        ).fetchall()
+        for row in candidates:
+            if _blocked_by_incomplete(conn, room_id, str(row["task_id"])):
+                continue
+            return _hydrate(conn, row)
+        return None
+    finally:
+        conn.close()
+
+
+def claim_task_for_dispatch(
+    db_path: Path | str,
+    *,
+    room_id: str,
+    task_id: str,
+    owner: str,
+    dispatch_thread_id: str,
+) -> dict[str, Any] | None:
+    """Atomically claim a specific available task and stamp its anchor thread.
+
+    Like :func:`claim_task` but also records ``dispatch_thread_id`` so a later
+    ``prepare_room`` can match the worker's settled reply back to this task. All
+    in one ``BEGIN IMMEDIATE`` txn, so two concurrent schedulers can never
+    dispatch the same task. Returns None (rather than raising) if the task is no
+    longer available — the scheduler just tries again next tick.
+    """
+
+    owner = (owner or "").strip()
+    if not owner:
+        raise RoomTaskError("dispatch requires a non-empty owner")
+    if not (dispatch_thread_id or "").strip():
+        raise RoomTaskError("dispatch requires a non-empty thread id")
+    conn = _connect(db_path)
+    try:
+        with _write_txn(conn):
+            row = conn.execute(
+                "SELECT * FROM room_task_dag WHERE room_id=? AND task_id=?",
+                (room_id, task_id),
+            ).fetchone()
+            if row is None:
+                return None
+            if str(row["status"]) != "pending" or row["owner"] is not None:
+                return None
+            if _blocked_by_incomplete(conn, room_id, task_id):
+                return None
+            now = time.time()
+            conn.execute(
+                """UPDATE room_task_dag
+                   SET owner=?, status='in_progress',
+                       dispatch_thread_id=?, updated_at=?
+                   WHERE room_id=? AND task_id=?
+                     AND status='pending' AND owner IS NULL""",
+                (owner, dispatch_thread_id, now, room_id, task_id),
+            )
+            claimed = conn.execute(
+                "SELECT * FROM room_task_dag WHERE room_id=? AND task_id=?",
+                (room_id, task_id),
+            ).fetchone()
+            return _hydrate(conn, claimed)
+    finally:
+        conn.close()
+
+
+def dispatched_task_for_thread(
+    db_path: Path | str, *, room_id: str, dispatch_thread_id: str
+) -> dict[str, Any] | None:
+    """Return the in_progress task auto-dispatched under ``dispatch_thread_id``."""
+
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT * FROM room_task_dag
+               WHERE room_id=? AND dispatch_thread_id=? AND status='in_progress'
+               LIMIT 1""",
+            (room_id, dispatch_thread_id),
+        ).fetchone()
+        return _hydrate(conn, row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def complete_dispatched(
+    db_path: Path | str, *, room_id: str, dispatch_thread_id: str
+) -> dict[str, Any] | None:
+    """Complete the task auto-dispatched under ``dispatch_thread_id`` (idempotent).
+
+    Called when the scheduler observes the worker's settled reply on the anchor
+    thread. Marks the task ``completed`` (auto-unblocking dependents on the next
+    ``claim_next``). Returns the completed task, or None if no in_progress task
+    matches the thread (already completed, or never dispatched).
+    """
+
+    conn = _connect(db_path)
+    try:
+        with _write_txn(conn):
+            row = conn.execute(
+                """SELECT * FROM room_task_dag
+                   WHERE room_id=? AND dispatch_thread_id=? AND status='in_progress'
+                   LIMIT 1""",
+                (room_id, dispatch_thread_id),
+            ).fetchone()
+            if row is None:
+                return None
+            task_id = str(row["task_id"])
+            conn.execute(
+                """UPDATE room_task_dag SET status='completed', updated_at=?
+                   WHERE room_id=? AND task_id=?""",
+                (time.time(), room_id, task_id),
+            )
+            done = conn.execute(
+                "SELECT * FROM room_task_dag WHERE room_id=? AND task_id=?",
+                (room_id, task_id),
+            ).fetchone()
+            return _hydrate(conn, done)
     finally:
         conn.close()

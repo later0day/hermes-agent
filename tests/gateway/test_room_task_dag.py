@@ -224,3 +224,155 @@ def test_additive_tables_invisible_to_hosted_rooms_schema_guard(tmp_path):
         dbp, room_id=ROOM, since_seq=0, limit=hosted_rooms.MAX_LOG_LIMIT
     ) is not None
     assert dag.list_tasks(dbp, room_id=ROOM)[0]["subject"] == "coexist"
+
+
+# ── C5 auto-dispatch integration ────────────────────────────────────────────
+
+def test_next_claimable_peeks_without_claiming(db):
+    dag.create_task(db, room_id=ROOM, subject="Solo", task_id="t1")
+    peek = dag.next_claimable(db, room_id=ROOM)
+    assert peek["task_id"] == "t1"
+    # A peek never mutates ownership — a second peek sees the same task.
+    again = dag.next_claimable(db, room_id=ROOM)
+    assert again["task_id"] == "t1"
+    assert dag.get_task(db, room_id=ROOM, task_id="t1")["status"] == "pending"
+
+
+def test_next_claimable_skips_blocked_and_owned(db):
+    dag.create_task(db, room_id=ROOM, subject="Design", task_id="t1")
+    dag.create_task(db, room_id=ROOM, subject="Build", task_id="t2",
+                    blocked_by=["t1"])
+    # t2 is blocked, so the only claimable task is t1.
+    assert dag.next_claimable(db, room_id=ROOM)["task_id"] == "t1"
+    # Once t1 is owned it is no longer claimable, and t2 is still blocked.
+    dag.claim_task(db, room_id=ROOM, task_id="t1", owner="alice")
+    assert dag.next_claimable(db, room_id=ROOM) is None
+    # Completing t1 unblocks t2.
+    dag.complete_task(db, room_id=ROOM, task_id="t1")
+    assert dag.next_claimable(db, room_id=ROOM)["task_id"] == "t2"
+
+
+def test_claim_task_for_dispatch_stamps_thread(db):
+    dag.create_task(db, room_id=ROOM, subject="@backend build", task_id="t1")
+    claimed = dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t1",
+        owner="backend", dispatch_thread_id="dagtask:t1",
+    )
+    assert claimed["owner"] == "backend"
+    assert claimed["status"] == "in_progress"
+    assert claimed["dispatch_thread_id"] == "dagtask:t1"
+
+
+def test_claim_task_for_dispatch_returns_none_when_unavailable(db):
+    dag.create_task(db, room_id=ROOM, subject="Solo", task_id="t1")
+    dag.claim_task(db, room_id=ROOM, task_id="t1", owner="someone")
+    # Already owned → dispatch claim is a no-op returning None (never raises).
+    assert dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t1",
+        owner="backend", dispatch_thread_id="dagtask:t1",
+    ) is None
+
+
+def test_claim_task_for_dispatch_refuses_blocked(db):
+    dag.create_task(db, room_id=ROOM, subject="Design", task_id="t1")
+    dag.create_task(db, room_id=ROOM, subject="Build", task_id="t2",
+                    blocked_by=["t1"])
+    assert dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t2",
+        owner="backend", dispatch_thread_id="dagtask:t2",
+    ) is None
+
+
+def test_claim_task_for_dispatch_requires_owner_and_thread(db):
+    dag.create_task(db, room_id=ROOM, subject="Solo", task_id="t1")
+    with pytest.raises(dag.RoomTaskError):
+        dag.claim_task_for_dispatch(
+            db, room_id=ROOM, task_id="t1",
+            owner="  ", dispatch_thread_id="dagtask:t1",
+        )
+    with pytest.raises(dag.RoomTaskError):
+        dag.claim_task_for_dispatch(
+            db, room_id=ROOM, task_id="t1",
+            owner="backend", dispatch_thread_id="",
+        )
+
+
+def test_dispatched_task_for_thread_lookup(db):
+    dag.create_task(db, room_id=ROOM, subject="@backend build", task_id="t1")
+    assert dag.dispatched_task_for_thread(
+        db, room_id=ROOM, dispatch_thread_id="dagtask:t1"
+    ) is None
+    dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t1",
+        owner="backend", dispatch_thread_id="dagtask:t1",
+    )
+    found = dag.dispatched_task_for_thread(
+        db, room_id=ROOM, dispatch_thread_id="dagtask:t1"
+    )
+    assert found is not None and found["task_id"] == "t1"
+
+
+def test_complete_dispatched_completes_and_unblocks(db):
+    dag.create_task(db, room_id=ROOM, subject="@backend build", task_id="t1")
+    dag.create_task(db, room_id=ROOM, subject="@frontend ui", task_id="t2",
+                    blocked_by=["t1"])
+    dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t1",
+        owner="backend", dispatch_thread_id="dagtask:t1",
+    )
+    # Before completion t2 is still blocked.
+    assert dag.next_claimable(db, room_id=ROOM) is None
+    done = dag.complete_dispatched(
+        db, room_id=ROOM, dispatch_thread_id="dagtask:t1"
+    )
+    assert done["task_id"] == "t1" and done["status"] == "completed"
+    # Completing t1 auto-unblocks t2.
+    assert dag.next_claimable(db, room_id=ROOM)["task_id"] == "t2"
+
+
+def test_complete_dispatched_is_idempotent(db):
+    dag.create_task(db, room_id=ROOM, subject="@backend build", task_id="t1")
+    dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t1",
+        owner="backend", dispatch_thread_id="dagtask:t1",
+    )
+    first = dag.complete_dispatched(
+        db, room_id=ROOM, dispatch_thread_id="dagtask:t1"
+    )
+    assert first["status"] == "completed"
+    # A second sweep finds no in_progress task on the thread → no-op None.
+    assert dag.complete_dispatched(
+        db, room_id=ROOM, dispatch_thread_id="dagtask:t1"
+    ) is None
+
+
+def test_dispatch_column_upgrades_c3_db_in_place(tmp_path):
+    # A pre-C5 state.db (room_task_dag without dispatch_thread_id) must gain the
+    # column on the next _connect without a migration harness.
+    import sqlite3
+    dbp = tmp_path / "state.db"
+    conn = sqlite3.connect(dbp)
+    conn.execute(
+        """CREATE TABLE room_task_dag (
+               room_id TEXT NOT NULL, task_id TEXT NOT NULL, subject TEXT,
+               description TEXT, status TEXT, owner TEXT, seq INTEGER,
+               created_at REAL, updated_at REAL,
+               PRIMARY KEY (room_id, task_id))"""
+    )
+    conn.execute(
+        "INSERT INTO room_task_dag VALUES (?,?,?,?,?,?,?,?,?)",
+        (ROOM, "t1", "legacy", "", "pending", None, 1, 1.0, 1.0),
+    )
+    conn.commit()
+    conn.close()
+    # The store opens it, adds the column, and hydrates a NULL dispatch thread.
+    task = dag.get_task(dbp, room_id=ROOM, task_id="t1")
+    assert task["subject"] == "legacy"
+    assert task["dispatch_thread_id"] is None
+    cols = {
+        row[1]
+        for row in sqlite3.connect(dbp)
+        .execute("PRAGMA table_info(room_task_dag)")
+        .fetchall()
+    }
+    assert "dispatch_thread_id" in cols

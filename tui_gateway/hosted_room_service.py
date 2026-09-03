@@ -614,6 +614,10 @@ class HostedRoomService:
                 room_id=binding.room_id,
                 clock=self.runtime.clock,
             )
+            # Reconcile the manual task DAG against the log first: a worker turn
+            # dispatched from the DAG that has now settled must complete its task
+            # (unblocking dependents) before we decide what to dispatch next.
+            self._sweep_completed_dag_dispatches(room)
             if any(
                 driver.list_tasks(
                     self.db_path,
@@ -656,6 +660,132 @@ class HostedRoomService:
                     )
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
+            if decision.status == "idle":
+                # The mention-driven scheduler has nothing to do. Only here —
+                # never competing with a real turn — do we consult the manual
+                # task DAG and auto-dispatch its next claimable task by appending
+                # a targeted @mention anchor the existing scheduler executes and
+                # publishes. This reuses 100% of the turn-coordinate/
+                # reconstruction machinery instead of a parallel dispatcher.
+                self._maybe_autodispatch_dag_task(binding, room)
+
+    def _maybe_autodispatch_dag_task(
+        self,
+        binding: HostedRoomBinding,
+        room: Mapping[str, Any],
+    ) -> None:
+        """Auto-dispatch the next claimable manual DAG task, if any.
+
+        Must be called from ``prepare_room`` under ``self._policy_lock`` while the
+        room is idle (no queued/running task, no pending user turn). Picks the
+        lowest-seq available task whose subject names exactly one worker via
+        ``@handle`` (the same routing the scheduler uses), atomically claims it,
+        and appends a ``message.user`` anchor on a deterministic per-task thread
+        so the worker's settled reply can be matched back and complete the task.
+        Any failure is swallowed — auto-dispatch is best-effort and must never
+        break the tested scheduling path.
+        """
+
+        try:
+            from gateway import room_task_dag as _dag
+        except Exception:
+            return
+        room_id = str(room["room_id"])
+        try:
+            task = _dag.next_claimable(self.db_path, room_id=room_id)
+        except Exception:
+            return
+        if task is None:
+            return
+        # Resolve exactly one target worker from the subject, using the same
+        # mention primitive the scheduler routes with. Ambiguous or unaddressed
+        # subjects are skipped (auto-dispatch needs a single, unambiguous owner).
+        members = discussion.validate_roster(
+            room.get("members") or [],
+            local_profiles=self.local_profiles(),
+        )
+        targets = discussion.resolve_mentions(
+            (str(task.get("subject") or ""),),
+            members,
+            default_all=False,
+        )
+        if len(targets) != 1:
+            return
+        target = targets[0]
+        anchor_thread = f"dagtask:{task['task_id']}"
+        claimed = _dag.claim_task_for_dispatch(
+            self.db_path,
+            room_id=room_id,
+            task_id=str(task["task_id"]),
+            owner=target.handle,
+            dispatch_thread_id=anchor_thread,
+        )
+        if claimed is None:
+            return
+        anchor_text = f"@{target.handle} {str(task.get('subject') or '').strip()}"
+        try:
+            hosted_rooms.append_event(
+                self.db_path,
+                room_id=room_id,
+                event_id=f"dagdispatch:{task['task_id']}",
+                kind="message.user",
+                actor={"kind": "user", "id": "task-dag"},
+                payload={"text": anchor_text, "thread_id": anchor_thread},
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]),
+            )
+            # Wake the worker loop so the anchor is admitted this instant rather
+            # than after a full poll interval — the same courtesy `send` extends.
+            self.runtime.wakeup()
+        except Exception:
+            # Anchor append failed — release the claim so it retries next tick.
+            try:
+                _dag.release_task(
+                    self.db_path, room_id=room_id, task_id=str(task["task_id"])
+                )
+            except Exception:
+                pass
+
+    def _sweep_completed_dag_dispatches(self, room: Mapping[str, Any]) -> None:
+        """Complete any auto-dispatched DAG task whose worker turn has settled.
+
+        Scans the room log for a settled member reply on a ``dagtask:`` anchor
+        thread and marks the matching in_progress DAG task completed (which
+        auto-unblocks its dependents on the next claim). Best-effort and
+        idempotent; failures never break scheduling.
+        """
+
+        try:
+            from gateway import room_task_dag as _dag
+        except Exception:
+            return
+        room_id = str(room["room_id"])
+        try:
+            events = self._events(room_id)
+        except Exception:
+            return
+        settled_threads: set[str] = set()
+        for event in events:
+            if event.get("kind") != "message.member":
+                continue
+            payload = event.get("payload") or {}
+            thread_id = str(payload.get("thread_id") or "")
+            if not thread_id.startswith("dagtask:"):
+                continue
+            if discussion.is_pass_text(payload.get("text")):
+                continue
+            settled_threads.add(thread_id)
+        for thread_id in settled_threads:
+            try:
+                completed = _dag.complete_dispatched(
+                    self.db_path, room_id=room_id, dispatch_thread_id=thread_id
+                )
+            except Exception:
+                continue
+            if completed is not None:
+                # A dependent may have just unblocked; re-run the scheduler
+                # promptly instead of waiting out the poll interval.
+                self.runtime.wakeup()
 
     def publish_terminal(
         self,

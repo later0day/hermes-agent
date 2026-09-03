@@ -452,6 +452,123 @@ def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path)
     assert replayed == events
 
 
+def test_c5_manual_dag_task_auto_dispatches_and_completes_closing_the_loop(
+    tmp_path: Path,
+):
+    """C5: a manual task DAG drives real member turns without a decider.
+
+    Two manual tasks (t2 blocked by t1), each subject targeting one worker via
+    ``@handle``. With the room otherwise idle, ``prepare_room`` must:
+      1. auto-dispatch t1 (lowest seq, unblocked) → its worker turn settles →
+         the sweep completes t1, which unblocks t2;
+      2. auto-dispatch t2 → its worker turn settles → t2 completes.
+    Proven end to end through the real runtime loop (no manual ticks): each
+    task ends ``completed`` with the right owner, and the log carries the
+    ``message.user`` anchor + the worker's ``message.member`` reply on each
+    per-task ``dagtask:`` thread.
+    """
+
+    from gateway import room_task_dag as dag
+
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.rpc = _FakeRPC()
+    service.runtime.rpc = service.rpc
+    service.local_profiles = lambda: ("default", "backend", "frontend")
+    service.create_room(
+        room_id="room-1",
+        name="DAG room",
+        members=[
+            {"member_id": "backend", "profile": "backend", "handle": "backend"},
+            {
+                "member_id": "frontend",
+                "profile": "frontend",
+                "handle": "frontend",
+            },
+        ],
+    )
+    dag.create_task(
+        db, room_id="room-1", subject="@backend build the API", task_id="t1"
+    )
+    dag.create_task(
+        db,
+        room_id="room-1",
+        subject="@frontend build the UI",
+        task_id="t2",
+        blocked_by=["t1"],
+    )
+
+    service.start()
+    try:
+        _wait_for(
+            lambda: dag.get_task(db, room_id="room-1", task_id="t2")["status"]
+            == "completed",
+            timeout=8.0,
+        )
+    finally:
+        assert service.stop(timeout=2.0)
+
+    t1 = dag.get_task(db, room_id="room-1", task_id="t1")
+    t2 = dag.get_task(db, room_id="room-1", task_id="t2")
+    assert t1["status"] == "completed" and t1["owner"] == "backend"
+    assert t2["status"] == "completed" and t2["owner"] == "frontend"
+
+    log = [
+        (event["kind"], (event.get("payload") or {}).get("thread_id"))
+        for event in service._events("room-1")
+    ]
+    for expected in (
+        ("message.user", "dagtask:t1"),
+        ("message.member", "dagtask:t1"),
+        ("message.user", "dagtask:t2"),
+        ("message.member", "dagtask:t2"),
+    ):
+        assert expected in log, f"missing {expected} in {log}"
+
+
+def test_c5_ambiguous_subject_is_not_auto_dispatched(tmp_path: Path):
+    """A DAG task whose subject names no single worker stays pending.
+
+    Auto-dispatch requires exactly one ``@handle`` target; a bare subject (or a
+    multi-mention one) must never be claimed, so the room stays quiet.
+    """
+
+    from gateway import room_task_dag as dag
+
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.rpc = _FakeRPC()
+    service.runtime.rpc = service.rpc
+    service.local_profiles = lambda: ("default", "backend", "frontend")
+    service.create_room(
+        room_id="room-1",
+        name="DAG room",
+        members=[
+            {"member_id": "backend", "profile": "backend", "handle": "backend"},
+            {
+                "member_id": "frontend",
+                "profile": "frontend",
+                "handle": "frontend",
+            },
+        ],
+    )
+    # No @handle → no unambiguous owner.
+    dag.create_task(db, room_id="room-1", subject="do something", task_id="t1")
+    # Two @handles → ambiguous, also skipped.
+    dag.create_task(
+        db, room_id="room-1", subject="@backend @frontend both", task_id="t2"
+    )
+
+    binding = service.bindings()[0]
+    service.prepare_room(binding)
+    service.prepare_room(binding)
+
+    assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "pending"
+    assert dag.get_task(db, room_id="room-1", task_id="t2")["status"] == "pending"
+    kinds = [event["kind"] for event in service._events("room-1")]
+    assert "message.user" not in kinds
+
+
 def test_policy_checkpoint_bounds_replay_after_completed_room_history(
     tmp_path: Path,
     monkeypatch,
