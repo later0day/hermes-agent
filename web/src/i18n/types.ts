@@ -558,6 +558,7 @@ export interface Translations {
     seq: string;
     kind: string;
     actor: string;
+    content: string;
     noEvents: string;
     loadMore: string;
     selectRoom: string;

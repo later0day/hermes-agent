@@ -3,6 +3,7 @@ import { Home, RotateCw, Users } from "lucide-react";
 import {
   api,
   type RoomDetailResponse,
+  type RoomEvent,
   type RoomLogResponse,
   type RoomSummary,
 } from "@/lib/api";
@@ -51,6 +52,7 @@ const FALLBACK = {
   seq: "Seq",
   kind: "Kind",
   actor: "Actor",
+  content: "Content",
   noEvents: "No events.",
   loadMore: "Load more",
   selectRoom: "Select a room to inspect its state and event log.",
@@ -74,6 +76,39 @@ function memberHandles(members: RoomSummary["members"]): string {
       return `${handle}${profile}`.trim() || m.member_id || "?";
     })
     .join(", ");
+}
+
+/** Extract a human-readable summary line from an event payload. */
+function eventContent(ev: RoomEvent): string {
+  const p = ev.payload || {};
+  const text = typeof p.text === "string" ? p.text : "";
+  switch (ev.kind) {
+    case "message.user":
+      return text;
+    case "message.member": {
+      const member = typeof p.member_id === "string" ? p.member_id : "?";
+      return `@${member}: ${text}`;
+    }
+    case "turn.requested":
+      return `[dispatch] member=${p.member_id ?? "?"} round=${p.round_index ?? "?"} task=${(p.task_id as string)?.slice(0, 20) ?? ""}`;
+    case "turn.settled": {
+      const passed = p.passed ? " (pass)" : "";
+      return `[settled] member=${p.member_id ?? "?"} round=${p.round_index ?? "?"}${passed}`;
+    }
+    case "turn.cancelled":
+      return `[cancelled] ${p.reason ?? ""}`;
+    case "room.activity":
+      return `[${p.status ?? "activity"}] ${p.reason_code ?? ""}`;
+    default:
+      return "";
+  }
+}
+
+/** Truncate text for display in a table cell. */
+function truncateText(text: string, max = 200): string {
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return text.slice(0, max).trimEnd() + "…";
 }
 
 export default function RoomsPage() {
@@ -321,26 +356,34 @@ export default function RoomsPage() {
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="text-left text-muted-foreground">
-                          <th className="py-1 pr-3 font-medium">{L.seq}</th>
-                          <th className="py-1 pr-3 font-medium">{L.kind}</th>
-                          <th className="py-1 pr-3 font-medium">{L.actor}</th>
-                          <th className="py-1 font-medium">{L.created}</th>
+                          <th className="py-1 pr-3 font-medium whitespace-nowrap">{L.seq}</th>
+                          <th className="py-1 pr-3 font-medium whitespace-nowrap">{L.kind}</th>
+                          <th className="py-1 pr-3 font-medium">{L.content}</th>
+                          <th className="py-1 pr-3 font-medium whitespace-nowrap">{L.created}</th>
                         </tr>
                       </thead>
                       <tbody className="font-mono">
-                        {log.events.map((ev) => (
-                          <tr key={ev.seq} className="border-t border-input/50">
-                            <td className="py-1 pr-3 tabular-nums">{ev.seq}</td>
-                            <td className="py-1 pr-3">{ev.kind}</td>
-                            <td className="py-1 pr-3">
-                              {ev.actor?.kind ?? "?"}
-                              {ev.actor?.id ? `:${ev.actor.id}` : ""}
-                            </td>
-                            <td className="py-1 text-muted-foreground">
-                              {fmtTs(ev.created_at)}
-                            </td>
-                          </tr>
-                        ))}
+                        {log.events.map((ev) => {
+                          const content = truncateText(eventContent(ev), 300);
+                          const isUser = ev.kind === "message.user";
+                          const isMember = ev.kind === "message.member";
+                          return (
+                            <tr key={ev.seq} className="border-t border-input/50 align-top">
+                              <td className="py-1 pr-3 tabular-nums whitespace-nowrap">{ev.seq}</td>
+                              <td className="py-1 pr-3 whitespace-nowrap">{ev.kind}</td>
+                              <td className={
+                                "py-1 pr-3 max-w-[400px] " +
+                                (isUser ? "text-blue-600 dark:text-blue-400" :
+                                 isMember ? "text-green-600 dark:text-green-400" : "text-muted-foreground")
+                              }>
+                                {content || "—"}
+                              </td>
+                              <td className="py-1 pr-3 text-muted-foreground whitespace-nowrap">
+                                {fmtTs(ev.created_at)}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                     {log.has_more && (

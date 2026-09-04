@@ -457,6 +457,7 @@ export const zh: Translations = {
     seq: "序号",
     kind: "类型",
     actor: "发起方",
+    content: "内容",
     noEvents: "暂无事件。",
     loadMore: "加载更多",
     selectRoom: "选择一个房间以查看其状态与事件日志。",

@@ -527,6 +527,7 @@ export const en: Translations = {
     seq: "Seq",
     kind: "Kind",
     actor: "Actor",
+    content: "Content",
     noEvents: "No events.",
     loadMore: "Load more",
     selectRoom: "Select a room to inspect its state and event log.",
