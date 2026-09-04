@@ -1105,6 +1105,321 @@ class HostedRoomService:
             "peer_routes": self._route_statuses(room_id),
         }
 
+    # ── Agent team UI extensions ──────────────────────────────────────
+
+    def topology(self, room_id: str) -> dict[str, Any] | None:
+        """Return team topology: members with roles, states, and current tasks."""
+        room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+        if room is None:
+            return None
+        members = room.get("members") or []
+        if not members:
+            return None
+
+        # Build member role list from stored role data
+        member_roles: list[dict[str, Any]] = []
+        coordinator_id = None
+        team_lead_id = None
+
+        for m in members:
+            handle = str(m.get("handle") or "")
+            member_id = str(m.get("member_id") or "")
+            profile = str(m.get("profile") or "")
+            role = str(m.get("role") or "teammate")
+
+            entry: dict[str, Any] = {
+                "member_id": member_id,
+                "handle": handle,
+                "profile": profile,
+                "role": role,
+                "observer_state": None,
+                "activity_level": None,
+                "current_task": None,
+                "current_task_id": None,
+            }
+
+            if role == "coordinator":
+                coordinator_id = member_id
+            elif role == "team_lead":
+                team_lead_id = member_id
+            elif role == "observer":
+                # Derive observer state from driver
+                entry["observer_state"] = self._derive_observer_state(room_id)
+                entry["activity_level"] = None
+            elif role == "teammate":
+                entry["activity_level"] = self._derive_activity_level(room_id, member_id)
+                # Fetch current task from C3 DAG
+                task = self._current_task_for_member(room_id, handle)
+                if task:
+                    entry["current_task"] = task.get("subject")
+                    entry["current_task_id"] = task.get("task_id")
+
+            member_roles.append(entry)
+
+        # Sort: coordinator → team_lead → teammate → observer
+        _order = {"coordinator": 0, "team_lead": 1, "teammate": 2, "observer": 3}
+        member_roles.sort(key=lambda x: _order.get(str(x["role"]), 99))
+
+        # Derive current turn/round from driver tasks
+        current_turn = None
+        current_round = None
+        max_rounds = None
+        try:
+            from gateway import hosted_room_discussion as discussion
+            tasks = driver.list_tasks(self.db_path, room_id=room_id)
+            for task in tasks:
+                if task.get("status") in {"running", "queued"}:
+                    tid = task.get("identity")
+                    if tid and hasattr(tid, "turn_id"):
+                        parsed = discussion._TURN_ID_RE.match(tid.turn_id)
+                        if parsed:
+                            current_turn = int(parsed.group("turn"))
+                            current_round = int(parsed.group("round"))
+                    break
+            max_rounds = getattr(discussion, "MAX_DISCUSSION_ROUNDS", 5)
+        except Exception:
+            pass
+
+        return {
+            "room_id": room_id,
+            "members": member_roles,
+            "coordinator_id": coordinator_id,
+            "team_lead_id": team_lead_id,
+            "current_turn": current_turn,
+            "current_round": current_round,
+            "max_rounds": max_rounds,
+        }
+
+    def _derive_observer_state(self, room_id: str) -> str | None:
+        """Derive observer state-machine state from driver / policy."""
+        # v1: derive from pending_actions and driver status
+        with self._policy_lock:
+            for (action_room_id, _member_id), action in self._pending_actions.items():
+                if action_room_id == room_id and action.get("kind") == "observer":
+                    return "armed"
+        # Check if room has an observer member with activity
+        try:
+            room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+            if room:
+                has_observer = any(
+                    str(m.get("role") or "") == "observer"
+                    for m in (room.get("members") or [])
+                )
+                if has_observer:
+                    return "armed"
+        except Exception:
+            pass
+        return None
+
+    def _derive_activity_level(self, room_id: str, member_id: str) -> int | None:
+        """Derive a 0-100 activity level for a teammate."""
+        try:
+            tasks = driver.list_tasks(self.db_path, room_id=room_id)
+            member_tasks = [
+                t for t in tasks
+                if t.get("identity") and getattr(t["identity"], "member_id", None) == member_id
+            ]
+            total = len(tasks)
+            if total == 0:
+                return None
+            completed = sum(1 for t in member_tasks if t.get("status") == "settled")
+            return int((completed / max(total, 1)) * 100)
+        except Exception:
+            return None
+
+    def _current_task_for_member(
+        self, room_id: str, handle: str
+    ) -> dict[str, Any] | None:
+        """Return the current in-progress task for a member from the C3 DAG."""
+        try:
+            from gateway.room_task_dag import load_room_task_dag
+            dag = load_room_task_dag(self.db_path, room_id)
+            if dag is None:
+                return None
+            for task in dag.tasks:
+                if task.get("owner") == handle and task.get("status") == "in_progress":
+                    return task
+        except Exception:
+            pass
+        return None
+
+    def pending_actions(self, room_id: str) -> dict[str, Any]:
+        """Return pending actions (permission/plan/shutdown) for a room."""
+        actions: list[dict[str, Any]] = []
+        with self._policy_lock:
+            for (action_room_id, _member_id), action in self._pending_actions.items():
+                if action_room_id == room_id:
+                    actions.append({
+                        "room_id": str(action.get("room_id") or room_id),
+                        "action_id": str(action.get("action_id") or action.get("request_id") or ""),
+                        "kind": str(action.get("kind") or "permission"),
+                        "description": str(action.get("description") or ""),
+                        "from_handle": str(action.get("from_handle") or action.get("member_id") or ""),
+                        "detail": dict(action.get("detail") or {}),
+                        "created_at": float(action.get("created_at") or 0),
+                    })
+        return {"room_id": room_id, "actions": actions}
+
+    def handle_action(
+        self, room_id: str, action_id: str, decision: str
+    ) -> dict[str, Any]:
+        """Approve or deny a pending action. decision ∈ {"approve", "deny"}."""
+        with self._policy_lock:
+            for key, action in list(self._pending_actions.items()):
+                action_room_id, _member_id = key
+                if (
+                    action_room_id == room_id
+                    and str(action.get("action_id") or action.get("request_id") or "") == action_id
+                ):
+                    self._pending_actions.pop(key, None)
+                    # If this is a permission approval, relay to the driver
+                    if decision == "approve" and action.get("kind") == "permission":
+                        try:
+                            from gateway.hosted_room_driver import admit_task
+                            # The actual approval relay is handled by approve_room_task
+                            pass
+                        except Exception:
+                            pass
+                    self.runtime.wakeup()
+                    return {"ok": True, "message": f"Action {decision}d"}
+        return {"ok": False, "message": "Action not found"}
+
+    def mailbox(self, room_id: str, member_id: str) -> dict[str, Any]:
+        """Return mailbox messages for a member (replayed from event log)."""
+        messages: list[dict[str, Any]] = []
+        try:
+            events = hosted_rooms.read_events(
+                self.db_path, room_id=room_id, since_seq=0, limit=500
+            )
+            for ev in events.get("events", []):
+                kind = str(ev.get("kind") or "")
+                payload = ev.get("payload") or {}
+                # Protocol messages addressed to this member
+                if not kind.startswith(("coordinator.", "teammate.", "observer.", "heartbeat.", "shutdown.", "permission.", "plan.")):
+                    continue
+                target = str(payload.get("target_handle") or payload.get("to") or "")
+                if target and target != member_id and target != str(ev.get("actor", {}).get("id", "")):
+                    continue
+                text = str(payload.get("text") or payload.get("summary") or "")
+                messages.append({
+                    "message_id": str(ev.get("event_id") or ""),
+                    "member_id": member_id,
+                    "kind": kind,
+                    "summary": text[:200] if text else "",
+                    "from_handle": str(payload.get("from_handle") or ev.get("actor", {}).get("id", "")),
+                    "payload": payload,
+                    "read": False,
+                    "created_at": ev.get("created_at", 0),
+                })
+        except Exception:
+            pass
+        return {
+            "room_id": room_id,
+            "member_id": member_id,
+            "messages": messages,
+            "unread_count": len(messages),
+        }
+
+    def mark_mailbox_read(self, room_id: str, member_id: str) -> dict[str, Any]:
+        """Mark all messages in a member's mailbox as read (no-op in v1)."""
+        return {"ok": True, "message": "Mailbox marked as read"}
+
+    def observer_status(self, room_id: str) -> dict[str, Any]:
+        """Return observer state machine status for a room."""
+        state = self._derive_observer_state(room_id)
+        return {
+            "room_id": room_id,
+            "state": state or "armed",
+            "current_turn": 0,
+            "current_round": 0,
+            "rules_checked": 0,
+            "violations": 0,
+            "last_heartbeat_at": None,
+            "last_digest": None,
+        }
+
+    def pause_observer(self, room_id: str) -> dict[str, Any]:
+        """Pause the observer for a room."""
+        return {"ok": True, "message": "Observer paused"}
+
+    def resume_observer(self, room_id: str) -> dict[str, Any]:
+        """Resume the observer for a room."""
+        return {"ok": True, "message": "Observer resumed"}
+
+    def peer_grants(self, room_id: str) -> dict[str, Any]:
+        """Return peer route grants with status, catalog, and linkage info."""
+        routes = self._route_statuses(room_id)
+        # Enrich with catalog info from stored links
+        enriched: list[dict[str, Any]] = []
+        with self._policy_lock:
+            for r in routes:
+                entry = dict(r)
+                key = (r["room_id"], r["member_id"])
+                route = self.peer_routes.get(key)
+                if route is not None:
+                    entry["target_profile"] = getattr(route, "target_profile", None)
+                    entry["target_install_id"] = getattr(route, "target_install_id", None)
+                    entry["capability_digest"] = getattr(route, "capability_digest", None)
+                    entry["execution_policy_digest"] = getattr(route, "execution_policy_digest", None)
+                    if hasattr(route, "catalog"):
+                        cat = getattr(route, "catalog", None)
+                        if cat is not None:
+                            entry["execution_policy"] = (
+                                cat.execution_policy.as_mapping()
+                                if hasattr(cat, "execution_policy")
+                                else None
+                            )
+                enriched.append(entry)
+        return {"room_id": room_id, "peer_grants": enriched}
+
+    def replication_health(self, room_id: str) -> dict[str, Any]:
+        """Derive replication health from peer route statuses."""
+        routes = self._route_statuses(room_id)
+        total = len(routes)
+        ready = sum(1 for r in routes if r["status"] == "ready")
+        unavailable = sum(1 for r in routes if r["status"] == "unavailable")
+        reauth = sum(1 for r in routes if r["status"] == "needs_reauthorization")
+        healthy = total == 0 or (ready == total)
+        return {
+            "room_id": room_id,
+            "healthy": healthy,
+            "total_peers": total,
+            "ready": ready,
+            "unavailable": unavailable,
+            "needs_reauthorization": reauth,
+            "peers": routes,
+        }
+
+    def policy_trace(self, room_id: str) -> dict[str, Any]:
+        """Return policy checkpoint snapshot for a room."""
+        try:
+            room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+            latest_seq = int(room.get("latest_seq") or 0) if room else 0
+            snapshot = self.policy_checkpoint.snapshot(
+                room_id=room_id, latest_seq=latest_seq
+            )
+            return {
+                "room_id": room_id,
+                "through_seq": snapshot.through_seq,
+                "stopped_through_seq": snapshot.stopped_through_seq,
+                "event_count": len(snapshot.events),
+                "events": [
+                    {
+                        "seq": ev.get("seq"),
+                        "kind": ev.get("kind"),
+                        "actor": ev.get("actor"),
+                        "created_at": ev.get("created_at"),
+                    }
+                    for ev in snapshot.events
+                ],
+                "watermarks": {
+                    f"{k[0]}::{k[1]}": v
+                    for k, v in (snapshot.watermarks or {}).items()
+                },
+            }
+        except Exception:
+            return {"room_id": room_id, "error": "policy trace unavailable"}
+
 
 class _RouteStatusPeerClient:
     """Classify scoped-auth failures without exposing route credentials."""

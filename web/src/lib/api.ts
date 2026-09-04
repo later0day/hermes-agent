@@ -1243,6 +1243,72 @@ export const api = {
     fetchJSON<RoomLogResponse>(
       `/api/rooms/${encodeURIComponent(roomId)}/log?since_seq=${sinceSeq}&limit=${limit}`,
     ),
+
+  // ── Hosted rooms: agent team extensions ───────────────────────────
+  getRoomTopology: (roomId: string) =>
+    fetchJSON<RoomTopologyResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/topology`,
+    ),
+  getRoomPendingActions: (roomId: string) =>
+    fetchJSON<PendingActionsResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/pending-actions`,
+    ),
+  approveRoomAction: (roomId: string, actionId: string) =>
+    fetchJSON<RoomActionResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/pending-actions/${encodeURIComponent(actionId)}/approve`,
+      { method: "POST" },
+    ),
+  denyRoomAction: (roomId: string, actionId: string) =>
+    fetchJSON<RoomActionResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/pending-actions/${encodeURIComponent(actionId)}/deny`,
+      { method: "POST" },
+    ),
+  getMemberMailbox: (roomId: string, memberId: string) =>
+    fetchJSON<MailboxResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(memberId)}/mailbox`,
+    ),
+  markMailboxRead: (roomId: string, memberId: string) =>
+    fetchJSON<RoomActionResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(memberId)}/mailbox/read`,
+      { method: "POST" },
+    ),
+  getObserverStatus: (roomId: string) =>
+    fetchJSON<ObserverStatus>(
+      `/api/rooms/${encodeURIComponent(roomId)}/observer`,
+    ),
+  pauseObserver: (roomId: string) =>
+    fetchJSON<RoomActionResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/observer/pause`,
+      { method: "POST" },
+    ),
+  resumeObserver: (roomId: string) =>
+    fetchJSON<RoomActionResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/observer/resume`,
+      { method: "POST" },
+    ),
+  getRoomPeerGrants: (roomId: string) =>
+    fetchJSON<PeerGrantsResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/peer-grants`,
+    ),
+  getRoomReplicationHealth: (roomId: string) =>
+    fetchJSON<ReplicationHealthResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/replication-health`,
+    ),
+  getRoomPolicyTrace: (roomId: string) =>
+    fetchJSON<PolicyTraceResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/policy-trace`,
+    ),
+  getRoomLogFiltered: (roomId: string, filter: RoomLogFilter) => {
+    const params = new URLSearchParams();
+    if (filter.since_seq !== undefined) params.set("since_seq", String(filter.since_seq));
+    if (filter.limit !== undefined) params.set("limit", String(filter.limit));
+    filter.actors?.forEach((a) => params.append("actor", a));
+    filter.kinds?.forEach((k) => params.append("kind", k));
+    return fetchJSON<RoomLogResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/log?${params.toString()}`,
+    );
+  },
+
   getMemoryProviderConfig: (provider: string) =>
     fetchJSON<MemoryProviderConfig>(
       `/api/memory/providers/${encodeURIComponent(provider)}/config`,
@@ -1481,6 +1547,144 @@ export interface RoomLogResponse {
   latest_seq: number;
   has_more: boolean;
   authority: { gateway_id?: string | null; epoch?: number | null };
+}
+
+// ── Hosted rooms: agent team extensions ─────────────────────────────
+
+export type RoomRoleKind = "coordinator" | "teammate" | "observer" | "team_lead";
+
+export type ObserverState =
+  | "armed"
+  | "delivering"
+  | "denied"
+  | "retired"
+  | "stopped"
+  | "blocked";
+
+export interface RoomMemberRole {
+  member_id: string;
+  handle: string;
+  profile: string;
+  role: RoomRoleKind;
+  /** Observer state-machine state; null for non-observer roles. */
+  observer_state?: ObserverState | null;
+  /** Activity level 0-100; null for observers. */
+  activity_level?: number | null;
+  /** Current task subject (from C3 task DAG where owner == handle). */
+  current_task?: string | null;
+  /** Current task ID. */
+  current_task_id?: string | null;
+}
+
+export interface RoomTopologyResponse {
+  room_id: string;
+  members: RoomMemberRole[];
+  coordinator_id: string | null;
+  team_lead_id: string | null;
+  current_turn?: number | null;
+  current_round?: number | null;
+  max_rounds?: number | null;
+}
+
+export type PendingActionKind = "permission" | "plan_approval" | "shutdown";
+
+export interface PendingAction {
+  room_id: string;
+  action_id: string;
+  kind: PendingActionKind;
+  description: string;
+  from_handle: string;
+  detail: Record<string, unknown>;
+  created_at: number;
+}
+
+export interface PendingActionsResponse {
+  room_id: string;
+  actions: PendingAction[];
+}
+
+export interface RoomActionResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export interface MailboxMessage {
+  message_id: string;
+  member_id: string;
+  kind: string;
+  summary: string;
+  from_handle: string;
+  payload: Record<string, unknown>;
+  read: boolean;
+  created_at: number;
+}
+
+export interface MailboxResponse {
+  room_id: string;
+  member_id: string;
+  messages: MailboxMessage[];
+  unread_count: number;
+}
+
+export interface ObserverStatus {
+  room_id: string;
+  state: ObserverState;
+  current_turn: number;
+  current_round: number;
+  rules_checked: number;
+  violations: number;
+  last_heartbeat_at: number | null;
+  last_digest: string | null;
+}
+
+export interface RoomLogFilter {
+  actors?: string[];
+  kinds?: string[];
+  since_seq?: number;
+  limit?: number;
+}
+
+export interface PeerGrant {
+  room_id: string;
+  member_id: string;
+  status: string;
+  target_profile?: string | null;
+  target_install_id?: string | null;
+  capability_digest?: string | null;
+  execution_policy_digest?: string | null;
+  execution_policy?: Record<string, unknown> | null;
+}
+
+export interface PeerGrantsResponse {
+  room_id: string;
+  peer_grants: PeerGrant[];
+}
+
+export interface ReplicationHealthResponse {
+  room_id: string;
+  healthy: boolean;
+  total_peers: number;
+  ready: number;
+  unavailable: number;
+  needs_reauthorization: number;
+  peers: PeerGrant[];
+}
+
+export interface PolicyTraceEvent {
+  seq?: number;
+  kind?: string;
+  actor?: Record<string, unknown>;
+  created_at?: number;
+}
+
+export interface PolicyTraceResponse {
+  room_id: string;
+  through_seq: number;
+  stopped_through_seq: number;
+  event_count: number;
+  events: PolicyTraceEvent[];
+  watermarks?: Record<string, number>;
+  error?: string;
 }
 
 export interface ActionResponse {

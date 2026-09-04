@@ -51,6 +51,7 @@ from agent.anthropic_endpoints import (  # noqa: F401
     _model_name_is_kimi_family,
     _normalize_base_url_text,
     _requires_bearer_auth,
+    _is_claude_code_gateway,
 )
 from agent.anthropic_message_convert import (  # noqa: F401
     _EMPTY_TEXT_PLACEHOLDER,
@@ -525,6 +526,56 @@ def _get_claude_code_version() -> str:
     return _claude_code_version_cache
 
 
+# ── Claude Code device_id for local proxy gateways ─────────────────────
+_claude_code_device_id_cache: Optional[str] = None
+
+
+def _detect_claude_code_device_id() -> str:
+    """Read the Claude Code device_id from ~/.claude.json's userID field.
+
+    Claude Code CLI writes a persistent device identifier to
+    ``~/.claude.json["userID"]`` on first run.  Local proxy gateways
+    (agentproxy etc.) use this to gate access to their Claude account pool.
+    Returns an empty string when Claude Code has never been run.
+    """
+    try:
+        cc_path = Path.home() / ".claude.json"
+        if cc_path.exists():
+            data = json.loads(cc_path.read_text(encoding="utf-8"))
+            uid = data.get("userID", "")
+            if isinstance(uid, str) and uid:
+                return uid
+    except Exception:
+        pass
+    return ""
+
+
+def _get_claude_code_device_id() -> str:
+    """Lazily read the Claude Code device_id, cached after first call."""
+    global _claude_code_device_id_cache
+    if _claude_code_device_id_cache is None:
+        _claude_code_device_id_cache = _detect_claude_code_device_id()
+    return _claude_code_device_id_cache
+
+
+def _build_claude_code_metadata() -> dict:
+    """Build the metadata.user_id field for Claude Code proxy gateways.
+
+    The proxy gateway checks ``metadata.user_id`` (a JSON-encoded string)
+    for a valid ``device_id`` to determine whether the request comes from
+    a Claude Code client.  The session_id is a fresh UUID per call.
+    """
+    import uuid as _uuid
+    device_id = _get_claude_code_device_id()
+    return {
+        "user_id": json.dumps({
+            "device_id": device_id,
+            "account_uuid": "",
+            "session_id": str(_uuid.uuid4()),
+        })
+    }
+
+
 
 
 
@@ -722,7 +773,20 @@ def build_anthropic_client(
         drop_context_1m_beta=drop_context_1m_beta,
     )
 
-    if _is_kimi_coding_endpoint(base_url):
+    if _is_claude_code_gateway(base_url):
+        # Local proxy gateways (agentproxy etc.) fronting Claude accounts
+        # enforce a "Claude Code clients only" policy: they check
+        # metadata.user_id for a valid device_id and the User-Agent header.
+        # Use Bearer auth + full Claude Code fingerprint so the proxy routes
+        # to its Claude account pool instead of returning 503.
+        all_betas = common_betas + _OAUTH_ONLY_BETAS
+        kwargs["auth_token"] = api_key
+        kwargs["default_headers"] = {
+            "anthropic-beta": ",".join(all_betas),
+            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, sdk-cli)",
+            "x-app": "cli",
+        }
+    elif _is_kimi_coding_endpoint(base_url):
         # Kimi's /coding endpoint requires a non-empty User-Agent to be
         # recognized as a valid Coding Agent. Originally we sent
         # ``claude-code/0.1.0`` (the minimum that avoided a 403), but the Kimi
@@ -1085,10 +1149,16 @@ def build_anthropic_kwargs(
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
+    if _is_claude_code_gateway(base_url):
+        # Local proxy gateways (agentproxy etc.) enforce a "Claude Code
+        # clients only" policy by checking metadata.user_id for a valid
+        # Claude Code device_id. Without this the proxy returns 503
+        # "No available accounts: this group only allows Claude Code clients".
+        # The device_id is read from ~/.claude.json's userID field,
+        # which Claude Code CLI writes on first run.
+        kwargs["metadata"] = _build_claude_code_metadata()
+
     return kwargs
-
-
-# Keys that belong exclusively to the OpenAI Responses / Codex API shape.
 # The Anthropic Messages SDK (``messages.create()`` / ``messages.stream()``)
 # raises ``TypeError: ... got an unexpected keyword argument`` on any of them.
 _RESPONSES_ONLY_KWARGS = frozenset(

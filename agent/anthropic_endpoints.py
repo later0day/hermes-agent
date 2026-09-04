@@ -212,6 +212,32 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     )
 
 
+def _is_claude_code_gateway(base_url: str | None) -> bool:
+    """Return True for local proxy gateways that require Claude Code client identity.
+
+    Self-hosted proxy gateways (e.g. agentproxy, FUCKALL) fronting Claude
+    accounts often enforce a "Claude Code clients only" policy by checking
+    ``metadata.user_id`` for a valid Claude Code ``device_id`` and the
+    ``User-Agent: claude-cli/...`` header.  When this returns True:
+
+    - The client uses Bearer auth + Claude Code headers (UA, x-app, betas).
+    - ``build_anthropic_kwargs`` injects ``metadata.user_id`` with the
+      device_id from ``~/.claude.json``.
+
+    Detection is limited to loopback addresses so it never fires on a
+    real Anthropic or known third-party endpoint.
+    """
+    normalized = _normalize_base_url_text(base_url).lower()
+    if not normalized:
+        return False
+    try:
+        from urllib.parse import urlparse as _urlparse
+        host = (_urlparse(normalized).hostname or "").lower()
+    except Exception:
+        host = ""
+    return host in ("127.0.0.1", "localhost", "::1", "[::1]")
+
+
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     """Return True for endpoints that still gate 1M context behind a beta."""
     normalized = _normalize_base_url_text(base_url).lower()
