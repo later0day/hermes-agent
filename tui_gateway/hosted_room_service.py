@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from gateway import hosted_room_actions
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
@@ -36,6 +38,8 @@ from tui_gateway.hosted_room_peer_transport import (
     PeerMemberRoute,
 )
 
+
+logger = logging.getLogger("gateway.run")
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
 _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
@@ -76,7 +80,16 @@ class HostedRoomService:
         self.db_path = Path(db_path or hosted_rooms.default_db_path())
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
-        self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
+        try:
+            self._pending_actions = hosted_room_actions.load_pending_actions(
+                self.db_path
+            )
+        except Exception:
+            logger.warning(
+                "hosted room pending actions could not be restored",
+                exc_info=True,
+            )
+            self._pending_actions = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
         self.rpc = HostedRoomServerRPC(server)
         self._link_load_error = None
@@ -407,11 +420,22 @@ class HostedRoomService:
         action: Mapping[str, Any] | None,
     ) -> None:
         key = (room_id, member_id)
-        with self._policy_lock:
-            if action is None:
+        if action is None:
+            hosted_room_actions.clear_pending_action(
+                self.db_path, room_id=room_id, member_id=member_id
+            )
+            with self._policy_lock:
                 self._pending_actions.pop(key, None)
-            else:
-                self._pending_actions[key] = {**action, "member_id": member_id}
+            return
+        normalized = {**action, "member_id": member_id}
+        hosted_room_actions.set_pending_action(
+            self.db_path,
+            room_id=room_id,
+            member_id=member_id,
+            action=normalized,
+        )
+        with self._policy_lock:
+            self._pending_actions[key] = normalized
 
     def _rotate_route_grant(
         self,
@@ -692,59 +716,61 @@ class HostedRoomService:
             return
         room_id = str(room["room_id"])
         try:
-            task = _dag.next_claimable(self.db_path, room_id=room_id)
+            tasks = _dag.list_claimable(self.db_path, room_id=room_id)
+            members = discussion.validate_roster(
+                room.get("members") or [],
+                local_profiles=self.local_profiles(),
+            )
         except Exception:
             return
-        if task is None:
-            return
-        # Resolve exactly one target worker from the subject, using the same
-        # mention primitive the scheduler routes with. Ambiguous or unaddressed
-        # subjects are skipped (auto-dispatch needs a single, unambiguous owner).
-        members = discussion.validate_roster(
-            room.get("members") or [],
-            local_profiles=self.local_profiles(),
-        )
-        targets = discussion.resolve_mentions(
-            (str(task.get("subject") or ""),),
-            members,
-            default_all=False,
-        )
-        if len(targets) != 1:
-            return
-        target = targets[0]
-        anchor_thread = f"dagtask:{task['task_id']}"
-        claimed = _dag.claim_task_for_dispatch(
-            self.db_path,
-            room_id=room_id,
-            task_id=str(task["task_id"]),
-            owner=target.handle,
-            dispatch_thread_id=anchor_thread,
-        )
-        if claimed is None:
-            return
-        anchor_text = f"@{target.handle} {str(task.get('subject') or '').strip()}"
-        try:
-            hosted_rooms.append_event(
+        # Skip tasks that cannot name one unambiguous worker instead of letting
+        # the first malformed subject permanently head-of-line block every later
+        # valid task. The task stays pending for an operator to correct or remove.
+        for task in tasks:
+            targets = discussion.resolve_mentions(
+                (str(task.get("subject") or ""),),
+                members,
+                default_all=False,
+            )
+            if len(targets) != 1:
+                continue
+            target = targets[0]
+            anchor_thread = f"dagtask:{task['task_id']}"
+            claimed = _dag.claim_task_for_dispatch(
                 self.db_path,
                 room_id=room_id,
-                event_id=f"dagdispatch:{task['task_id']}",
-                kind="message.user",
-                actor={"kind": "user", "id": "task-dag"},
-                payload={"text": anchor_text, "thread_id": anchor_thread},
-                authority_gateway_id=str(room["authority_gateway_id"]),
-                authority_epoch=int(room["authority_epoch"]),
+                task_id=str(task["task_id"]),
+                owner=target.handle,
+                dispatch_thread_id=anchor_thread,
             )
-            # Wake the worker loop so the anchor is admitted this instant rather
-            # than after a full poll interval — the same courtesy `send` extends.
-            self.runtime.wakeup()
-        except Exception:
-            # Anchor append failed — release the claim so it retries next tick.
+            if claimed is None:
+                continue
+            anchor_text = f"@{target.handle} {str(task.get('subject') or '').strip()}"
             try:
-                _dag.release_task(
-                    self.db_path, room_id=room_id, task_id=str(task["task_id"])
+                hosted_rooms.append_event(
+                    self.db_path,
+                    room_id=room_id,
+                    event_id=f"dagdispatch:{task['task_id']}",
+                    kind="message.user",
+                    actor={"kind": "user", "id": "task-dag"},
+                    payload={"text": anchor_text, "thread_id": anchor_thread},
+                    authority_gateway_id=str(room["authority_gateway_id"]),
+                    authority_epoch=int(room["authority_epoch"]),
                 )
+                # Wake the worker loop so the anchor is admitted this instant
+                # rather than after a full poll interval.
+                self.runtime.wakeup()
             except Exception:
-                pass
+                # Anchor append failed — release the claim so it retries next tick.
+                try:
+                    _dag.release_task(
+                        self.db_path,
+                        room_id=room_id,
+                        task_id=str(task["task_id"]),
+                    )
+                except Exception:
+                    pass
+            return
 
     def _sweep_completed_dag_dispatches(self, room: Mapping[str, Any]) -> None:
         """Complete any auto-dispatched DAG task whose worker turn has settled.
@@ -761,6 +787,23 @@ class HostedRoomService:
             return
         room_id = str(room["room_id"])
         try:
+            pending_dispatches = _dag.list_in_progress_dispatches(
+                self.db_path, room_id=room_id
+            )
+        except Exception:
+            return
+        # The common case is no manual DAG dispatch awaiting completion. Do not
+        # replay the entire room log merely to rediscover that fact: policy
+        # checkpoint compaction relies on completed history staying off this hot
+        # path as rooms grow.
+        pending_threads = {
+            str(task.get("dispatch_thread_id") or "")
+            for task in pending_dispatches
+            if task.get("dispatch_thread_id")
+        }
+        if not pending_threads:
+            return
+        try:
             events = self._events(room_id)
         except Exception:
             return
@@ -770,26 +813,13 @@ class HostedRoomService:
                 continue
             payload = event.get("payload") or {}
             thread_id = str(payload.get("thread_id") or "")
-            if not thread_id.startswith("dagtask:"):
+            if thread_id not in pending_threads:
                 continue
             if discussion.is_pass_text(payload.get("text")):
                 continue
             settled_threads.add(thread_id)
         for thread_id in settled_threads:
             try:
-                # Cheap read-only pre-check first: prepare_room re-runs this
-                # sweep every cycle, so most settled `dagtask:` threads already
-                # have their task completed from a prior sweep. Skipping those
-                # here avoids taking a BEGIN IMMEDIATE write lock (in
-                # complete_dispatched) for a no-op — only a still-in_progress
-                # dispatch pays for the write.
-                if (
-                    _dag.dispatched_task_for_thread(
-                        self.db_path, room_id=room_id, dispatch_thread_id=thread_id
-                    )
-                    is None
-                ):
-                    continue
                 completed = _dag.complete_dispatched(
                     self.db_path, room_id=room_id, dispatch_thread_id=thread_id
                 )
@@ -1056,14 +1086,15 @@ class HostedRoomService:
             raise RuntimeError("room approval target is unavailable")
         with self._policy_lock:
             current = self._pending_actions.get(key)
-            if (
+            still_current = (
                 current is not None
                 and str(current.get("request_id") or "") == requested_approval_id
                 and current.get("task_id") == task_id
                 and int(current.get("execution_generation") or 0)
                 == execution_generation
-            ):
-                self._pending_actions.pop(key, None)
+            )
+        if still_current:
+            self._set_pending_action(room_id, member_id, None)
         self.runtime.wakeup()
         return result
 
@@ -1232,16 +1263,13 @@ class HostedRoomService:
     ) -> dict[str, Any] | None:
         """Return the current in-progress task for a member from the C3 DAG."""
         try:
-            from gateway.room_task_dag import load_room_task_dag
-            dag = load_room_task_dag(self.db_path, room_id)
-            if dag is None:
-                return None
-            for task in dag.tasks:
-                if task.get("owner") == handle and task.get("status") == "in_progress":
-                    return task
+            from gateway.room_task_dag import current_task_for_owner
+
+            return current_task_for_owner(
+                self.db_path, room_id=room_id, owner=handle
+            )
         except Exception:
-            pass
-        return None
+            return None
 
     def pending_actions(self, room_id: str) -> dict[str, Any]:
         """Return pending actions (permission/plan/shutdown) for a room."""
@@ -1263,26 +1291,45 @@ class HostedRoomService:
     def handle_action(
         self, room_id: str, action_id: str, decision: str
     ) -> dict[str, Any]:
-        """Approve or deny a pending action. decision ∈ {"approve", "deny"}."""
+        """Approve or deny one exact pending Room action."""
+        if decision not in {"approve", "deny"}:
+            return {"ok": False, "message": "Decision must be approve or deny"}
+        matched: tuple[tuple[str, str], dict[str, Any]] | None = None
         with self._policy_lock:
-            for key, action in list(self._pending_actions.items()):
-                action_room_id, _member_id = key
+            for key, action in self._pending_actions.items():
                 if (
-                    action_room_id == room_id
-                    and str(action.get("action_id") or action.get("request_id") or "") == action_id
+                    key[0] == room_id
+                    and str(action.get("action_id") or action.get("request_id") or "")
+                    == action_id
                 ):
-                    self._pending_actions.pop(key, None)
-                    # If this is a permission approval, relay to the driver
-                    if decision == "approve" and action.get("kind") == "permission":
-                        try:
-                            from gateway.hosted_room_driver import admit_task
-                            # The actual approval relay is handled by approve_room_task
-                            pass
-                        except Exception:
-                            pass
-                    self.runtime.wakeup()
-                    return {"ok": True, "message": f"Action {decision}d"}
-        return {"ok": False, "message": "Action not found"}
+                    matched = (key, dict(action))
+                    break
+        if matched is None:
+            return {"ok": False, "message": "Action not found"}
+        key, action = matched
+        kind = str(action.get("kind") or "")
+        if kind in {"approval", "permission"}:
+            try:
+                result = self.approve_room_task(
+                    room_id,
+                    member_id=key[1],
+                    task_id=str(action.get("task_id") or ""),
+                    execution_generation=int(
+                        action.get("execution_generation") or 0
+                    ),
+                    choice="once" if decision == "approve" else "deny",
+                    request_id=str(action.get("request_id") or action_id),
+                )
+            except Exception as exc:
+                return {"ok": False, "message": str(exc)}
+            return {
+                "ok": True,
+                "message": f"Action {decision}d",
+                "result": dict(result),
+            }
+        self._set_pending_action(room_id, key[1], None)
+        self.runtime.wakeup()
+        return {"ok": True, "message": f"Action {decision}d"}
 
     def mailbox(self, room_id: str, member_id: str) -> dict[str, Any]:
         """Return mailbox messages for a member (replayed from event log)."""

@@ -1356,6 +1356,13 @@ def _prune_disbanded_rooms_locked(
         room_ids,
     )
     dependent_tables = (
+        # Additive Room sidecars are created lazily by their owning modules,
+        # so pruning checks existence before deleting them. Dependencies must
+        # precede their task rows if a future schema adds foreign keys.
+        "room_task_deps",
+        "room_task_dag",
+        "room_notify_subs",
+        "hosted_room_pending_actions",
         "hosted_room_policy_transcript_state",
         "hosted_room_policy_transcript",
         "hosted_room_policy_publications",

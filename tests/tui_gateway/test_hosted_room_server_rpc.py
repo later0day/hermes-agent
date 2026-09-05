@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -152,6 +153,134 @@ def test_rpc_errors_are_typed():
     with pytest.raises(HostedRoomSessionError) as exc:
         rpc.resolve_exact(profile="ops", title="Group: room", source="bot_room")
     assert exc.value.code == 4007
+
+
+def test_real_prompt_submit_runs_agent_and_commits_terminal_receipt(
+    tmp_path, monkeypatch
+):
+    """RPC → real prompt.submit thread → agent turn → terminal callback."""
+
+    import tui_gateway.server as real_server
+
+    home = tmp_path / ".hermes"
+    profile_home = home / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    seen = []
+
+    class _DeterministicAgent:
+        session_id = ""
+        model = "deterministic-model"
+        provider = "deterministic"
+        base_url = ""
+        api_key = ""
+        api_mode = ""
+        _config_context_length = None
+        interim_assistant_callback = None
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self,
+            prompt,
+            *,
+            conversation_history=None,
+            stream_callback=None,
+            persist_user_message=None,
+            task_id=None,
+        ):
+            seen.append(
+                {
+                    "prompt": prompt,
+                    "history": list(conversation_history or []),
+                    "persist_user_message": persist_user_message,
+                    "task_id": task_id,
+                }
+            )
+            if stream_callback is not None:
+                stream_callback("worker done")
+            return {
+                "final_response": "worker done",
+                "messages": [
+                    {"role": "user", "content": persist_user_message or prompt},
+                    {"role": "assistant", "content": "worker done"},
+                ],
+                "completed": True,
+            }
+
+    agent = _DeterministicAgent()
+
+    def _schedule_build(sid):
+        session = real_server._sessions[sid]
+        agent.session_id = session["session_key"]
+        session["agent"] = agent
+        session["agent_ready"].set()
+
+    monkeypatch.setattr(real_server, "_schedule_agent_build", _schedule_build)
+    monkeypatch.setattr(real_server, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(real_server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(real_server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(real_server, "_sync_agent_model_with_config", lambda *_args: None)
+    monkeypatch.setattr(real_server, "_sync_agent_compression_with_config", lambda *_args: None)
+    monkeypatch.setattr(real_server, "_sync_bot_capabilities", lambda *_args: None)
+    monkeypatch.setattr(real_server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(real_server, "render_message", lambda _raw, _cols: None)
+    monkeypatch.setattr(real_server, "_get_usage", lambda _agent: {})
+
+    with real_server._sessions_lock:
+        prior_sessions = dict(real_server._sessions)
+        real_server._sessions.clear()
+    try:
+        rpc = HostedRoomServerRPC(real_server)
+        created = rpc.create(
+            profile="ops", title="Group: room-e2e", source="bot_room"
+        )
+        receipt = []
+        terminal = threading.Event()
+
+        accepted = rpc.submit(
+            profile="ops",
+            session_id=str(created["session_id"]),
+            prompt="execute deterministic room task",
+            source="bot_room",
+            task=TaskIdentity("room-e2e", "task-1", "thread-1", "turn-1"),
+            execution_generation=1,
+            on_terminal=lambda value: (receipt.append(dict(value)), terminal.set()),
+        )
+
+        assert accepted["status"] == "streaming"
+        assert terminal.wait(5.0), "real prompt.submit turn did not settle"
+        assert seen == [
+            {
+                "prompt": "execute deterministic room task",
+                "history": [],
+                "persist_user_message": "execute deterministic room task",
+                "task_id": created["stored_session_id"],
+            }
+        ]
+        assert receipt == [{"status": "settled", "text": "worker done"}]
+        with real_server._sessions_lock:
+            session = real_server._sessions[str(created["session_id"])]
+            run_thread = session.get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(timeout=5.0)
+            assert not run_thread.is_alive()
+        deadline = time.time() + 5.0
+        resolved = None
+        while time.time() < deadline and resolved is None:
+            resolved = rpc.resolve_exact(
+                profile="ops", title="Group: room-e2e", source="bot_room"
+            )
+            if resolved is None:
+                time.sleep(0.01)
+        assert resolved is not None
+        assert resolved["session_id"] == created["stored_session_id"]
+    finally:
+        with real_server._sessions_lock:
+            real_server._sessions.clear()
+            real_server._sessions.update(prior_sessions)
+
 
 
 def test_prompt_rejection_is_proven_not_admitted():

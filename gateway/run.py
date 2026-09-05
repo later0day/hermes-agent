@@ -18287,8 +18287,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           * Echo-safe: this only ever writes ``message.user``; the outbound
             mirror only forwards ``message.member`` — the loop is structurally
             impossible.
-          * Fail-open: any lookup/dispatch error falls through to normal
-            handling so a bridge hiccup can never swallow a user's message.
+          * Safe fallback: lookup errors before a binding is proven fall through
+            to normal handling. Once a binding is proven, dispatch errors fail
+            closed with a retryable user response so another agent cannot consume
+            a message intended for the room.
         """
 
         try:
@@ -18331,13 +18333,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Idempotency key: bind the room's user-event namespace to the IM
         # message id so PTB/webhook redelivery of the same message is a no-op.
         # Fall back to a per-(source,text) key when the platform gives no id.
+        import hashlib as _hashlib
+
+        source_scope = f"{platform}:{chat_id}:{thread_id}"
         raw_msg_id = str(getattr(event, "message_id", "") or "").strip()
         if raw_msg_id:
-            client_key = f"{platform}:{chat_id}:{thread_id}:{raw_msg_id}"
+            client_key = f"{source_scope}:{raw_msg_id}"
         else:
-            import hashlib as _hashlib
             digest = _hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
-            client_key = f"{platform}:{chat_id}:{thread_id}:t:{digest}"
+            client_key = f"{source_scope}:t:{digest}"
+        # Room discussion payloads require a stable identifier-safe thread id.
+        # Platform thread/chat ids are not guaranteed to satisfy that schema, so
+        # derive one from the bound source. Messages redelivered into the same
+        # chat/thread converge on this exact discussion thread.
+        room_thread_id = (
+            "inbound:"
+            + _hashlib.sha256(source_scope.encode("utf-8")).hexdigest()[:32]
+        )
 
         def _send() -> dict:
             from tui_gateway.methods_groups import get_hosted_room_service
@@ -18347,7 +18359,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return service.send(
                 room_id=room_id,
                 event_id=user_event_id(client_key),
-                payload={"text": text},
+                payload={"text": text, "thread_id": room_thread_id},
                 actor_id=actor_id,
             )
 

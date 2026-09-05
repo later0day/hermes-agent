@@ -893,16 +893,20 @@ class GatewaySlashCommandsMixin:
                     return t("gateway.room.need_room_id", action=action)
                 room_id = args[0]
                 # Optional target "platform:chat_id"; defaults to the current
-                # chat. Optional --decider-only restricts the mirror to the
-                # room's single decider (the "single external voice").
+                # chat. Rooms with a decider default to that single external
+                # voice; --all-members is the explicit opt-out. The legacy
+                # --decider-only flag remains accepted and requires a decider.
                 # Optional --inbound also opts this binding into full-duplex:
                 # plain chat messages route into the room as message.user.
                 target = ""
                 decider_only = False
+                all_members = False
                 inbound = False
                 for tok in args[1:]:
                     if tok == "--decider-only":
                         decider_only = True
+                    elif tok == "--all-members":
+                        all_members = True
                     elif tok == "--inbound":
                         inbound = True
                     elif tok.startswith("--"):
@@ -935,20 +939,26 @@ class GatewaySlashCommandsMixin:
                     return t(f"gateway.room.{key}", room_id=room_id,
                              platform=platform_str, chat_id=chat_id)
 
-                member_filter = None
-                if decider_only:
-                    try:
-                        room = room_state(db_path, room_id=room_id)
-                    except HostedRoomError as exc:
-                        return t("gateway.room.error_prefix", error=exc)
-                    decider = next(
-                        (m for m in (room.get("members") or [])
-                         if isinstance(m, dict) and m.get("role") == "decider"),
-                        None,
+                if decider_only and all_members:
+                    return t(
+                        "gateway.room.error_prefix",
+                        error="--decider-only and --all-members are mutually exclusive",
                     )
-                    if decider is None:
-                        return t("gateway.room.mirror_no_decider", room_id=room_id)
+                try:
+                    room = room_state(db_path, room_id=room_id)
+                except HostedRoomError as exc:
+                    return t("gateway.room.error_prefix", error=exc)
+                decider = next(
+                    (m for m in (room.get("members") or [])
+                     if isinstance(m, dict) and m.get("role") == "decider"),
+                    None,
+                )
+                if decider_only and decider is None:
+                    return t("gateway.room.mirror_no_decider", room_id=room_id)
+                member_filter = None
+                if decider is not None and not all_members:
                     member_filter = str(decider.get("member_id") or "")
+                    decider_only = True
                 _mir.create_sub(
                     db_path,
                     room_id=room_id,

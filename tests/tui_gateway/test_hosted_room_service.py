@@ -452,6 +452,178 @@ def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path)
     assert replayed == events
 
 
+def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
+    tmp_path: Path, monkeypatch, request
+):
+    """Real Room service chain reaches prompt.submit and publishes its reply."""
+
+    import tui_gateway.server as real_server
+
+    home = tmp_path / ".hermes"
+    (home / "profiles" / "ops").mkdir(parents=True)
+    (home / "profiles" / "reviewer").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    seen_prompts: list[str] = []
+
+    class _DeterministicAgent:
+        session_id = ""
+        model = "deterministic-model"
+        provider = "deterministic"
+        base_url = ""
+        api_key = ""
+        api_mode = ""
+        _config_context_length = None
+        interim_assistant_callback = None
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self,
+            prompt,
+            *,
+            conversation_history=None,
+            stream_callback=None,
+            persist_user_message=None,
+            task_id=None,
+        ):
+            del conversation_history, persist_user_message, task_id
+            seen_prompts.append(str(prompt))
+            if stream_callback is not None:
+                stream_callback("worker done")
+            return {
+                "final_response": "worker done",
+                "messages": [
+                    {"role": "user", "content": str(prompt)},
+                    {"role": "assistant", "content": "worker done"},
+                ],
+                "completed": True,
+            }
+
+    def _schedule_build(sid):
+        session = real_server._sessions[sid]
+        agent = _DeterministicAgent()
+        agent.session_id = session["session_key"]
+        session["agent"] = agent
+        session["agent_ready"].set()
+
+    monkeypatch.setattr(real_server, "_schedule_agent_build", _schedule_build)
+    monkeypatch.setattr(real_server, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(real_server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(real_server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(real_server, "_sync_agent_model_with_config", lambda *_args: None)
+    monkeypatch.setattr(real_server, "_sync_agent_compression_with_config", lambda *_args: None)
+    monkeypatch.setattr(real_server, "_sync_bot_capabilities", lambda *_args: None)
+    monkeypatch.setattr(real_server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(real_server, "render_message", lambda _raw, _cols: None)
+    monkeypatch.setattr(real_server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(real_server, "_emit", lambda *_args, **_kwargs: None)
+
+    with real_server._sessions_lock:
+        prior_sessions = dict(real_server._sessions)
+        real_server._sessions.clear()
+
+    def _restore_sessions():
+        with real_server._sessions_lock:
+            real_server._sessions.clear()
+            real_server._sessions.update(prior_sessions)
+
+    request.addfinalizer(_restore_sessions)
+    service = None
+    try:
+        db = hosted_rooms.default_db_path()
+        service = HostedRoomService(real_server, db_path=db)
+        service.local_profiles = lambda: ("ops", "reviewer")
+        service.create_room(
+            room_id="room-e2e",
+            name="Production chain",
+            members=[
+                {"member_id": "ops", "profile": "ops", "handle": "ops"},
+                {
+                    "member_id": "reviewer",
+                    "profile": "reviewer",
+                    "handle": "reviewer",
+                },
+            ],
+        )
+        from gateway import room_mirror_db
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+        from tui_gateway import methods_groups
+        import asyncio
+
+        room_mirror_db.create_sub(
+            db,
+            room_id="room-e2e",
+            platform="telegram",
+            chat_id="chat-e2e",
+            inbound=True,
+        )
+        monkeypatch.setattr(
+            methods_groups, "get_hosted_room_service", lambda: service
+        )
+        inbound = MessageEvent(
+            text="@ops execute the production chain",
+            message_id="external-1",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                user_id="platform-user",
+                chat_id="chat-e2e",
+                chat_type="group",
+            ),
+        )
+        runner = GatewayRunner.__new__(GatewayRunner)
+        service.start()
+        assert asyncio.run(
+            runner._maybe_route_inbound_to_room(inbound, inbound.source)
+        ) is None
+        # Platform redelivery must route idempotently, never mint another turn.
+        assert asyncio.run(
+            runner._maybe_route_inbound_to_room(inbound, inbound.source)
+        ) is None
+        _wait_for(
+            lambda: any(
+                event["kind"] == "message.member"
+                for event in service._events("room-e2e")
+            ),
+            timeout=8.0,
+        )
+    finally:
+        if service is not None:
+            assert service.stop(timeout=3.0)
+
+    with real_server._sessions_lock:
+        run_threads = [
+            session.get("_run_thread") for session in real_server._sessions.values()
+        ]
+    for run_thread in run_threads:
+        if run_thread is not None:
+            run_thread.join(timeout=5.0)
+            assert not run_thread.is_alive()
+
+    events = service._events("room-e2e")
+    member = next(event for event in events if event["kind"] == "message.member")
+    assert member["actor"] == {"kind": "member", "id": "ops", "profile": "ops"}
+    assert member["payload"]["text"] == "worker done"
+    assert any(event["kind"] == "turn.settled" for event in events)
+    assert sum(event["kind"] == "message.user" for event in events) == 1
+    user_event = next(event for event in events if event["kind"] == "message.user")
+    assert user_event["actor"] == {"kind": "user", "id": "platform-user"}
+    assert user_event["payload"]["thread_id"].startswith("inbound:")
+    assert member["payload"]["thread_id"] == user_event["payload"]["thread_id"]
+    assert len(seen_prompts) == 1
+    assert "execute the production chain" in seen_prompts[0]
+    resolved = service.rpc.resolve_exact(
+        profile="ops", title="Group: room-e2e", source="bot_room"
+    )
+    assert resolved is not None
+    with real_server._sessions_lock:
+        assert len(real_server._sessions) == 1
+
+
+
 def test_c5_manual_dag_task_auto_dispatches_and_completes_closing_the_loop(
     tmp_path: Path,
 ):
@@ -567,6 +739,49 @@ def test_c5_ambiguous_subject_is_not_auto_dispatched(tmp_path: Path):
     assert dag.get_task(db, room_id="room-1", task_id="t2")["status"] == "pending"
     kinds = [event["kind"] for event in service._events("room-1")]
     assert "message.user" not in kinds
+
+
+
+def test_c5_unroutable_head_does_not_block_later_valid_task(tmp_path: Path):
+    from gateway import room_task_dag as dag
+
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.rpc = _FakeRPC()
+    service.runtime.rpc = service.rpc
+    service.local_profiles = lambda: ("default", "backend", "frontend")
+    service.create_room(
+        room_id="room-1",
+        name="DAG room",
+        members=[
+            {"member_id": "backend", "profile": "backend", "handle": "backend"},
+            {
+                "member_id": "frontend",
+                "profile": "frontend",
+                "handle": "frontend",
+            },
+        ],
+    )
+    dag.create_task(db, room_id="room-1", subject="missing target", task_id="t1")
+    dag.create_task(
+        db, room_id="room-1", subject="@backend valid work", task_id="t2"
+    )
+
+    service.start()
+    try:
+        _wait_for(
+            lambda: dag.get_task(db, room_id="room-1", task_id="t2")["status"]
+            == "completed",
+            timeout=8.0,
+        )
+    finally:
+        assert service.stop(timeout=2.0)
+
+    assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "pending"
+    t2 = dag.get_task(db, room_id="room-1", task_id="t2")
+    assert t2["status"] == "completed"
+    assert t2["owner"] == "backend"
+
 
 
 def test_policy_checkpoint_bounds_replay_after_completed_room_history(
@@ -2089,6 +2304,50 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
     assert service.status("room-1")["pending_actions"] == []
 
 
+def test_pending_local_approval_survives_restart_and_generic_action_relays(
+    tmp_path: Path,
+):
+    db = tmp_path / "state.db"
+    first = HostedRoomService(_server(), db_path=db)
+    first._set_pending_action(
+        "room-1",
+        "local",
+        {
+            "kind": "approval",
+            "task_id": "task-local-1",
+            "execution_generation": 3,
+            "session_id": "local-session",
+            "request_id": "approval-local-1",
+            "approval": {"choices": ["once", "deny"]},
+        },
+    )
+
+    restarted = HostedRoomService(_server(), db_path=db)
+    rpc = _FakeRPC()
+    restarted.rpc = rpc
+    restarted.runtime.rpc = rpc
+    assert restarted.pending_actions("room-1")["actions"][0]["action_id"] == (
+        "approval-local-1"
+    )
+
+    result = restarted.handle_action(
+        "room-1", "approval-local-1", "approve"
+    )
+
+    assert result["ok"] is True
+    assert rpc.approvals == [
+        {
+            "session_id": "local-session",
+            "request_id": "approval-local-1",
+            "choice": "once",
+        }
+    ]
+    assert restarted.pending_actions("room-1")["actions"] == []
+    after_resolution = HostedRoomService(_server(), db_path=db)
+    assert after_resolution.pending_actions("room-1")["actions"] == []
+
+
+
 def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
     rpc = _FakeRPC()
@@ -2274,19 +2533,17 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     )
     assert decider_from_all == ["bot_room", "clarify", "delegation", "todo"]
 
-    # Non-room sessions and non-Group titles fail open (never over-restricted).
+    # Normal sessions are untouched. A malformed bot_room session fails closed
+    # because its worker/decider role cannot be positively established.
     assert (
         tui_server._room_decider_toolset_filter(
             {"source": "desktop", "title": "Group: room-1"}, list(full_engineer)
         )
         == full_engineer
     )
-    assert (
-        tui_server._room_decider_toolset_filter(
-            {"source": "bot_room", "title": "Untitled"}, list(full_engineer)
-        )
-        == full_engineer
-    )
+    assert tui_server._room_decider_toolset_filter(
+        {"source": "bot_room", "title": "Untitled"}, list(full_engineer)
+    ) == ["bot_room", "clarify", "delegation", "todo"]
 
     # Regression (real-E2E): ``session.create`` stashes the room name under
     # ``pending_title`` — not ``title`` — because no DB row exists yet at the
@@ -2314,3 +2571,22 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
         list(full_engineer),
     )
     assert worker_pending == full_engineer
+
+    unknown_profile = tui_server._room_decider_toolset_filter(
+        {
+            "source": "bot_room",
+            "pending_title": "Group: room-1",
+            "profile_home": str(tmp_path / "profiles" / "unknown"),
+        },
+        list(full_engineer),
+    )
+    assert unknown_profile == ["bot_room", "clarify", "delegation", "todo"]
+
+    monkeypatch.setattr(
+        "gateway.hosted_rooms.room_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("db unavailable")),
+    )
+    unavailable = tui_server._room_decider_toolset_filter(
+        _room_session("backend"), list(full_engineer)
+    )
+    assert unavailable == ["bot_room", "clarify", "delegation", "todo"]

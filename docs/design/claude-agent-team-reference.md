@@ -143,11 +143,14 @@ Fire on every occurrence (no matchers):
    fencing. CC's Task DAG is a data-model reference for C3, not a transport model.
 
 ## 9. Direct mapping to Hermes work
+
+This table is a mechanism cross-reference, not the current implementation ledger.
+See `hermes-cc-agent-team-integration.md` for authoritative Hermes status.
 | CC concept | Hermes analogue | Design doc |
 |---|---|---|
 | team-lead coordinates | decider role (but ALSO hides workers) | hosted-room-decider.md |
 | mailbox / SendMessage(to:name) | @handle mentions over the event log | hosted-room-decider.md (mention filter) |
-| shared task DAG (blocks/blockedBy) | C3 Room↔Kanban glue | (C3, TBD) |
+| shared task DAG (blocks/blockedBy) | Persistent Room Task DAG; structured Decider materialization remains separate | hosted-room-task-dag.md |
 | TeammateIdle/TaskCompleted exit-2 gate | decider "never (pass)" enforcement (risk D) | hosted-room-decider.md |
 | lead does NOT hide teammates | C2 mirror member_filter = single voice | hosted-room-chat-bridge.md |
 | spawn prompt self-contained (no history) | _build_prompt bounded delta (shared) / v3 isolation | hosted-room-decider.md B1 |
@@ -270,22 +273,21 @@ is a memory/blackboard distinct from the task list and mailbox.
 ## A.7 Corrected mapping to Hermes (mechanism-accurate)
 | CC mechanism (verified) | Hermes rooms today | Gap / action |
 |---|---|---|
-| pull-based self-claim, tie-break lowest task ID, `withQueueFileLock` | serial guard (one member/turn), @mention turn-taking; no task table | C3 would add the task table; decider = push assignment (CC's `isTaskAssignment` branch) |
+| pull-based self-claim, tie-break lowest task ID, `withQueueFileLock` | serial guard plus SQLite Room Task DAG with deterministic claim/CAS | Manual DAG exists; structured Decider creation/review remains open |
 | push idle-notification → lead mailbox; `waitForTeammatesToBecomeIdle` barrier | `turn.settled` terminal events in the log; `plan_next_task` replays to decide next | Hermes' log replay IS the "survey shared state" equivalent of TaskList; no separate poller needed — already aligned |
 | mailbox with read/unread + `messageIdentityKey` dedup + file lock | append-only event log with idempotent `event_id` + authority-epoch fence | Hermes' event_id idempotency ⊃ CC's messageIdentityKey; the log is stronger (transport-neutral, durable, ordered) |
-| structured protocol messages (shutdown/plan/permission/mode) | typed events (message.user/member, turn.*, room.*) | Hermes already has a typed-event vocabulary; a decider "dispatch" is a new event kind, not a new transport |
-| shared store (blackboard) + anti-injection framing | `_build_prompt` bounded thread delta (shared context) | Hermes' shared context = CC's shared store; the anti-injection framing is a prompt-hardening idea to borrow for the decider |
-| coordinator = restricted tool set, cannot fork | (decider would be a scheduling-only role) | mirrors decision #3 "decider only schedules, never does work" — CC validates this by *tool-filtering* the coordinator (`applyCoordinatorToolFilter`) |
+| structured protocol messages (shutdown/plan/permission/mode) | typed Room events and durable pending permission actions | Plan/shutdown/mode semantics remain incomplete; reuse the event transport |
+| shared store (blackboard) + anti-injection framing | bounded event-log thread delta | Not a general blackboard; context isolation/deduplication remain open |
+| coordinator = restricted tool set, cannot fork | Decider toolset is narrowed at Agent build | Fail-closed Room/profile resolution mirrors CC's hard filtering intent |
 
 **Net correction to the design docs**: CC's coordinator does NOT background-poll
 teammate status — teammates **push** idle/terminal notifications and the
 coordinator **reads shared state on demand** (TaskList) + uses a quiescence
 barrier. Hermes' append-only-log + `plan_next_task` replay is the *same shape*
 (read shared state to decide next), so the decider needs no poller either — it
-reacts to terminal events exactly as the current worker loop already does. The
-one mechanism Hermes lacks and CC has is the **explicit task table with
-owner/blockedBy** (→ that is precisely C3), and **tool-filtering to enforce a
-schedule-only role** (→ a concrete way to implement decider decision #3).
+reacts to terminal events exactly as the current worker loop already does. Hermes now has an explicit task table with owner/blockedBy and build-time
+Decider tool filtering. The remaining mechanism gap is the typed Decider → DAG →
+quality-review/repair workflow, not persistence of the task table itself.
 
 ## A.8 Three-layer anti-injection protocol (native-binary mined)
 

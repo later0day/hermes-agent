@@ -8,8 +8,11 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
+from gateway import hosted_room_actions as actions
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
+from gateway import room_mirror_db as mirror_db
+from gateway import room_task_dag as task_dag
 import hermes_state
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from hermes_state import SessionDB
@@ -929,7 +932,9 @@ def test_byte_pressure_pruning_keeps_retired_room_id_reserved(
     _assert_retired_identity_stays_reserved(db, "room-full", fresh_id="room-new")
 
 
-def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path):
+def test_tombstone_pruning_cleans_owned_room_state_but_not_unknown_tables(
+    tmp_path,
+):
     db = tmp_path / "state.db"
     _create(db)
     identity = driver.TaskIdentity(
@@ -958,6 +963,35 @@ def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path)
         clock=lambda: 20,
     )
     HostedRoomPolicyCheckpoint(db)
+    task_dag.create_task(
+        db, room_id="room-1", task_id="t1", subject="Plan release"
+    )
+    task_dag.create_task(
+        db,
+        room_id="room-1",
+        task_id="t2",
+        subject="Ship release",
+        blocked_by=("t1",),
+    )
+    mirror_db.create_sub(
+        db,
+        room_id="room-1",
+        platform="telegram",
+        chat_id="chat-1",
+        inbound=True,
+    )
+    actions.set_pending_action(
+        db,
+        room_id="room-1",
+        member_id="ops",
+        action={
+            "kind": "approval",
+            "request_id": "approval-1",
+            "task_id": "task-1",
+            "execution_generation": 1,
+            "session_id": "ops-session",
+        },
+    )
     _disband(db, room_id="room-1", now=50)
     with sqlite3.connect(db) as conn:
         conn.execute(
@@ -1022,6 +1056,10 @@ def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path)
             "hosted_room_policy_publications",
             "hosted_room_policy_transcript",
             "hosted_room_policy_transcript_state",
+            "room_task_deps",
+            "room_task_dag",
+            "room_notify_subs",
+            "hosted_room_pending_actions",
         ):
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
         assert (

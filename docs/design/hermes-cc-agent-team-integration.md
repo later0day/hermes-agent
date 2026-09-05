@@ -27,11 +27,11 @@ Hermes' decider proxies all worker output so the chat group sees one coherent vo
 | Topology | Mesh (teammates message each other) | Star (decider hub, workers report to decider) |
 | Transport | JSON mailbox files (`~/.claude/teams/{team}/inboxes/`) | Append-only event log (`state.db`) |
 | Coordinator | `team-lead` (assigns, does not hide workers) | `decider` (orchestration-only, single external voice) |
-| Task model | Shared DAG (pending/in_progress/completed, blockedBy) | @mention turn-taking (C3 adds DAG) |
+| Task model | Shared DAG (pending/in_progress/completed, blockedBy) | @mention scheduler + persistent manual Room DAG; Decider materialization open |
 | Scheduling | Pull-based self-claim (lowest ID, file-locked) | Serial guard (one member/turn), `plan_next_task` replay |
 | Execution | Parallel (multiple teammates run concurrently) | Serial (one member at a time, no write races) |
 | Context | Isolated (teammate = own context, no history carry-over) | Shared (bounded delta of all thread messages, v3 adds isolation) |
-| Quality gates | Hooks (`TeammateIdle` exit-2, `TaskCreated`/`TaskCompleted`) | Observer (rules_checked, violations) + F1 hard tool whitelist |
+| Quality gates | Hooks (`TeammateIdle` exit-2, `TaskCreated`/`TaskCompleted`) | F1 tool policy exists; durable task-quality gates remain open |
 | Inspector | In-process agent panel / split-pane | Web dashboard (C9: read-only inspector) |
 
 ---
@@ -44,20 +44,20 @@ Hermes' decider proxies all worker output so the chat group sees one coherent vo
 |---|---|---|---|
 | **Team lead** (coordinator mode) | **Decider** (role=`decider`) | ✅ SHIPPED | F1 orchestration-only tool whitelist hard-enforced |
 | **Teammates** | Workers (role=`teammate`) | ✅ SHIPPED | Full toolset, serial execution |
-| **Task list** (`~/.claude/tasks/{team}/`) | C3 Room↔Kanban DAG | 🔲 TODO | `docs/design/hosted-room-task-dag.md` |
+| **Task list** (`~/.claude/tasks/{team}/`) | C3 Room Task DAG sidecar | ✅ SHIPPED (manual ledger) | `gateway/room_task_dag.py`; Decider materialization remains open |
 | **Mailbox** (`~/.claude/teams/{team}/inboxes/`) | Event log `message.member` / `message.user` | ✅ SHIPPED | Append-only, idempotent `event_id`, authority-epoch fence |
 | **Team config** (`config.json` `members[]`) | Room `members` JSON column | ✅ SHIPPED | Persisted verbatim in `state.db` |
 | **SendMessage** | `@handle` mentions in member text | ✅ SHIPPED | `plan_next_task` resolves mentions |
 | **ListAgents** | Room topology API | ✅ SHIPPED | `GET /api/rooms/{id}/topology` |
-| **TaskCreate/Get/Update/List** | C3 task commands | 🔲 TODO | `/room task add|list|dep` |
+| **TaskCreate/Get/Update/List** | C3 task commands/store | ✅ SHIPPED | `/room task add|list|dep|claim|assign|done|release` |
 | **TaskStop** | `/room disband` | ✅ SHIPPED | |
 | **Coordinator tool filter** (`applyCoordinatorToolFilter`) | F1 `ORCHESTRATION_ONLY_TOOLSETS` | ✅ SHIPPED | `hosted_room_execution_policy.py` |
-| **TeammateIdle hook** | `turn.settled` terminal event | ✅ SHIPPED | `plan_next_task` replay triggers next |
-| **TaskCreated/TaskCompleted hooks** | C3 (future) | 🔲 TODO | |
+| **TeammateIdle hook** | `turn.settled` terminal event | ⚠️ PARTIAL | Scheduling resumes, but no completion-quality veto exists |
+| **TaskCreated/TaskCompleted hooks** | Durable Room quality gates | 🔲 TODO | |
 | **Anti-injection protocol** (3 layers) | `_format_message` / `_build_prompt` | ✅ SHIPPED | `hosted_room_discussion.py` §A.8 |
-| **Shared store** (blackboard) | `_build_prompt` bounded thread delta | ✅ SHIPPED | Shared context (v3 adds isolation) |
-| **Structured protocol messages** (plan/shutdown/permission) | Pending actions (permission.request, plan.approval, shutdown.request) | ✅ SHIPPED | `GET /api/rooms/{id}/pending-actions` + approve/deny endpoints |
-| **Cross-session messaging** | C2 chat-group bridge (outbound mirror) | 🔲 TODO | `docs/design/hosted-room-chat-bridge.md` |
+| **Shared store** (blackboard) | Event-log replay + bounded thread delta | ⚠️ PARTIAL | Not a general shared blackboard; task-context isolation remains open |
+| **Structured protocol messages** (plan/shutdown/permission) | Pending actions | ⚠️ PARTIAL | Permission actions are durable and relayed exactly; plan/shutdown semantics remain incomplete |
+| **Cross-session messaging** | C2 full-duplex chat-group bridge | ✅ SHIPPED | Durable cursor, idempotent inbound event ids, stable source-thread mapping |
 
 ### 2.2 Key design decisions
 
@@ -196,26 +196,25 @@ session (requires room with active member turns).
 - 18 browser UI tests (Playwright + Chrome headless): **0 failures**
 - Known: `observer pause/resume` backend is a stub (returns ok but doesn't change state)
 
-### 3.7 C2 — Chat-Group Bridge (NOT YET IMPLEMENTED)
+### 3.7 C2 — Chat-Group Bridge (SHIPPED, production-chain E2E)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Outbound mirror (room → chat) | 🔲 | Design: `docs/design/hosted-room-chat-bridge.md` |
-| Inbound routing (chat → room) | 🔲 | Requires outbound first |
-| `member_filter` (decider-only emission) | 🔲 | The "single external voice" enforcement point |
+| Outbound mirror (room → chat) | ✅ | Durable subscription cursor; send failure rewinds and never silently drops |
+| Inbound routing (chat → room) | ✅ | Exact bound source, idempotent message id, stable identifier-safe Room thread |
+| `member_filter` (decider-only emission) | ✅ | Decider Rooms default to single external voice; `--all-members` is explicit opt-out |
+| Full production chain | ✅ | Gateway ingress → Room → runtime → real `prompt.submit` → agent turn → terminal callback → publication |
 
-**Sequencing:** C2 outbound must precede (or ship with) the decider's "single voice"
-product promise. Today nothing is pushed outward — member output only lands in the
-event log / Web inspector.
-
-### 3.8 C3 — Room↔Kanban Task DAG (NOT YET IMPLEMENTED)
+### 3.8 C3 — Room Task DAG (SHIPPED manual ledger; structured Decider planning open)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Task table (sidecar store) | 🔲 | Design: `docs/design/hosted-room-task-dag.md` |
-| Self-claim algorithm (pull-based, file-locked) | 🔲 | Mirrors CC's A.2 scheduling algorithm |
-| Dependency DAG (blocks/blockedBy, auto-unblock) | 🔲 | |
-| Room task commands (`/room task`) | ✅ | Commands exist; DAG storage not yet |
+| Task table (sidecar store) | ✅ | Real SQLite `room_task_dag` / `room_task_deps` |
+| Self-claim algorithm | ✅ | `BEGIN IMMEDIATE` + CAS; real concurrent-thread acceptance test |
+| Dependency DAG (blocks/blockedBy, auto-unblock) | ✅ | Cycle rejection and missing-dependency fail closed |
+| Room task commands (`/room task`) | ✅ | Add/list/dep/claim/assign/done/release |
+| Automatic manual-DAG dispatch | ✅ | Skips unroutable head tasks; settlement closes dispatch and unlocks dependents |
+| Decider output → structured persistent DAG | 🔲 | Must use a narrow service-gated protocol, not free-form text parsing |
 
 ### 3.9 Decider v3 — Worker Context Isolation (NOT YET IMPLEMENTED)
 
@@ -231,12 +230,12 @@ event log / Web inspector.
 
 | # | Category | What it covers | How to test | Executed this session |
 |---|---|---|---|---|
-| T1 | Room lifecycle | Create, list, detail, disband | API: create room, verify in list, check detail, disband | ❌ (rooms pre-exist) |
-| T2 | Event replay | Log correctness, monotonicity, pagination | API: read log, validate seq order, test since_seq edge | ✅ (T7 subset) |
-| T3 | Decider star scheduling | Round-0 decider-only, mention filter, worker isolation | Integration: send user msg, verify only decider speaks r0 | ❌ (requires live driver) |
-| T4 | Decider 5-round serial | r0→r1→r2→r3→r4 cycle, crash recovery | Integration: full 5-turn cycle, restart mid-turn | ❌ (requires live driver + restart) |
-| T5 | F1 tool whitelist | Decider toolset restricted, worker full toolset | Unit: `test_f1_decider_member_is_restricted_to_orchestration_only_tools` | ❌ (pytest, not run) |
-| T6 | Anti-injection | XML wrapper, escape, provenance framing | Unit: inject malicious `</teammate-message>`, verify escaped | ❌ (requires active room) |
+| T1 | Room lifecycle | Create, list, detail, disband | Repository tests against isolated SQLite | ✅ |
+| T2 | Event replay | Log correctness, monotonicity, pagination, bounded replay | Repository tests against isolated SQLite | ✅ |
+| T3 | Decider star scheduling | Round-0 decider-only, mention filter, worker isolation | Real runtime tests plus deterministic policy tests | ✅ |
+| T4 | Decider 5-round serial | r0→r1→r2→r3→r4 cycle, crash reconstruction | Driver/discussion restart tests | ✅ (reconstruction; process-kill matrix remains open) |
+| T5 | F1 tool whitelist | Decider restricted, Worker full, lookup failures fail closed | `test_f1_decider_member_is_restricted_to_orchestration_only_tools` | ✅ |
+| T6 | Anti-injection | XML wrapper, escape, provenance framing | Repository discussion/runtime tests | ✅ |
 | T7 | C9 inspector | All 15 API endpoints, 9 UI components, cross-endpoint consistency | API + browser E2E | ✅ **307 passed, 0 failed** |
 | T8 | Observer | State machine, rules_checked, violations | API: check state, pause/resume cycle | ✅ (4 rooms, stub noted) |
 | T9 | Peer grants + replication | Route statuses, health arithmetic | API: verify ready+unavail+reauth = total, healthy logic | ✅ (4 rooms, 0 failures) |
@@ -244,9 +243,23 @@ event log / Web inspector.
 | T11 | Cross-endpoint consistency | member_ids, room_id, latest_seq across endpoints | API: compare detail ↔ topology ↔ log ↔ policy-trace | ✅ (4 rooms, 0 failures) |
 | T12 | Error handling | Non-existent room, non-existent member, invalid params | API: 404 for missing rooms, graceful defaults for missing data | ✅ (3/4 passed, 1 warning) |
 | T13 | Frontend rendering | All C9 components, empty states, collapsible interaction | Browser: Playwright + Chrome headless | ✅ **18 passed, 0 failed** |
-| T14 | i18n | EN + ZH for all new keys | Bundle: verify all 22 new keys in production build | ✅ (44/44 keys) |
+| T14 | i18n | EN + ZH for all new keys | Bundle verification | ✅ |
+| T15 | Production turn chain | bound Gateway ingress → Room service/runtime → real `prompt.submit` → agent turn → terminal publication | Deterministic model boundary, real storage/session/driver/RPC path | ✅ |
+| T16 | DAG concurrency/starvation | simultaneous SQLite claims; malformed head before valid task | Real connections/threads + runtime loop | ✅ |
+| T17 | Approval restart | pending action restart recovery and exact local relay | Recreate service on same SQLite DB | ✅ |
+| T18 | Mirror durability | retry budget cannot advance past unsent event | Real cursor store + watcher loop | ✅ |
 
-### 4.2 Test Execution Results (2026-09-05)
+### 4.2 Test Execution Results (latest repository acceptance)
+
+The complete Hosted Room acceptance matrix currently passes **383 tests, 0 failures**.
+It includes the real production-chain test
+`test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e`; the model
+network boundary is deterministic, while Gateway ingress, SQLite state, Room service,
+runtime, `HostedRoomServerRPC`, `prompt.submit`, agent invocation, callback threading,
+session persistence, and Room publication use production code.
+
+The historical Dashboard-only run below is retained as UI evidence, not as proof of
+the full Agent Team execution chain.
 
 | Test | Scope | Passed | Failed | Warnings |
 |---|---|---|---|---|
@@ -274,8 +287,8 @@ event log / Web inspector.
 
 | Gap | Priority | Effort | Blocks |
 |---|---|---|---|
-| C2 outbound bridge (room → chat) | P0 | Medium | Decider "single external voice" product promise |
-| C2 inbound routing (chat → room) | P1 | Medium | Full-duplex chat↔room |
+| Structured Decider → persistent DAG protocol | P0 | Large | End-to-end planned work rather than manual DAG entry |
+| Durable mirror dead-letter/operator retry UI | P1 | Medium | Current implementation preserves/retries events but has no durable paused state |
 | Observer pause/resume implementation | P1 | Small | UI buttons are non-functional |
 | Non-existent room observer → 404 | P3 | Trivial | Error handling consistency |
 
@@ -283,9 +296,10 @@ event log / Web inspector.
 
 | Gap | Priority | Effort | Notes |
 |---|---|---|---|
-| C3 Room↔Kanban task DAG | P2 | Large | CC's self-claim algorithm, dependency DAG, sidecar store |
-| Decider v3 context isolation | P2 | Medium | Localized to `_build_prompt` |
-| T1-T6 E2E tests (decider lifecycle, F1, anti-injection) | P2 | Medium | Requires live room driver or dedicated test harness |
+| Task quality gates and review/repair state | P1 | Large | Prevent false completion and gate downstream work |
+| DAG claim lease/recovery | P1 | Medium | Manual in-progress claims still need abandoned-owner recovery |
+| Decider v3 context isolation | P2 | Medium | Bound per-task context and deduplicate Room delta/session history |
+| Full process-kill recovery matrix | P2 | Medium | Current tests reconstruct state but do not kill at every commit boundary |
 
 ### 5.3 CC features not adopted (by design)
 
@@ -298,63 +312,59 @@ event log / Web inspector.
 | Dynamic workflows (JS script) | Out of scope — Hermes uses decider prompt + turn-based dispatch |
 | Subagent definitions as roles | Hermes uses profiles (reusable agent configs) |
 
-### 5.4 CC features mapped but not yet E2E-tested
+### 5.4 Remaining E2E limits
 
-| Feature | Status | Test gap |
+| Feature | Current evidence | Test gap |
 |---|---|---|
-| Decider v1 star scheduling | ✅ SHIPPED | T3 not executed (requires live driver) |
-| Decider v2 5-round serial | ✅ SHIPPED | T4 not executed (requires live driver + restart) |
-| F1 tool whitelist | ✅ SHIPPED | T5 not executed (pytest available, not run this session) |
-| Anti-injection protocol | ✅ SHIPPED | T6 not executed (requires active room with member turns) |
+| Process crash recovery | Durable reconstruction and service restart tests | No kill/restart injection at every transaction boundary |
+| Mirror external delivery | Real watcher/cursor with deterministic adapter | No live third-party platform network test in CI |
+| Model invocation | Real `prompt.submit`/agent invocation with deterministic agent boundary | No paid provider network call in repository tests |
+| Structured Decider planning | Not implemented | Requires service-gated typed coordination protocol first |
+| Quality review/repair | Not implemented | Requires durable task verdict/finding/attempt schema first |
 
 ---
 
 ## 6. E2E Test Commands
 
-### 6.1 C9 API tests (Python)
-
-See Appendix A for the full test script. Quick smoke test:
+### 6.1 Repository Hosted Room acceptance
 
 ```bash
-# Login
-curl -s -c /tmp/cookies.txt -X POST http://localhost:9119/auth/password-login \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"basic","username":"admin","password":"<password>"}'
-
-# Key endpoints
-curl -s -b /tmp/cookies.txt http://localhost:9119/api/rooms | jq '.rooms | length'
-curl -s -b /tmp/cookies.txt http://localhost:9119/api/rooms/{id}/log?since_seq=0 | jq '.events | length'
-curl -s -b /tmp/cookies.txt http://localhost:9119/api/rooms/{id}/peer-grants | jq '.peer_grants | length'
-curl -s -b /tmp/cookies.txt http://localhost:9119/api/rooms/{id}/replication-health | jq '.healthy'
-curl -s -b /tmp/cookies.txt http://localhost:9119/api/rooms/{id}/policy-trace | jq '.through_seq'
+source .venv/bin/activate 2>/dev/null || source venv/bin/activate
+python -m pytest \
+  tests/gateway/test_hosted_room_*.py \
+  tests/gateway/test_hosted_rooms*.py \
+  tests/gateway/test_room_mirror_db.py \
+  tests/gateway/test_room_task_dag.py \
+  tests/tui_gateway/test_hosted_room_*.py \
+  -q -p no:cacheprovider
 ```
 
-### 6.2 Browser UI tests (Playwright)
+The production-chain case can be run alone:
 
 ```bash
-# Requires: npm install playwright-core, chrome at /root/.agent-browser/browsers/
-# Login + navigate to rooms + verify all C9 components
-node /tmp/test_rooms_final.mjs
-# Screenshot output: /tmp/rooms_final.png
+python -m pytest \
+  tests/tui_gateway/test_hosted_room_service.py::test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e \
+  -q -p no:cacheprovider
 ```
 
-### 6.3 Decider integration tests (pytest)
+### 6.2 Frontend build verification
+
+Use the repository-supported nvm toolchain rather than the system Node/npm:
 
 ```bash
-# F1: Decider tool whitelist
-pytest gateway/tests/ -k "test_f1_decider_member_is_restricted_to_orchestration_only_tools"
-
-# v2: 5-round crash recovery
-pytest gateway/tests/ -k "test_later_round_task_reconstructs_after_restart or test_five_round_bound"
+export NVM_DIR="$HOME/.nvm"
+source "$NVM_DIR/nvm.sh"
+nvm use 24.11.1
+npm run typecheck -w web
+npm test -w web
+npm run build -w web
 ```
 
-### 6.4 Frontend build verification
+### 6.3 Live Dashboard smoke check
 
-```bash
-npm run --workspace web build
-# Verify bundle contains all new components/keys
-grep -c 'peerGrants\|replicationHealth\|policyTrace\|noLinkage' hermes_cli/web_dist/assets/RoomsPage-*.js
-```
+The Appendix A script is historical/manual evidence only. Supply credentials through
+`HERMES_DASHBOARD_PASSWORD`; it must not contain a checked-in fallback password or
+be described as the repository production-chain E2E.
 
 ---
 
@@ -392,7 +402,7 @@ import json, urllib.request, urllib.error, http.cookiejar, sys, os
 
 DASHBOARD = "http://localhost:9119"
 USER = "admin"
-PASS = os.environ.get("HERMES_DASHBOARD_PASSWORD", "viZNzYFPpiGdmrYbrWSCmmhx")
+PASS = os.environ["HERMES_DASHBOARD_PASSWORD"]
 
 passed = 0; failed = 0; warnings = 0; failures = []
 
@@ -709,3 +719,4 @@ sys.exit(0 if failed == 0 else 1)
 |---|---|---|
 | v1 | 2026-09-05 | Initial document: architecture mapping, implementation status, E2E test plan, gap analysis |
 | v1.1 | 2026-09-05 | Added §2.3 structured protocol message mapping; fixed §4.1/§4.2 execution status columns; added §5.4 untested-but-shipped features; added Appendix A with full test script; fixed Observer row numeric format |
+| v1.2 | 2026-09-05 | Corrected C2/C3 status; recorded repository production-chain E2E; documented remaining structured planning/quality/recovery limits; removed checked-in password fallback |

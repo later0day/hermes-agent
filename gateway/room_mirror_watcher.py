@@ -21,9 +21,9 @@ import logging
 
 logger = logging.getLogger("gateway.run")
 
-# Consecutive send-failure budget before a subscription is skipped for the rest
-# of the process lifetime. Matches the kanban notifier's ~60s-at-5s-cadence
-# tolerance so a transient adapter outage never silently drops a live mirror.
+# Consecutive failures are diagnostic only. They must never authorize cursor
+# advancement: without a durable delivery/dead-letter record, advancing would
+# permanently discard an event after a transient outage or process restart.
 _MAX_SEND_FAILURES = 12
 
 
@@ -149,28 +149,10 @@ class GatewayRoomMirrorMixin:
                         sub["room_id"], sub["platform"],
                         sub["chat_id"], sub.get("thread_id") or "",
                     )
-                    # Consecutive-failure budget: after _MAX_SEND_FAILURES ticks
-                    # against a dead chat, advance past this claim rather than
-                    # spinning forever. A genuinely transient outage recovers
-                    # well within the budget; a deleted chat / kicked bot stops
-                    # replaying. The counter resets on any successful send.
-                    if fail_counts.get(sub_key, 0) >= _MAX_SEND_FAILURES:
-                        logger.warning(
-                            "room mirror: room %s → %s exceeded %d send failures; "
-                            "advancing cursor to stop replay",
-                            sub["room_id"], platform_str, _MAX_SEND_FAILURES,
-                        )
-                        await asyncio.to_thread(
-                            _mir.advance_cursor,
-                            db_path,
-                            room_id=sub["room_id"],
-                            platform=sub["platform"],
-                            chat_id=sub["chat_id"],
-                            thread_id=sub.get("thread_id") or "",
-                            new_cursor=d["cursor"],
-                        )
-                        fail_counts.pop(sub_key, None)
-                        continue
+                    # The process-local counter is observability only. Even after
+                    # many failures, retry the claimed events: skipping them would
+                    # violate the durable mirror contract because no dead-letter
+                    # receipt exists from which an operator could recover them.
 
                     handles = d.get("handles") or {}
                     metadata: dict = {}
@@ -210,9 +192,14 @@ class GatewayRoomMirrorMixin:
                             fail_counts[sub_key] = fails
                             logger.warning(
                                 "room mirror: send failed for room %s on %s "
-                                "(attempt %d/%d): %s",
-                                sub["room_id"], platform_str, fails,
-                                _MAX_SEND_FAILURES, exc,
+                                "(consecutive attempt %d%s): %s",
+                                sub["room_id"],
+                                platform_str,
+                                fails,
+                                " — operator attention required"
+                                if fails >= _MAX_SEND_FAILURES
+                                else "",
+                                exc,
                             )
                             delivered_ok = False
                             break

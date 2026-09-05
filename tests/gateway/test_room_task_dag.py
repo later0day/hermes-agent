@@ -9,7 +9,9 @@ survey. The venv has no pytest, so these run under a tiny standalone harness
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -46,6 +48,26 @@ def test_create_is_idempotent_on_explicit_id(db):
 def test_empty_subject_rejected(db):
     with pytest.raises(dag.RoomTaskError):
         dag.create_task(db, room_id=ROOM, subject="   ")
+
+
+
+def test_current_task_for_owner_is_room_and_status_scoped(db):
+    dag.create_task(db, room_id=ROOM, subject="first", task_id="t1")
+    dag.create_task(db, room_id=ROOM, subject="second", task_id="t2")
+    dag.claim_task(db, room_id=ROOM, task_id="t1", owner="alice")
+    dag.claim_task(db, room_id=ROOM, task_id="t2", owner="alice")
+    dag.create_task(db, room_id="other-room", subject="other", task_id="t1")
+    dag.claim_task(db, room_id="other-room", task_id="t1", owner="alice")
+
+    current = dag.current_task_for_owner(db, room_id=ROOM, owner="alice")
+
+    assert current is not None
+    assert current["task_id"] == "t1"
+    assert dag.current_task_for_owner(db, room_id=ROOM, owner="bob") is None
+    dag.complete_task(db, room_id=ROOM, task_id="t1")
+    assert dag.current_task_for_owner(
+        db, room_id=ROOM, owner="alice"
+    )["task_id"] == "t2"
 
 
 def test_unblocked_task_is_claimable(db):
@@ -96,6 +118,26 @@ def test_two_claims_never_take_the_same_task(db):
     b = dag.claim_next(db, room_id=ROOM, owner="bob")
     assert a is not None and a["task_id"] == "t1"
     assert b is None  # bob gets nothing — the single task is already owned
+
+
+
+def test_concurrent_claims_have_exactly_one_winner(db):
+    dag.create_task(db, room_id=ROOM, subject="Only one")
+    ready = Barrier(2)
+
+    def claim(owner: str):
+        ready.wait(timeout=5)
+        return dag.claim_next(db, room_id=ROOM, owner=owner)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, ("alice", "bob")))
+
+    winners = [task for task in results if task is not None]
+    assert len(winners) == 1
+    assert winners[0]["task_id"] == "t1"
+    stored = dag.get_task(db, room_id=ROOM, task_id="t1")
+    assert stored["owner"] == winners[0]["owner"]
+    assert stored["status"] == "in_progress"
 
 
 def test_claim_specific_task(db):
@@ -238,6 +280,19 @@ def test_next_claimable_peeks_without_claiming(db):
     assert dag.get_task(db, room_id=ROOM, task_id="t1")["status"] == "pending"
 
 
+
+def test_list_claimable_returns_all_unblocked_tasks_in_seq_order(db):
+    dag.create_task(db, room_id=ROOM, subject="A", task_id="t1")
+    dag.create_task(
+        db, room_id=ROOM, subject="blocked", task_id="t2", blocked_by=["t1"]
+    )
+    dag.create_task(db, room_id=ROOM, subject="C", task_id="t3")
+
+    tasks = dag.list_claimable(db, room_id=ROOM)
+
+    assert [task["task_id"] for task in tasks] == ["t1", "t3"]
+
+
 def test_next_claimable_skips_blocked_and_owned(db):
     dag.create_task(db, room_id=ROOM, subject="Design", task_id="t1")
     dag.create_task(db, room_id=ROOM, subject="Build", task_id="t2",
@@ -310,6 +365,30 @@ def test_dispatched_task_for_thread_lookup(db):
         db, room_id=ROOM, dispatch_thread_id="dagtask:t1"
     )
     assert found is not None and found["task_id"] == "t1"
+
+
+
+def test_list_in_progress_dispatches_excludes_manual_and_terminal_tasks(db):
+    dag.create_task(db, room_id=ROOM, subject="manual", task_id="t1")
+    dag.claim_task(db, room_id=ROOM, task_id="t1", owner="alice")
+    dag.create_task(db, room_id=ROOM, subject="@backend active", task_id="t2")
+    dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t2",
+        owner="backend", dispatch_thread_id="dagtask:t2",
+    )
+    dag.create_task(db, room_id=ROOM, subject="@frontend done", task_id="t3")
+    dag.claim_task_for_dispatch(
+        db, room_id=ROOM, task_id="t3",
+        owner="frontend", dispatch_thread_id="dagtask:t3",
+    )
+    dag.complete_dispatched(
+        db, room_id=ROOM, dispatch_thread_id="dagtask:t3"
+    )
+
+    pending = dag.list_in_progress_dispatches(db, room_id=ROOM)
+
+    assert [task["task_id"] for task in pending] == ["t2"]
+    assert pending[0]["dispatch_thread_id"] == "dagtask:t2"
 
 
 def test_complete_dispatched_completes_and_unblocks(db):

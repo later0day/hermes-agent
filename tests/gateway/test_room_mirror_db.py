@@ -87,6 +87,52 @@ def _drive_member(db: Path, room: dict, text: str) -> None:
         hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
 
 
+@pytest.mark.asyncio
+async def test_watcher_never_drops_events_after_failure_budget(
+    room_db, monkeypatch
+):
+    from gateway.room_mirror_watcher import GatewayRoomMirrorMixin
+    import gateway.room_mirror_watcher as watcher_module
+
+    db, room = room_db
+    mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
+    _append_user(db, "u1", "Ship it")
+    _drive_member(db, room, "final answer")
+    sends = []
+
+    class _Adapter:
+        async def send(self, chat_id, content, *, metadata):
+            sends.append((chat_id, content, metadata))
+            runner._running = False
+            return type("Result", (), {"success": True})()
+
+    class _Runner(GatewayRoomMirrorMixin):
+        def __init__(self):
+            self._running = True
+            self._room_mirror_fail_counts = {
+                (ROOM_ID, "telegram", "c1", ""): 12
+            }
+
+        def _authorization_adapter(self, platform, profile):
+            assert platform.value == "telegram"
+            assert profile is None
+            return _Adapter()
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: db)
+    monkeypatch.setattr(watcher_module.asyncio, "sleep", _no_sleep)
+    runner = _Runner()
+
+    await runner._room_mirror_watcher(interval=0)
+
+    assert sends == [("c1", "@plan: final answer", {})]
+    assert mirror.list_subs(db)[0]["last_event_seq"] > 0
+    assert runner._room_mirror_fail_counts == {}
+
+
+
 def test_claim_advances_cursor_and_second_claim_is_empty(room_db):
     db, room = room_db
     mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
@@ -106,6 +152,41 @@ def test_claim_advances_cursor_and_second_claim_is_empty(room_db):
         db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
     )
     assert events2 == [] and old2 == new2 == new
+
+
+@pytest.mark.asyncio
+async def test_room_mirror_command_defaults_decider_to_single_external_voice(
+    room_db, monkeypatch
+):
+    from gateway.config import Platform
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+
+    db, _room = room_db
+    monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: db)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="admin",
+        chat_id="c1",
+        chat_type="group",
+    )
+    runner = GatewaySlashCommandsMixin()
+
+    await runner._handle_room_command(
+        MessageEvent(text="/room mirror room-1", source=source)
+    )
+
+    assert mirror.list_subs(db)[0]["member_filter"] == "m-plan"
+
+    await runner._handle_room_command(
+        MessageEvent(
+            text="/room mirror room-1 --all-members",
+            source=source,
+        )
+    )
+    assert mirror.list_subs(db)[0]["member_filter"] is None
+
 
 
 def test_member_filter_enforces_single_voice(room_db):

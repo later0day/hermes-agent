@@ -8955,13 +8955,22 @@ def _room_decider_toolset_filter(
 
     Keyed on the room roster's persisted ``role`` (a decider is always local and
     owns a unique local profile), resolved from the ``Group: <room_id>`` room
-    session this agent is being built for. Fails OPEN for anything that is not a
-    positively-identified decider so a normal chat/worker turn is never
-    over-restricted; only a confirmed decider is narrowed.
+    session this agent is being built for. Normal non-room sessions are untouched.
+    A ``bot_room`` session only retains worker tools after its room and profile
+    are positively resolved; malformed or unavailable room state fails closed to
+    the orchestration-only set instead of granting engineer capabilities.
     """
 
     if not session or _session_source(session) != "bot_room":
         return base_toolsets
+    try:
+        from gateway.hosted_room_execution_policy import orchestration_only_toolsets
+    except Exception:
+        # No policy module means no room tools are safe to expose.
+        return []
+
+    def _fail_closed() -> list[str]:
+        return orchestration_only_toolsets(base_toolsets)
     # ``session.create`` stashes the room name under ``pending_title`` (no DB row
     # exists yet at build time — it is created lazily on the first prompt), so at
     # this seam the persisted ``title`` key is still empty. Read ``pending_title``
@@ -8969,12 +8978,11 @@ def _room_decider_toolset_filter(
     # first turn, not only after the row (and its ``title``) is materialized.
     title = str(session.get("pending_title") or session.get("title") or "")
     if not title.startswith("Group: "):
-        return base_toolsets
+        return _fail_closed()
     room_id = title.removeprefix("Group: ").strip()
     if not room_id:
-        return base_toolsets
+        return _fail_closed()
     try:
-        from gateway.hosted_room_execution_policy import orchestration_only_toolsets
         from gateway.hosted_rooms import default_db_path, room_state
 
         profile_home = session.get("profile_home")
@@ -8988,13 +8996,13 @@ def _room_decider_toolset_filter(
             if str(member.get("profile") or "") != str(profile_name or ""):
                 continue
             if str(member.get("role") or "worker") == "decider":
-                return orchestration_only_toolsets(base_toolsets)
+                return _fail_closed()
             return base_toolsets
     except Exception:
-        logger.debug(
-            "decider toolset filter skipped for %s", title, exc_info=True
+        logger.warning(
+            "room toolset filter failed closed for %s", title, exc_info=True
         )
-    return base_toolsets
+    return _fail_closed()
 
 
 def _make_agent(
