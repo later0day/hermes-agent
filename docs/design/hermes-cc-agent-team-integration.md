@@ -125,7 +125,10 @@ log. → Not executed this session (rooms pre-existed in state.db).
 
 **E2E test (T3):** Full turn cycle: user msg → decider r0 → decider `@worker` →
 worker r1 → worker `@decider` → decider summarizes r2. Back-compat: rooms without
-decider keep mesh behavior. → Not executed this session (requires live room driver).
+decider keep mesh behavior. → **Executed live on 2026-09-06** with `alibaba-cn` /
+`qwen-plus`: the decider emitted `@team-worker`, the worker received its own full
+toolset and ran real `terminal(stat ...)`, reported `@default`, and the decider
+received the report and published a review/synthesis before `room.activity=settled`.
 
 ### 3.3 Decider v2 — 5-Round Serial Iteration (SHIPPED)
 
@@ -144,7 +147,7 @@ reconstruction. → Not executed this session (requires live room driver + resta
 
 | Feature | Status | Code |
 |---|---|---|
-| `ORCHESTRATION_ONLY_TOOLSETS = {bot_room, delegation, todo, clarify}` | ✅ | `hosted_room_execution_policy.py:32` |
+| `ORCHESTRATION_ONLY_TOOLSETS = {bot_room, todo, clarify}` (Room dispatch only; no ephemeral `delegate_task`) | ✅ | `hosted_room_execution_policy.py:32` |
 | `orchestration_only_toolsets(base)` (intersect-then-force-`bot_room`) | ✅ | `hosted_room_execution_policy.py:42` |
 | `_room_decider_toolset_filter` applied at `_make_agent` | ✅ | `tui_gateway/server.py` |
 | Role persisted by `service.create_room`/`update_members` | ✅ | `tui_gateway/hosted_room_service.py` |
@@ -152,11 +155,15 @@ reconstruction. → Not executed this session (requires live room driver + resta
 This is **hard enforcement**, not a prompt. A decider bound to a full engineer profile
 (file/terminal/code_execution/web/browser) cannot Read/Bash/Edit/Write — those
 toolsets are stripped before the agent snapshots its tools. `bot_room` is always
-retained so the decider can still `@mention` and speak.
+retained so the decider can still `@mention` and speak. `delegation` is also
+stripped: the decider must dispatch the Room's durable frozen-roster workers, not
+spawn process-local `delegate_task` children that bypass the Room event log.
 
 **E2E test (T5):** `test_f1_decider_member_is_restricted_to_orchestration_only_tools`
 — decider with full profile → toolset intersected to orchestration-only; worker in
-same room keeps full toolset. → Pytest unit test (not executed this session).
+same room keeps full toolset. → Executed in the 195-test core Room suite. The live
+Qwen run additionally verified the decider exposed only `clarify`/`todo`, while the
+worker exposed and successfully invoked `terminal`.
 
 ### 3.5 CC Anti-Injection Protocol (SHIPPED)
 
@@ -253,18 +260,31 @@ session (requires room with active member turns).
 | T16 | DAG concurrency/starvation | simultaneous SQLite claims; malformed head before valid task | Real connections/threads + runtime loop | ✅ |
 | T17 | Approval restart | pending action restart recovery and exact local relay | Recreate service on same SQLite DB | ✅ |
 | T18 | Mirror durability | retry budget cannot advance past unsent event | Real cursor store + watcher loop | ✅ |
+| T19 | Live Agent Team chain | user → decider → worker terminal → decider review → settled | Live `alibaba-cn` / `qwen-plus`, production Room service/runtime/RPC | ✅ **real provider + real terminal** |
 
 ### 4.2 Test Execution Results (latest repository acceptance)
 
-The complete Hosted Room acceptance matrix currently passes **383 tests, 0 failures**.
-It includes the real production-chain test
+The focused core Hosted Room suite executed after the live-agent fixes passes **195
+tests, 0 failures** (`hosted_room_discussion`, both driver suites, and
+`hosted_room_service`). The broader recorded acceptance matrix also includes the real
+production-chain test
 `test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e`; the model
 network boundary is deterministic, while Gateway ingress, SQLite state, Room service,
 runtime, `HostedRoomServerRPC`, `prompt.submit`, agent invocation, callback threading,
 session persistence, and Room publication use production code.
 
-The historical Dashboard-only run below is retained as UI evidence, not as proof of
-the full Agent Team execution chain.
+A separate live provider run now proves the full Agent Team execution chain. It
+exposed and fixed two integration bugs that deterministic agents did not reveal:
+
+1. Room deciders could call generic `delegate_task`, spawning ephemeral subagents
+   outside the frozen roster instead of dispatching the configured Room worker.
+   Deciders now dispatch only through durable final-text `@mention`s.
+2. The mention regex consumed conversational punctuation (`@default:` became the
+   unknown handle `default:`), preventing worker → decider report-back. Resolution
+   now prefers an exact roster handle, then strips trailing `:`/`.` punctuation.
+
+The historical Dashboard-only run below remains UI evidence rather than execution-
+chain evidence.
 
 | Test | Scope | Passed | Failed | Warnings |
 |---|---|---|---|---|
@@ -323,7 +343,7 @@ the full Agent Team execution chain.
 |---|---|---|
 | Process crash recovery | Durable reconstruction and service restart tests | No kill/restart injection at every transaction boundary |
 | Mirror external delivery | Real watcher/cursor with deterministic adapter | No live third-party platform network test in CI |
-| Model invocation | Real `prompt.submit`/agent invocation with deterministic agent boundary | No paid provider network call in repository tests |
+| Model invocation | Live `alibaba-cn` / `qwen-plus` Agent Team run plus deterministic repository chain | Paid-provider call is manual evidence, not a hermetic CI test |
 | Structured Decider planning | Not implemented | Requires service-gated typed coordination protocol first |
 | Quality review/repair | Not implemented | Requires durable task verdict/finding/attempt schema first |
 
@@ -726,3 +746,4 @@ sys.exit(0 if failed == 0 else 1)
 | v1.1 | 2026-09-05 | Added §2.3 structured protocol message mapping; fixed §4.1/§4.2 execution status columns; added §5.4 untested-but-shipped features; added Appendix A with full test script; fixed Observer row numeric format |
 | v1.2 | 2026-09-05 | Corrected C2/C3 status; recorded repository production-chain E2E; documented remaining structured planning/quality/recovery limits; removed checked-in password fallback |
 | v1.3 | 2026-09-06 | Replaced false C9 browser E2E claims (never executed) with real-browser Dashboard E2E results: 11 API endpoints 200, 12 UI components verified, pending actions persisted across restart, approve endpoint functional. Source Dashboard started via `python -m hermes_cli.main dashboard` with nvm Node v24.11.1 / `.venv` |
+| v1.4 | 2026-09-06 | Executed live Qwen Agent Team E2E through production Room service/runtime/RPC and real terminal. Fixed generic `delegate_task` escaping the Room roster and punctuation-breaking `@default:` report-back. Core Room suite: 195 passed. |

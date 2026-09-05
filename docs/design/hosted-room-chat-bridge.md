@@ -236,8 +236,10 @@ All slices in this doc are now shipped.
       build-time boundary — the Hermes analogue of CC's
       `applyCoordinatorToolFilter` / `COORDINATOR_MODE_ALLOWED_TOOLS`.
       `gateway/hosted_room_execution_policy.py` gains
-      `ORCHESTRATION_ONLY_TOOLSETS = {bot_room, delegation, todo, clarify}` +
+      `ORCHESTRATION_ONLY_TOOLSETS = {bot_room, todo, clarify}` +
       `orchestration_only_toolsets(base)` (intersect, always force `bot_room`);
+      generic `delegation` is excluded because Room dispatch must remain on the
+      durable `@mention` rail rather than spawning ephemeral subagents;
       `tui_gateway/server._room_decider_toolset_filter` applies it at
       `_make_agent` for exactly the room member whose persisted `role ==
       "decider"` (a decider is always local with a unique local profile, so the

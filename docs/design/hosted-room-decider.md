@@ -294,8 +294,11 @@ work") should not rely on prompt-only. **Shipped (hard enforcement):** the
 decider member's local `bot_room` agent is built with its toolset *intersected*
 against an orchestration-only allow-set — the Hermes analogue of
 `applyCoordinatorToolFilter`. `gateway/hosted_room_execution_policy.py` defines
-`ORCHESTRATION_ONLY_TOOLSETS = {bot_room, delegation, todo, clarify}` and
-`orchestration_only_toolsets(base)` (intersect-then-force-`bot_room`);
+`ORCHESTRATION_ONLY_TOOLSETS = {bot_room, todo, clarify}` and
+`orchestration_only_toolsets(base)` (intersect-then-force-`bot_room`). Generic
+`delegation` is deliberately excluded: a Room decider dispatches durable frozen-
+roster workers through `@mention`; `delegate_task` would instead create ephemeral
+subagents outside the Room event log and can starve the configured workers;
 `tui_gateway/server._room_decider_toolset_filter` applies it at
 `_make_agent` for exactly the room member whose persisted `role == "decider"`
 (a decider is always local and owns a unique local profile, so the room session

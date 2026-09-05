@@ -20,7 +20,7 @@ from tools import mcp_tool_lifecycle as _mcp_lifecycle
 from tui_gateway.hosted_room_service import HostedRoomService
 
 FULL_ENGINEER = ["bot_room", "browser", "clarify", "code_execution", "delegation", "file", "terminal", "todo", "web"]
-ORCHESTRATION_ONLY = ["bot_room", "clarify", "delegation", "todo"]
+ORCHESTRATION_ONLY = ["bot_room", "clarify", "todo"]
 
 
 def _decider_room(tmp_path: Path, monkeypatch, *, decider: str, worker: str) -> Path:
