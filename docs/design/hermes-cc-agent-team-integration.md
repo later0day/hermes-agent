@@ -1,6 +1,6 @@
 # Hermes ↔ CC Agent Team Integration — Status, Mapping & E2E Test Plan
 
-Status: living document — current as of 2026-09-05
+Status: living document — current as of 2026-09-06
 Sources:
 - `docs/design/claude-agent-team-reference.md` (CC v2.1.226 binary-mined)
 - `docs/design/hosted-room-decider.md` (Hermes decider design)
@@ -174,7 +174,7 @@ User messages keep `User (user): <text>` format (trusted, no wrapping).
 it's escaped in the prompt and doesn't break the XML wrapper. → Not executed this
 session (requires room with active member turns).
 
-### 3.6 C9 — Hosted Room Web Inspector (SHIPPED this session, E2E verified)
+### 3.6 C9 — Hosted Room Web Inspector (SHIPPED; real-browser E2E verified 2026-09-06)
 
 | Feature | Backend endpoint | Frontend component | Status |
 |---|---|---|---|
@@ -186,14 +186,19 @@ session (requires room with active member turns).
 | Policy trace | `GET /api/rooms/{id}/policy-trace` | `PolicyTraceCard` (collapsible) | ✅ |
 | Room linkage (peer route targets) | (uses peer-grants data) | `LinkageCard` | ✅ |
 | Team topology | `GET /api/rooms/{id}/topology` | `TeamTopologyCard` | ✅ |
-| Pending actions | `GET /api/rooms/{id}/pending-actions` | Pending actions panel | ✅ |
+| Pending actions | `GET /api/rooms/{id}/pending-actions` | Pending actions panel (Approve/Deny) | ✅ |
 | Mailbox | `GET /api/rooms/{id}/members/{mid}/mailbox` | — | ✅ (API) |
 | Observer monitor | `GET /api/rooms/{id}/observer` | `LiveObserverCard` | ✅ |
 | Observer pause/resume | `POST /api/rooms/{id}/observer/{pause,resume}` | Buttons | ⚠️ Backend is stub |
+| Member detail + tool filtering | `GET /api/rooms/{id}/topology` | Member detail panel with radio-group tool filter | ✅ |
 
-**E2E test results (T7, this session, 2026-09-05):**
-- 307 API tests across 4 rooms / 15 endpoints: **0 failures**
-- 18 browser UI tests (Playwright + Chrome headless): **0 failures**
+**Real-browser Dashboard E2E results (2026-09-06, this session):**
+- Source Dashboard started via `python -m hermes_cli.main dashboard` with nvm Node v24.11.1 / `.venv`
+- Room `dashboard-e2e` seeded with 2 members (decider + teammate), 3 events, 2 DAG tasks, mirror subscription, pending action
+- **11 API endpoints all 200**: `rooms`, `rooms/{id}`, `log`, `topology`, `pending-actions`, `observer`, `peer-grants`, `replication-health`, `policy-trace`, `members/{id}/mailbox` (×2)
+- **12 UI components verified** in browser: room list, team topology, pending actions (Approve/Deny buttons), member detail panel (tool filtering, mailbox), event log table (3 rows), observer monitor, peer grants, replication health, room linkage, policy trace, refresh button, show disbanded toggle
+- **Pending actions persisted across Dashboard restart**: data survived process kill + restart, API returned correct action after restart
+- **Approve endpoint functional**: `POST /approve` correctly validated missing session (returned `{"ok":false,"message":"approval.respond failed: session not found"}`) — no false positive
 - Known: `observer pause/resume` backend is a stub (returns ok but doesn't change state)
 
 ### 3.7 C2 — Chat-Group Bridge (SHIPPED, production-chain E2E)
@@ -720,3 +725,4 @@ sys.exit(0 if failed == 0 else 1)
 | v1 | 2026-09-05 | Initial document: architecture mapping, implementation status, E2E test plan, gap analysis |
 | v1.1 | 2026-09-05 | Added §2.3 structured protocol message mapping; fixed §4.1/§4.2 execution status columns; added §5.4 untested-but-shipped features; added Appendix A with full test script; fixed Observer row numeric format |
 | v1.2 | 2026-09-05 | Corrected C2/C3 status; recorded repository production-chain E2E; documented remaining structured planning/quality/recovery limits; removed checked-in password fallback |
+| v1.3 | 2026-09-06 | Replaced false C9 browser E2E claims (never executed) with real-browser Dashboard E2E results: 11 API endpoints 200, 12 UI components verified, pending actions persisted across restart, approve endpoint functional. Source Dashboard started via `python -m hermes_cli.main dashboard` with nvm Node v24.11.1 / `.venv` |
