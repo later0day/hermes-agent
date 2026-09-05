@@ -271,6 +271,9 @@ def test_deterministic_task_fits_existing_driver_and_reconstructs_after_restart(
     ("text", "expected_profile"),
     [
         ("@build please inspect this", "build"),
+        ("@build: please inspect this", "build"),
+        ("@build. Please inspect this", "build"),
+        ("@all: inspect this", "research"),
         ("@all inspect this", "research"),
         ("@everyone inspect this", "research"),
         ("inspect this", "research"),
@@ -916,6 +919,8 @@ def test_decider_answers_opening_round_alone(decider_room_db):
     assert first.member.profile == "research"
     assert first.round_index == 0
     assert "You are the decider" in first.payload["prompt"]
+    assert "never call delegate_task" in first.payload["prompt"]
+    assert "never answer (pass) on the opening turn" in first.payload["prompt"]
 
 
 def test_decider_dispatches_worker_who_reports_back(decider_room_db):
@@ -955,7 +960,9 @@ def test_worker_can_pull_the_decider_back(decider_room_db):
     _append_user(db, event_id="user-1", text="Ship the release.")
     _settle_next(room, db, text="@build please build it.")
     # Build reports back and re-mentions the decider.
-    handoff = _settle_next(room, db, text="Done. @research please review and wrap up.")
+    # Natural model prose commonly appends a colon to the addressee. The
+    # mention parser must not consume it as part of the handle.
+    handoff = _settle_next(room, db, text="Done. @research: please review and wrap up.")
     assert handoff.member.profile == "build"
     back = _next_task(room, db)
     assert back.member.profile == "research"

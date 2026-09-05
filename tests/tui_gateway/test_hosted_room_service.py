@@ -2460,8 +2460,10 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     contract — the Hermes analogue of Claude Code's applyCoordinatorToolFilter.
     A decider bound to a full engineer profile (file/terminal/code_execution/
     web/browser) has those stripped down to the orchestration allow-set
-    (bot_room/delegation/todo/clarify), always retaining bot_room so it can
-    still @mention and speak. A worker in the same room keeps its full toolset.
+    (bot_room/todo/clarify), always retaining bot_room so it can still @mention
+    and speak. Generic delegation is stripped because Room workers must be
+    dispatched through the durable @mention protocol, not ephemeral subagents.
+    A worker in the same room keeps its full toolset.
     """
 
     from tui_gateway import server as tui_server
@@ -2513,12 +2515,13 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     decider_tools = tui_server._room_decider_toolset_filter(
         _room_session("lead"), list(full_engineer)
     )
-    assert decider_tools == ["bot_room", "clarify", "delegation", "todo"]
+    assert decider_tools == ["bot_room", "clarify", "todo"]
     assert "file" not in decider_tools
     assert "terminal" not in decider_tools
     assert "code_execution" not in decider_tools
     assert "browser" not in decider_tools
     assert "bot_room" in decider_tools
+    assert "delegation" not in decider_tools
 
     # Worker: untouched — the same full engineer toolset passes through.
     worker_tools = tui_server._room_decider_toolset_filter(
@@ -2531,7 +2534,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     decider_from_all = tui_server._room_decider_toolset_filter(
         _room_session("lead"), None
     )
-    assert decider_from_all == ["bot_room", "clarify", "delegation", "todo"]
+    assert decider_from_all == ["bot_room", "clarify", "todo"]
 
     # Normal sessions are untouched. A malformed bot_room session fails closed
     # because its worker/decider role cannot be positively established.
@@ -2543,7 +2546,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     )
     assert tui_server._room_decider_toolset_filter(
         {"source": "bot_room", "title": "Untitled"}, list(full_engineer)
-    ) == ["bot_room", "clarify", "delegation", "todo"]
+    ) == ["bot_room", "clarify", "todo"]
 
     # Regression (real-E2E): ``session.create`` stashes the room name under
     # ``pending_title`` — not ``title`` — because no DB row exists yet at the
@@ -2561,7 +2564,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
         },
         list(full_engineer),
     )
-    assert decider_pending == ["bot_room", "clarify", "delegation", "todo"]
+    assert decider_pending == ["bot_room", "clarify", "todo"]
     worker_pending = tui_server._room_decider_toolset_filter(
         {
             "source": "bot_room",
@@ -2580,7 +2583,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
         },
         list(full_engineer),
     )
-    assert unknown_profile == ["bot_room", "clarify", "delegation", "todo"]
+    assert unknown_profile == ["bot_room", "clarify", "todo"]
 
     monkeypatch.setattr(
         "gateway.hosted_rooms.room_state",
@@ -2589,4 +2592,4 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     unavailable = tui_server._room_decider_toolset_filter(
         _room_session("backend"), list(full_engineer)
     )
-    assert unavailable == ["bot_room", "clarify", "delegation", "todo"]
+    assert unavailable == ["bot_room", "clarify", "todo"]

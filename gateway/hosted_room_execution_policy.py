@@ -16,25 +16,22 @@ MAX_POLICY_ITERATIONS = (1 << 53) - 1
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
-# The Hermes analogue of Claude Code's ``COORDINATOR_MODE_ALLOWED_TOOLS``
-# (decoded from the binary: ``{Agent, SendMessage, ListAgents, Workflow,
-# TaskStop, StructuredOutput}``). CC runs its coordinator through
-# ``applyCoordinatorToolFilter`` — a runtime *intersection* of the session's
-# tools with this allow-set, so the coordinator is *orchestration-only*: it can
-# delegate, message teammates, orchestrate and stop tasks, and NOTHING else (no
-# Read/Bash/Grep/Edit/Write — strictly stronger than read-only). Our decider is
-# the same role, so its member turn is restricted to the messaging/delegation/
-# orchestration toolsets below and can never touch the filesystem, a terminal,
-# code execution, a browser, or computer-use. ``bot_room`` (the room voice) is
-# mandatory — it is the SendMessage analogue that lets the decider @mention
-# teammates and speak the single external voice, and dispatch is expressed by
-# that message, not by a write tool.
+# A Room decider is orchestration-only: it plans, asks clarifying questions,
+# and publishes @mentions that the durable Room scheduler turns into member
+# work.  It must not receive generic ``delegate_task``: that tool spawns an
+# ephemeral subagent outside the frozen Room roster, bypasses the append-only
+# discussion log, and competes with the @mention dispatch protocol.  A live
+# qwen-plus E2E exposed the failure mode: the decider repeatedly delegated to
+# ordinary subagents while the configured Room worker never received a turn.
+#
+# ``bot_room`` is deliberately an empty schema marker.  The member's final
+# conversational text is the verified room voice; @mentions in that text are
+# the SendMessage analogue and the only worker-dispatch mechanism.
 ORCHESTRATION_ONLY_TOOLSETS = frozenset(
     {
-        "bot_room",  # SendMessage — the room voice; @mentions ARE the dispatch
-        "delegation",  # Agent — delegate_task
+        "bot_room",  # verified room voice; @mentions ARE the dispatch
         "todo",  # Workflow — plan/track the orchestration
-        "clarify",  # steer teammates with clarifying questions
+        "clarify",  # ask the user for missing information
     }
 )
 
