@@ -2556,21 +2556,29 @@ def _room_decider_toolset_filter(session: dict | None, base_toolsets: list[str] 
     enforcement -- a decider bound to a full engineer profile could still Read/Bash/Edit. Here the decider
     member's toolset is intersected with the orchestration-only allow-set (bot_room / delegation / todo /
     clarify), always retaining ``bot_room`` so it can still @mention and speak the single external voice.
-    Workers are untouched.
 
     Keyed on the room roster's persisted ``role`` (a decider is always local and owns a unique local profile),
-    resolved from the ``Group: <room_id>`` room session this agent is being built for. Fails OPEN for anything
-    that is not a positively-identified decider so a normal chat/worker turn is never over-restricted.
+    resolved from the ``Group: <room_id>`` room session this agent is being built for. Non-room sessions are
+    untouched. A ``bot_room`` session (only local hosted-room turns build here; peer turns run under the
+    api_server RoomExecutionPolicy) keeps worker tools only once its room and profile are positively resolved;
+    malformed or unavailable room state fails CLOSED to the orchestration-only set.
     """
     if not session or _session_source(session) != "bot_room":
         return base_toolsets
-    # ``session.create`` stashes the room name under ``pending_title`` (the DB row, and its persisted ``title``,
-    # is created lazily on the first prompt), so read it first or the whitelist falls open on turn one.
-    title = str(session.get("pending_title") or session.get("title") or "")
-    if not title.startswith("Group: ") or not (room_id := title.removeprefix("Group: ").strip()):
-        return base_toolsets
     try:
         from gateway.hosted_room_execution_policy import orchestration_only_toolsets
+    except Exception:
+        return []  # no policy module means no room tools are safe to expose
+
+    def _fail_closed() -> list[str]:
+        return orchestration_only_toolsets(base_toolsets)
+
+    # ``session.create`` stashes the room name under ``pending_title`` (the DB row, and its persisted ``title``,
+    # is created lazily on the first prompt), so read it first or the whitelist misses turn one.
+    title = str(session.get("pending_title") or session.get("title") or "")
+    if not title.startswith("Group: ") or not (room_id := title.removeprefix("Group: ").strip()):
+        return _fail_closed()
+    try:
         from gateway.hosted_rooms import default_db_path, room_state
         from hermes_constants import profile_name_for_home
 
@@ -2579,12 +2587,10 @@ def _room_decider_toolset_filter(session: dict | None, base_toolsets: list[str] 
         for member in room_state(default_db_path(), room_id=room_id).get("members") or []:
             if not isinstance(member, dict) or str(member.get("profile") or "") != str(profile_name or ""):
                 continue
-            if str(member.get("role") or "worker") == "decider":
-                return orchestration_only_toolsets(base_toolsets)
-            return base_toolsets
+            return _fail_closed() if str(member.get("role") or "worker") == "decider" else base_toolsets
     except Exception:
-        logger.debug("decider toolset filter skipped for %s", title, exc_info=True)
-    return base_toolsets
+        logger.warning("room toolset filter failed closed for %s", title, exc_info=True)
+    return _fail_closed()
 
 
 def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:

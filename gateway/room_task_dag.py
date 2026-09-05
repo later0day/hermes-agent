@@ -548,6 +548,25 @@ def get_task(
         conn.close()
 
 
+
+def current_task_for_owner(
+    db_path: Path | str, *, room_id: str, owner: str
+) -> dict[str, Any] | None:
+    """Return the owner's earliest in-progress task, if any."""
+
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT * FROM room_task_dag
+               WHERE room_id=? AND owner=? AND status='in_progress'
+               ORDER BY seq ASC LIMIT 1""",
+            (room_id, owner),
+        ).fetchone()
+        return _hydrate(conn, row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def list_tasks(db_path: Path | str, *, room_id: str) -> list[dict[str, Any]]:
     """Return every task in the room in creation (seq) order — CC's TaskList."""
 
@@ -564,17 +583,10 @@ def list_tasks(db_path: Path | str, *, room_id: str) -> list[dict[str, Any]]:
 
 # ── C5 auto-dispatch integration ────────────────────────────────────────────
 
-def next_claimable(
+def list_claimable(
     db_path: Path | str, *, room_id: str
-) -> dict[str, Any] | None:
-    """Peek the next available task without claiming it (read-only).
-
-    Availability is the same predicate as :func:`claim_next` (pending ∧ unowned
-    ∧ every blockedBy completed, lowest seq). The caller resolves an auto-dispatch
-    target from the task subject and then atomically claims the specific task via
-    :func:`claim_task_for_dispatch`, so a peek that loses a race simply claims
-    nothing.
-    """
+) -> list[dict[str, Any]]:
+    """Return every available task in deterministic creation order."""
 
     conn = _connect(db_path)
     try:
@@ -584,13 +596,29 @@ def next_claimable(
                ORDER BY seq ASC""",
             (room_id,),
         ).fetchall()
-        for row in candidates:
-            if _blocked_by_incomplete(conn, room_id, str(row["task_id"])):
-                continue
-            return _hydrate(conn, row)
-        return None
+        return [
+            _hydrate(conn, row)
+            for row in candidates
+            if not _blocked_by_incomplete(conn, room_id, str(row["task_id"]))
+        ]
     finally:
         conn.close()
+
+
+def next_claimable(
+    db_path: Path | str, *, room_id: str
+) -> dict[str, Any] | None:
+    """Peek the first available task without claiming it (read-only).
+
+    Availability is the same predicate as :func:`claim_next` (pending ∧ unowned
+    ∧ every blockedBy completed, lowest seq). The caller resolves an auto-dispatch
+    target from the task subject and then atomically claims the specific task via
+    :func:`claim_task_for_dispatch`, so a peek that loses a race simply claims
+    nothing.
+    """
+
+    candidates = list_claimable(db_path, room_id=room_id)
+    return candidates[0] if candidates else None
 
 
 def claim_task_for_dispatch(
@@ -642,6 +670,26 @@ def claim_task_for_dispatch(
                 (room_id, task_id),
             ).fetchone()
             return _hydrate(conn, claimed)
+    finally:
+        conn.close()
+
+
+def list_in_progress_dispatches(
+    db_path: Path | str, *, room_id: str
+) -> list[dict[str, Any]]:
+    """Return auto-dispatched tasks still awaiting a terminal member reply."""
+
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT * FROM room_task_dag
+               WHERE room_id=? AND status='in_progress'
+                 AND dispatch_thread_id IS NOT NULL
+                 AND TRIM(dispatch_thread_id) != ''
+               ORDER BY seq ASC""",
+            (room_id,),
+        ).fetchall()
+        return [_hydrate(conn, row) for row in rows]
     finally:
         conn.close()
 

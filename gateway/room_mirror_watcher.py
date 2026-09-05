@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("gateway.run")
 
-# Consecutive send-failure budget before a subscription is skipped for the rest
-# of the process lifetime. Matches the kanban notifier's ~60s-at-5s-cadence
-# tolerance so a transient adapter outage never silently drops a live mirror.
+# Consecutive failures are diagnostic only. They must never authorize cursor
+# advancement: without a durable delivery/dead-letter record, advancing would
+# permanently discard an event after a transient outage or process restart.
 _MAX_SEND_FAILURES = 12
 
 # Sentinel distinguishing "inbound message was NOT routed to a hosted room" (fall through to normal dispatch)
@@ -59,8 +59,10 @@ class GatewayRoomMirrorMixin:
           * Echo-safe: this only ever writes ``message.user``; the outbound
             mirror only forwards ``message.member`` — the loop is structurally
             impossible.
-          * Fail-open: any lookup/dispatch error falls through to normal
-            handling so a bridge hiccup can never swallow a user's message.
+          * Safe fallback: lookup errors before a binding is proven fall through
+            to normal handling. Once a binding is proven, dispatch errors fail
+            closed with a retryable user response so another agent cannot consume
+            a message intended for the room.
         """
 
         try:
@@ -103,13 +105,23 @@ class GatewayRoomMirrorMixin:
         # Idempotency key: bind the room's user-event namespace to the IM
         # message id so PTB/webhook redelivery of the same message is a no-op.
         # Fall back to a per-(source,text) key when the platform gives no id.
+        import hashlib as _hashlib
+
+        source_scope = f"{platform}:{chat_id}:{thread_id}"
         raw_msg_id = str(getattr(event, "message_id", "") or "").strip()
         if raw_msg_id:
-            client_key = f"{platform}:{chat_id}:{thread_id}:{raw_msg_id}"
+            client_key = f"{source_scope}:{raw_msg_id}"
         else:
-            import hashlib as _hashlib
             digest = _hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
-            client_key = f"{platform}:{chat_id}:{thread_id}:t:{digest}"
+            client_key = f"{source_scope}:t:{digest}"
+        # Room discussion payloads require a stable identifier-safe thread id.
+        # Platform thread/chat ids are not guaranteed to satisfy that schema, so
+        # derive one from the bound source. Messages redelivered into the same
+        # chat/thread converge on this exact discussion thread.
+        room_thread_id = (
+            "inbound:"
+            + _hashlib.sha256(source_scope.encode("utf-8")).hexdigest()[:32]
+        )
 
         def _send() -> dict:
             from tui_gateway.methods_groups import get_hosted_room_service
@@ -119,7 +131,7 @@ class GatewayRoomMirrorMixin:
             return service.send(
                 room_id=room_id,
                 event_id=user_event_id(client_key),
-                payload={"text": text},
+                payload={"text": text, "thread_id": room_thread_id},
                 actor_id=actor_id,
             )
 
@@ -262,28 +274,10 @@ class GatewayRoomMirrorMixin:
                         sub["room_id"], sub["platform"],
                         sub["chat_id"], sub.get("thread_id") or "",
                     )
-                    # Consecutive-failure budget: after _MAX_SEND_FAILURES ticks
-                    # against a dead chat, advance past this claim rather than
-                    # spinning forever. A genuinely transient outage recovers
-                    # well within the budget; a deleted chat / kicked bot stops
-                    # replaying. The counter resets on any successful send.
-                    if fail_counts.get(sub_key, 0) >= _MAX_SEND_FAILURES:
-                        logger.warning(
-                            "room mirror: room %s → %s exceeded %d send failures; "
-                            "advancing cursor to stop replay",
-                            sub["room_id"], platform_str, _MAX_SEND_FAILURES,
-                        )
-                        await asyncio.to_thread(
-                            _mir.advance_cursor,
-                            db_path,
-                            room_id=sub["room_id"],
-                            platform=sub["platform"],
-                            chat_id=sub["chat_id"],
-                            thread_id=sub.get("thread_id") or "",
-                            new_cursor=d["cursor"],
-                        )
-                        fail_counts.pop(sub_key, None)
-                        continue
+                    # The process-local counter is observability only. Even after
+                    # many failures, retry the claimed events: skipping them would
+                    # violate the durable mirror contract because no dead-letter
+                    # receipt exists from which an operator could recover them.
 
                     handles = d.get("handles") or {}
                     metadata: dict = {}
@@ -323,9 +317,14 @@ class GatewayRoomMirrorMixin:
                             fail_counts[sub_key] = fails
                             logger.warning(
                                 "room mirror: send failed for room %s on %s "
-                                "(attempt %d/%d): %s",
-                                sub["room_id"], platform_str, fails,
-                                _MAX_SEND_FAILURES, exc,
+                                "(consecutive attempt %d%s): %s",
+                                sub["room_id"],
+                                platform_str,
+                                fails,
+                                " — operator attention required"
+                                if fails >= _MAX_SEND_FAILURES
+                                else "",
+                                exc,
                             )
                             delivered_ok = False
                             break
