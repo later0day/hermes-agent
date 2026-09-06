@@ -218,6 +218,10 @@ describe("RoomsWorkspace summary header", () => {
     expect(dialog?.textContent).not.toContain("/private");
     expect(dialog?.textContent).not.toContain("SECRET");
     expect([...dialog!.querySelectorAll("button")].some((button) => button.textContent === "Deny")).toBe(false);
+    expect(dialog?.getAttribute("data-testid")).toBe("room-action-dialog");
+    expect(dialog?.className).toContain("w-[min(32rem,calc(100vw-2rem))]");
+    expect(dialog?.className).toContain("max-h-[85vh]");
+    expect(dialog?.className).toContain("overflow-y-auto");
   });
 
   it("keeps the workspace Action review control compact and responsive", async () => {
