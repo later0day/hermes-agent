@@ -222,4 +222,109 @@ describe("RoomsWorkspace summary header", () => {
     expect(button?.className).toContain("self-center");
     expect(button?.closest("div")?.className).toContain("sm:grid-cols-[minmax(0,1fr)_auto]");
   });
+
+  it("wraps every arbitrary-content surface without changing diagnostic scrolling", async () => {
+    const long = "x".repeat(512);
+    const room = summary("wrapping-room", 0, 2);
+    room.workspace!.current_task = { subject: long } as NonNullable<NonNullable<typeof room.workspace>["current_task"]>;
+    const value = props([room]);
+    value.topology = {
+      room_id: room.room_id,
+      coordinator_id: null,
+      team_lead_id: null,
+      members: [{ member_id: "member-1", handle: "worker", profile: "default", role: "teammate", current_task: long }],
+    };
+    value.workspace!.tasks = [
+      { task_id: "task-1", subject: long, description: long, status: "running", visual_state: "running", owner: "worker", pending_actions: [] },
+      { task_id: "task-2", subject: long, description: long, status: "pending", visual_state: "pending", blockedBy: ["task-1"], pending_actions: [] },
+    ];
+    value.workspace!.conversation = [
+      message({ event_id: "brief", actor_kind: "user", text: long }),
+      message({ event_id: "member", text: long }),
+      message({ event_id: "report", kind: "leader_report", text: `LEADER_REPORT: ${long}` }),
+    ];
+    value.workspace!.activity = [{
+      event_id: "event-1", seq: 1, kind: "custom.safe", category: "other", title: long, summary: long,
+      created_at: 1, raw_event: { room_id: room.room_id, seq: 1, event_id: "event-1", kind: "custom.safe", actor: {}, authority_epoch: 1, created_at: 1, redacted: true },
+    }];
+    value.workspace!.pending_actions = [{
+      action_id: "action-card", room_id: room.room_id, kind: "retry", from_handle: "leader", description: long, created_at: 1, detail: {},
+    }];
+    value.actionCenterAction = {
+      action_id: "action-dialog", room_id: room.room_id, kind: "permission", from_handle: "leader", description: long, created_at: 1,
+      detail: { scope: long, reason: long },
+    };
+
+    const assertWrap = (element: Element | null | undefined) => {
+      expect(element).not.toBeNull();
+      expect(element?.className).toContain("min-w-0");
+      expect(element?.className).toContain("max-w-full");
+      expect(element?.className).toContain("break-words");
+      expect(element?.className).toContain("[overflow-wrap:anywhere]");
+    };
+
+    let container = await renderWorkspace(value);
+    assertWrap(container.querySelector("main header p.mt-1"));
+    assertWrap([...container.querySelectorAll("section[aria-labelledby=room-team-heading] span")].find((node) => node.textContent?.startsWith(long)));
+    assertWrap([...container.querySelectorAll("button small")].find((node) => node.textContent === long));
+    assertWrap([...container.querySelectorAll("span")].find((node) => node.textContent === long && node.closest('[aria-label="Action Center"]')));
+    assertWrap(document.querySelector('[role="dialog"]'));
+    assertWrap([...document.querySelectorAll("dd")].find((node) => node.textContent === long));
+
+    await act(async () => root?.unmount());
+    root = undefined;
+    value.tab = "conversation";
+    container = await renderWorkspace(value);
+    const thread = container.querySelector('[aria-label="Conversation thread"]')!;
+    assertWrap(thread.querySelector("details summary"));
+    assertWrap(thread.querySelector("details summary span:first-child"));
+    assertWrap([...thread.querySelectorAll("p")].find((node) => node.textContent === long));
+    assertWrap(container.querySelector('[aria-label="Final leader report"]'));
+    assertWrap(container.querySelector('[aria-label="Final leader report"] p'));
+
+    await act(async () => root?.unmount());
+    root = undefined;
+    value.tab = "activity";
+    value.inspector = { kind: "event", eventId: "event-1" };
+    container = await renderWorkspace(value);
+    assertWrap(container.querySelector("ol li"));
+    assertWrap(container.querySelector("ol li button"));
+    assertWrap(container.querySelector('[aria-label="Context inspector"] h2'));
+    assertWrap(container.querySelector('[aria-label="Context inspector"] p.mt-3'));
+    expect(container.querySelector("details .font-mono")?.className).toContain("break-all");
+
+    await act(async () => root?.unmount());
+    root = undefined;
+    value.tab = "tasks";
+    value.inspector = { kind: "task", taskId: "task-1" };
+    container = await renderWorkspace(value);
+    assertWrap(container.querySelector('[aria-label="Context inspector"] h2'));
+    assertWrap([...container.querySelectorAll('[aria-label="Context inspector"] p')].find((node) => node.textContent === long));
+
+    await act(async () => root?.unmount());
+    root = undefined;
+    value.taskMode = "graph";
+    container = await renderWorkspace(value);
+    for (const node of container.querySelectorAll("ol button .font-semibold, ol button .text-text-tertiary")) assertWrap(node);
+  });
+
+  it("constrains every workspace action control instead of relying on inherited Button sizing", async () => {
+    const value = props([summary("research-room", 1, 1)]);
+    value.tab = "conversation";
+    value.workspace!.conversation = [
+      message({ event_id: "finding", actor_id: "researcher", task_id: "task-1", text: "Evidence" }),
+      message({ event_id: "report", actor_id: "leader", task_id: "task-1", text: "LEADER_REPORT: Result" }),
+    ];
+
+    const container = await renderWorkspace(value);
+    const actionButtons = [...container.querySelectorAll("button")].filter((button) =>
+      /View related task|Open related task|Review action|Review retry/.test(button.textContent ?? ""),
+    );
+    expect(actionButtons.length).toBeGreaterThan(0);
+    for (const button of actionButtons) {
+      expect(button.className).toMatch(/h-(8|9)/);
+      expect(button.className).toContain("whitespace-nowrap");
+      expect(button.className).toMatch(/w-auto|sm:w-auto/);
+    }
+  });
 });

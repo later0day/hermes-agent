@@ -10,7 +10,6 @@ import {
   Users,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +33,10 @@ import type {
   RoomWorkspaceTask,
 } from "@/lib/api";
 import { filterRoomInbox, taskProgress } from "./workspace-helpers";
+
+const compactButtonClass = "inline-flex h-8 w-auto flex-none self-start items-center justify-center whitespace-nowrap rounded-md border border-border bg-background px-3 text-xs font-semibold text-text-primary shadow-sm transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:pointer-events-none disabled:opacity-50";
+const compactPrimaryButtonClass = `${compactButtonClass} border-primary bg-primary text-primary-foreground hover:bg-primary/90`;
+const wrapContentClass = "min-w-0 max-w-full break-words [overflow-wrap:anywhere]";
 
 export type RoomPreset = "all" | "needs_action" | "failed" | "running" | "idle";
 export type RoomWorkspaceTab = "tasks" | "conversation" | "activity";
@@ -166,7 +169,7 @@ function Header({ p, room }: { p: RoomsWorkspaceProps; room: RoomSummary }) {
       <div className="min-w-0">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Team workspace</p>
         <h1 className="truncate text-2xl font-bold">{room.name}</h1>
-        <p className="mt-1 truncate text-sm text-text-secondary">{room.workspace?.current_task?.subject ?? "Ready for the next assignment"}</p>
+        <p className={`mt-1 text-sm text-text-secondary ${wrapContentClass}`}>{room.workspace?.current_task?.subject ?? "Ready for the next assignment"}</p>
       </div>
       <Badge tone={room.disbanded_at ? "outline" : "success"}>{room.disbanded_at ? "Closed" : "Live"}</Badge>
     </div>
@@ -198,7 +201,7 @@ function MemberRoster({ topology, fallback }: { topology?: RoomTopologyResponse 
     <div className="grid gap-2 sm:grid-cols-2">
       {topology.members.map((member) => <div key={member.member_id} className="flex items-center justify-between gap-3 rounded-md bg-background p-2.5">
         <span className="min-w-0"><b className="block truncate">{displayMember(member)}</b><small className="text-text-secondary">{roleLabel(member.role)}</small></span>
-        <span className="text-right text-xs text-text-secondary">{member.current_task ? <span className="block max-w-40 truncate">{member.current_task}</span> : null}{member.role === "observer" ? humanize(member.observer_state ?? "waiting") : member.activity_level != null ? `${member.activity_level}% active` : "Available"}</span>
+        <span className={`text-right text-xs text-text-secondary ${wrapContentClass}`}>{member.current_task ? <span className={`block ${wrapContentClass}`}>{member.current_task}</span> : null}{member.role === "observer" ? humanize(member.observer_state ?? "waiting") : member.activity_level != null ? `${member.activity_level}% active` : "Available"}</span>
       </div>)}
     </div>
   </section>;
@@ -249,7 +252,7 @@ function Tasks({ p, room }: { p: RoomsWorkspaceProps; room: RoomSummary }) {
       <p className="mb-2 mt-1 text-xs text-text-secondary">Attempt history and generations are operational details.</p>
       <div>{workspace.attempts.map((attempt, index) => {
         const subject = workspace.tasks.find((task) => task.task_id === attempt.identity.task_id)?.subject ?? "Task attempt";
-        return <button key={attempt.identity.turn_id} type="button" onClick={() => p.onInspectorChange({ kind: "attempt", attemptIndex: index })} className="flex w-full items-center justify-between gap-3 border-t border-border py-3 text-left"><span>{subject}<small className="block text-text-tertiary">Generation {attempt.execution_generation}</small></span><Badge tone={tone(attempt.status)}>{humanize(attempt.status)}</Badge></button>;
+        return <button key={attempt.identity.turn_id} type="button" onClick={() => p.onInspectorChange({ kind: "attempt", attemptIndex: index })} className="flex w-full min-w-0 max-w-full items-center justify-between gap-3 border-t border-border py-3 text-left"><span className={wrapContentClass}>{subject}<small className="block text-text-tertiary">Generation {attempt.execution_generation}</small></span><Badge tone={tone(attempt.status)}>{humanize(attempt.status)}</Badge></button>;
       })}</div>
     </details>
     : p.taskMode === "graph"
@@ -263,15 +266,15 @@ function Tasks({ p, room }: { p: RoomsWorkspaceProps; room: RoomSummary }) {
               <span aria-hidden="true" className="absolute left-1 top-3.5 grid h-4 w-4 place-items-center rounded-full bg-primary/10 text-[9px] font-semibold text-primary">{index + 1}</span>
               <button type="button" onClick={() => p.onInspectorChange({ kind: "task", taskId: task.task_id })} className="grid w-full gap-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-3">
                 <span className="min-w-0">
-                  <span className="block truncate text-sm font-semibold">{task.subject}</span>
-                  <span className="block text-xs text-text-tertiary">
+                  <span className={`block text-sm font-semibold ${wrapContentClass}`}>{task.subject}</span>
+                  <span className={`block text-xs text-text-tertiary ${wrapContentClass}`}>
                     {task.owner ? <>@{task.owner}</> : "Unassigned"}
                     {before.length ? <> · after {before.join(", ")}</> : " · starts independently"}
                   </span>
                 </span>
-                <span className="flex items-center gap-2 text-xs text-text-secondary">
+                <span className="flex min-w-0 max-w-full items-center gap-2 text-xs text-text-secondary">
                   <Badge tone={tone(task.status)}>{humanize(task.status)}</Badge>
-                  {explicitNext.length ? <><ChevronRight className="h-3.5 w-3.5" /><span className="hidden max-w-40 truncate lg:inline">{explicitNext.join(", ")}</span></> : <span className="hidden lg:inline">No dependents</span>}
+                  {explicitNext.length ? <><ChevronRight className="h-3.5 w-3.5" /><span className={`hidden lg:inline ${wrapContentClass}`}>{explicitNext.join(", ")}</span></> : <span className="hidden lg:inline">No dependents</span>}
                 </span>
               </button>
             </li>;
@@ -282,11 +285,11 @@ function Tasks({ p, room }: { p: RoomsWorkspaceProps; room: RoomSummary }) {
         const prerequisites = dependencyNames(task.blockedBy, workspace.tasks);
         return <article key={task.task_id} className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between">
           <button type="button" className="min-w-0 text-left" onClick={() => p.onInspectorChange({ kind: "task", taskId: task.task_id })}>
-            <b className="block truncate">{task.subject}</b>
-            <small className="mt-1 block text-text-secondary">{prerequisites.length ? `Waiting for ${prerequisites.join(", ")}` : task.description || "Ready to move forward"}</small>
+            <b className={`block ${wrapContentClass}`}>{task.subject}</b>
+            <small className={`mt-1 block text-text-secondary ${wrapContentClass}`}>{prerequisites.length ? `Waiting for ${prerequisites.join(", ")}` : task.description || "Ready to move forward"}</small>
             {task.owner ? <small className="mt-1 block text-text-tertiary">Owned by @{task.owner}</small> : null}
           </button>
-          <span className="flex shrink-0 items-center gap-2"><Badge tone={tone(task.status)}>{humanize(task.status)}</Badge>{task.pending_actions[0] ? <Button type="button" size="xs" onClick={() => p.onOpenActionCenter(task.pending_actions[0])}>Review</Button> : null}</span>
+          <span className="flex shrink-0 items-center gap-2"><Badge tone={tone(task.status)}>{humanize(task.status)}</Badge>{task.pending_actions[0] ? <button type="button" className={compactPrimaryButtonClass} onClick={() => p.onOpenActionCenter(task.pending_actions[0])}>Review</button> : null}</span>
         </article>;
       })}</div>;
 
@@ -310,23 +313,23 @@ function Conversation({ p }: { p: RoomsWorkspaceProps }) {
     <section aria-label="Conversation thread" className="min-w-0 space-y-3">
       {thread.map((item, index) => {
         const userBrief = item.actor_kind.toLowerCase() === "user" && index === 0;
-        return <article key={item.event_id} className="rounded-lg border border-border bg-background p-3 sm:p-4">
+        return <article key={item.event_id} className={`rounded-lg border border-border bg-background p-3 sm:p-4 ${wrapContentClass}`}>
           <header className="mb-2 flex items-center justify-between gap-3">
             <span className="flex min-w-0 items-center gap-2"><MessageSquareText className="h-4 w-4 shrink-0 text-text-tertiary" /><b className="truncate">@{item.actor_id}</b>{item.actor_kind ? <Badge tone="outline">{humanize(item.actor_kind)}</Badge> : null}</span>
             <time className="shrink-0 text-xs text-text-tertiary">{stamp(item.created_at)}</time>
           </header>
           {userBrief ? <details className="group">
-            <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden"><span className="block whitespace-pre-wrap leading-relaxed group-open:hidden line-clamp-6">{item.text}</span><span className="mt-2 inline-block text-sm font-medium text-primary group-open:hidden">Read full brief</span><span className="hidden whitespace-pre-wrap leading-relaxed group-open:block">{item.text}</span><span className="mt-2 hidden text-sm font-medium text-primary group-open:inline-block">Show less</span></summary>
-          </details> : <p className="whitespace-pre-wrap leading-relaxed">{item.text}</p>}
-          {item.task_id ? <Button className="mt-3" size="xs" outlined onClick={() => p.onInspectorChange({ kind: "task", taskId: item.task_id! })}>View related task</Button> : null}
+            <summary className={`cursor-pointer list-none [&::-webkit-details-marker]:hidden ${wrapContentClass}`}><span className={`block whitespace-pre-wrap leading-relaxed group-open:hidden line-clamp-6 ${wrapContentClass}`}>{item.text}</span><span className="mt-2 inline-block text-sm font-medium text-primary group-open:hidden">Read full brief</span><span className={`hidden whitespace-pre-wrap leading-relaxed group-open:block ${wrapContentClass}`}>{item.text}</span><span className="mt-2 hidden text-sm font-medium text-primary group-open:inline-block">Show less</span></summary>
+          </details> : <p className={`whitespace-pre-wrap leading-relaxed ${wrapContentClass}`}>{item.text}</p>}
+          {item.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: item.task_id! })}>View related task</button> : null}
         </article>;
       })}
       {!thread.length ? <div className="rounded-lg border border-dashed border-border p-8 text-center"><MessageSquareText className="mx-auto mb-2 h-6 w-6 text-text-tertiary" /><p>No conversation yet</p><p className="text-xs text-text-secondary">Team updates will appear here.</p></div> : null}
     </section>
-    {finalReport ? <article aria-label="Final leader report" className="rounded-xl border border-primary/40 bg-primary/10 p-4 shadow-sm 2xl:sticky 2xl:top-4">
+    {finalReport ? <article aria-label="Final leader report" className={`rounded-xl border border-primary/40 bg-primary/10 p-4 shadow-sm 2xl:sticky 2xl:top-4 ${wrapContentClass}`}>
       <header className="mb-3 flex items-center justify-between gap-3"><span className="flex items-center gap-2"><ShieldCheck className="h-5 w-5 shrink-0 text-primary" /><b>Final report</b></span><time className="shrink-0 text-xs text-text-tertiary">{stamp(finalReport.created_at)}</time></header>
-      <p className="whitespace-pre-wrap leading-relaxed">{finalReport.text.replace(/^LEADER_REPORT\s*:?\s*/i, "")}</p>
-      {finalReport.task_id ? <Button className="mt-3" size="xs" outlined onClick={() => p.onInspectorChange({ kind: "task", taskId: finalReport.task_id! })}>View related task</Button> : null}
+      <p className={`whitespace-pre-wrap leading-relaxed ${wrapContentClass}`}>{finalReport.text.replace(/^LEADER_REPORT\s*:?\s*/i, "")}</p>
+      {finalReport.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: finalReport.task_id! })}>View related task</button> : null}
     </article> : null}
   </div>;
 }
@@ -362,11 +365,11 @@ function Timeline({ p }: { p: RoomsWorkspaceProps }) {
     <ol className="relative ml-2 border-l border-border pl-5">
       {activity.map((item) => {
         const copy = activityCopy(item);
-        return <li key={item.event_id} className="relative pb-5 last:pb-0">
+        return <li key={item.event_id} className={`relative pb-5 last:pb-0 ${wrapContentClass}`}>
           <span className="absolute -left-[1.62rem] top-1.5 h-2 w-2 rounded-full bg-primary ring-4 ring-background" />
-          <button type="button" onClick={() => p.onInspectorChange({ kind: "event", eventId: item.event_id })} className="block w-full rounded-lg p-2 text-left hover:bg-surface">
-            <span className="flex flex-wrap items-center justify-between gap-2"><b>{copy.label}</b><time className="text-xs text-text-tertiary">{stamp(item.created_at)}</time></span>
-            <p className="mt-1 line-clamp-2 text-sm text-text-secondary">{copy.summary}</p>
+          <button type="button" onClick={() => p.onInspectorChange({ kind: "event", eventId: item.event_id })} className={`block w-full rounded-lg p-2 text-left hover:bg-surface ${wrapContentClass}`}>
+            <span className={`flex flex-wrap items-center justify-between gap-2 ${wrapContentClass}`}><b className={wrapContentClass}>{copy.label}</b><time className="text-xs text-text-tertiary">{stamp(item.created_at)}</time></span>
+            <p className={`mt-1 line-clamp-2 text-sm text-text-secondary ${wrapContentClass}`}>{copy.summary}</p>
           </button>
         </li>;
       })}
@@ -392,11 +395,11 @@ function Inspector({ p, room }: { p: RoomsWorkspaceProps; room: RoomSummary }) {
   const eventId = p.inspector.kind === "event" ? p.inspector.eventId : undefined;
   const event = eventId ? workspace.activity.find((item) => item.event_id === eventId) : undefined;
   const member = task?.owner ? p.topology?.members.find((item) => item.handle === task.owner || item.member_id === task.owner) : undefined;
-  return <aside aria-label="Context inspector" className="border-t border-border bg-surface/20 p-4 xl:min-h-0 xl:overflow-y-auto xl:border-l xl:border-t-0">
+  return <aside aria-label="Context inspector" className={`border-t border-border bg-surface/20 p-4 xl:min-h-0 xl:overflow-y-auto xl:border-l xl:border-t-0 ${wrapContentClass}`}>
     <p className="text-xs font-semibold uppercase tracking-[0.15em] text-primary">Context</p>
-    <h2 className="mt-1 text-xl font-bold">{event?.title ?? task?.subject ?? room.name}</h2>
-    {event ? <><p className="mt-3 text-sm leading-relaxed text-text-secondary">{event.summary}</p>{event.task_id ? <Button className="mt-3" size="xs" onClick={() => p.onInspectorChange({ kind: "task", taskId: event.task_id! })}>Open related task</Button> : null}<EventDiagnostics event={event} /></> : null}
-    {task ? <div className="mt-3 space-y-3"><Badge tone={tone(attempt?.status ?? task.status)}>{humanize(attempt?.status ?? task.status)}</Badge><div><small className="block text-text-tertiary">Owner</small><p>{task.owner ? `@${task.owner}` : "Unassigned"}{member ? <span className="text-text-secondary"> · {roleLabel(member.role)}</span> : null}</p></div>{task.description ? <p className="text-sm leading-relaxed text-text-secondary">{task.description}</p> : null}{task.pending_actions[0] ? <Button onClick={() => p.onOpenActionCenter(task.pending_actions[0])}>Review action</Button> : null}{attempt ? <Diagnostics><div>Room context available</div><div>Conversation context available</div><div>Attempt reference available</div><div>Execution generation: {attempt.execution_generation}</div><div>Cancel generation: {attempt.cancel_generation}</div><div>Created: {stamp(attempt.created_at)}</div><div>Updated: {stamp(attempt.updated_at)}</div><div>Started: {stamp(attempt.started_at)}</div><div>Terminal: {stamp(attempt.terminal_at)}</div><div>Settlement: {attempt.settlement_status ?? "—"}</div><div className="font-sans text-warning">Payload and result are redacted.</div></Diagnostics> : null}</div> : null}
+    <h2 className={`mt-1 text-xl font-bold ${wrapContentClass}`}>{event?.title ?? task?.subject ?? room.name}</h2>
+    {event ? <><p className={`mt-3 text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{event.summary}</p>{event.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: event.task_id! })}>Open related task</button> : null}<EventDiagnostics event={event} /></> : null}
+    {task ? <div className="mt-3 space-y-3"><Badge tone={tone(attempt?.status ?? task.status)}>{humanize(attempt?.status ?? task.status)}</Badge><div><small className="block text-text-tertiary">Owner</small><p>{task.owner ? `@${task.owner}` : "Unassigned"}{member ? <span className="text-text-secondary"> · {roleLabel(member.role)}</span> : null}</p></div>{task.description ? <p className={`text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{task.description}</p> : null}{task.pending_actions[0] ? <button type="button" className={compactPrimaryButtonClass} onClick={() => p.onOpenActionCenter(task.pending_actions[0])}>Review action</button> : null}{attempt ? <Diagnostics><div>Room context available</div><div>Conversation context available</div><div>Attempt reference available</div><div>Execution generation: {attempt.execution_generation}</div><div>Cancel generation: {attempt.cancel_generation}</div><div>Created: {stamp(attempt.created_at)}</div><div>Updated: {stamp(attempt.updated_at)}</div><div>Started: {stamp(attempt.started_at)}</div><div>Terminal: {stamp(attempt.terminal_at)}</div><div>Settlement: {attempt.settlement_status ?? "—"}</div><div className="font-sans text-warning">Payload and result are redacted.</div></Diagnostics> : null}</div> : null}
     {!event && !task ? <div className="mt-4 space-y-3 text-sm"><div className="rounded-lg border border-border bg-background p-3"><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-4 w-4 text-primary" /> Team health</span><p className="mt-2 text-text-secondary">{p.replicationHealth?.healthy === false ? "Some teammates need attention." : "Team connections are operating normally."}</p></div><dl className="grid gap-2"><div><dt className="text-xs text-text-tertiary">Connected peers</dt><dd>{p.replicationHealth?.ready ?? 0} of {p.replicationHealth?.total_peers ?? p.peerGrants?.length ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">Observer</dt><dd>{humanize(p.observer?.state ?? "Unknown")}</dd></div><div><dt className="text-xs text-text-tertiary">Policy events</dt><dd>{p.policyTrace?.event_count ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">Team members</dt><dd>{p.topology?.members.length ?? room.members.length}</dd></div></dl><Diagnostics><div>Room context available</div><div>Revision: {room.revision}</div><div>Latest sequence: {room.latest_seq}</div></Diagnostics></div> : null}
   </aside>;
 }
@@ -420,7 +423,7 @@ function ActionDialog({ p }: { p: RoomsWorkspaceProps }) {
   if (!action) return null;
   const presentation = actionPresentation(action.kind);
   const safe = Object.fromEntries(Object.entries(action.detail).filter(([key, value]) => ACTION_DETAIL_ALLOWLIST.includes(key as typeof ACTION_DETAIL_ALLOWLIST[number]) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean")));
-  return <Dialog open onOpenChange={(open) => { if (!open) p.onCloseActionCenter(); }}><DialogContent><DialogHeader><DialogTitle>Action Center · {presentation?.title ?? "Unsupported action"}</DialogTitle><DialogDescription>Requested by @{action.from_handle}</DialogDescription></DialogHeader><p>{action.description}</p><dl className="rounded-lg border border-border p-3 text-xs">{Object.entries(safe).map(([key, value]) => <div key={key} className="flex justify-between gap-3 py-1"><dt className="capitalize text-text-secondary">{humanize(key)}</dt><dd className="text-right">{String(value)}</dd></div>)}</dl><p className="flex items-center gap-1 text-xs text-text-tertiary"><ShieldCheck className="h-3.5 w-3.5" /> Sensitive action detail is redacted.</p><DialogFooter>{presentation ? <>{presentation.deny ? <Button type="button" outlined disabled={p.actionBusy} onClick={() => p.onDenyAction(action)}>Deny</Button> : null}<Button type="button" disabled={p.actionBusy} onClick={() => p.onApproveAction(action)}>{presentation.approve}</Button></> : <Button type="button" outlined onClick={p.onCloseActionCenter}>Close</Button>}</DialogFooter></DialogContent></Dialog>;
+  return <Dialog open onOpenChange={(open) => { if (!open) p.onCloseActionCenter(); }}><DialogContent className={wrapContentClass}><DialogHeader><DialogTitle>Action Center · {presentation?.title ?? "Unsupported action"}</DialogTitle><DialogDescription>Requested by @{action.from_handle}</DialogDescription></DialogHeader><p className={wrapContentClass}>{action.description}</p><dl className="rounded-lg border border-border p-3 text-xs">{Object.entries(safe).map(([key, value]) => <div key={key} className="flex min-w-0 max-w-full justify-between gap-3 py-1"><dt className="capitalize text-text-secondary">{humanize(key)}</dt><dd className={`text-right ${wrapContentClass}`}>{String(value)}</dd></div>)}</dl><p className="flex items-center gap-1 text-xs text-text-tertiary"><ShieldCheck className="h-3.5 w-3.5" /> Sensitive action detail is redacted.</p><DialogFooter>{presentation ? <>{presentation.deny ? <button type="button" className={compactButtonClass} disabled={p.actionBusy} onClick={() => p.onDenyAction(action)}>Deny</button> : null}<button type="button" className={compactPrimaryButtonClass} disabled={p.actionBusy} onClick={() => p.onApproveAction(action)}>{presentation.approve}</button></> : <button type="button" className={compactButtonClass} onClick={p.onCloseActionCenter}>Close</button>}</DialogFooter></DialogContent></Dialog>;
 }
 
 export function RoomsWorkspace(p: RoomsWorkspaceProps) {
@@ -432,8 +435,8 @@ export function RoomsWorkspace(p: RoomsWorkspaceProps) {
   const actions = p.workspace.pending_actions;
   return <div className={`grid min-h-[36rem] overflow-hidden rounded-lg border border-border md:grid-cols-[18rem_minmax(0,1fr)] xl:h-[calc(100vh-8rem)] xl:grid-cols-[18rem_minmax(30rem,1fr)_21rem] ${p.className ?? ""}`}>
     <Inbox p={p} rooms={rooms} />
-    <main className="min-h-0 overflow-y-auto bg-background"><Header p={p} room={room} /><section role="tabpanel" className="p-3 sm:p-4 lg:p-5">
-      {actions.length ? <section aria-label="Action Center" className="mb-4 space-y-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><AlertTriangle className="h-4 w-4 text-warning" /> Action Center</h2>{actions.map((action) => <div key={action.action_id} className="grid gap-3 rounded-lg border border-warning/40 bg-warning/10 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"><span className="min-w-0"><b>{action.kind === "retry" ? "Retry required" : "Your decision is needed"}</b><span className="block text-sm text-text-secondary">{action.description}</span></span><button type="button" data-testid="room-action-review" onClick={() => p.onOpenActionCenter(action)} className="inline-flex h-9 w-full items-center justify-center self-center whitespace-nowrap rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 sm:w-auto">Review {humanize(action.kind)}</button></div>)}</section> : null}
+    <main className="min-h-0 overflow-y-auto bg-background"><Header p={p} room={room} /><section role="tabpanel" className={`p-3 sm:p-4 lg:p-5 ${wrapContentClass}`}>
+      {actions.length ? <section aria-label="Action Center" className="mb-4 space-y-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><AlertTriangle className="h-4 w-4 text-warning" /> Action Center</h2>{actions.map((action) => <div key={action.action_id} className="grid gap-3 rounded-lg border border-warning/40 bg-warning/10 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"><span className={wrapContentClass}><b>{action.kind === "retry" ? "Retry required" : "Your decision is needed"}</b><span className={`block text-sm text-text-secondary ${wrapContentClass}`}>{action.description}</span></span><button type="button" data-testid="room-action-review" onClick={() => p.onOpenActionCenter(action)} className="inline-flex h-9 w-full items-center justify-center self-center whitespace-nowrap rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 sm:w-auto">Review {humanize(action.kind)}</button></div>)}</section> : null}
       {p.tab === "tasks" ? <Tasks p={p} room={room} /> : p.tab === "conversation" ? <Conversation p={p} /> : <Timeline p={p} />}
     </section></main>
     <Inspector p={p} room={room} />
