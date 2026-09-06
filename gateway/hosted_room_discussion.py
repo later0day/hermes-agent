@@ -867,7 +867,9 @@ def _failed_effects(result: Any, **_: Any) -> Effects:
     supplied_reason = (
         str(result.get("reason_code") or result.get("reason") or "").strip() if isinstance(result, Mapping) else "")
     reason_code = supplied_reason if supplied_reason in _all_failure_reasons() else classify_agent_error(error_text)
-    return {"error": error_text, "reason_code": reason_code}, []
+    # The append-only Room log is rendered by Conversation/Activity views: record the typed operator-safe reason,
+    # never arbitrary provider output (which may carry prompts, URLs, or credentials).
+    return {"error": reason_code, "reason_code": reason_code}, []
 
 
 def _cancelled_effects(result: Any, *, newer_same_thread: bool, **_: Any) -> Effects:

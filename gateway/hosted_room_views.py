@@ -53,6 +53,36 @@ def _serialise_driver_task(task: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _driver_task_display(
+    attempt: Mapping[str, Any],
+    *,
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    """Derive readable driver-only labels from public Room event metadata."""
+
+    identity = attempt.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    task_id = str(identity.get("task_id") or "")
+    terminal = next(
+        (
+            event
+            for event in reversed(events)
+            if str((event.get("payload") or {}).get("task_id") or "") == task_id
+            and str(event.get("kind") or "").startswith("turn.")
+        ),
+        None,
+    )
+    payload = (terminal or {}).get("payload") or {}
+    member_id = str(payload.get("member_id") or "")
+    round_index = payload.get("round_index")
+    subject = (
+        f"@{member_id} · Round {int(round_index) + 1}"
+        if member_id and isinstance(round_index, int)
+        else f"@{member_id} turn" if member_id else "Room member turn"
+    )
+    return {"subject": subject, "owner": member_id}
+
+
 def _action_task_id(action: Mapping[str, Any]) -> str:
     detail = action.get("detail")
     detail = detail if isinstance(detail, Mapping) else {}
@@ -350,11 +380,20 @@ def build_room_workspace(db_path: Path | str, *, room_id: str) -> dict[str, Any]
             and task_id not in manual_attempt_ids
             and thread_id not in manual_threads
         ):
+            display = _driver_task_display(attempt, events=log["events"])
             tasks.append({
-                "task_id": task_id, "subject": task_id,
+                "task_id": task_id,
+                "subject": display["subject"],
                 "description": "Driver-managed Room task",
+                "owner": display["owner"],
                 "status": attempt.get("status"),
-                "visual_state": ("in_progress" if attempt.get("status") == "running" else attempt.get("status")),
+                "visual_state": (
+                    "completed"
+                    if attempt.get("status") == "settled"
+                    else "in_progress"
+                    if attempt.get("status") == "running"
+                    else attempt.get("status")
+                ),
                 "pending_actions": [], "latest_attempt": attempt,
                 "driver_only": True,
             })
