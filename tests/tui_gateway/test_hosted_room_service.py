@@ -1110,15 +1110,28 @@ def test_policy_checkpoint_bounds_replay_after_completed_room_history(
 class _ResearchTeamRPC(_FakeRPC):
     """Scripted model transport that still exercises the real Room runtime."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, sessions=None) -> None:
         super().__init__()
+        self.sessions = sessions if sessions is not None else {}
         self.prompts: list[tuple[str, str]] = []
         self.counts: dict[str, int] = {}
+        self.creates: list[tuple[str, str]] = []
+        self.resumes: list[tuple[str, str]] = []
+        self.submits: list[tuple[str, str]] = []
+
+    def create(self, *, profile, title, source):
+        self.creates.append((profile, title))
+        return super().create(profile=profile, title=title, source=source)
+
+    def resume(self, *, profile, session_id, source):
+        self.resumes.append((profile, session_id))
+        return super().resume(profile=profile, session_id=session_id, source=source)
 
     def submit(self, **kwargs):
         profile = kwargs["profile"]
         prompt = kwargs["prompt"]
         self.prompts.append((profile, prompt))
+        self.submits.append((profile, kwargs["session_id"]))
         index = self.counts.get(profile, 0)
         self.counts[profile] = index + 1
         responses = {
@@ -1255,8 +1268,16 @@ def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_
     old_lease = first.runtime._leases["research-room"]
     driver.release_lease(db, old_lease, clock=time.time)
 
+    created_sessions = dict(first_rpc.sessions)
+    assert {profile for profile, _title in first_rpc.creates} == {
+        "research",
+        "site_a",
+        "site_b",
+    }
+    assert len(first_rpc.creates) == 3
+
     restarted = HostedRoomService(_server(), db_path=db)
-    restarted_rpc = _ResearchTeamRPC()
+    restarted_rpc = _ResearchTeamRPC(sessions=created_sessions)
     # The new model sessions resume at the synthesis turn; prior responses are
     # recovered from SQLite rather than regenerated through this transport.
     restarted_rpc.counts.update({"research": 1, "site_a": 1, "site_b": 1})
@@ -1290,6 +1311,21 @@ def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_
     assert restarted_rpc.counts["site_a"] == 2
     assert restarted_rpc.counts["site_b"] == 2
     assert restarted_rpc.counts["research"] in {3, 4}
+    assert restarted_rpc.creates == []
+    resumed_profiles = {profile for profile, _session_id in restarted_rpc.resumes}
+    assert resumed_profiles == {"research", "site_a", "site_b"}
+    expected_session_ids = {
+        profile: created_sessions[(profile, "Group: research-room")]["session_id"]
+        for profile in ("research", "site_a", "site_b")
+    }
+    assert all(
+        session_id == expected_session_ids[profile]
+        for profile, session_id in restarted_rpc.resumes
+    )
+    assert all(
+        session_id == expected_session_ids[profile]
+        for profile, session_id in restarted_rpc.submits
+    )
     for _ in range(3):
         restarted.runtime._process_room(restarted_binding)
         if not driver.list_tasks(db, room_id="research-room", status="queued"):
