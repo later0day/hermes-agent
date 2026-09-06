@@ -211,15 +211,22 @@ describe("RoomsWorkspace summary header", () => {
 
     await renderWorkspace(value);
     const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("Action required");
     expect(dialog?.textContent).toContain("Retry uncertain Room turn");
     expect(dialog?.textContent).toContain("execution generation");
+    expect(dialog?.textContent).toContain("Retry only if the previous attempt did not complete");
     expect(dialog?.textContent).not.toContain("dtask:");
     expect(dialog?.textContent).not.toContain("PRIVATE COMMAND");
     expect(dialog?.textContent).not.toContain("/private");
     expect(dialog?.textContent).not.toContain("SECRET");
-    expect([...dialog!.querySelectorAll("button")].some((button) => button.textContent === "Deny")).toBe(false);
+    const buttons = [...dialog!.querySelectorAll("button")];
+    expect(buttons.some((button) => button.textContent === "Deny")).toBe(false);
+    expect(buttons.some((button) => button.textContent === "Cancel")).toBe(true);
+    const footer = [...dialog!.querySelectorAll("div")].find((element) => element.className.includes("sm:flex-row") && element.querySelector("button"));
+    expect(footer?.className).toContain("flex-col");
+    expect(buttons.find((button) => button.textContent === "Retry")?.className).toContain("w-full");
     expect(dialog?.getAttribute("data-testid")).toBe("room-action-dialog");
-    expect(dialog?.className).toContain("w-[min(32rem,calc(100vw-2rem))]");
+    expect(dialog?.className).toContain("w-[min(30rem,calc(100vw-2rem))]");
     expect(dialog?.className).toContain("max-h-[85vh]");
     expect(dialog?.className).toContain("overflow-y-auto");
   });
