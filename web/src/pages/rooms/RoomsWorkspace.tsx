@@ -309,7 +309,7 @@ function Conversation({ p }: { p: RoomsWorkspaceProps }) {
   const finalReportIndex = items.findLastIndex(isLeaderReport);
   const finalReport = finalReportIndex >= 0 ? items[finalReportIndex] : undefined;
   const thread = items.filter((_, index) => index !== finalReportIndex);
-  return <div className="grid items-start gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.85fr)]">
+  return <div className="grid min-w-0 items-start gap-4">
     <section aria-label="Conversation thread" className="min-w-0 space-y-3">
       {thread.map((item, index) => {
         const userBrief = item.actor_kind.toLowerCase() === "user" && index === 0;
@@ -326,7 +326,7 @@ function Conversation({ p }: { p: RoomsWorkspaceProps }) {
       })}
       {!thread.length ? <div className="rounded-lg border border-dashed border-border p-8 text-center"><MessageSquareText className="mx-auto mb-2 h-6 w-6 text-text-tertiary" /><p>No conversation yet</p><p className="text-xs text-text-secondary">Team updates will appear here.</p></div> : null}
     </section>
-    {finalReport ? <article aria-label="Final leader report" className={`rounded-xl border border-primary/40 bg-primary/10 p-4 shadow-sm 2xl:sticky 2xl:top-4 ${wrapContentClass}`}>
+    {finalReport ? <article aria-label="Final leader report" className={`rounded-xl border border-primary/40 bg-primary/10 p-4 shadow-sm ${wrapContentClass}`}>
       <header className="mb-3 flex items-center justify-between gap-3"><span className="flex items-center gap-2"><ShieldCheck className="h-5 w-5 shrink-0 text-primary" /><b>Final report</b></span><time className="shrink-0 text-xs text-text-tertiary">{stamp(finalReport.created_at)}</time></header>
       <p className={`whitespace-pre-wrap leading-relaxed ${wrapContentClass}`}>{finalReport.text.replace(/^LEADER_REPORT\s*:?\s*/i, "")}</p>
       {finalReport.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: finalReport.task_id! })}>View related task</button> : null}

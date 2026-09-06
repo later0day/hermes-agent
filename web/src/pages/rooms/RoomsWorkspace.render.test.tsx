@@ -119,6 +119,21 @@ describe("RoomsWorkspace summary header", () => {
     expect(container.querySelector('[aria-label="Conversation thread"]')?.textContent).toContain("Historical report remains visible");
     expect(container.querySelector('[aria-label="Final leader report"]')?.textContent).not.toContain("Historical report remains visible");
     expect(container.textContent).not.toContain("task/private");
+    const conversationLayout = container.querySelector('[aria-label="Conversation thread"]')?.parentElement;
+    expect(conversationLayout?.className).not.toContain("grid-cols-");
+    expect(conversationLayout?.className).toContain("min-w-0");
+  });
+
+  it("uses the full workspace width when no final report exists", async () => {
+    const value = props([summary("wide-room", 1, 1)]);
+    value.tab = "conversation";
+    value.workspace!.conversation = [message({ event_id: "update", text: "A normal team update" })];
+
+    const container = await renderWorkspace(value);
+    const thread = container.querySelector('[aria-label="Conversation thread"]');
+    expect(thread).not.toBeNull();
+    expect(thread?.nextElementSibling).toBeNull();
+    expect(thread?.parentElement?.className).not.toContain("grid-cols-");
   });
 
   it("renders a concise private Timeline instead of raw prompts and task ids", async () => {
