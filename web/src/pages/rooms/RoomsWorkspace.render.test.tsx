@@ -204,4 +204,22 @@ describe("RoomsWorkspace summary header", () => {
     expect(dialog?.textContent).not.toContain("SECRET");
     expect([...dialog!.querySelectorAll("button")].some((button) => button.textContent === "Deny")).toBe(false);
   });
+
+  it("keeps the workspace Action review control compact and responsive", async () => {
+    const value = props([summary("action-room", 0, 1)]);
+    value.workspace!.pending_actions = [{
+      action_id: "retry-card", room_id: "action-room", kind: "retry", from_handle: "leader",
+      description: "Retry uncertain Room turn", created_at: 1, detail: { status: "deferred" },
+    }];
+
+    const container = await renderWorkspace(value);
+    const button = container.querySelector('[data-testid="room-action-review"]');
+    expect(button).not.toBeNull();
+    expect(button?.className).toContain("h-9");
+    expect(button?.className).toContain("w-full");
+    expect(button?.className).toContain("sm:w-auto");
+    expect(button?.className).toContain("whitespace-nowrap");
+    expect(button?.className).toContain("self-center");
+    expect(button?.closest("div")?.className).toContain("sm:grid-cols-[minmax(0,1fr)_auto]");
+  });
 });
