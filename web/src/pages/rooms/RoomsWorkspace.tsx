@@ -423,7 +423,40 @@ function ActionDialog({ p }: { p: RoomsWorkspaceProps }) {
   if (!action) return null;
   const presentation = actionPresentation(action.kind);
   const safe = Object.fromEntries(Object.entries(action.detail).filter(([key, value]) => ACTION_DETAIL_ALLOWLIST.includes(key as typeof ACTION_DETAIL_ALLOWLIST[number]) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean")));
-  return <Dialog open onOpenChange={(open) => { if (!open) p.onCloseActionCenter(); }}><DialogContent data-testid="room-action-dialog" className={`max-h-[85vh] w-[min(32rem,calc(100vw-2rem))] overflow-y-auto rounded-xl p-4 sm:p-6 ${wrapContentClass}`}><DialogHeader><DialogTitle>Action Center · {presentation?.title ?? "Unsupported action"}</DialogTitle><DialogDescription>Requested by @{action.from_handle}</DialogDescription></DialogHeader><p className={wrapContentClass}>{action.description}</p><dl className="rounded-lg border border-border p-3 text-xs">{Object.entries(safe).map(([key, value]) => <div key={key} className="flex min-w-0 max-w-full justify-between gap-3 py-1"><dt className="capitalize text-text-secondary">{humanize(key)}</dt><dd className={`text-right ${wrapContentClass}`}>{String(value)}</dd></div>)}</dl><p className="flex items-center gap-1 text-xs text-text-tertiary"><ShieldCheck className="h-3.5 w-3.5" /> Sensitive action detail is redacted.</p><DialogFooter>{presentation ? <>{presentation.deny ? <button type="button" className={compactButtonClass} disabled={p.actionBusy} onClick={() => p.onDenyAction(action)}>Deny</button> : null}<button type="button" className={compactPrimaryButtonClass} disabled={p.actionBusy} onClick={() => p.onApproveAction(action)}>{presentation.approve}</button></> : <button type="button" className={compactButtonClass} onClick={p.onCloseActionCenter}>Close</button>}</DialogFooter></DialogContent></Dialog>;
+  const requester = action.from_handle ? `@${action.from_handle}` : "A team member";
+  const title = presentation?.title ?? "Unsupported action";
+  const riskCopy = action.kind === "retry"
+    ? "Retry only if the previous attempt did not complete. This may repeat side effects."
+    : "Review this request before allowing the team to continue.";
+
+  return <Dialog open onOpenChange={(open) => { if (!open) p.onCloseActionCenter(); }}>
+    <DialogContent data-testid="room-action-dialog" className={`max-h-[85vh] w-[min(30rem,calc(100vw-2rem))] gap-0 overflow-y-auto rounded-2xl border-border/80 bg-background p-0 shadow-2xl ${wrapContentClass}`}>
+      <div className="border-b border-border px-5 py-5 pr-12 sm:px-6 sm:py-6 sm:pr-14">
+        <DialogHeader className="gap-1.5 text-left">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-warning">Action required</p>
+          <DialogTitle className="text-xl leading-tight">{title}</DialogTitle>
+          <DialogDescription className="text-sm">Requested by {requester}</DialogDescription>
+        </DialogHeader>
+      </div>
+      <div className="space-y-4 px-5 py-5 sm:px-6">
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">Request</h3>
+          <p className={`mt-1.5 text-sm leading-6 text-text-primary ${wrapContentClass}`}>{action.description}</p>
+        </section>
+        {Object.keys(safe).length ? <dl className="divide-y divide-border rounded-lg border border-border bg-surface/30 px-3 text-sm">{Object.entries(safe).map(([key, value]) => <div key={key} className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] gap-4 py-2.5"><dt className="capitalize text-text-secondary">{humanize(key)}</dt><dd className={`text-right font-medium text-text-primary ${wrapContentClass}`}>{String(value)}</dd></div>)}</dl> : null}
+        <div className="flex items-start gap-2.5 rounded-lg bg-warning/10 p-3 text-xs leading-5 text-text-secondary">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          <p><span className="font-semibold text-text-primary">Protected details.</span> Sensitive execution data is hidden. {riskCopy}</p>
+        </div>
+      </div>
+      <DialogFooter className="flex-col gap-2 border-t border-border bg-surface/20 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+        {presentation ? <>
+          {presentation.deny ? <button type="button" className={`${compactButtonClass} w-full sm:w-auto`} disabled={p.actionBusy} onClick={() => p.onDenyAction(action)}>Deny</button> : <button type="button" className={`${compactButtonClass} w-full sm:w-auto`} disabled={p.actionBusy} onClick={p.onCloseActionCenter}>Cancel</button>}
+          <button type="button" className={`${compactPrimaryButtonClass} w-full sm:w-auto`} disabled={p.actionBusy} onClick={() => p.onApproveAction(action)}>{presentation.approve}</button>
+        </> : <button type="button" className={`${compactButtonClass} w-full sm:w-auto`} onClick={p.onCloseActionCenter}>Close</button>}
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 export function RoomsWorkspace(p: RoomsWorkspaceProps) {
