@@ -1243,6 +1243,10 @@ export const api = {
     fetchJSON<RoomLogResponse>(
       `/api/rooms/${encodeURIComponent(roomId)}/log?since_seq=${sinceSeq}&limit=${limit}`,
     ),
+  getRoomWorkspace: (roomId: string) =>
+    fetchJSON<RoomWorkspaceResponse>(
+      `/api/rooms/${encodeURIComponent(roomId)}/workspace`,
+    ),
 
   // ── Hosted rooms: agent team extensions ───────────────────────────
   getRoomTopology: (roomId: string) =>
@@ -1508,6 +1512,18 @@ export interface RoomSummary {
   created_at?: number | null;
   updated_at?: number | null;
   disbanded_at?: number | null;
+  workspace?: RoomWorkspaceSummary | null;
+}
+
+export interface RoomWorkspaceSummary {
+  state: "needs_action" | "failed" | "running" | "idle";
+  health: "healthy" | "warning" | "critical";
+  task_counts: Record<string, number> & { total: number; completed: number };
+  pending_action_count: number;
+  active_member_count: number;
+  current_task: { task_id: string; subject: string; assignee?: string | null } | null;
+  last_activity_at: number;
+  driver_running: boolean;
 }
 
 export interface RoomListResponse {
@@ -1547,6 +1563,74 @@ export interface RoomLogResponse {
   latest_seq: number;
   has_more: boolean;
   authority: { gateway_id?: string | null; epoch?: number | null };
+}
+
+export interface RoomWorkspaceTask {
+  task_id: string;
+  subject: string;
+  description?: string;
+  status: string;
+  visual_state: string;
+  owner?: string | null;
+  blockedBy?: string[];
+  blocks?: string[];
+  dispatch_thread_id?: string | null;
+  pending_actions: PendingAction[];
+  latest_attempt?: RoomTaskAttempt | null;
+  driver_only?: boolean;
+}
+
+export interface RoomTaskAttempt {
+  identity: { room_id: string; task_id: string; thread_id: string; turn_id: string };
+  status: string;
+  execution_generation: number;
+  cancel_generation: number;
+  created_at: number;
+  updated_at: number;
+  started_at?: number | null;
+  terminal_at?: number | null;
+  indeterminate_at?: number | null;
+  settlement_status?: string | null;
+  terminal_reason?: string | null;
+  error?: string | null;
+  redacted?: boolean;
+}
+
+export interface RoomConversationItem {
+  event_id: string;
+  kind: string;
+  actor_id: string;
+  actor_kind: string;
+  text: string;
+  task_id?: string | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  terminal_kind?: string | null;
+  created_at: number;
+}
+
+export interface RoomActivityItem {
+  event_id: string;
+  seq: number;
+  kind: string;
+  category: string;
+  title: string;
+  summary: string;
+  task_id?: string | null;
+  thread_id?: string | null;
+  member_id?: string | null;
+  created_at: number;
+  raw_event: Pick<RoomEvent, "room_id" | "seq" | "event_id" | "kind" | "actor" | "authority_epoch" | "created_at"> & { redacted: true };
+}
+
+export interface RoomWorkspaceResponse {
+  room: RoomSummary;
+  tasks: RoomWorkspaceTask[];
+  attempts: RoomTaskAttempt[];
+  pending_actions: PendingAction[];
+  conversation: RoomConversationItem[];
+  activity: RoomActivityItem[];
+  log: RoomLogResponse;
 }
 
 // ── Hosted rooms: agent team extensions ─────────────────────────────
@@ -1596,6 +1680,8 @@ export interface PendingAction {
   from_handle: string;
   detail: Record<string, unknown>;
   created_at: number;
+  task_id?: string | null;
+  redacted?: boolean | Record<string, unknown>;
 }
 
 export interface PendingActionsResponse {

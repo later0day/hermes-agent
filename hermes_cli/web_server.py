@@ -14715,29 +14715,30 @@ async def remove_credential_pool_entry(provider: str, index: int):
 
 @app.get("/api/rooms")
 async def list_hosted_rooms(all: bool = False):
-    """Return one bounded page of hosted rooms for the inspector list."""
+    """Return one bounded page of Rooms enriched with durable workspace summaries."""
 
     def _run():
+        from gateway.hosted_room_views import build_room_workspace, room_summary
         from gateway.hosted_rooms import default_db_path, list_rooms
 
-        rooms = list_rooms(default_db_path(), include_disbanded=bool(all))
-        return {
-            "rooms": [
-                {
-                    "room_id": r.get("room_id"),
-                    "name": r.get("name"),
-                    "members": r.get("members") or [],
-                    "revision": r.get("revision", 0),
-                    "latest_seq": r.get("latest_seq", 0),
-                    "authority_epoch": r.get("authority_epoch", 0),
-                    "authority_gateway_id": r.get("authority_gateway_id"),
-                    "created_at": r.get("created_at"),
-                    "updated_at": r.get("updated_at"),
-                    "disbanded_at": r.get("disbanded_at"),
-                }
-                for r in rooms
-            ]
-        }
+        db_path = default_db_path()
+        rooms = list_rooms(db_path, include_disbanded=bool(all))
+        enriched = []
+        for room in rooms:
+            try:
+                workspace = build_room_workspace(db_path, room_id=str(room["room_id"]))
+                enriched.append(
+                    room_summary(
+                        room,
+                        tasks=workspace["tasks"],
+                        actions=workspace["pending_actions"],
+                    )
+                )
+            except Exception:
+                # One malformed sidecar must not hide the entire Room inbox.
+                _log.exception("failed to build workspace summary for Room %s", room.get("room_id"))
+                enriched.append({**room, "workspace": None})
+        return {"rooms": enriched}
 
     return await asyncio.to_thread(_run)
 
@@ -14772,6 +14773,28 @@ async def get_hosted_room(room_id: str):
             except Exception:
                 driver_status = None
         return {"room": room, "driver_status": driver_status}
+
+    return await asyncio.to_thread(_run)
+
+
+@app.get("/api/rooms/{room_id}/workspace")
+async def get_hosted_room_workspace(room_id: str):
+    """Return the bounded durable task, attempt, conversation, and activity view."""
+
+    def _run():
+        from gateway.hosted_room_views import build_room_workspace
+        from gateway.hosted_rooms import (
+            HostedRoomError,
+            RoomNotFoundError,
+            default_db_path,
+        )
+
+        try:
+            return build_room_workspace(default_db_path(), room_id=room_id)
+        except RoomNotFoundError:
+            raise HTTPException(status_code=404, detail="room not found")
+        except HostedRoomError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     return await asyncio.to_thread(_run)
 

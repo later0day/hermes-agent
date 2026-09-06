@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoomEvent, RoomRoleKind } from "@/lib/api";
-import { filterEvents, requireRoomActionSuccess } from "./RoomsPage";
+import { filterEvents, requireRoomActionSuccess } from "./rooms/room-model";
 
 function event(kind: string, actor: RoomEvent["actor"]): RoomEvent {
   return {
