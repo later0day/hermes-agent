@@ -730,12 +730,18 @@ def plan_next_task(
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
     if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
         return decide("bounded", "max_messages")
-    terminals = {
-        (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
+    terminals = {  # coordinate -> terminal event (its kind distinguishes a recoverable deferral)
+        (int(event.payload["round_index"]), str(event.payload["member_id"])): event for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)
     seen_through_seq = max(event.seq for event in thread_messages)
     decider = _decider(room)
+    # A server-owned manual DAG anchor is one bounded worker execution, not an open-ended Discussion: the durable
+    # DAG owns dependency progression and any later review task, so mentions in the worker's prose must not fan out
+    # extra conversational rounds.
+    task_dag_anchor = (
+        str(discussion.actor.get("id") or "") == "task-dag"
+        and str(discussion.payload.get("thread_id") or "").startswith("dagtask:"))
     for round_index in range(MAX_DISCUSSION_ROUNDS):
         # The user's message selects the first round, with no mention meaning
         # everyone. Later rounds are opt-in: only a peer explicitly cited by a
@@ -743,12 +749,23 @@ def plan_next_task(
         # watermark remains intact, so a peer cited later still receives the
         # complete bounded transcript delta without consuming turns meanwhile.
         # With a decider (star roster) the opening round is answered by the decider alone; it then pulls workers
-        # in by @mention. Mesh rosters keep the historical everyone-or-mentioned behavior.
-        responders = (
-            ((decider,) if decider is not None else resolve_mentions((str(discussion.payload["text"]),), room.members))
-            if round_index == 0 else _unaddressed_member_mentions(discussion_messages, room))
+        # in by @mention. Mesh rosters keep the historical everyone-or-mentioned behavior. A manual-DAG anchor has
+        # already resolved and atomically claimed exactly one worker, so it alone bypasses the decider (routing it
+        # through the decider is redundant and unsafe: the decider may fail or rephrase while the ledger stays
+        # in_progress); ordinary user ingress always enters through the decider.
+        text = (str(discussion.payload["text"]),)
+        if round_index == 0:
+            responders = (
+                resolve_mentions(text, room.members, default_all=False) if task_dag_anchor
+                else (decider,) if decider is not None else resolve_mentions(text, room.members))
+        else:
+            responders = () if task_dag_anchor else _unaddressed_member_mentions(discussion_messages, room)
         for member_index, member in enumerate(_rotate(responders, round_index)):
-            if (round_index, member.member_id) in terminals:
+            if (terminal := terminals.get((round_index, member.member_id))) is not None:
+                # A deferral is a recoverable execution boundary, not a silent member round: keep the source
+                # discussion pending so an exact retry can reconstruct and publish its next-generation result.
+                if terminal.kind == "turn.deferred" and task_dag_anchor:
+                    return decide("idle", "deferred_turn")
                 continue
             watermark = watermarks.get((thread_id, member.member_id), 0)
             if not any(watermark < event.seq <= seen_through_seq for event in thread_messages):
@@ -759,6 +776,11 @@ def plan_next_task(
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt))
+        # A deferred coordinate may coexist with independently completed responders in a mesh round. Let those run,
+        # but do not compact the source discussion until the deferred coordinate is retried and replaced by its
+        # later terminal event, or the persisted retry action cannot reconstruct its source message.
+        if any(terminal.kind == "turn.deferred" for terminal in terminals.values()):
+            return decide("idle", "deferred_turn")
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
         if round_index == MAX_DISCUSSION_ROUNDS - 1:

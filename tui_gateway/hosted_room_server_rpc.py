@@ -97,6 +97,10 @@ class HostedRoomServerRPC:
             return next((c for c in self.server._sessions.values()
                          if str(c.get("session_key") or "") == session_id), None)
 
+    def owns_session(self, session_id: str) -> bool:
+        """Return whether this process can answer controls for the session."""
+        return self._session_record(session_id) is not None
+
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
         del profile, source
         record = self._session_record(session_id)
