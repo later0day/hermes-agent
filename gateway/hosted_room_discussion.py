@@ -1616,7 +1616,10 @@ def plan_publication(
         )
         terminal_payload = {
             **common,
-            "error": error_text,
+            # The append-only Room log is rendered by Conversation/Activity
+            # views. Preserve the typed operator-safe reason, not arbitrary
+            # provider output which may contain prompts, URLs, or credentials.
+            "error": reason_code,
             "reason_code": reason_code,
         }
         terminal_kind = "turn.failed"

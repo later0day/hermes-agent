@@ -164,6 +164,65 @@ def test_driver_attempt_serializes_identity(tmp_path):
     assert result["attempts"][0]["redacted"] is True
 
 
+def test_driver_only_discussion_tasks_have_readable_labels_and_summary_counts(tmp_path):
+    db = tmp_path / "state.db"
+    _room(db)
+    identity = driver.TaskIdentity(ROOM, "driver-task", "thread-1", "turn-1")
+    driver.admit_task(
+        db,
+        identity=identity,
+        payload={"target_profile": "worker", "prompt": "private", "source_event_seq": 1},
+        clock=lambda: 1,
+    )
+    lease = driver.acquire_lease(
+        db,
+        room_id=ROOM,
+        gateway_id="gateway-a",
+        authority_epoch=1,
+        process_generation="process-a",
+        ttl_seconds=30,
+        clock=lambda: 2,
+    )
+    attempt = driver.start_task(
+        db, identity, lease, expected_cancel_generation=0, clock=lambda: 3
+    )
+    driver.settle_task(
+        db,
+        attempt,
+        settlement_id="settlement-1",
+        status="settled",
+        result={"text": "private result"},
+        clock=lambda: 4,
+    )
+    _event(
+        db,
+        event_id="terminal-1",
+        kind="turn.settled",
+        actor={"kind": "gateway", "id": "gateway-a"},
+        payload={
+            "task_id": "driver-task",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "member_id": "worker",
+            "round_index": 2,
+        },
+        now=5,
+    )
+
+    workspace = views.build_room_workspace(db, room_id=ROOM)
+    task = workspace["tasks"][0]
+    assert task["subject"] == "@worker · Round 3"
+    assert task["owner"] == "worker"
+    assert task["visual_state"] == "completed"
+    summary = views.room_summary(
+        workspace["room"], tasks=workspace["tasks"], actions=[]
+    )
+    assert summary["workspace"]["task_counts"] == {
+        "total": 1,
+        "completed": 1,
+    }
+
+
 def test_workspace_projects_retry_action_for_uncertain_attempt(tmp_path):
     db = tmp_path / "state.db"
     _room(db)

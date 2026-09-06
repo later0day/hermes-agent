@@ -1452,9 +1452,10 @@ class HostedRoomService:
                     )
                     detail = dict(action.get("detail") or {})
                     if raw_kind == "approval":
+                        # The Dashboard only needs decision metadata. Never copy
+                        # arbitrary approval fields such as command, args, cwd,
+                        # or environment into this operator-facing read model.
                         detail = {
-                            **approval_detail,
-                            **detail,
                             "tool_name": str(
                                 detail.get("tool_name")
                                 or approval_detail.get("tool_name")

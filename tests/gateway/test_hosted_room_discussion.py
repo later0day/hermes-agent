@@ -1113,6 +1113,228 @@ def test_project_task_dag_later_round_blocks_on_open_earlier_task(decider_room_d
     assert build.task_id not in review.blocked_by
 
 
+def test_research_team_parallel_followups_and_final_synthesis(decider_room_db):
+    db, room = decider_room_db
+    _append_user(
+        db,
+        event_id="research-request",
+        text="Compare news sites A and B, verify conflicts, and report one synthesis.",
+        thread_id="research-thread",
+    )
+
+    opening = _settle_next(
+        room,
+        db,
+        text=(
+            "@build research news site A; return URLs, timestamps, facts, confidence, "
+            "and open questions. @review research news site B using the same evidence schema."
+        ),
+    )
+    assert opening.member.profile == "research"
+
+    parallel = discussion.project_task_dag(
+        room, _events(db), local_profiles=LOCAL_PROFILES, thread_id="research-thread"
+    )
+    assert {task.owner_handle for task in parallel} == {"build", "review"}
+    assert all(task.blocked_by == () for task in parallel)
+
+    site_a = _settle_next(
+        room,
+        db,
+        text=(
+            "Site A: headline Alpha; URL https://a.example/alpha; published 09:00 UTC; "
+            "claim 10 affected; confidence medium; open question revision time. "
+            "@research please compare."
+        ),
+    )
+    site_b = _settle_next(
+        room,
+        db,
+        text=(
+            "Site B: headline Alpha update; URL https://b.example/alpha; published 10:00 UTC; "
+            "claim 12 affected after official update; confidence high. @research please compare."
+        ),
+    )
+    assert {site_a.member.profile, site_b.member.profile} == {"build", "review"}
+
+    coordinator = _next_task(room, db)
+    assert coordinator.member.profile == "research"
+    assert "https://a.example/alpha" in coordinator.payload["prompt"]
+    assert "https://b.example/alpha" in coordinator.payload["prompt"]
+    _append_publication(
+        db,
+        discussion.plan_publication(
+            room,
+            _events(db),
+            coordinator,
+            status="settled",
+            result={
+                "text": (
+                    "The counts conflict. @build verify Site A revision time and source. "
+                    "@review verify whether Site B cites the official update."
+                )
+            },
+            local_profiles=LOCAL_PROFILES,
+        ),
+    )
+
+    followups = discussion.project_task_dag(
+        room, _events(db), local_profiles=LOCAL_PROFILES, thread_id="research-thread"
+    )
+    second_wave = followups[-2:]
+    assert {task.owner_handle for task in second_wave} == {"build", "review"}
+    assert all(task.blocked_by == () for task in second_wave)
+
+    supplements = {}
+    while set(supplements) != {"build", "review"}:
+        next_task = _next_task(room, db)
+        if next_task.member.profile == "research":
+            response = "Waiting for both requested source checks before synthesis."
+        elif next_task.member.profile == "build":
+            response = "Site A revised at 10:15 UTC and still cites the initial bulletin. @research verified."
+            supplements["build"] = response
+        else:
+            response = "Site B links the 10:00 UTC official update containing 12 affected. @research verified."
+            supplements["review"] = response
+        _append_publication(
+            db,
+            discussion.plan_publication(
+                room,
+                _events(db),
+                next_task,
+                status="settled",
+                result={"text": response},
+                local_profiles=LOCAL_PROFILES,
+            ),
+        )
+    final = _next_task(room, db)
+    assert final.member.profile == "research"
+    transcript = "\n".join(
+        event["payload"].get("text", "")
+        for event in _events(db)
+        if event["kind"] == "message.member"
+    )
+    assert "revised at 10:15 UTC" in transcript
+    assert "official update containing 12" in transcript
+    assert "@build" in final.payload["prompt"]
+    assert "@review" in final.payload["prompt"]
+    _append_publication(
+        db,
+        discussion.plan_publication(
+            room,
+            _events(db),
+            final,
+            status="settled",
+            result={
+                "text": (
+                    "Leader report: both sites cover Alpha. Site A preserves the initial 10; "
+                    "Site B reports the later official 12. The difference is temporal, not an unresolved conflict."
+                )
+            },
+            local_profiles=LOCAL_PROFILES,
+        ),
+    )
+    decision = discussion.plan_next_task(
+        room, _events(db), local_profiles=LOCAL_PROFILES
+    )
+    assert decision.status == "settled"
+    assert decision.reason == "silent_round"
+    messages = [
+        event for event in _events(db) if event["kind"] == "message.member"
+    ]
+    assert messages[-1]["payload"]["text"].startswith("Leader report:")
+
+
+def test_research_team_failed_source_never_produces_a_false_leader_report(decider_room_db):
+    db, room = decider_room_db
+    _append_user(
+        db,
+        event_id="research-failure",
+        text="Compare news sites A and B and report verified findings.",
+        thread_id="research-failure-thread",
+    )
+    _settle_next(
+        room,
+        db,
+        text="@build research site A. @review research site B.",
+    )
+
+    first_worker = _next_task(room, db)
+    failed = discussion.plan_publication(
+        room,
+        _events(db),
+        first_worker,
+        status="failed",
+        result={"error": "HTTP 401 authentication failed PRIVATE_PROVIDER_RESPONSE"},
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert failed.terminal_kind == "turn.failed"
+    assert failed.events[0].payload["reason_code"] == "provider_auth_or_access"
+    assert "PRIVATE_PROVIDER_RESPONSE" not in str(failed.events[0].payload)
+    _append_publication(db, failed)
+
+    second_worker = _settle_next(
+        room,
+        db,
+        text="Site B evidence: https://b.example/story. @research site A was unavailable.",
+    )
+    assert second_worker.member.profile in {"build", "review"}
+    coordinator = _next_task(room, db)
+    assert coordinator.member.profile == "research"
+    failed_events = [event for event in _events(db) if event["kind"] == "turn.failed"]
+    assert failed_events[0]["payload"]["reason_code"] == "provider_auth_or_access"
+    _append_publication(
+        db,
+        discussion.plan_publication(
+            room,
+            _events(db),
+            coordinator,
+            status="settled",
+            result={"text": "Unable to produce a verified comparison because Site A failed."},
+            local_profiles=LOCAL_PROFILES,
+        ),
+    )
+    messages = [
+        event["payload"]["text"]
+        for event in _events(db)
+        if event["kind"] == "message.member"
+    ]
+    assert not any(text.startswith("Leader report:") for text in messages)
+
+
+def test_research_team_superseded_request_discards_stale_research_result(decider_room_db):
+    db, room = decider_room_db
+    _append_user(
+        db,
+        event_id="research-old",
+        text="Research yesterday's Site A and Site B reports.",
+        thread_id="research-thread",
+    )
+    stale = _next_task(room, db)
+    latest = _append_user(
+        db,
+        event_id="research-latest",
+        text="Correction: research today's Site A and Site B reports only.",
+        thread_id="research-thread",
+    )
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        stale,
+        status="settled",
+        result={"text": "Leader report: stale yesterday result."},
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert publication.terminal_kind == "turn.cancelled"
+    assert publication.events[0].payload["reason"] == "superseded_by_newer_user_event"
+    _append_publication(db, publication)
+    current = _next_task(room, db)
+    assert current.member.profile == "research"
+    assert current.payload["source_event_seq"] == latest["seq"]
+    assert "today's Site A" in current.payload["prompt"]
+    assert "stale yesterday result" not in current.payload["prompt"]
+
+
 def test_project_task_dag_is_deterministic(decider_room_db):
     db, room = decider_room_db
     _append_user(db, event_id="user-1", text="Ship it.")
