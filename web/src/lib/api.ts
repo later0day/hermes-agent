@@ -1586,7 +1586,7 @@ export interface RoomTopologyResponse {
   max_rounds?: number | null;
 }
 
-export type PendingActionKind = "permission" | "plan_approval" | "shutdown";
+export type PendingActionKind = "permission" | "plan_approval" | "shutdown" | "retry";
 
 export interface PendingAction {
   room_id: string;

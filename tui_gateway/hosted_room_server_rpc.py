@@ -149,6 +149,10 @@ class HostedRoomServerRPC:
                     return candidate
         return None
 
+    def owns_session(self, session_id: str) -> bool:
+        """Return whether this process can answer controls for the session."""
+        return self._session_record(session_id) is not None
+
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
         del profile, source
         record = self._session_record(session_id)

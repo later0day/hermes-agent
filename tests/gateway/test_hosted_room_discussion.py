@@ -55,13 +55,14 @@ def _append_user(
     event_id: str,
     text: str,
     thread_id: str = "thread-1",
+    actor_id: str = "local-user",
 ) -> dict:
     return hosted_rooms.append_event(
         db,
         room_id=ROOM_ID,
         event_id=event_id,
         kind="message.user",
-        actor={"kind": "user", "id": "local-user"},
+        actor={"kind": "user", "id": actor_id},
         authority_gateway_id=GATEWAY_ID,
         authority_epoch=1,
         payload={"text": text, "thread_id": thread_id},
@@ -323,6 +324,39 @@ def test_plain_member_reply_does_not_wake_another_bot_round(
 
     assert decision.status == "settled"
     assert decision.reason == "silent_round"
+
+
+def test_deferred_member_turn_keeps_discussion_pending_for_exact_retry(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    _append_user(
+        db,
+        event_id="user-1",
+        text="@research answer the user",
+        thread_id="dagtask:t1",
+        actor_id="task-dag",
+    )
+    task = _next_task(room, db)
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        task,
+        status="deferred",
+        execution_generation=1,
+        local_profiles=LOCAL_PROFILES,
+    )
+    _append_publication(db, publication)
+
+    decision = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=LOCAL_PROFILES,
+    )
+
+    assert decision.status == "idle"
+    assert decision.reason == "deferred_turn"
+    assert decision.discussion_event_id == "user-1"
 
 
 @pytest.mark.parametrize("value", ["", "pass", "pass.", "(pass)", " ( PASS ). "])
@@ -921,6 +955,35 @@ def test_decider_answers_opening_round_alone(decider_room_db):
     assert "You are the decider" in first.payload["prompt"]
     assert "never call delegate_task" in first.payload["prompt"]
     assert "never answer (pass) on the opening turn" in first.payload["prompt"]
+
+
+def test_internal_task_dag_anchor_targets_worker_without_decider_round(
+    decider_room_db,
+):
+    db, room = decider_room_db
+    _append_user(
+        db,
+        event_id="dagdispatch:t1",
+        text="@build run the claimed task",
+        thread_id="dagtask:t1",
+        actor_id="task-dag",
+    )
+
+    first = _settle_next(room, db, text="@research claimed task complete")
+    assert first.member.profile == "build"
+    assert first.round_index == 0
+    assert "You are the decider" not in first.payload["prompt"]
+    assert "@research" in first.payload["prompt"]
+
+    # The ledger, not conversational mentions, owns the next DAG transition.
+    # The worker's natural report-to-decider text must not open another round.
+    decision = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert decision.status == "settled"
+    assert decision.reason == "silent_round"
 
 
 def test_decider_dispatches_worker_who_reports_back(decider_room_db):

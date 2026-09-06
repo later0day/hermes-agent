@@ -1245,6 +1245,16 @@ def plan_next_task(
     seen_through_seq = max(event.seq for event in thread_messages)
 
     decider = _decider(room)
+    # A server-owned manual DAG anchor is one bounded worker execution, not an
+    # open-ended Discussion. The durable DAG owns dependency progression and
+    # any later review task, so mentions in the worker's prose must not fan out
+    # extra conversational rounds.
+    task_dag_anchor = (
+        str(discussion.actor.get("id") or "") == "task-dag"
+        and str(discussion.payload.get("thread_id") or "").startswith(
+            "dagtask:"
+        )
+    )
 
     for round_index in range(MAX_DISCUSSION_ROUNDS):
         # The user's message selects the first round, with no mention meaning
@@ -1257,18 +1267,49 @@ def plan_next_task(
         # decider alone; it then pulls workers in by @mention. Mesh rosters keep
         # the historical everyone-or-mentioned behavior.
         if round_index == 0:
+            # Manual DAG auto-dispatch has already resolved and atomically
+            # claimed exactly one target worker before appending its task-dag
+            # anchor. Sending that internal anchor through the decider again is
+            # both redundant and unsafe: the decider can fail or rephrase the
+            # assignment while the ledger remains in_progress. Only this
+            # server-owned anchor bypasses the star's normal decider-first user
+            # ingress; ordinary users still always enter through the decider.
             responders = (
-                (decider,)
-                if decider is not None
-                else resolve_mentions(
-                    (str(discussion.payload["text"]),), room.members
+                resolve_mentions(
+                    (str(discussion.payload["text"]),),
+                    room.members,
+                    default_all=False,
+                )
+                if task_dag_anchor
+                else (
+                    (decider,)
+                    if decider is not None
+                    else resolve_mentions(
+                        (str(discussion.payload["text"]),), room.members
+                    )
                 )
             )
         else:
-            responders = _unaddressed_member_mentions(discussion_messages, room)
+            responders = (
+                ()
+                if task_dag_anchor
+                else _unaddressed_member_mentions(discussion_messages, room)
+            )
         ordered = _rotate(responders, round_index)
         for member_index, member in enumerate(ordered):
-            if (round_index, member.member_id) in terminals:
+            terminal = terminals.get((round_index, member.member_id))
+            if terminal is not None:
+                # A deferral is a recoverable execution boundary, not a silent
+                # member round. Keep the source discussion pending so an exact
+                # retry can reconstruct and publish its next-generation result.
+                if terminal.kind == "turn.deferred" and task_dag_anchor:
+                    return DiscussionDecision(
+                        status="idle",
+                        reason="deferred_turn",
+                        discussion_event_id=discussion.event_id,
+                        source_event_seq=discussion.seq,
+                        thread_id=thread_id,
+                    )
                 continue
             watermark = watermarks.get((thread_id, member.member_id), 0)
             delta = [
@@ -1301,6 +1342,23 @@ def plan_next_task(
                 source_event_seq=discussion.seq,
                 thread_id=thread_id,
                 task=task,
+            )
+
+        # A deferred coordinate may coexist with independently completed
+        # responders in a mesh round. Let those responders run, but do not
+        # compact the source discussion until the deferred coordinate is
+        # retried and replaced by its later terminal event. Otherwise the
+        # persisted retry action cannot reconstruct its source message.
+        if any(
+            terminal.kind == "turn.deferred"
+            for terminal in terminals.values()
+        ):
+            return DiscussionDecision(
+                status="idle",
+                reason="deferred_turn",
+                discussion_event_id=discussion.event_id,
+                source_event_seq=discussion.seq,
+                thread_id=thread_id,
             )
 
         spoke = any(

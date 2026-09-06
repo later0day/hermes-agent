@@ -624,6 +624,123 @@ def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
 
 
 
+def test_dashboard_relays_exact_approval_to_separate_gateway_process(tmp_path: Path):
+    db = tmp_path / "state.db"
+    gateway = HostedRoomService(_server(), db_path=db)
+    gateway.rpc = _FakeRPC()
+    gateway.runtime.rpc = gateway.rpc
+    gateway.rpc.owns_session = lambda session_id: session_id == "owner-session"
+    gateway.local_profiles = lambda: ("default", "ops")
+    gateway.create_room(
+        room_id="room-1",
+        name="Cross-process approval",
+        members=[
+            {"member_id": "default", "profile": "default", "handle": "default"},
+            {"member_id": "ops", "profile": "ops", "handle": "ops"},
+        ],
+    )
+    gateway.send(
+        room_id="room-1",
+        event_id="user-1",
+        payload={"text": "@ops inspect", "thread_id": "thread-1"},
+    )
+    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=gateway.bindings()[0].gateway_id,
+        authority_epoch=1,
+        process_generation="gateway-process",
+        ttl_seconds=30,
+        clock=time.time,
+    )
+    attempt = driver.start_task(
+        db,
+        task["identity"],
+        lease,
+        expected_cancel_generation=0,
+        clock=time.time,
+    )
+    member_id = str(task["payload"]["target_member_id"])
+    gateway._set_pending_action(
+        "room-1",
+        member_id,
+        {
+            "kind": "approval",
+            "task_id": task["identity"].task_id,
+            "execution_generation": attempt.execution_generation,
+            "session_id": "owner-session",
+            "request_id": "request-1",
+            "approval": {
+                "request_id": "request-1",
+                "description": "dangerous command",
+            },
+        },
+    )
+
+    dashboard = HostedRoomService(_server(), db_path=db)
+    dashboard.rpc = _FakeRPC()
+    dashboard.runtime.rpc = dashboard.rpc
+    dashboard.rpc.owns_session = lambda _session_id: False
+    action = dashboard.pending_actions("room-1")["actions"][0]
+    assert action["kind"] == "permission"
+    assert dashboard.handle_action(
+        "room-1", action["action_id"], "approve"
+    ) == {"ok": True, "message": "Action decision queued"}
+    assert dashboard.handle_action(
+        "room-1", action["action_id"], "approve"
+    ) == {"ok": True, "message": "Action decision already recorded"}
+    conflict = dashboard.handle_action(
+        "room-1", action["action_id"], "deny"
+    )
+    assert conflict == {
+        "ok": False,
+        "message": "Action already has a different decision",
+    }
+    assert dashboard.rpc.approvals == []
+
+    assert gateway._relay_action_decisions_once() == 1
+    assert gateway.rpc.approvals == [
+        {
+            "session_id": "owner-session",
+            "request_id": "request-1",
+            "choice": "once",
+        }
+    ]
+    assert dashboard.pending_actions("room-1")["actions"] == []
+
+    # A queued choice is fenced by its task generation even if a replacement
+    # action accidentally reuses the same external request id.
+    from gateway import hosted_room_actions
+
+    hosted_room_actions.request_action_decision(
+        db,
+        room_id="room-1",
+        member_id=member_id,
+        action_id="request-2",
+        decision={
+            "choice": "deny",
+            "task_id": "old-task",
+            "execution_generation": 1,
+            "request_id": "request-2",
+        },
+    )
+    gateway._set_pending_action(
+        "room-1",
+        member_id,
+        {
+            "kind": "approval",
+            "task_id": "replacement-task",
+            "execution_generation": 2,
+            "session_id": "owner-session",
+            "request_id": "request-2",
+        },
+    )
+    assert gateway._relay_action_decisions_once() == 1
+    assert len(gateway.rpc.approvals) == 1
+    assert hosted_room_actions.load_undelivered_decisions(db) == []
+
+
 def test_c5_manual_dag_task_auto_dispatches_and_completes_closing_the_loop(
     tmp_path: Path,
 ):
@@ -696,6 +813,107 @@ def test_c5_manual_dag_task_auto_dispatches_and_completes_closing_the_loop(
         ("message.member", "dagtask:t2"),
     ):
         assert expected in log, f"missing {expected} in {log}"
+    anchors = [
+        (event.get("payload") or {}).get("text")
+        for event in service._events("room-1")
+        if event["kind"] == "message.user"
+    ]
+    assert anchors == ["@backend build the API", "@frontend build the UI"]
+
+
+def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
+    tmp_path: Path,
+):
+    """A decider dispatch message must not complete its worker-owned DAG task.
+
+    Publication appends message.member before turn.settled, so even the worker's
+    visible reply is insufficient until its terminal event commits it.
+    """
+
+    from gateway import room_task_dag as dag
+
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.local_profiles = lambda: ("lead", "backend")
+    service.create_room(
+        room_id="room-1",
+        name="DAG room with decider",
+        members=[
+            {
+                "member_id": "lead-id",
+                "profile": "lead",
+                "handle": "lead",
+                "role": "decider",
+            },
+            {
+                "member_id": "backend-id",
+                "profile": "backend",
+                "handle": "backend",
+            },
+        ],
+    )
+    dag.create_task(
+        db, room_id="room-1", subject="@backend inspect it", task_id="t1"
+    )
+    assert dag.claim_task_for_dispatch(
+        db,
+        room_id="room-1",
+        task_id="t1",
+        owner="backend",
+        dispatch_thread_id="dagtask:t1",
+    ) is not None
+    room = hosted_rooms.room_state(db, room_id="room-1")
+
+    def append(*, event_id: str, kind: str, actor: dict, payload: dict) -> None:
+        hosted_rooms.append_event(
+            db,
+            room_id="room-1",
+            event_id=event_id,
+            kind=kind,
+            actor=actor,
+            payload=payload,
+            authority_gateway_id=str(room["authority_gateway_id"]),
+            authority_epoch=int(room["authority_epoch"]),
+        )
+
+    append(
+        event_id="decider-message",
+        kind="message.member",
+        actor={"kind": "member", "id": "lead-id", "profile": "lead"},
+        payload={
+            "member_id": "lead-id",
+            "thread_id": "dagtask:t1",
+            "text": "@backend inspect it",
+        },
+    )
+    service._sweep_completed_dag_dispatches(room)
+    assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "in_progress"
+
+    append(
+        event_id="worker-message",
+        kind="message.member",
+        actor={"kind": "member", "id": "backend-id", "profile": "backend"},
+        payload={
+            "member_id": "backend-id",
+            "thread_id": "dagtask:t1",
+            "text": "@lead done",
+        },
+    )
+    service._sweep_completed_dag_dispatches(room)
+    assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "in_progress"
+
+    append(
+        event_id="worker-terminal",
+        kind="turn.settled",
+        actor={"kind": "gateway", "id": str(room["authority_gateway_id"])},
+        payload={
+            "member_id": "backend-id",
+            "thread_id": "dagtask:t1",
+            "message_event_id": "worker-message",
+        },
+    )
+    service._sweep_completed_dag_dispatches(room)
+    assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "completed"
 
 
 def test_c5_ambiguous_subject_is_not_auto_dispatched(tmp_path: Path):
@@ -1112,25 +1330,42 @@ def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
     deferred = next(event for event in events if event["kind"] == "turn.deferred")
     assert deferred["payload"]["task_id"] == first["identity"].task_id
     assert deferred["payload"]["execution_generation"] == 1
+    # Ordinary discussion deferrals do not stall independent later members:
+    # only server-owned manual-DAG anchors are held for exact retry.
     assert any(
-        event["kind"] == "message.member" and event["payload"]["member_id"] == "ops"
+        event["kind"] == "message.member"
+        and event["payload"]["member_id"] == "ops"
         for event in events
     )
 
-    requeued = service.retry_room_task(
-        "room-1",
-        task_id=first["identity"].task_id,
+    retry_action = service.pending_actions("room-1")["actions"][0]
+    assert retry_action["kind"] == "retry"
+    assert retry_action["detail"]["task_id"] == first["identity"].task_id
+    assert retry_action["detail"]["status"] == "deferred"
+    handled = service.handle_action(
+        "room-1", retry_action["action_id"], "approve"
     )
+    assert handled == {"ok": True, "message": "Room turn retry queued"}
+    requeued = driver.get_task(db, first["identity"])
     assert requeued["status"] == "queued"
-    lease = service.runtime._leases["room-1"]
-    retried = driver.start_task(
-        db,
-        first["identity"],
-        lease,
-        expected_cancel_generation=0,
-        clock=clock,
+    assert service.pending_actions("room-1")["actions"] == []
+
+    service.runtime._process_room(binding)
+    retried = driver.get_task(db, first["identity"])
+    assert retried["status"] == "settled"
+    service.runtime._process_room(binding)
+    assert retried["execution_generation"] == old_attempt.execution_generation + 1
+    retried_events = service._events("room-1")
+    assert any(
+        event["kind"] == "message.member"
+        and event["payload"]["member_id"] == "ops"
+        for event in retried_events
     )
-    assert retried.execution_generation == old_attempt.execution_generation + 1
+    assert sum(
+        event["kind"] == "turn.settled"
+        and event["payload"]["task_id"] == first["identity"].task_id
+        for event in retried_events
+    ) == 1
 
 
 def test_stop_fence_prevents_the_next_room_member_from_starting(
@@ -2227,8 +2462,9 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
         },
     )
     pending = service.status("room-1")["pending_actions"]
-    assert pending == [
-        {
+    assert len(pending) == 1
+    assert pending[0]["created_at"] > 0
+    assert {key: value for key, value in pending[0].items() if key != "created_at"} == {
             "kind": "approval",
             "task_id": "task-1",
             "execution_generation": 2,
@@ -2242,7 +2478,6 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
             },
             "member_id": "member-peer",
         }
-    ]
 
     assert service.approve_room_task(
         "room-1",
@@ -2326,9 +2561,13 @@ def test_pending_local_approval_survives_restart_and_generic_action_relays(
     rpc = _FakeRPC()
     restarted.rpc = rpc
     restarted.runtime.rpc = rpc
-    assert restarted.pending_actions("room-1")["actions"][0]["action_id"] == (
-        "approval-local-1"
-    )
+    dashboard_action = restarted.pending_actions("room-1")["actions"][0]
+    assert dashboard_action["action_id"] == "approval-local-1"
+    assert dashboard_action["kind"] == "permission"
+    assert dashboard_action["description"] == ""
+    assert dashboard_action["detail"]["tool_name"] == "terminal"
+    assert dashboard_action["detail"]["scope"] == "once"
+    assert dashboard_action["created_at"] > 0
 
     result = restarted.handle_action(
         "room-1", "approval-local-1", "approve"

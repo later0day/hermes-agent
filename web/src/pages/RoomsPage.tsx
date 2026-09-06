@@ -27,6 +27,7 @@ import {
   type PendingActionKind,
   type PolicyTraceResponse,
   type ReplicationHealthResponse,
+  type RoomActionResponse,
   type RoomDetailResponse,
   type RoomEvent,
   type RoomLogResponse,
@@ -281,19 +282,44 @@ function eventContent(ev: RoomEvent): EventContentResult {
   }
 }
 
+export function requireRoomActionSuccess(response: RoomActionResponse): void {
+  if (!response.ok) throw new Error(response.message || "Room action failed");
+}
+
 /* ------------------------------------------------------------------ */
 /*  Event filtering                                                     */
 /* ------------------------------------------------------------------ */
 
-function filterEvents(events: RoomEvent[], actorFilter: string, kindFilter: string): RoomEvent[] {
+export function filterEvents(
+  events: RoomEvent[],
+  actorFilter: string,
+  kindFilter: string,
+  memberRoles: ReadonlyMap<string, RoomRoleKind> = new Map(),
+): RoomEvent[] {
   return events.filter((ev) => {
     if (actorFilter !== "all") {
-      if (actorFilter === "coordinator" && !ev.kind.startsWith("coordinator.")) return false;
-      if (actorFilter === "teammate" && !ev.kind.startsWith("teammate.")) return false;
-      if (actorFilter === "observer" && !ev.kind.startsWith("observer.")) return false;
-      if (actorFilter === "user" && ev.kind !== "message.user") return false;
+      const actorKind = String(ev.actor?.kind ?? "");
+      const actorId = String(ev.actor?.id ?? "");
+      const memberRole = actorKind === "member" ? memberRoles.get(actorId) : undefined;
+      if (
+        actorFilter === "coordinator"
+        && memberRole !== "coordinator"
+        && memberRole !== "team_lead"
+        && !ev.kind.startsWith("coordinator.")
+      ) return false;
+      if (
+        actorFilter === "teammate"
+        && memberRole !== "teammate"
+        && !ev.kind.startsWith("teammate.")
+      ) return false;
+      if (
+        actorFilter === "observer"
+        && memberRole !== "observer"
+        && !ev.kind.startsWith("observer.")
+      ) return false;
+      if (actorFilter === "user" && actorKind !== "user" && ev.kind !== "message.user") return false;
       if (actorFilter === "system" && ev.kind !== "room.activity" && !ev.kind.startsWith("room.")
-        && ev.actor?.kind !== "system" && ev.actor?.kind !== "gateway") return false;
+        && actorKind !== "system" && actorKind !== "gateway") return false;
     }
     if (kindFilter !== "all") {
       const c = eventContent(ev);
@@ -548,7 +574,7 @@ export default function RoomsPage() {
     if (!selected) return;
     setBusyActionId(actionId);
     try {
-      await api.approveRoomAction(selected, actionId);
+      requireRoomActionSuccess(await api.approveRoomAction(selected, actionId));
       setPendingActions((prev) => prev ? prev.filter((a) => a.action_id !== actionId) : null);
       showToast("Action approved", "success");
     } catch (err) { showToast(String(err), "error"); }
@@ -559,7 +585,7 @@ export default function RoomsPage() {
     if (!selected) return;
     setBusyActionId(actionId);
     try {
-      await api.denyRoomAction(selected, actionId);
+      requireRoomActionSuccess(await api.denyRoomAction(selected, actionId));
       setPendingActions((prev) => prev ? prev.filter((a) => a.action_id !== actionId) : null);
       showToast("Action denied", "success");
     } catch (err) { showToast(String(err), "error"); }
@@ -570,7 +596,9 @@ export default function RoomsPage() {
     if (!selected || !pendingActions) return;
     setBusyActionId("__approve_all__");
     try {
-      for (const action of pendingActions) { await api.approveRoomAction(selected, action.action_id); }
+      for (const action of pendingActions) {
+        requireRoomActionSuccess(await api.approveRoomAction(selected, action.action_id));
+      }
       setPendingActions([]);
       showToast("All actions approved", "success");
     } catch (err) { showToast(String(err), "error"); }
@@ -602,9 +630,13 @@ export default function RoomsPage() {
     return L.idle;
   }, [detail, L]);
 
+  const memberRoles = useMemo(
+    () => new Map((topology?.members ?? []).map((member) => [member.member_id, member.role])),
+    [topology],
+  );
   const filteredEvents = useMemo(
-    () => (log ? filterEvents(log.events, actorFilter, kindFilter) : []),
-    [log, actorFilter, kindFilter],
+    () => (log ? filterEvents(log.events, actorFilter, kindFilter, memberRoles) : []),
+    [log, actorFilter, kindFilter, memberRoles],
   );
 
   return (
@@ -922,6 +954,12 @@ function formatActionDetail(action: PendingAction, L: Record<string, string>): s
   } else if (action.kind === "shutdown") {
     const reason = typeof d.reason === "string" ? d.reason : "";
     if (reason) lines.push(`reason: ${reason}`);
+  } else if (action.kind === "retry") {
+    if (typeof d.task_id === "string") lines.push(`task: ${d.task_id}`);
+    if (typeof d.status === "string") lines.push(`status: ${d.status}`);
+    if (typeof d.execution_generation === "number") {
+      lines.push(`generation: ${d.execution_generation}`);
+    }
   }
   return lines;
 }
@@ -933,8 +971,8 @@ function PendingActionsCard({ actions, loading, error, onApprove, onDeny, onAppr
 }) {
   const { t } = useI18n();
   const L = { ...FALLBACK, ...(t.rooms ?? {}) };
-  const ACTION_ICON: Record<PendingActionKind, typeof Key> = { permission: Key, plan_approval: ClipboardList, shutdown: Power };
-  const ACTION_LABEL: Record<PendingActionKind, string> = { permission: L.permissionRequest, plan_approval: L.planApproval, shutdown: L.shutdownRequest };
+  const ACTION_ICON: Record<PendingActionKind, typeof Key> = { permission: Key, plan_approval: ClipboardList, shutdown: Power, retry: RotateCw };
+  const ACTION_LABEL: Record<PendingActionKind, string> = { permission: L.permissionRequest, plan_approval: L.planApproval, shutdown: L.shutdownRequest, retry: "Retry" };
   const count = actions?.length ?? 0;
 
   return (
@@ -982,15 +1020,19 @@ function PendingActionsCard({ actions, loading, error, onApprove, onDeny, onAppr
                     <div className="flex items-center gap-1.5 pl-5">
                       <Button ghost size="xs" className="text-[--color-success] hover:bg-[--color-success]/10 h-6 text-[11px]"
                         disabled={isBusy} onClick={() => onApprove(action.action_id)}
-                        prefix={isBusy ? <Spinner className="h-3 w-3" /> : undefined}>{L.approve}</Button>
-                      <Button ghost size="xs" className="text-[--color-destructive] hover:bg-[--color-destructive]/10 h-6 text-[11px]"
-                        disabled={isBusy} onClick={() => onDeny(action.action_id)}>{L.deny}</Button>
+                        prefix={isBusy ? <Spinner className="h-3 w-3" /> : undefined}>
+                        {action.kind === "retry" ? "Retry" : L.approve}
+                      </Button>
+                      {action.kind !== "retry" && (
+                        <Button ghost size="xs" className="text-[--color-destructive] hover:bg-[--color-destructive]/10 h-6 text-[11px]"
+                          disabled={isBusy} onClick={() => onDeny(action.action_id)}>{L.deny}</Button>
+                      )}
                     </div>
                   </div>
                 );
               })}
             </div>
-            {actions.length > 1 && (
+            {actions.length > 1 && actions.every((action) => action.kind !== "retry") && (
               <div className="pt-1">
                 <Button ghost size="xs" className="text-[--color-primary] w-full"
                   disabled={busyActionId !== null} onClick={onApproveAll}>{L.approveAll} ({actions.length})</Button>

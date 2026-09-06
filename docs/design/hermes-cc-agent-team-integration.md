@@ -69,18 +69,27 @@ Hermes' decider proxies all worker output so the chat group sees one coherent vo
 | **Decider = orchestration-only** | Hard tool whitelist, not prompt — F1 enforces at build time | CC's `applyCoordinatorToolFilter` restricts to 6 tools |
 | **Pull-based self-claim → C3** | v1/v2 uses @mention dispatch; C3 adds CC-style task DAG with file-locked claim | CC's self-claim algorithm (A.2) |
 
-### 2.3 CC structured protocol messages → Hermes pending actions
+### 2.3 CC structured protocol messages → Hermes control surfaces
 
-CC's mailbox carries typed protocol messages beyond plain text (§A.5). Hermes maps
-these to typed events in the append-only log, exposed as pending actions:
+CC's mailbox carries typed protocol messages beyond plain text (§A.5). Hermes does
+**not** currently publish equivalent `plan.*`, `shutdown.*`, or
+`permission.*` Room-log events. The implemented boundaries are deliberately
+narrower:
 
-| CC protocol message | Hermes event kind | API endpoint |
+| CC protocol message | Implemented Hermes representation | Control surface |
 |---|---|---|
-| `isPlanApprovalRequest` / `isPlanApprovalResponse` | `plan.approval` / `plan.approval_result` | `GET /api/rooms/{id}/pending-actions` → approve/deny |
-| `isShutdownRequest` / `isShutdownApproved` | `shutdown.request` / `shutdown.approved` / `shutdown.denied` | `GET /api/rooms/{id}/pending-actions` → approve/deny |
-| `isPermissionRequest` / `isPermissionResponse` | `permission.request` / `permission.approved` / `permission.denied` | `GET /api/rooms/{id}/pending-actions` → approve/deny |
-| `isTaskAssignment` | (`task.created` / `task.updated` — C3) | `/room task` commands |
-| `isIdleNotification` | `turn.settled` (terminal event, no user action needed) | Event log (auto-triggers `plan_next_task`) |
+| Permission request/response | Runtime callback action kind `approval`, persisted in `hosted_room_pending_actions`; Dashboard API normalizes it to `permission` | `GET /api/rooms/{id}/pending-actions` and exact approve/deny action endpoint |
+| Failed/indeterminate execution retry | Derived `retry` pending action fenced by task id, execution generation, and cancel generation | One exact Retry action; never bulk-approved |
+| Task assignment/completion | Sidecar `room_task_dag` / `room_task_deps` ledger, not Room-log `task.*` events | `/room task add|list|dep|claim|assign|done|release` |
+| Idle notification | `turn.settled` terminal Room event | Event log and scheduler wake-up |
+| Plan approval / shutdown protocol | Not implemented as a structured Room protocol | Open work; do not infer it from free-form text |
+
+Pending actions are refreshed from SQLite so a Dashboard process can see actions
+created by a separate Gateway process. Decisions are written first-writer-wins to the durable
+`hosted_room_action_decisions` relay; duplicate choices are idempotent,
+conflicting choices fail closed, and only the process that owns the exact
+session delivers the task/generation-matched decision. A crashed session's stale approval is dropped and
+replaced by an exact `retry` action rather than reporting false success.
 
 ---
 
@@ -200,13 +209,13 @@ session (requires room with active member turns).
 | Member detail + tool filtering | `GET /api/rooms/{id}/topology` | Member detail panel with radio-group tool filter | ✅ |
 
 **Real-browser Dashboard E2E results (2026-09-06, this session):**
-- Source Dashboard started via `python -m hermes_cli.main dashboard` with nvm Node v24.11.1 / `.venv`
-- Room `dashboard-e2e` seeded with 2 members (decider + teammate), 3 events, 2 DAG tasks, mirror subscription, pending action
-- **11 API endpoints all 200**: `rooms`, `rooms/{id}`, `log`, `topology`, `pending-actions`, `observer`, `peer-grants`, `replication-health`, `policy-trace`, `members/{id}/mailbox` (×2)
-- **12 UI components verified** in browser: room list, team topology, pending actions (Approve/Deny buttons), member detail panel (tool filtering, mailbox), event log table (3 rows), observer monitor, peer grants, replication health, room linkage, policy trace, refresh button, show disbanded toggle
-- **Pending actions persisted across Dashboard restart**: data survived process kill + restart, API returned correct action after restart
-- **Approve endpoint functional**: `POST /approve` correctly validated missing session (returned `{"ok":false,"message":"approval.respond failed: session not found"}`) — no false positive
-- Known: `observer pause/resume` backend is a stub (returns ok but doesn't change state)
+- The source Dashboard stayed online at `http://127.0.0.1:9119`; all Room checks used its authenticated browser session and production REST/WebSocket surfaces.
+- Room `prod-dag4-227d14ac` completed a four-task dependency DAG with two real Qwen workers: exactly four server-owned anchors, four worker messages, four matching settled terminals, and no failed/cancelled/deferred terminal.
+- The browser verified topology-role event filters, the append-only event table, pending-action rendering, peer grants, linkage, replication health, and task/thread-scoped output evidence.
+- Room `approval-manual-97b3ede2` proved cross-process Approve and Deny. A separate Dashboard persisted the decision; the Gateway process owning the exact session relayed it. Approve deleted the authorized marker, while Deny preserved its marker and produced no false success.
+- Room `approval-manual-8a8587ec` proved crash recovery: the stale approval was replaced by one exact generation-fenced Retry action; the generation-2 permission was approved and published one matching result.
+- Room `peer-e2e-232429e5` linked the live Dashboard Room to an isolated API-server Gateway on loopback. A real Qwen peer returned `PEER-E2E-232429E5`; the UI showed one Ready peer grant, one linkage, and healthy `1/1 peers ready`. Revocation changed health to Needs Reauthorization and blocked the queued peer turn until a new scoped grant was registered.
+- Known: `observer pause/resume` backend is a stub (returns ok but doesn't change state).
 
 ### 3.7 C2 — Chat-Group Bridge (SHIPPED, production-chain E2E)
 
@@ -216,6 +225,14 @@ session (requires room with active member turns).
 | Inbound routing (chat → room) | ✅ | Exact bound source, idempotent message id, stable identifier-safe Room thread |
 | `member_filter` (decider-only emission) | ✅ | Decider Rooms default to single external voice; `--all-members` is explicit opt-out |
 | Full production chain | ✅ | Gateway ingress → Room → runtime → real `prompt.submit` → agent turn → terminal callback → publication |
+
+**Live mirror durability evidence:** Room `mirror-e2e-40cbb8ab` published a
+real Qwen worker result through the production Gateway watcher and webhook
+adapter exactly once. Its subscription cursor advanced to seq 4. With the
+adapter disabled, a second result reached seq 8 while the cursor remained at 4;
+after adapter recovery it was delivered exactly once and the cursor advanced to
+8. The binding had `inbound=0`, so outbound content could not echo back into
+the Room.
 
 ### 3.8 C3 — Room Task DAG (SHIPPED manual ledger; structured Decider planning open)
 
@@ -250,28 +267,33 @@ session (requires room with active member turns).
 | T6 | Anti-injection | XML wrapper, escape, provenance framing | Repository discussion/runtime tests | ✅ |
 | T7 | C9 inspector | All 15 API endpoints, 9 UI components, cross-endpoint consistency | API + browser E2E | ✅ **307 passed, 0 failed** |
 | T8 | Observer | State machine, rules_checked, violations | API: check state, pause/resume cycle | ✅ (4 rooms, stub noted) |
-| T9 | Peer grants + replication | Route statuses, health arithmetic | API: verify ready+unavail+reauth = total, healthy logic | ✅ (4 rooms, 0 failures) |
-| T10 | Policy trace | Checkpoint snapshot, through_seq, watermarks | API: verify through_seq = room latest_seq, event_count = len(events) | ✅ (4 rooms, 0 failures) |
-| T11 | Cross-endpoint consistency | member_ids, room_id, latest_seq across endpoints | API: compare detail ↔ topology ↔ log ↔ policy-trace | ✅ (4 rooms, 0 failures) |
-| T12 | Error handling | Non-existent room, non-existent member, invalid params | API: 404 for missing rooms, graceful defaults for missing data | ✅ (3/4 passed, 1 warning) |
-| T13 | Frontend rendering | All C9 components, empty states, collapsible interaction | Browser: Playwright + Chrome headless | ✅ **18 passed, 0 failed** |
+| T9 | Peer grants + replication | Scoped invitation/register/probe, Ready/Needs Reauthorization health, two-installation replica promotion | Live API-server peer Gateway + separate real installation homes | ✅ |
+| T10 | Policy trace | Checkpoint snapshot, through_seq, watermarks | API: verify through_seq = room latest_seq, event_count = len(events) | ✅ |
+| T11 | Cross-endpoint consistency | member_ids, room_id, latest_seq across endpoints | API: compare detail ↔ topology ↔ log ↔ policy-trace | ✅ |
+| T12 | Error handling | Non-existent room, non-existent member, invalid params | API rejection and repository boundary tests | ✅ |
+| T13 | Frontend rendering | Topology, event filters, pending actions, peer/linkage/health cards | Authenticated live Chrome against source Dashboard | ✅ |
 | T14 | i18n | EN + ZH for all new keys | Bundle verification | ✅ |
-| T15 | Production turn chain | bound Gateway ingress → Room service/runtime → real `prompt.submit` → agent turn → terminal publication | Deterministic model boundary, real storage/session/driver/RPC path | ✅ |
+| T15 | Production turn chain | bound Gateway ingress → Room service/runtime → real `prompt.submit` → agent turn → terminal publication | Production services plus live Qwen | ✅ |
 | T16 | DAG concurrency/starvation | simultaneous SQLite claims; malformed head before valid task | Real connections/threads + runtime loop | ✅ |
-| T17 | Approval restart | pending action restart recovery and exact local relay | Recreate service on same SQLite DB | ✅ |
-| T18 | Mirror durability | retry budget cannot advance past unsent event | Real cursor store + watcher loop | ✅ |
+| T17 | Approval restart | cross-process visibility, durable exact-session relay, stale action replacement | Live Gateway/Dashboard crash and restart | ✅ |
+| T18 | Mirror durability | send outage rewinds cursor; recovery delivers once; inbound-off echo safety | Live Gateway watcher + webhook adapter | ✅ |
 | T19 | Live Agent Team chain | user → decider → worker terminal → decider review → settled | Live `alibaba-cn` / `qwen-plus`, production Room service/runtime/RPC | ✅ **real provider + real terminal** |
+| T20 | Failure/cancel/retry | model failure, terminal-process cancellation, exact generation retry | Live invalid-model profile, real terminal sleep, Dashboard stop/retry | ✅ |
+| T21 | Supersession fencing | newer same-thread user event cancels older task and rejects late result | Live Qwen task with delayed old generation | ✅ |
+| T22 | Two-Gateway RoomLink | scoped grant, real peer worker, revoke, health degradation, reauthorization | Main Dashboard + isolated live API-server Gateway | ✅ |
+| T23 | Replica takeover | page cursor, idempotent replay, gap rejection, promotion, returning-owner fence | Two isolated real `HERMES_HOME` installations and SQLite stores | ✅ |
 
 ### 4.2 Test Execution Results (latest repository acceptance)
 
-The focused core Hosted Room suite executed after the live-agent fixes passes **195
-tests, 0 failures** (`hosted_room_discussion`, both driver suites, and
-`hosted_room_service`). The broader recorded acceptance matrix also includes the real
-production-chain test
-`test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e`; the model
-network boundary is deterministic, while Gateway ingress, SQLite state, Room service,
-runtime, `HostedRoomServerRPC`, `prompt.submit`, agent invocation, callback threading,
-session persistence, and Room publication use production code.
+The complete focused Hosted Room subsystem suite passes **446 tests, 0
+failures**. It includes authoritative storage and replay, Discussion and driver
+runtime, manual Task DAG, mirror cursor semantics, execution policy, API-server
+Room grants/dispatch, peer HTTP/transport, two-Gateway scoping, prompt fences,
+server RPC, service lifecycle, and `groups.*` JSON-RPC methods. The suite also
+contains the production-chain test
+`test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e`; the
+separate live runs below replace its deterministic model boundary with Qwen and
+real terminal/network activity.
 
 A separate live provider run now proves the full Agent Team execution chain. It
 exposed and fixed two integration bugs that deterministic agents did not reveal:
@@ -282,6 +304,21 @@ exposed and fixed two integration bugs that deterministic agents did not reveal:
 2. The mention regex consumed conversational punctuation (`@default:` became the
    unknown handle `default:`), preventing worker → decider report-back. Resolution
    now prefers an exact roster handle, then strips trailing `:`/`.` punctuation.
+
+The live failure and fencing matrix also passed:
+
+- `failure-e2e-195a62de`: the invalid target model produced exactly
+  `turn.failed(reason_code=model_unavailable)`, with no false member message.
+- `cancel-e2e-345ba7d2`: Dashboard `groups.stop` interrupted a real
+  `sleep(120)` terminal process. The log contains `room.stop_requested` and
+  `turn.cancelled`, and no late member/settled result.
+- `supersede-e2e-b53f4ce0`: a newer same-thread user event fenced the delayed
+  old task. The old terminal became `turn.cancelled` with
+  `superseded_by_newer_user_event`; only the new `NEW` result was published.
+- Two isolated installation homes replicated three one-event pages, replayed an
+  already-ingested page with zero new rows, rejected a sequence gap, promoted the
+  replica to epoch 2 with `authority.claimed`, and fenced a returning epoch-1
+  writer after `authority.lost`.
 
 The historical Dashboard-only run below remains UI evidence rather than execution-
 chain evidence.
@@ -341,9 +378,9 @@ chain evidence.
 
 | Feature | Current evidence | Test gap |
 |---|---|---|
-| Process crash recovery | Durable reconstruction and service restart tests | No kill/restart injection at every transaction boundary |
-| Mirror external delivery | Real watcher/cursor with deterministic adapter | No live third-party platform network test in CI |
-| Model invocation | Live `alibaba-cn` / `qwen-plus` Agent Team run plus deterministic repository chain | Paid-provider call is manual evidence, not a hermetic CI test |
+| Process crash recovery | Live approval-session crash, lease expiry, exact retry, and generation-2 completion | No kill/restart injection at every transaction boundary |
+| Mirror external delivery | Live production Gateway watcher + webhook adapter outage/recovery | No live third-party SaaS/chat platform test in CI |
+| Model invocation | Live `alibaba-cn` / `qwen-plus` local and two-Gateway RoomLink runs plus hermetic repository tests | Paid-provider calls remain manual evidence, not hermetic CI |
 | Structured Decider planning | Not implemented | Requires service-gated typed coordination protocol first |
 | Quality review/repair | Not implemented | Requires durable task verdict/finding/attempt schema first |
 
@@ -504,14 +541,12 @@ for r in rooms:
 # ── 2. Event Log ──
 print("\n═══ 2. EVENT LOG ═══")
 valid_kinds = {
-    "message.user", "message.member", "room.activity", "turn.settled",
-    "observer.activity_digest", "observer.heartbeat", "observer.rule_violation",
-    "plan.publication", "plan.approval", "plan.approval_result",
-    "task.created", "task.updated", "task.completed", "task.deleted",
-    "member.joined", "member.left", "member.updated",
-    "room.created", "room.disbanded", "room.revision",
-    "permission.request", "permission.approved", "permission.denied",
-    "shutdown.request", "shutdown.approved", "shutdown.denied",
+    "message.user", "message.member", "member.unavailable",
+    "room.activity", "room.stop_requested",
+    "turn.started", "turn.deferred", "turn.reassigned",
+    "turn.cancelled", "turn.failed", "turn.settled",
+    "authority.claimed", "authority.lost",
+    "room.created", "room.disbanded", "room.members_changed", "room.renamed",
 }
 event_kinds = set()
 for r in rooms:
@@ -747,3 +782,4 @@ sys.exit(0 if failed == 0 else 1)
 | v1.2 | 2026-09-05 | Corrected C2/C3 status; recorded repository production-chain E2E; documented remaining structured planning/quality/recovery limits; removed checked-in password fallback |
 | v1.3 | 2026-09-06 | Replaced false C9 browser E2E claims (never executed) with real-browser Dashboard E2E results: 11 API endpoints 200, 12 UI components verified, pending actions persisted across restart, approve endpoint functional. Source Dashboard started via `python -m hermes_cli.main dashboard` with nvm Node v24.11.1 / `.venv` |
 | v1.4 | 2026-09-06 | Executed live Qwen Agent Team E2E through production Room service/runtime/RPC and real terminal. Fixed generic `delegate_task` escaping the Room roster and punctuation-breaking `@default:` report-back. Core Room suite: 195 passed. |
+| v1.5 | 2026-09-06 | Corrected nonexistent `plan.*`/`permission.*`/`shutdown.*` event claims; added live four-task DAG, cross-process approve/deny, crash/retry, cancellation, supersession, mirror outage/recovery, two-Gateway RoomLink revoke/reauthorize, and replica takeover evidence. Hardened the durable decision relay as first-writer-wins with task/generation fencing, corruption quarantine, bounded reads, and retention. Complete focused suite: 446 passed. |

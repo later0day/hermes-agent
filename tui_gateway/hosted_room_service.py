@@ -143,6 +143,8 @@ class HostedRoomService:
                 client = supplied_clients.get(route.target_install_id)
             if client is not None:
                 self.peer_clients[key] = client
+        self._action_relay_stop = threading.Event()
+        self._action_relay_thread: threading.Thread | None = None
         self.runtime = HostedRoomRuntime(
             db_path=self.db_path,
             rooms=self.bindings,
@@ -201,9 +203,100 @@ class HostedRoomService:
 
     def start(self) -> None:
         self.runtime.start()
+        with self._policy_lock:
+            if (
+                self._action_relay_thread is not None
+                and self._action_relay_thread.is_alive()
+            ):
+                return
+            self._action_relay_stop.clear()
+            self._action_relay_thread = threading.Thread(
+                target=self._action_relay_loop,
+                name="hosted-room-action-relay",
+                daemon=True,
+            )
+            self._action_relay_thread.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:
-        return self.runtime.stop(timeout=timeout)
+        self._action_relay_stop.set()
+        runtime_stopped = self.runtime.stop(timeout=timeout)
+        with self._policy_lock:
+            relay = self._action_relay_thread
+        if relay is not None:
+            relay.join(max(0.0, timeout))
+        return runtime_stopped and (relay is None or not relay.is_alive())
+
+    def _action_relay_loop(self) -> None:
+        while not self._action_relay_stop.is_set():
+            try:
+                self._relay_action_decisions_once()
+            except Exception as exc:
+                logger.warning("Room action relay failed: %s", exc)
+            self._action_relay_stop.wait(_HOSTED_ROOM_ACTIVE_POLL_SECONDS)
+
+    def _relay_action_decisions_once(self) -> int:
+        """Deliver exact durable decisions only in the process owning a session."""
+        decisions = hosted_room_actions.load_undelivered_decisions(self.db_path)
+        if not decisions:
+            return 0
+        self._refresh_pending_actions()
+        delivered = 0
+        for decision in decisions:
+            room_id = str(decision.get("room_id") or "")
+            member_id = str(decision.get("member_id") or "")
+            action_id = str(decision.get("action_id") or "")
+            with self._policy_lock:
+                action = self._pending_actions.get((room_id, member_id))
+                action = dict(action) if action is not None else None
+            if (
+                action is None
+                or str(
+                    action.get("action_id") or action.get("request_id") or ""
+                )
+                != action_id
+                or str(action.get("task_id") or "")
+                != str(decision.get("task_id") or "")
+                or int(action.get("execution_generation") or 0)
+                != int(decision.get("execution_generation") or 0)
+            ):
+                # Never transfer a queued choice to a replacement action that
+                # happens to reuse its external request id.
+                hosted_room_actions.mark_decision_delivered(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                    action_id=action_id,
+                )
+                delivered += 1
+                continue
+            session_id = str(action.get("session_id") or "")
+            owns_session = getattr(self.rpc, "owns_session", None)
+            if callable(owns_session) and not owns_session(session_id):
+                continue
+            try:
+                self.approve_room_task(
+                    room_id,
+                    member_id=member_id,
+                    task_id=str(action.get("task_id") or ""),
+                    execution_generation=int(
+                        action.get("execution_generation") or 0
+                    ),
+                    choice=str(decision.get("choice") or "deny"),
+                    request_id=str(action.get("request_id") or action_id),
+                )
+            except Exception as exc:
+                # A local session may have just settled. Exact task-generation
+                # checks make the decision stale rather than transferable.
+                logger.warning("Room action decision remains undelivered: %s", exc)
+                continue
+            hosted_room_actions.mark_decision_delivered(
+                self.db_path,
+                room_id=room_id,
+                member_id=member_id,
+                action_id=action_id,
+            )
+            delivered += 1
+        return delivered
 
     def wakeup(self) -> None:
         self.runtime.wakeup()
@@ -413,6 +506,39 @@ class HostedRoomService:
             status=status,
         )
 
+    def _refresh_pending_actions(self) -> None:
+        """Refresh durable actions so a separate Dashboard sees gateway writes."""
+        restored = hosted_room_actions.load_pending_actions(self.db_path)
+        with self._policy_lock:
+            self._pending_actions = restored
+
+    def _drop_stale_approval_actions(self, room_id: str) -> None:
+        """Remove approvals whose exact in-memory attempt cannot still answer."""
+        tasks = {
+            task["identity"].task_id: str(task.get("status") or "")
+            for task in driver.list_tasks(self.db_path, room_id=room_id)
+        }
+        with self._policy_lock:
+            stale = [
+                (key, dict(action))
+                for key, action in self._pending_actions.items()
+                if key[0] == room_id
+                and str(action.get("kind") or "") == "approval"
+                and tasks.get(str(action.get("task_id") or ""))
+                in {"indeterminate", "deferred", "settled", "failed", "cancelled"}
+            ]
+        for key, _action in stale:
+            self._set_pending_action(key[0], key[1], None)
+
+    @staticmethod
+    def _retry_action_id(task: Mapping[str, Any]) -> str:
+        identity = task["identity"]
+        return (
+            f"retry:{identity.task_id}:"
+            f"{int(task.get('execution_generation') or 0)}:"
+            f"{int(task.get('cancel_generation') or 0)}"
+        )
+
     def _set_pending_action(
         self,
         room_id: str,
@@ -427,7 +553,11 @@ class HostedRoomService:
             with self._policy_lock:
                 self._pending_actions.pop(key, None)
             return
-        normalized = {**action, "member_id": member_id}
+        normalized = {
+            **action,
+            "member_id": member_id,
+            "created_at": float(action.get("created_at") or time.time()),
+        }
         hosted_room_actions.set_pending_action(
             self.db_path,
             room_id=room_id,
@@ -745,7 +875,10 @@ class HostedRoomService:
             )
             if claimed is None:
                 continue
-            anchor_text = f"@{target.handle} {str(task.get('subject') or '').strip()}"
+            # The subject was just resolved to exactly one target, so it already
+            # contains the routing mention. Preserve it verbatim rather than
+            # prepending the handle a second time in the durable event log/UI.
+            anchor_text = str(task.get("subject") or "").strip()
             try:
                 hosted_rooms.append_event(
                     self.db_path,
@@ -807,6 +940,31 @@ class HostedRoomService:
             events = self._events(room_id)
         except Exception:
             return
+        # A dispatch thread contains the decider's @worker instruction before
+        # the worker answers.  Completing on any member message therefore marks
+        # the DAG row done too early and can unlock dependants while the worker
+        # turn is still running.  Match the claimed owner to the frozen roster
+        # member, and require that exact worker message to be committed by its
+        # corresponding turn.settled event.
+        member_id_by_handle = {
+            str(member.get("handle") or "").casefold(): str(
+                member.get("member_id") or ""
+            )
+            for member in (room.get("members") or [])
+            if isinstance(member, Mapping)
+        }
+        expected_member_by_thread = {
+            str(task.get("dispatch_thread_id") or ""): member_id_by_handle.get(
+                str(task.get("owner") or "").casefold(), ""
+            )
+            for task in pending_dispatches
+            if task.get("dispatch_thread_id")
+        }
+        committed_message_ids = {
+            str((event.get("payload") or {}).get("message_event_id") or "")
+            for event in events
+            if event.get("kind") == "turn.settled"
+        }
         settled_threads: set[str] = set()
         for event in events:
             if event.get("kind") != "message.member":
@@ -814,6 +972,12 @@ class HostedRoomService:
             payload = event.get("payload") or {}
             thread_id = str(payload.get("thread_id") or "")
             if thread_id not in pending_threads:
+                continue
+            if str(payload.get("member_id") or "") != expected_member_by_thread.get(
+                thread_id
+            ):
+                continue
+            if str(event.get("event_id") or "") not in committed_message_ids:
                 continue
             if discussion.is_pass_text(payload.get("text")):
                 continue
@@ -1105,6 +1269,8 @@ class HostedRoomService:
             runtime = {**runtime, "link_load_error": self._link_load_error}
         if room_id is None:
             return runtime
+        self._refresh_pending_actions()
+        self._drop_stale_approval_actions(room_id)
         tasks = driver.list_tasks(self.db_path, room_id=room_id)
         counts = Counter(str(task["status"]) for task in tasks)
         pending_actions = [
@@ -1272,20 +1438,76 @@ class HostedRoomService:
             return None
 
     def pending_actions(self, room_id: str) -> dict[str, Any]:
-        """Return pending actions (permission/plan/shutdown) for a room."""
+        """Return approvals and explicit retries awaiting operator action."""
+        self._refresh_pending_actions()
+        self._drop_stale_approval_actions(room_id)
         actions: list[dict[str, Any]] = []
         with self._policy_lock:
             for (action_room_id, _member_id), action in self._pending_actions.items():
                 if action_room_id == room_id:
+                    raw_kind = str(action.get("kind") or "permission")
+                    approval = action.get("approval")
+                    approval_detail = (
+                        dict(approval) if isinstance(approval, Mapping) else {}
+                    )
+                    detail = dict(action.get("detail") or {})
+                    if raw_kind == "approval":
+                        detail = {
+                            **approval_detail,
+                            **detail,
+                            "tool_name": str(
+                                detail.get("tool_name")
+                                or approval_detail.get("tool_name")
+                                or "terminal"
+                            ),
+                            "scope": str(
+                                detail.get("scope")
+                                or approval_detail.get("pattern_key")
+                                or "once"
+                            ),
+                        }
                     actions.append({
                         "room_id": str(action.get("room_id") or room_id),
                         "action_id": str(action.get("action_id") or action.get("request_id") or ""),
-                        "kind": str(action.get("kind") or "permission"),
-                        "description": str(action.get("description") or ""),
+                        "kind": "permission" if raw_kind == "approval" else raw_kind,
+                        "description": str(
+                            action.get("description")
+                            or approval_detail.get("description")
+                            or ""
+                        ),
                         "from_handle": str(action.get("from_handle") or action.get("member_id") or ""),
-                        "detail": dict(action.get("detail") or {}),
+                        "detail": detail,
                         "created_at": float(action.get("created_at") or 0),
                     })
+        for task in driver.list_tasks(self.db_path, room_id=room_id):
+            if str(task.get("status") or "") not in {"indeterminate", "deferred"}:
+                continue
+            identity = task["identity"]
+            payload = task.get("payload") or {}
+            actions.append({
+                "room_id": room_id,
+                "action_id": self._retry_action_id(task),
+                "kind": "retry",
+                "description": "Retry uncertain Room turn after restart",
+                "from_handle": str(
+                    payload.get("target_member_id")
+                    or payload.get("target_profile")
+                    or ""
+                ),
+                "detail": {
+                    "task_id": identity.task_id,
+                    "thread_id": identity.thread_id,
+                    "status": str(task.get("status") or ""),
+                    "execution_generation": int(
+                        task.get("execution_generation") or 0
+                    ),
+                },
+                "created_at": float(
+                    task.get("indeterminate_at")
+                    or task.get("updated_at")
+                    or 0
+                ),
+            })
         return {"room_id": room_id, "actions": actions}
 
     def handle_action(
@@ -1294,6 +1516,30 @@ class HostedRoomService:
         """Approve or deny one exact pending Room action."""
         if decision not in {"approve", "deny"}:
             return {"ok": False, "message": "Decision must be approve or deny"}
+        self._refresh_pending_actions()
+        self._drop_stale_approval_actions(room_id)
+        if action_id.startswith("retry:"):
+            if decision != "approve":
+                return {"ok": False, "message": "Retry can only be approved"}
+            retry_task = next(
+                (
+                    task
+                    for task in driver.list_tasks(self.db_path, room_id=room_id)
+                    if str(task.get("status") or "")
+                    in {"indeterminate", "deferred"}
+                    and self._retry_action_id(task) == action_id
+                ),
+                None,
+            )
+            if retry_task is None:
+                return {"ok": False, "message": "Retry action is stale"}
+            try:
+                self.retry_room_task(
+                    room_id, task_id=retry_task["identity"].task_id
+                )
+            except Exception as exc:
+                return {"ok": False, "message": str(exc)}
+            return {"ok": True, "message": "Room turn retry queued"}
         matched: tuple[tuple[str, str], dict[str, Any]] | None = None
         with self._policy_lock:
             for key, action in self._pending_actions.items():
@@ -1309,6 +1555,36 @@ class HostedRoomService:
         key, action = matched
         kind = str(action.get("kind") or "")
         if kind in {"approval", "permission"}:
+            session_id = str(action.get("session_id") or "")
+            owns_session = getattr(self.rpc, "owns_session", None)
+            if callable(owns_session) and not owns_session(session_id):
+                try:
+                    outcome = hosted_room_actions.request_action_decision(
+                        self.db_path,
+                        room_id=room_id,
+                        member_id=key[1],
+                        action_id=action_id,
+                        decision={
+                            "choice": "once" if decision == "approve" else "deny",
+                            "task_id": str(action.get("task_id") or ""),
+                            "execution_generation": int(
+                                action.get("execution_generation") or 0
+                            ),
+                            "request_id": str(
+                                action.get("request_id") or action_id
+                            ),
+                        },
+                    )
+                except hosted_room_actions.ActionDecisionConflictError as exc:
+                    return {"ok": False, "message": str(exc)}
+                return {
+                    "ok": True,
+                    "message": (
+                        "Action decision queued"
+                        if outcome == "queued"
+                        else "Action decision already recorded"
+                    ),
+                }
             try:
                 result = self.approve_room_task(
                     room_id,
