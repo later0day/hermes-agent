@@ -3,7 +3,7 @@ import { api, type PendingAction, type ProfileInfo, type RoomCreateRequest } fro
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import RoomsWorkspace, { type RoomInspector } from "./rooms/RoomsWorkspace";
-import { requireRoomActionSuccess } from "./rooms/room-model";
+import { requireRoomActionSuccess, roomErrorMessage } from "./rooms/room-model";
 import { useRoomsWorkspace } from "./rooms/useRoomsWorkspace";
 
 export default function RoomsPage() {
@@ -12,10 +12,10 @@ export default function RoomsPage() {
   const [actionCenterAction, setActionCenterAction] = useState<PendingAction | null>(null);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [teamBusy, setTeamBusy] = useState(false);
-  useEffect(() => { void api.getProfiles().then((result) => setProfiles(result.profiles)).catch((error) => showToast(String(error), "error")); }, [showToast]);
+  useEffect(() => { void api.getProfiles().then((result) => setProfiles(result.profiles)).catch((error) => showToast(roomErrorMessage(error), "error")); }, [showToast]);
   const state = useRoomsWorkspace({
     requireSuccess: requireRoomActionSuccess,
-    onError: (error) => showToast(String(error), "error"),
+    onError: (error) => showToast(roomErrorMessage(error), "error"),
   });
 
   const selectRoom = (roomId: string) => {
@@ -53,7 +53,7 @@ export default function RoomsPage() {
       selectRoom(request.room_id);
       showToast("Team created", "success");
       return true;
-    } catch (error) { showToast(String(error), "error"); return false; }
+    } catch (error) { showToast(roomErrorMessage(error), "error"); return false; }
     finally { setTeamBusy(false); }
   };
 
@@ -65,7 +65,7 @@ export default function RoomsPage() {
       await state.refreshRoom();
       showToast(`Work sent to @${recipient}`, "success");
       return true;
-    } catch (error) { showToast(String(error), "error"); return false; }
+    } catch (error) { showToast(roomErrorMessage(error), "error"); return false; }
     finally { setTeamBusy(false); }
   };
 
