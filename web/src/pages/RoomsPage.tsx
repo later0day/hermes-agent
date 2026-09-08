@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { PendingAction } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { api, type PendingAction, type ProfileInfo, type RoomCreateRequest } from "@/lib/api";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import RoomsWorkspace, { type RoomInspector } from "./rooms/RoomsWorkspace";
@@ -10,6 +10,9 @@ export default function RoomsPage() {
   const { toast, showToast } = useToast();
   const [inspector, setInspector] = useState<RoomInspector>({ kind: "room" });
   const [actionCenterAction, setActionCenterAction] = useState<PendingAction | null>(null);
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [teamBusy, setTeamBusy] = useState(false);
+  useEffect(() => { void api.getProfiles().then((result) => setProfiles(result.profiles)).catch((error) => showToast(String(error), "error")); }, [showToast]);
   const state = useRoomsWorkspace({
     requireSuccess: requireRoomActionSuccess,
     onError: (error) => showToast(String(error), "error"),
@@ -42,6 +45,30 @@ export default function RoomsPage() {
     }
   };
 
+  const createTeam = async (request: RoomCreateRequest) => {
+    setTeamBusy(true);
+    try {
+      await api.createRoom(request);
+      await state.refreshList();
+      selectRoom(request.room_id);
+      showToast("Team created", "success");
+      return true;
+    } catch (error) { showToast(String(error), "error"); return false; }
+    finally { setTeamBusy(false); }
+  };
+
+  const delegateWork = async (recipient: string, text: string) => {
+    if (!state.selectedRoomId) return false;
+    setTeamBusy(true);
+    try {
+      await api.sendRoomMessage(state.selectedRoomId, { recipient, text, event_id: `web-${crypto.randomUUID()}`, thread_id: `web-${crypto.randomUUID()}` });
+      await state.refreshRoom();
+      showToast(`Work sent to @${recipient}`, "success");
+      return true;
+    } catch (error) { showToast(String(error), "error"); return false; }
+    finally { setTeamBusy(false); }
+  };
+
   return (
     <>
       <RoomsWorkspace
@@ -59,6 +86,10 @@ export default function RoomsPage() {
         taskMode={state.mode}
         inspector={inspector}
         actionCenterAction={actionCenterAction}
+        profiles={profiles}
+        teamBusy={teamBusy}
+        onCreateTeam={createTeam}
+        onDelegateWork={delegateWork}
         onSearchChange={state.setSearch}
         onPresetChange={state.setPreset}
         onSelectRoom={selectRoom}

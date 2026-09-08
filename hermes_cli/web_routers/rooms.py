@@ -7,12 +7,113 @@ non-secret (members carry no tokens, peer-route status is a classification).
 """
 
 import asyncio
+from typing import List, Literal
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from hermes_cli.web_routers._common import log as _log
 
 router = APIRouter()
+
+
+# -- Team workspace mutations: thin adapters over HostedRoomService (same narrow waist as groups.* RPC). The
+# dashboard does not recreate chat; it only admits team setup and explicit user work requests into the durable
+# Room scheduler.
+
+class RoomMemberInput(BaseModel):
+    profile: str
+    handle: str
+    display_name: str = ""
+    role: Literal["worker", "decider"] = "worker"
+
+
+class RoomCreateInput(BaseModel):
+    room_id: str
+    name: str
+    members: List[RoomMemberInput]
+
+
+class RoomMessageInput(BaseModel):
+    text: str
+    recipient: str
+    event_id: str
+    thread_id: str
+
+
+def _room_member_payload(member: RoomMemberInput, index: int) -> dict:
+    return {
+        "member_id": f"member-{index + 1}-{member.handle}",
+        "profile": member.profile,
+        "handle": member.handle,
+        "display_name": member.display_name,
+        "role": member.role,
+    }
+
+
+@router.post("/api/rooms")
+async def create_hosted_room(body: RoomCreateInput):
+    """Create a persistent 2-6 member team through HostedRoomService."""
+
+    def _run():
+        from gateway.hosted_room_discussion import DiscussionValidationError
+        from gateway.hosted_rooms import HostedRoomError, RoomConflictError, RoomNotFoundError
+        from tui_gateway.methods_groups import get_hosted_room_service
+
+        service = get_hosted_room_service()
+        if service is None:
+            raise HTTPException(status_code=503, detail="room service not available")
+        try:
+            room = service.create_room(
+                room_id=body.room_id,
+                name=body.name,
+                members=[_room_member_payload(member, index) for index, member in enumerate(body.members)],
+            )
+            return {"room": room}
+        except RoomNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except RoomConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except (HostedRoomError, DiscussionValidationError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    return await asyncio.to_thread(_run)
+
+
+@router.post("/api/rooms/{room_id}/messages")
+async def send_hosted_room_message(room_id: str, body: RoomMessageInput):
+    """Admit one explicit user work request into the Room scheduler."""
+
+    def _run():
+        from gateway.hosted_room_discussion import DiscussionValidationError
+        from gateway.hosted_rooms import HostedRoomError, RoomConflictError, RoomNotFoundError
+        from tui_gateway.methods_groups import get_hosted_room_service
+
+        service = get_hosted_room_service()
+        if service is None:
+            raise HTTPException(status_code=503, detail="room service not available")
+        recipient = body.recipient.strip().lstrip("@")
+        text = body.text.strip()
+        if not recipient:
+            raise HTTPException(status_code=400, detail="recipient is required")
+        if not text:
+            raise HTTPException(status_code=400, detail="task text is required")
+        try:
+            event = service.send(
+                room_id=room_id,
+                event_id=body.event_id,
+                payload={"text": f"@{recipient} {text}", "thread_id": body.thread_id},
+                recipient=recipient,
+            )
+            return {"event": event, "accepted": True}
+        except RoomNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except RoomConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except (HostedRoomError, DiscussionValidationError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    return await asyncio.to_thread(_run)
 
 
 @router.get("/api/rooms")

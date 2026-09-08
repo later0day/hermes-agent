@@ -826,10 +826,16 @@ class HostedRoomService:
         return room
 
     def send(
-        self, *, room_id: str, event_id: str, payload: Any, actor_id: str = "desktop",
+        self, *, room_id: str, event_id: str, payload: Any, actor_id: str = "desktop", recipient: str | None = None,
     ) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
+        if recipient is not None:
+            # Dashboard work requests name an explicit recipient: it must be on this room's frozen roster.
+            requested = str(recipient).strip().lstrip("@").casefold()
+            handles = {str(member.get("handle") or "").casefold() for member in self._room(room_id).get("members") or []}
+            if not requested or requested not in handles:
+                raise hosted_rooms.HostedRoomError("recipient is not a member of this room")
         event = hosted_rooms.append_event(
             self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
             actor={"kind": "user", "id": actor_id or "desktop"}, payload=normalized,
@@ -954,7 +960,14 @@ class HostedRoomService:
             handle = str(m.get("handle") or "")
             member_id = str(m.get("member_id") or "")
             profile = str(m.get("profile") or "")
-            role = str(m.get("role") or "teammate")
+            stored_role = str(m.get("role") or "worker")
+            role = (
+                "team_lead"
+                if stored_role == discussion.DECIDER_ROLE
+                else "teammate"
+                if stored_role == discussion.WORKER_ROLE
+                else stored_role
+            )
 
             entry: dict[str, Any] = {
                 "member_id": member_id,
@@ -994,7 +1007,6 @@ class HostedRoomService:
         current_round = None
         max_rounds = None
         try:
-            from gateway import hosted_room_discussion as discussion
             tasks = driver.list_tasks(self.db_path, room_id=room_id)
             for task in tasks:
                 if task.get("status") in {"running", "queued"}:

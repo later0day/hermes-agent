@@ -1,10 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   AlertTriangle,
   ChevronLeft,
   ChevronRight,
   CircleCheck,
   MessageSquareText,
+  Plus,
   Search,
   ShieldCheck,
   Users,
@@ -24,6 +25,8 @@ import type {
   PeerGrant,
   PendingAction,
   PolicyTraceResponse,
+  ProfileInfo,
+  RoomCreateRequest,
   ReplicationHealthResponse,
   RoomActivityItem,
   RoomMemberRole,
@@ -33,6 +36,7 @@ import type {
   RoomWorkspaceTask,
 } from "@/lib/api";
 import { filterRoomInbox, taskProgress } from "./workspace-helpers";
+import { CreateTeamDialog, WorkComposer } from "./TeamOperations";
 
 const compactButtonClass = "inline-flex h-8 w-auto flex-none self-start items-center justify-center whitespace-nowrap rounded-md border border-border bg-background px-3 text-xs font-semibold text-text-primary shadow-sm transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:pointer-events-none disabled:opacity-50";
 const compactPrimaryButtonClass = `${compactButtonClass} border-primary bg-primary text-primary-foreground hover:bg-primary/90`;
@@ -62,6 +66,10 @@ export interface RoomsWorkspaceProps {
   taskMode: RoomTaskMode;
   inspector: RoomInspector;
   actionCenterAction?: PendingAction | null;
+  profiles?: readonly ProfileInfo[];
+  teamBusy?: boolean;
+  onCreateTeam?(request: RoomCreateRequest): Promise<boolean>;
+  onDelegateWork?(recipient: string, text: string): Promise<boolean>;
   onSearchChange(value: string): void;
   onPresetChange(value: RoomPreset): void;
   onSelectRoom(id: string): void;
@@ -117,11 +125,11 @@ function Choices<T extends string>({ value, values, onChange, name }: {
   </div>;
 }
 
-function Inbox({ p, rooms }: { p: RoomsWorkspaceProps; rooms: RoomSummary[] }) {
+function Inbox({ p, rooms, onNewTeam }: { p: RoomsWorkspaceProps; rooms: RoomSummary[]; onNewTeam(): void }) {
   return <aside aria-label="Room inbox" className={`min-h-0 flex-col border-border bg-background/40 md:flex md:border-r ${p.selectedRoomId ? "hidden" : "flex"}`}>
     <div className="border-b border-border p-4">
       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Team inbox</p>
-      <h2 className="mt-1 text-2xl font-bold">Rooms</h2>
+      <div className="mt-1 flex items-center justify-between gap-3"><h2 className="text-2xl font-bold">Rooms</h2>{p.onCreateTeam ? <button type="button" className={compactPrimaryButtonClass} onClick={onNewTeam}><Plus className="mr-1 h-3.5 w-3.5" /> New team</button> : null}</div>
       <p className="mt-1 text-sm text-text-secondary">Work that needs your attention, in one place.</p>
       <label className="relative mt-4 block">
         <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-text-tertiary" />
@@ -460,20 +468,23 @@ function ActionDialog({ p }: { p: RoomsWorkspaceProps }) {
 }
 
 export function RoomsWorkspace(p: RoomsWorkspaceProps) {
+  const [createTeamOpen, setCreateTeamOpen] = useState(false);
   const rooms = useMemo(() => filterRoomInbox(p.rooms, p.search, p.preset), [p.rooms, p.search, p.preset]);
   const baseRoom = p.workspace?.room ?? p.rooms.find((item) => item.room_id === p.selectedRoomId);
   const summary = p.rooms.find((item) => item.room_id === p.selectedRoomId)?.workspace;
   const room = baseRoom ? { ...baseRoom, workspace: summary ?? baseRoom.workspace } : undefined;
-  if (!room || !p.workspace) return <div className="grid min-h-[36rem] overflow-hidden rounded-lg border border-border md:grid-cols-[18rem_1fr]"><Inbox p={p} rooms={rooms} /><main className="hidden place-items-center bg-surface/20 md:grid"><div className="text-center"><MessageSquareText className="mx-auto mb-3 h-8 w-8 text-text-tertiary" /><h1 className="text-lg font-semibold">Choose a team room</h1><p className="mt-1 text-sm text-text-secondary">Select an inbox item to see its work and conversation.</p></div></main></div>;
+  if (!room || !p.workspace) return <><div className="grid min-h-[36rem] overflow-hidden rounded-lg border border-border md:grid-cols-[18rem_1fr]"><Inbox p={p} rooms={rooms} onNewTeam={() => setCreateTeamOpen(true)} /><main className="hidden place-items-center bg-surface/20 md:grid"><div className="text-center"><MessageSquareText className="mx-auto mb-3 h-8 w-8 text-text-tertiary" /><h1 className="text-lg font-semibold">Choose a team room</h1><p className="mt-1 text-sm text-text-secondary">Select an inbox item to see its work and conversation.</p></div></main></div>{p.onCreateTeam ? <CreateTeamDialog profiles={p.profiles ?? []} createOpen={createTeamOpen} onCloseCreate={() => setCreateTeamOpen(false)} onCreate={p.onCreateTeam} busy={p.teamBusy} /> : null}</>;
   const actions = p.workspace.pending_actions;
   return <div className={`grid min-h-[36rem] overflow-hidden rounded-lg border border-border md:grid-cols-[18rem_minmax(0,1fr)] xl:h-[calc(100vh-8rem)] xl:grid-cols-[18rem_minmax(30rem,1fr)_21rem] ${p.className ?? ""}`}>
-    <Inbox p={p} rooms={rooms} />
+    <Inbox p={p} rooms={rooms} onNewTeam={() => setCreateTeamOpen(true)} />
     <main className="min-h-0 overflow-y-auto bg-background"><Header p={p} room={room} /><section role="tabpanel" className={`p-3 sm:p-4 lg:p-5 ${wrapContentClass}`}>
+      <WorkComposer topology={p.topology} room={room} busy={p.teamBusy} onDelegate={p.onDelegateWork} />
       {actions.length ? <section aria-label="Action Center" className="mb-4 space-y-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><AlertTriangle className="h-4 w-4 text-warning" /> Action Center</h2>{actions.map((action) => <div key={action.action_id} className="grid gap-3 rounded-lg border border-warning/40 bg-warning/10 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"><span className={wrapContentClass}><b>{action.kind === "retry" ? "Retry required" : "Your decision is needed"}</b><span className={`block text-sm text-text-secondary ${wrapContentClass}`}>{action.description}</span></span><button type="button" data-testid="room-action-review" onClick={() => p.onOpenActionCenter(action)} className="inline-flex h-9 w-full items-center justify-center self-center whitespace-nowrap rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 sm:w-auto">Review {humanize(action.kind)}</button></div>)}</section> : null}
       {p.tab === "tasks" ? <Tasks p={p} room={room} /> : p.tab === "conversation" ? <Conversation p={p} /> : <Timeline p={p} />}
     </section></main>
     <Inspector p={p} room={room} />
     <ActionDialog p={p} />
+    {p.onCreateTeam ? <CreateTeamDialog profiles={p.profiles ?? []} createOpen={createTeamOpen} onCloseCreate={() => setCreateTeamOpen(false)} onCreate={p.onCreateTeam} busy={p.teamBusy} /> : null}
   </div>;
 }
 
