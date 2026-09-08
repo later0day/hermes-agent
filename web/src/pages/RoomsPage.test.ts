@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoomEvent, RoomRoleKind } from "@/lib/api";
-import { filterEvents, requireRoomActionSuccess } from "./rooms/room-model";
+import { filterEvents, requireRoomActionSuccess, roomErrorMessage } from "./rooms/room-model";
 
 function event(kind: string, actor: RoomEvent["actor"]): RoomEvent {
   return {
@@ -39,6 +39,19 @@ describe("Rooms event actor filters", () => {
       .toEqual(["message.user"]);
     expect(filterEvents(events, "system", "all", roles).map((x) => x.kind))
       .toEqual(["turn.settled"]);
+  });
+});
+
+describe("Rooms network error copy", () => {
+  it("replaces raw fetch failures with actionable product language", () => {
+    expect(roomErrorMessage(new TypeError("Failed to fetch"))).toBe(
+      "Couldn’t load teams. The Dashboard service did not respond.",
+    );
+  });
+
+  it("preserves specific backend errors", () => {
+    expect(roomErrorMessage(new Error('409: {"detail":"room already exists"}')))
+      .toContain("room already exists");
   });
 });
 

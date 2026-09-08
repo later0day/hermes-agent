@@ -6,6 +6,13 @@ import type {
   RoomSummary,
 } from "@/lib/api";
 
+export function roomErrorMessage(error: unknown): string {
+  const message = String(error);
+  return message.includes("Failed to fetch")
+    ? "Couldn’t load teams. The Dashboard service did not respond."
+    : message;
+}
+
 export function requireRoomActionSuccess(response: RoomActionResponse): void {
   if (!response.ok) throw new Error(response.message || "Room action failed");
 }

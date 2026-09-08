@@ -11,7 +11,7 @@ import {
   type RoomTopologyResponse,
   type RoomWorkspaceResponse,
 } from "@/lib/api";
-import { sortRoomsByPriority } from "./room-model";
+import { roomErrorMessage, sortRoomsByPriority } from "./room-model";
 
 export type RoomsWorkspaceTab = "tasks" | "conversation" | "activity";
 export type RoomsWorkspaceMode = "list" | "graph" | "attempts";
@@ -142,7 +142,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       setRooms(next);
       setSelectedRoomId((current) => selectAvailableRoom(current, next));
     } catch (error) {
-      if (mounted.current && listGuard.current.current(token)) { setListError(String(error)); onError?.(error); }
+      if (mounted.current && listGuard.current.current(token)) { setListError(roomErrorMessage(error)); onError?.(error); }
     } finally {
       if (mounted.current && listGuard.current.current(token)) setLoadingList(false);
     }
@@ -173,7 +173,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       }));
       setSelectedTaskId((current) => selectAvailableTask(current, response));
     } catch (error) {
-      if (mounted.current && roomGuard.current.current(token)) { setWorkspaceError(String(error)); onError?.(error); }
+      if (mounted.current && roomGuard.current.current(token)) { setWorkspaceError(roomErrorMessage(error)); onError?.(error); }
     } finally {
       if (mounted.current && roomGuard.current.current(token)) setLoadingWorkspace(false);
     }
