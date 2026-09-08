@@ -1247,6 +1247,21 @@ export const api = {
     fetchJSON<RoomWorkspaceResponse>(
       `/api/rooms/${encodeURIComponent(roomId)}/workspace`,
     ),
+  createRoom: (body: RoomCreateRequest) =>
+    fetchJSON<{ room: RoomSummary }>("/api/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  sendRoomMessage: (roomId: string, body: RoomMessageRequest) =>
+    fetchJSON<{ event: RoomEvent; accepted: boolean }>(
+      `/api/rooms/${encodeURIComponent(roomId)}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
 
   // ── Hosted rooms: agent team extensions ───────────────────────────
   getRoomTopology: (roomId: string) =>
@@ -1498,7 +1513,26 @@ export interface RoomMember {
   profile?: string;
   handle?: string;
   display_name?: string;
+  role?: "worker" | "decider";
   target?: { kind?: string; profile?: string } | null;
+}
+
+export interface RoomCreateRequest {
+  room_id: string;
+  name: string;
+  members: Array<{
+    profile: string;
+    handle: string;
+    display_name?: string;
+    role: "worker" | "decider";
+  }>;
+}
+
+export interface RoomMessageRequest {
+  text: string;
+  recipient: string;
+  event_id: string;
+  thread_id: string;
 }
 
 export interface RoomSummary {

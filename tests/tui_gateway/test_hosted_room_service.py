@@ -355,6 +355,60 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     assert calls == ["stop-1"]
 
 
+
+
+def test_topology_projects_decider_and_worker_roles_for_dashboard(tmp_path: Path):
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service.local_profiles = lambda: ("lead", "worker")
+    service.create_room(
+        room_id="role-room",
+        name="Role room",
+        members=[
+            {"member_id": "lead", "profile": "lead", "handle": "lead", "role": "decider"},
+            {"member_id": "worker", "profile": "worker", "handle": "worker", "role": "worker"},
+        ],
+    )
+
+    topology = service.topology("role-room")
+    assert [(member["handle"], member["role"]) for member in topology["members"]] == [
+        ("lead", "team_lead"),
+        ("worker", "teammate"),
+    ]
+    assert topology["team_lead_id"] == "lead"
+
+
+
+def test_send_with_recipient_rejects_non_member_before_append(tmp_path: Path):
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service.local_profiles = lambda: ("lead", "worker")
+    service.create_room(
+        room_id="recipient-room",
+        name="Recipient room",
+        members=[
+            {"member_id": "lead", "profile": "lead", "handle": "Lead", "role": "decider"},
+            {"member_id": "worker", "profile": "worker", "handle": "worker", "role": "worker"},
+        ],
+    )
+
+    with pytest.raises(hosted_rooms.HostedRoomError, match="recipient is not a member"):
+        service.send(
+            room_id="recipient-room",
+            event_id="unknown-recipient",
+            payload={"text": "@missing do work", "thread_id": "thread"},
+            recipient="missing",
+        )
+    assert not any(event["event_id"] == "unknown-recipient" for event in service._events("recipient-room"))
+
+    service.prepare_room = lambda _binding: None
+    service.runtime = SimpleNamespace(wakeup=lambda: None)
+    accepted = service.send(
+        room_id="recipient-room",
+        event_id="known-recipient",
+        payload={"text": "@Lead plan work", "thread_id": "thread"},
+        recipient="lead",
+    )
+    assert accepted["event_id"] == "known-recipient"
+
 def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path):
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)

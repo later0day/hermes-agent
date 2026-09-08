@@ -1098,9 +1098,15 @@ class HostedRoomService:
         event_id: str,
         payload: Any,
         actor_id: str = "desktop",
+        recipient: str | None = None,
     ) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         room = self._owned_room(room_id)
+        if recipient is not None:
+            requested = str(recipient).strip().lstrip("@").casefold()
+            handles = {str(member.get("handle") or "").casefold() for member in room.get("members") or []}
+            if not requested or requested not in handles:
+                raise hosted_rooms.HostedRoomError("recipient is not a member of this room")
         event = hosted_rooms.append_event(
             self.db_path,
             room_id=room_id,
@@ -1322,7 +1328,14 @@ class HostedRoomService:
             handle = str(m.get("handle") or "")
             member_id = str(m.get("member_id") or "")
             profile = str(m.get("profile") or "")
-            role = str(m.get("role") or "teammate")
+            stored_role = str(m.get("role") or "worker")
+            role = (
+                "team_lead"
+                if stored_role == discussion.DECIDER_ROLE
+                else "teammate"
+                if stored_role == discussion.WORKER_ROLE
+                else stored_role
+            )
 
             entry: dict[str, Any] = {
                 "member_id": member_id,
@@ -1362,7 +1375,6 @@ class HostedRoomService:
         current_round = None
         max_rounds = None
         try:
-            from gateway import hosted_room_discussion as discussion
             tasks = driver.list_tasks(self.db_path, room_id=room_id)
             for task in tasks:
                 if task.get("status") in {"running", "queued"}:
