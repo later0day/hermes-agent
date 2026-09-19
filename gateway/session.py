@@ -723,6 +723,31 @@ def build_session_key(
     return ":".join(str(part) for part in parts)
 
 
+def build_source_binding_key(
+    source: "SessionSource",
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
+    """Build a source-agent-binding key using the exact session-source identity rules.
+
+    Delegates to :func:`build_session_key` so binding identity stays aligned with session identity
+    for Slack workspace scope, WhatsApp canonicalization, Discord prospective threads, and DM
+    participant fallback. Only the namespace differs: the session key's ``agent:main:`` becomes
+    ``source:`` here so both stores can safely share the same reasoning path without accidental
+    key aliasing.
+    """
+    session_key = build_session_key(
+        source,
+        group_sessions_per_user=group_sessions_per_user,
+        thread_sessions_per_user=thread_sessions_per_user,
+        profile=None,
+    )
+    prefix = "agent:main:"
+    if not session_key.startswith(prefix):
+        raise ValueError(f"unexpected session key namespace: {session_key!r}")
+    return f"source:{session_key[len(prefix):]}"
+
+
 class _SessionFlight:
     def __init__(self) -> None:
         self.event = threading.Event()
