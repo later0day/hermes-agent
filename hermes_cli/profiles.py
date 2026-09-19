@@ -680,6 +680,9 @@ class ProfileInfo:
     # True when ``description`` was LLM-generated and not yet user-confirmed (dashboard
     # shows a "review" badge).
     description_auto: bool = False
+    # True when this profile is meant to be used as a template source by
+    # ``/agent create --from-template`` (does not affect direct routing).
+    template: bool = False
     # Presentation-only display name; resolution/comparison/spawn always use ``name``.
     display_name: str = ""
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
@@ -928,7 +931,7 @@ def _cached_skill_count(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
+"""Read ``profile.yaml`` -> ``{description, description_auto, display_name,
     previous_names}`` (empty defaults when missing/unreadable). Never raises — a
     corrupt file on one profile must not break ``hermes profile list``."""
     def _read() -> dict:
@@ -942,6 +945,7 @@ def read_profile_meta(profile_dir: Path) -> dict:
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
+            "template": bool(data.get("template", False)),
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
             "previous_names": _clean_previous_names(data.get("previous_names")),
@@ -971,6 +975,7 @@ def _clean_previous_names(raw) -> list[str]:
 
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
+    template: Optional[bool] = None,
     display_name: Optional[str] = None, previous_names: Optional[list[str]] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
@@ -983,6 +988,8 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
+    if template is not None:
+        existing["template"] = bool(template)
     if display_name is not None:
         # Empty string clears the key (falls back to the canonical id).
         if display_name.strip():
@@ -1344,7 +1351,9 @@ def cloned_plugin_names(profile_dir: Path) -> list[str]:
 
 
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
-                           sync_imports: bool = False) -> None:
+                           sync_imports: bool = False,
+                           clone_env: bool = True,
+                           clone_skills: bool = True) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
     AND user-installed skills), and memory/identity files from *source_dir*.
@@ -1360,9 +1369,11 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _seed_model_config(profile_dir)
         return
     for relpath in _CLONE_CONFIG_FILES:
+        if relpath == ".env" and not clone_env:
+            continue
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
-    if source_skills.is_dir():
+    if clone_skills and source_skills.is_dir():
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
@@ -1379,6 +1390,7 @@ def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
     clone_channels: bool = False, sync_imports: bool = False,
+    clone_env: bool = True, clone_skills: bool = True,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -1392,7 +1404,7 @@ def create_profile(
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
     ``sync_imports`` (``--clone`` only; ``--clone-all`` copies the file anyway) also copies the
     ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees."""
-    if no_skills and (clone_from is not None or clone_config or clone_all):
+    if no_skills and (clone_all or (clone_skills and (clone_from is not None or clone_config))):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
@@ -1436,7 +1448,10 @@ def create_profile(
         if clone_all and source_dir:
             _clone_all_into(source_dir, staging, canon)
         else:
-            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
+            _bootstrap_profile_dir(
+                staging, source_dir, sync_imports=sync_imports,
+                clone_env=clone_env, clone_skills=clone_skills,
+            )
         if source_dir is not None:
             from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
             release_setup_copy(staging, setup_state=setup_marker_state(source_dir))

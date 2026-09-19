@@ -889,7 +889,7 @@ class GatewaySlashCommandsMixin(
             parts = text.split()
 
         if len(parts) < 2:
-            return "Usage: /agent <use|clear|status> ..."
+            return "Usage: /agent <use|clear|status|webhook|list|create|delete> ..."
 
         action = parts[1].lower()
         args = parts[2:]
@@ -991,7 +991,278 @@ class GatewaySlashCommandsMixin(
                 f"DingTalk fallback webhook is {wh_status}."
             )
 
-        return "Usage: /agent <use|clear|status> ..."
+        elif action == "webhook":
+            binding = store.get_binding(source_key)
+            if not binding:
+                return "No agent bound. Use `/agent use` first."
+            raw = getattr(event, "raw_message", None)
+            if raw is not None:
+                fb_extra = dict(binding.fallback_extra or {})
+                if hasattr(raw, "session_webhook"):
+                    fb_extra["session_webhook"] = raw.session_webhook
+                if hasattr(raw, "session_webhook_expired_time"):
+                    fb_extra["session_webhook_expired_time"] = raw.session_webhook_expired_time
+                store.set_binding(
+                    source_key,
+                    binding.profile_name,
+                    agent_id=binding.agent_id,
+                    fallback_target=binding.fallback_target,
+                    fallback_extra=fb_extra,
+                    actor_user_id=actor_user_id,
+                    actor_user_name=actor_user_name,
+                )
+                # Also refresh the chat-level row (groups) so a webhook update
+                # from any member benefits every user routed via chat scope.
+                if chat_level_key != source_key:
+                    chat_binding = store.get_binding(chat_level_key)
+                    if chat_binding is not None:
+                        chat_fb = dict(chat_binding.fallback_extra or {})
+                        if hasattr(raw, "session_webhook"):
+                            chat_fb["session_webhook"] = raw.session_webhook
+                        if hasattr(raw, "session_webhook_expired_time"):
+                            chat_fb["session_webhook_expired_time"] = raw.session_webhook_expired_time
+                        store.set_binding(
+                            chat_level_key,
+                            chat_binding.profile_name,
+                            agent_id=chat_binding.agent_id,
+                            fallback_target=chat_binding.fallback_target,
+                            fallback_extra=chat_fb,
+                        )
+                return f"Stored DingTalk fallback webhook for agent `{binding.profile_name}`."
+            return "No webhook found in raw message."
+
+        elif action == "list":
+            from hermes_cli.profiles import (
+                get_profile_dir,
+                list_profiles,
+                read_profile_meta,
+            )
+
+            lines = []
+            for p in list_profiles():
+                meta = read_profile_meta(get_profile_dir(p.name))
+                tag = ", template" if meta.get("template") else ""
+                # Real model/skill counts: read the profile's config.yaml
+                # (model) and count the skills dir (installed skills). Both
+                # are best-effort; profiles without either resolve to "unset"
+                # / 0 rather than crashing the list.
+                model_name = "unset"
+                try:
+                    cfg_path = get_profile_dir(p.name) / "config.yaml"
+                    if cfg_path.is_file():
+                        import yaml as _yaml
+
+                        cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                        model_name = str(cfg.get("model") or cfg.get("default_model") or "unset")
+                except Exception:  # noqa: BLE001
+                    pass
+                skill_count = 0
+                try:
+                    skills_dir = get_profile_dir(p.name) / "skills"
+                    if skills_dir.is_dir():
+                        skill_count = sum(1 for _ in skills_dir.iterdir() if _.is_dir())
+                except Exception:  # noqa: BLE001
+                    pass
+                lines.append(f"- `{p.name}` (model {model_name}, skills: {skill_count}{tag})")
+            return "\n".join(lines) or "No profiles."
+
+        elif action == "create":
+            import argparse
+
+            from hermes_cli.profiles import (
+                create_profile,
+                get_profile_dir,
+                read_profile_meta,
+                write_profile_meta,
+            )
+
+            parser = argparse.ArgumentParser(prog="/agent create", add_help=False)
+            parser.add_argument("name")
+            parser.add_argument("--description", nargs="+", default=[])
+            parser.add_argument("--orchestrator", action="store_true")
+            parser.add_argument("--with-env", action="store_true")
+            parser.add_argument("--from-template", type=str)
+            parser.add_argument("--template", action="store_true")
+            try:
+                parsed, _ = parser.parse_known_args(args)
+            except SystemExit:
+                return (
+                    "Usage: /agent create <name> [--description ...] "
+                    "[--orchestrator] [--with-env] [--from-template <profile>] [--template]"
+                )
+            target_name = parsed.name
+            try:
+                if parsed.from_template:
+                    tmpl_meta = read_profile_meta(get_profile_dir(parsed.from_template))
+                    if not tmpl_meta.get("template"):
+                        return f"Profile `{parsed.from_template}` is not marked as a template."
+                    create_profile(
+                        target_name,
+                        clone_from=parsed.from_template,
+                        clone_env=parsed.with_env,
+                        clone_skills=parsed.with_env,
+                    )
+                    self._append_agent_audit(
+                        "agent.template_clone",
+                        profile_name=target_name,
+                        source=parsed.from_template,
+                        actor_user_id=actor_user_id,
+                        actor_user_name=actor_user_name,
+                    )
+                else:
+                    create_profile(
+                        target_name,
+                        clone_from="default",
+                        clone_env=parsed.with_env,
+                        clone_skills=parsed.with_env,
+                    )
+                    self._append_agent_audit(
+                        "agent.create",
+                        after={"profile_name": target_name, "orchestrator": parsed.orchestrator},
+                        actor_user_id=actor_user_id,
+                        actor_user_name=actor_user_name,
+                    )
+                p_dir = get_profile_dir(target_name)
+                if parsed.description:
+                    write_profile_meta(p_dir, description=" ".join(parsed.description))
+                if parsed.template:
+                    write_profile_meta(p_dir, template=True)
+                if parsed.orchestrator:
+                    import yaml as _yaml
+
+                    cfg_path = p_dir / "config.yaml"
+                    if cfg_path.exists():
+                        cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                        ts = cfg.get("toolsets", [])
+                        if "kanban" not in ts:
+                            ts.append("kanban")
+                            cfg["toolsets"] = ts
+                            cfg_path.write_text(_yaml.safe_dump(cfg), encoding="utf-8")
+                out = f"Created agent profile `{target_name}`."
+                out += (
+                    " .env copied. skills copied."
+                    if parsed.with_env
+                    else " .env not copied. no skills copied."
+                )
+                if parsed.orchestrator:
+                    out += " kanban orchestrator tools enabled."
+                if parsed.template:
+                    out += " Marked as template."
+                return out
+            except Exception as exc:  # noqa: BLE001
+                return f"Failed: {exc}"
+
+        elif action == "delete":
+            import secrets as _secrets
+            import time as _t
+
+            from hermes_cli.profiles import delete_profile
+
+            if not args:
+                return "Usage: /agent delete <profile> [confirm-code]"
+            target_name = args[0]
+            if target_name == "default":
+                return "Refusing to delete `default`."
+            if not hasattr(self, "_agent_delete_confirmations"):
+                self._agent_delete_confirmations = {}
+            code = args[1] if len(args) > 1 else None
+            if not code:
+                code = getattr(
+                    self,
+                    "_agent_delete_code_factory",
+                    lambda: _secrets.token_hex(3).upper(),
+                )()
+                self._agent_delete_confirmations[source_key] = {
+                    "profile": target_name,
+                    "code": code,
+                    "expires_at": _t.time() + 300,
+                }
+                self._append_agent_audit(
+                    "agent.delete.request",
+                    profile=target_name,
+                    actor_user_id=actor_user_id,
+                    actor_user_name=actor_user_name,
+                )
+                return f"Confirm within 5m: `/agent delete {target_name} {code}`"
+            req = self._agent_delete_confirmations.get(source_key)
+            if not req or req.get("profile") != target_name:
+                return "No pending deletion request for that profile."
+            if _t.time() > req.get("expires_at", 0):
+                self._agent_delete_confirmations.pop(source_key, None)
+                return "Confirmation expired. Run /agent delete again."
+            if code != req.get("code"):
+                self._append_agent_audit(
+                    "agent.delete.failed",
+                    profile=target_name,
+                    actor_user_id=actor_user_id,
+                    actor_user_name=actor_user_name,
+                )
+                return "Code incorrect."
+            self._agent_delete_confirmations.pop(source_key, None)
+            # Snapshot bindings BEFORE deleting them so we can notify the other
+            # IM sessions bound to the same agent.
+            bindings = store.list_bindings(profile_name=target_name)
+            removed_count = len(
+                {
+                    (b.fallback_target or {}).get("chat_id")
+                    for b in bindings
+                    if b.fallback_target
+                }
+            )
+            # Delete the profile FIRST; only clean bindings if the deletion
+            # succeeded — a failed delete must not silently unbind existing
+            # chats.
+            _profiles_being_deleted = getattr(self, "_profiles_being_deleted", None)
+            if _profiles_being_deleted is not None:
+                _profiles_being_deleted.add(target_name)
+            try:
+                delete_profile(target_name, yes=True)
+            except Exception as exc:  # noqa: BLE001
+                return f"Failed: {exc}"
+            finally:
+                if _profiles_being_deleted is not None:
+                    _profiles_being_deleted.discard(target_name)
+            store.delete_bindings_for_profile(target_name)
+            self._append_agent_audit(
+                "agent.delete",
+                profile=target_name,
+                extra={"removed_bindings": removed_count},
+                actor_user_id=actor_user_id,
+                actor_user_name=actor_user_name,
+            )
+            # Best-effort notify OTHER bound sessions (never the one that
+            # issued the delete, each other chat at most once).
+            issuing_chat_id = getattr(source, "chat_id", None)
+            notified_chats: set = set()
+            for b in bindings:
+                if b.source_binding_key == source_key or not b.fallback_target:
+                    continue
+                target_chat_id = b.fallback_target.get("chat_id")
+                if target_chat_id == issuing_chat_id or target_chat_id in notified_chats:
+                    continue
+                notified_chats.add(target_chat_id)
+                platform_name = b.fallback_target.get("platform")
+                for pt, adapter in getattr(self, "adapters", {}).items():
+                    if getattr(pt, "value", None) != platform_name:
+                        continue
+                    metadata_to_send: dict = {}
+                    if b.fallback_extra and "session_webhook" in b.fallback_extra:
+                        metadata_to_send["session_webhook"] = b.fallback_extra["session_webhook"]
+                    try:
+                        await adapter.send(
+                            target_chat_id,
+                            f"Agent profile `{target_name}` was deleted. This chat has been unbound.",
+                            metadata=metadata_to_send,
+                        )
+                    except Exception as _notify_exc:  # noqa: BLE001
+                        logger.debug(
+                            "/agent delete: failed to notify binding %s: %s",
+                            target_chat_id,
+                            _notify_exc,
+                        )
+            return f"Deleted agent profile `{target_name}`."
+
+        return "Usage: /agent <use|clear|status|webhook|list|create|delete> ..."
 
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /bg <prompt> — run a prompt in a background thread with its own session; the
