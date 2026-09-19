@@ -3470,6 +3470,18 @@ class GatewayRunner(
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        # Append-only audit trail for /agent binding actions (use/clear/...).
+        # One JSON line per action under the root Hermes dir. Best-effort;
+        # _append_agent_audit no-ops if this is unset.
+        try:
+            from hermes_constants import get_default_hermes_root
+            self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
+        except Exception:  # noqa: BLE001
+            self._agent_audit_path = None
+        # Profiles currently inside the destructive /agent delete window.
+        # Ingress rejects their new turns until the tombstone is in place,
+        # closing the check-then-delete race with the shared multiplexer.
+        self._profiles_being_deleted: set[str] = set()
         # Non-None means SessionDB init failed — the gateway broadcasts a one-time warning to the home
         # channel(s) after connecting so the user learns persistence is broken before /resume fails.
         # See #88235.
@@ -4384,6 +4396,100 @@ class GatewayRunner(
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
+    def _binding_profile_for_source(self, source: SessionSource) -> Optional[str]:
+        """Return the profile a source->agent binding maps this source to, or None.
+
+        Single source of truth for binding-store profile resolution, shared by the
+        ingress stamping path (``_profile_name_for_source``) and the turn home
+        resolver (``_resolve_profile_home_for_source``) so both agree on which
+        profile owns a bound conversation. Best-effort: any lookup error returns
+        None so routing falls through to profile_routes / the active profile
+        rather than dropping the message.
+
+        Lookup order:
+          1. Exact key under the configured group/thread isolation settings.
+          2. Chat-level key (no participant suffix) — fallback for group members
+             who did not run ``/agent use`` themselves.
+
+        Invalid/stale rows (unparseable or nonexistent profile) are ignored and
+        removed so a deleted profile cannot stamp one namespace while falling
+        back to another home. Legacy mixed-case rows are canonicalized.
+        """
+        try:
+            store = getattr(self, "_source_agent_binding_store", None)
+            if store is None:
+                from gateway.source_agent_binding import SourceAgentBindingStore
+
+                store = SourceAgentBindingStore()
+                self._source_agent_binding_store = store
+            from gateway.session import build_source_binding_key
+            from hermes_cli.profiles import (
+                normalize_profile_name,
+                profile_exists,
+                validate_profile_name,
+            )
+
+            config = getattr(self, "config", None)
+            group_per_user = bool(getattr(config, "group_sessions_per_user", True))
+            thread_per_user = bool(getattr(config, "thread_sessions_per_user", False))
+
+            def _valid_profile(binding, key: str) -> Optional[str]:
+                if not binding or not binding.profile_name:
+                    return None
+                try:
+                    profile = normalize_profile_name(binding.profile_name)
+                    validate_profile_name(profile)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring invalid source-agent binding %s -> %r",
+                        key, binding.profile_name,
+                    )
+                    store.delete_binding(key)
+                    return None
+                if not profile_exists(profile):
+                    logger.warning(
+                        "Ignoring stale source-agent binding %s -> %s: profile does not exist",
+                        key, binding.profile_name,
+                    )
+                    store.delete_binding(key)
+                    return None
+                if profile != binding.profile_name:
+                    try:
+                        store.set_binding(
+                            key, profile, agent_id=binding.agent_id,
+                            fallback_target=binding.fallback_target,
+                            fallback_extra=binding.fallback_extra,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Could not canonicalize binding %s: %s", key, exc)
+                return profile
+
+            key = build_source_binding_key(
+                source,
+                group_sessions_per_user=group_per_user,
+                thread_sessions_per_user=thread_per_user,
+            )
+            profile = _valid_profile(store.get_binding(key), key)
+            if profile:
+                return profile
+            chat_type = str(getattr(source, "chat_type", None) or "group")
+            if chat_type != "dm":
+                chat_key = build_source_binding_key(
+                    source,
+                    group_sessions_per_user=False,
+                    thread_sessions_per_user=False,
+                )
+                if chat_key != key:
+                    profile = _valid_profile(store.get_binding(chat_key), chat_key)
+                    if profile:
+                        return profile
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "binding store lookup failed for source %s: %s",
+                getattr(source, "chat_id", "?"), exc,
+            )
+        return None
+
     def _profile_name_for_source(
         self, source: SessionSource, adapter_profile: Optional[str] = None,
     ) -> Optional[str]:
@@ -4396,6 +4502,19 @@ class GatewayRunner(
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
+        # Dynamic source->agent binding takes precedence over static profile_routes.
+        # This is the SINGLE stamping path: whatever we return is stamped onto
+        # ``source.profile`` at ingress, which selects BOTH the session-key namespace
+        # (``agent:<profile>``) AND the profile the turn runs under
+        # (``_resolve_profile_home_for_source``). Resolving here keeps those two
+        # dimensions in agreement.
+        bound = self._binding_profile_for_source(source)
+        if bound:
+            if bound in (getattr(self, "_profiles_being_deleted", set()) or set()):
+                from gateway.profile_routing import ProfileRouteRejected
+
+                raise ProfileRouteRejected(bound)
+            return bound
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
@@ -4417,6 +4536,10 @@ class GatewayRunner(
                 source.platform, source.chat_id, exc_info=True)
             raise ProfileRouteRejected("matcher") from exc
         if matched:
+            if matched.profile in (
+                getattr(self, "_profiles_being_deleted", set()) or set()
+            ):
+                raise ProfileRouteRejected(matched.name)
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
             except Exception as exc:
@@ -4454,12 +4577,24 @@ class GatewayRunner(
             if not name:
                 name = get_active_profile_name() or "default"
             profile_dir = get_profile_dir(name)
+            # An explicit missing profile cannot fall through to the global
+            # home while multiplexing: the source was already stamped into
+            # ``agent:<profile>`` and that fallback would split history and
+            # runtime state across two profiles. Legacy non-multiplex callers
+            # retain the historical best-effort fallback.
             if explicit_profile and not profile_exists(name):
+                multiplexing = bool(
+                    getattr(getattr(self, "config", None), "multiplex_profiles", False)
+                )
                 logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
+                    "Profile %r does not exist for source %s/%s (guild_id=%s); %s",
                     explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None))
+                    getattr(source, "guild_id", None),
+                    ("rejecting explicitly scoped multiplex turn" if multiplexing
+                     else "falling back to global HERMES_HOME"),
+                )
+                if multiplexing:
+                    raise ProfileRouteRejected(explicit_profile)
                 return get_hermes_home()
             return profile_dir
         except ProfileRouteRejected:

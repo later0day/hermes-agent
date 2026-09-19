@@ -2130,6 +2130,17 @@ class GatewayShutdownMixin:
         # Same sweep for the runner's own per-profile session_search handles.
         _step("Runner SessionDB handle sweep error", lambda: GatewayRunner.close_all_session_db_handles(self))
 
+        def _close_binding_store() -> None:
+            _binding_store = getattr(self, "_source_agent_binding_store", None)
+            if _binding_store is None:
+                return
+            try:
+                _binding_store.close()
+            finally:
+                self._source_agent_binding_store = None
+
+        _step("SourceAgentBindingStore close error", _close_binding_store)
+
         def _close_shared() -> None:
             # Shared SessionDB instances still held by the process-wide registry (tools, cron, mirror).
             # This is the safety net that guarantees no WAL write lock survives past gateway shutdown
