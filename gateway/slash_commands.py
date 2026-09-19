@@ -816,6 +816,183 @@ class GatewaySlashCommandsMixin(
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    def _append_agent_audit(self, action, **kwargs):
+        """Best-effort append-only audit of /agent binding actions.
+
+        Writes one JSON line per action to ``self._agent_audit_path`` (set on the
+        GatewayRunner). Silently no-ops if the path was never configured, so this
+        mixin method is safe on any host object.
+        """
+        if not getattr(self, "_agent_audit_path", None):
+            return
+        import json as _json
+        import os as _os
+        import time as _time
+
+        entry = {"action": action, "timestamp": _time.time(), **kwargs}
+        try:
+            with open(self._agent_audit_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry) + "\n")
+            if _os.name == "posix":
+                try:
+                    _os.chmod(self._agent_audit_path, 0o600)
+                except OSError:
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _handle_agent_command(self, event) -> str:
+        """Handle /agent — bind THIS chat/source to an agent profile.
+
+        Subcommands (phase 1): ``use`` / ``clear`` / ``status``. Binding a source
+        routes every subsequent inbound turn from that source to the named profile
+        (its own config/skills/memory/.env), while the shared gateway keeps a
+        single inbound stream. Resolution flows through
+        ``GatewayRunner._binding_profile_for_source`` so the session-key namespace
+        and the turn profile home stay in agreement.
+        """
+        import shlex
+
+        from gateway.session import build_source_binding_key
+
+        source = event.source
+        actor_user_id = getattr(source, "user_id", None)
+        actor_user_name = getattr(source, "user_name", None)
+        config = getattr(self, "config", None)
+        group_per_user = bool(getattr(config, "group_sessions_per_user", True))
+        thread_per_user = bool(getattr(config, "thread_sessions_per_user", False))
+        source_key = build_source_binding_key(
+            source,
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
+        )
+        chat_type = str(getattr(source, "chat_type", None) or "group")
+        chat_level_key = source_key
+        if chat_type != "dm":
+            chat_level_key = build_source_binding_key(
+                source,
+                group_sessions_per_user=False,
+                thread_sessions_per_user=False,
+            )
+
+        store = getattr(self, "_source_agent_binding_store", None)
+        if store is None:
+            from gateway.source_agent_binding import SourceAgentBindingStore
+
+            store = SourceAgentBindingStore()
+            self._source_agent_binding_store = store
+
+        text = (event.text or "").strip()
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+
+        if len(parts) < 2:
+            return "Usage: /agent <use|clear|status> ..."
+
+        action = parts[1].lower()
+        args = parts[2:]
+
+        if not bool(getattr(config, "multiplex_profiles", False)):
+            return (
+                "Dynamic profile binding is disabled. "
+                "Enable `gateway.multiplex_profiles` first."
+            )
+
+        if action == "status":
+            profile = self._binding_profile_for_source(source)
+            if profile:
+                binding = store.get_binding(source_key) or store.get_binding(chat_level_key)
+                fb = (binding.fallback_extra if binding else None) or {}
+                wh_status = "present" if fb.get("session_webhook") else "missing"
+                return (
+                    f"Profile: `{profile}`\n"
+                    f"DingTalk fallback webhook: {wh_status}"
+                )
+            from hermes_cli.profiles import get_active_profile_name
+
+            effective = self._profile_name_for_source(source)
+            effective = effective or get_active_profile_name() or "default"
+            return f"No dynamic binding. Effective profile: `{effective}`."
+
+        elif action == "clear":
+            removed = store.delete_binding(source_key)
+            if chat_level_key != source_key:
+                removed = store.delete_binding(chat_level_key) or removed
+            self._append_agent_audit(
+                "agent.clear",
+                source_key=source_key,
+                actor_user_id=actor_user_id,
+                actor_user_name=actor_user_name,
+            )
+            from hermes_cli.profiles import get_active_profile_name
+
+            effective = self._profile_name_for_source(source)
+            effective = effective or get_active_profile_name() or "default"
+            prefix = "Cleared dynamic binding." if removed else "No dynamic binding existed."
+            return f"{prefix} Effective profile: `{effective}`."
+
+        elif action == "use":
+            if not args:
+                return "Usage: /agent use <profile>"
+            from hermes_cli.profiles import (
+                normalize_profile_name,
+                profile_exists,
+                validate_profile_name,
+            )
+
+            try:
+                target = normalize_profile_name(args[0])
+                validate_profile_name(target)
+            except (TypeError, ValueError) as exc:
+                return f"Invalid profile: {exc}"
+            if not profile_exists(target):
+                return f"Profile `{target}` does not exist."
+            fb_extra = {}
+            raw = getattr(event, "raw_message", None)
+            if raw is not None:
+                if hasattr(raw, "session_webhook"):
+                    fb_extra["session_webhook"] = raw.session_webhook
+                if hasattr(raw, "session_webhook_expired_time"):
+                    fb_extra["session_webhook_expired_time"] = raw.session_webhook_expired_time
+            store.set_binding(
+                source_key,
+                target,
+                agent_id=target,
+                fallback_target=source.to_dict(),
+                fallback_extra=fb_extra,
+                actor_user_id=actor_user_id,
+                actor_user_name=actor_user_name,
+            )
+            # Also create a chat-level binding (without user_id) so ALL users in
+            # this group route to the same profile, not just the person who ran
+            # /agent use. DMs already omit user_id so this only matters for groups.
+            if chat_level_key != source_key:
+                store.set_binding(
+                    chat_level_key,
+                    target,
+                    agent_id=target,
+                    fallback_target=source.to_dict(),
+                    fallback_extra=fb_extra,
+                    actor_user_id=actor_user_id,
+                    actor_user_name=actor_user_name,
+                )
+            self._append_agent_audit(
+                "agent.use",
+                source_key=source_key,
+                profile=target,
+                actor_user_id=actor_user_id,
+                actor_user_name=actor_user_name,
+            )
+            wh_status = "present" if fb_extra.get("session_webhook") else "missing"
+            return (
+                f"Bound this chat to agent `{target}`.\n"
+                f"DingTalk fallback webhook is {wh_status}."
+            )
+
+        return "Usage: /agent <use|clear|status> ..."
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /bg <prompt> — run a prompt in a background thread with its own session; the
         result is sent to the same chat without touching the active session's history."""
