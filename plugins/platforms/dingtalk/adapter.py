@@ -66,6 +66,28 @@ RECONNECT_CIRCUIT_BREAKER_TRIPS = 5  # identical errors escaping start() before 
 RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # seconds between attempts while tripped (matches the runner's cap)
 _SDK_LOG_REPEAT_WINDOW = 300.0  # identical dingtalk_stream.client records are collapsed within this window
 
+# Stream liveness watchdog. DingTalk Stream Mode connections can silently go "half-open": the TCP
+# socket stays established and the SDK's ``async for raw_message in websocket`` blocks forever
+# waiting for business frames that never arrive, while ``start()`` neither returns nor raises — so
+# the adapter's own reconnect loop (``_run_stream``) never gets control. Observed in production
+# 2026-08-12: a connection went silent for 4.5 days with zero exceptions until manual restart.
+# The fix is an application-layer watchdog that actively pings the live websocket and force-closes
+# it if the pong does not return within a timeout, which breaks the SDK's inner loop and triggers
+# its (and our) reconnect path with a fresh ticket. A quiet-but-healthy connection returns the pong
+# promptly, so this never churns a live socket. Tunable via env for ops without a redeploy.
+STREAM_PING_INTERVAL = 60  # seconds between liveness pings
+STREAM_PING_TIMEOUT = 20  # seconds to await the pong before declaring half-open
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    """Read a positive int from env, falling back to ``default`` on any error."""
+    import os
+    try:
+        value = int(os.getenv(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
 
 def _is_sdk_incompat(exc: BaseException | None) -> bool:
     """True for #24851: ``websockets.connect`` is not an async CM for this dingtalk-stream.
@@ -119,6 +141,7 @@ class _SdkLogGuard(logging.Filter):
         except Exception:
             pass  # a logging filter must never break the caller
         return True
+
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 _TRUTHY = {"true", "1", "yes", "on"}
@@ -210,6 +233,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
         self._allowed_users: Set[str] = {item.lower() for item in self._csv_setting("allowed_users", "DINGTALK_ALLOWED_USERS")}
         self._stream_client = self._stream_task = self._http_client = self._card_sdk = self._robot_sdk = None
+        # Liveness watchdog for half-open Stream Mode connections; see ``STREAM_PING_INTERVAL``.
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._ping_interval: int = _env_int("DINGTALK_STREAM_PING_INTERVAL", STREAM_PING_INTERVAL)
+        self._ping_timeout: int = _env_int("DINGTALK_STREAM_PING_TIMEOUT", STREAM_PING_TIMEOUT)
         self._robot_code: str = extra.get("robot_code") or self._client_id
         self._dedup = MessageDeduplicator(max_size=1000)
         self._session_webhooks: Dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
@@ -245,6 +272,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                     logger.info("[%s] Robot SDK initialized (media download)", self.name)
             self._stream_client.register_callback_handler(dingtalk_stream.ChatbotMessage.TOPIC, _IncomingHandler(self, asyncio.get_running_loop()))
             self._stream_task = asyncio.create_task(self._run_stream())
+            self._watchdog_task = asyncio.create_task(self._run_watchdog())
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
             self._wire_plugin_handlers(self._stream_client)  # plugin-registered native handlers
@@ -335,6 +363,38 @@ class DingTalkAdapter(BasePlatformAdapter):
         if cancel and task is not None and not task.done():
             task.cancel()  # SDK's own retry loop never exits; lands on its next await
 
+    async def _run_watchdog(self) -> None:
+        """Detect and recover half-open Stream connections.
+
+        Periodically pings the live websocket and awaits the pong. A healthy (even if idle)
+        connection returns the pong promptly; a half-open one never does. On timeout we force the
+        websocket closed, which unblocks the SDK's inner ``async for`` and triggers a fresh
+        reconnect with a new ticket. See ``STREAM_PING_INTERVAL`` for the full rationale.
+        """
+        while self._running:
+            await asyncio.sleep(self._ping_interval)
+            if not self._running:
+                return
+            websocket = getattr(self._stream_client, "websocket", None) if self._stream_client else None
+            if websocket is None:
+                continue  # not connected yet (or mid-reconnect); nothing to probe
+            try:
+                # ws.ping() returns a future that resolves when the matching pong arrives. Awaiting
+                # it under a timeout is the actual half-open detector (the SDK's own keepalive
+                # never awaits it).
+                pong_waiter = await websocket.ping()
+                await asyncio.wait_for(pong_waiter, timeout=self._ping_timeout)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                # Includes ``asyncio.TimeoutError`` (pong never arrived) and any
+                # ``ConnectionClosed*`` raised by ``ping()`` on an already-dead socket.
+                if not self._running:
+                    return
+                logger.warning("[%s] Stream liveness check failed (%s: %s) — forcing reconnect on "
+                               "suspected half-open connection", self.name, type(exc).__name__, exc)
+                await self._quiet(websocket.close(), "[%s] watchdog websocket close failed: %s")
+
     async def _quiet(self, coro, debug_fmt: str = "", *args) -> None:
         """Await *coro*, swallowing any exception (logged at debug as ``debug_fmt % (name, *args, exc)`` when given)."""
         try:
@@ -347,6 +407,15 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Disconnect from DingTalk."""
         self._running = False
         self._mark_disconnected()
+        # Cancel the liveness watchdog first so it can't race the shutdown close() below into a
+        # spurious "half-open" reconnect while we're actually tearing the socket down.
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await asyncio.wait_for(self._watchdog_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                logger.debug("[%s] watchdog task did not exit cleanly during disconnect", self.name)
+            self._watchdog_task = None
         # Close the websocket first so the stream task sees the disconnect instead of awaiting frames that never arrive.
         websocket = getattr(self._stream_client, "websocket", None) if self._stream_client else None
         if websocket is not None:
