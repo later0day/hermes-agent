@@ -183,13 +183,60 @@ def _primary_profile_routes_for_current_home() -> list:
 def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
     """True when the primary gateway routes this platform to the profile being served.
 
-    scheduler is currently serving (preflight rescue, #97476).
+    Two routing sources are consulted, both owned by the PRIMARY home:
+
+    1. Static ``profile_routes`` in the primary ``config.yaml`` (the original
+       #97476 fast path via ``_primary_profile_routes_for_current_home``).
+    2. The dynamic ``source_agent_bindings`` store — the runtime ``/agent use``
+       binding mechanism. A profile can serve many bound DingTalk/Telegram/etc.
+       chats without ANY static route; a config-only check false-blocks every
+       one of that profile's cron jobs even though the primary gateway's live
+       adapter IS connected and IS the one that would deliver them.
     """
     platform_key = platform_name.lower()
-    return any(
+    if any(
         str(route.platform).lower() == platform_key
         for route in _primary_profile_routes_for_current_home()
-    )
+    ):
+        return True
+
+    # (2) Dynamic bindings. Read from the PRIMARY home only, so no satellite
+    # platform config leaks into this process. A binding key is
+    # ``source:<platform>:<type>:<chat_id>[:...]``; the platform is segment 1.
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        primary_home = get_default_hermes_root().expanduser().resolve(strict=False)
+        current_home = _sched.Path(get_hermes_home()).expanduser().resolve(strict=False)
+        if primary_home == current_home:
+            return False  # this IS the primary home — nothing to consult
+
+        primary_bindings_db = primary_home / "source_agent_bindings.sqlite"
+        if not primary_bindings_db.exists():
+            return False
+
+        from gateway.source_agent_binding import SourceAgentBindingStore
+        from hermes_cli.profiles import profile_matches_home
+
+        store = SourceAgentBindingStore(db_path=primary_bindings_db)
+        try:
+            for binding in store.list_bindings():
+                parts = (binding.source_binding_key or "").split(":")
+                if (
+                    len(parts) >= 2
+                    and parts[0] == "source"
+                    and parts[1].lower() == platform_key
+                    and profile_matches_home(binding.profile_name)
+                ):
+                    return True
+        finally:
+            store.close()
+    except Exception:
+        logger.debug(
+            "preflight: primary source-agent binding lookup unavailable",
+            exc_info=True,
+        )
+    return False
 
 
 class SharedRouteAdapters:
