@@ -144,3 +144,104 @@ class TestRoutedSatellitePreflight:
             assert _delivery_platform_routed_from_primary_gateway("telegram") is False
         finally:
             reset_hermes_home_override(token)
+
+
+class TestBoundSatellitePreflight:
+    """The runtime binding store ALSO rescues preflight — a profile can serve
+    dozens of bound DingTalk/etc. chats via ``/agent use`` without any static
+    route, and cron must not false-block those jobs. See fix db16a085b0."""
+
+    def _seed_primary_binding(self, root: Path, platform: str, profile: str,
+                              chat_id: str = "chat-abc") -> None:
+        from gateway.source_agent_binding import SourceAgentBindingStore
+
+        store = SourceAgentBindingStore(db_path=root / "source_agent_bindings.sqlite")
+        try:
+            store.set_binding(
+                f"source:{platform}:group:{chat_id}", profile,
+                fallback_target={"platform": platform, "chat_id": chat_id,
+                                 "chat_type": "group"},
+            )
+        finally:
+            store.close()
+
+    def test_bound_platform_passes_preflight(self, tmp_path, monkeypatch):
+        """xcx has 21 dingtalk bindings, 0 static routes → dingtalk cron passes."""
+        root = tmp_path / "root"
+        xcx_home = root / "profiles" / "xcx"
+        xcx_home.mkdir(parents=True)
+        # No config.yaml at all — pure binding-based routing.
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root", lambda: root
+        )
+        self._seed_primary_binding(root, "dingtalk", "xcx")
+        token = set_hermes_home_override(str(xcx_home))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("dingtalk") is True
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_wrong_platform_binding_does_not_rescue(self, tmp_path, monkeypatch):
+        """A dingtalk binding does not un-block a telegram cron job."""
+        root = tmp_path / "root"
+        xcx_home = root / "profiles" / "xcx"
+        xcx_home.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root", lambda: root
+        )
+        self._seed_primary_binding(root, "dingtalk", "xcx")
+        token = set_hermes_home_override(str(xcx_home))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("telegram") is False
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_wrong_profile_binding_does_not_rescue(self, tmp_path, monkeypatch):
+        """A binding to some OTHER profile is not this home's lifeline."""
+        root = tmp_path / "root"
+        xcx_home = root / "profiles" / "xcx"
+        xcx_home.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root", lambda: root
+        )
+        self._seed_primary_binding(root, "dingtalk", "different-profile")
+        token = set_hermes_home_override(str(xcx_home))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("dingtalk") is False
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_primary_home_skips_binding_lookup(self, tmp_path, monkeypatch):
+        """The primary running as itself doesn't consult its own bindings."""
+        root = tmp_path / "root"
+        root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root", lambda: root
+        )
+        # Seed a binding that WOULD match — but we're the primary, so ignored.
+        self._seed_primary_binding(root, "dingtalk", "default")
+        token = set_hermes_home_override(str(root))
+        try:
+            assert _delivery_platform_routed_from_primary_gateway("dingtalk") is False
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_binding_rescue_composes_with_deliver_check(self, tmp_path, monkeypatch):
+        """The full preflight path: a bound dingtalk profile whose config.yaml
+        reports dingtalk unconnected still passes because the primary's live
+        adapter delivers it."""
+        root = tmp_path / "root"
+        xcx_home = root / "profiles" / "xcx"
+        xcx_home.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root", lambda: root
+        )
+        self._seed_primary_binding(root, "dingtalk", "xcx", chat_id="g1")
+        token = set_hermes_home_override(str(xcx_home))
+        try:
+            with patch("gateway.config.load_gateway_config",
+                       return_value=_gateway_config(set())):
+                assert _preflight_check_delivery(
+                    {"deliver": "dingtalk:g1"}) is None
+        finally:
+            reset_hermes_home_override(token)
