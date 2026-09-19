@@ -717,8 +717,55 @@ def _action_create(a: Dict[str, Any]) -> str:
     return _dumps(_with_guidance(_result, job, deliver))
 
 
+# Platforms whose sessions are multi-tenant chat surfaces: one bound profile
+# can serve MANY distinct groups/DMs (source->profile binding), so any member
+# of any bound group could otherwise list/mutate every other group's cron jobs
+# in the same profile store (cross-origin IDOR — fork port-plan §4.1). Jobs
+# carry origin.platform+origin.chat_id (the creating chat); we gate list/mutate
+# so a chat can only see/operate jobs it created. Trusted management surfaces —
+# CLI/TUI (no session origin → origin is None) and api_server (gated by its
+# own per-profile API key) — are exempt and retain full-store access.
+_CRON_ORIGIN_SCOPED_PLATFORMS = frozenset({
+    "dingtalk", "weixin", "wecom", "wechat", "feishu", "lark",
+    "slack", "discord", "telegram", "matrix", "line", "whatsapp",
+})
+
+
+def _caller_may_touch_job(job: Dict[str, Any]) -> bool:
+    """Authorize the current session to see/operate ``job`` (fork IDOR gate).
+
+    Returns True (full access) for trusted management surfaces:
+      * CLI/TUI and any path without a captured session origin (origin None).
+      * api_server (its own API key already gates the caller).
+    For multi-tenant chat platforms, only the creating chat (same
+    origin.platform + origin.chat_id) may see/operate the job. Jobs missing an
+    origin are treated as unowned/system jobs and only surfaced to trusted
+    surfaces (fail-closed for scoped chat callers).
+    """
+    caller = _origin_from_env()
+    if caller is None:
+        return True
+    platform = caller.get("platform")
+    if platform not in _CRON_ORIGIN_SCOPED_PLATFORMS:
+        return True
+    origin = job.get("origin") or {}
+    return bool(
+        origin.get("platform") == platform
+        and origin.get("chat_id")
+        and origin.get("chat_id") == caller.get("chat_id")
+    )
+
+
 def _action_list(a: Dict[str, Any]) -> str:
-    jobs = [_format_job(job) for job in list_jobs(include_disabled=a["include_disabled"])]
+    # Fork IDOR gate: a multi-tenant chat platform may bind many distinct
+    # groups/DMs to one profile store, so an unfiltered listing would leak
+    # every other group's job prompts. A scoped chat sees only its own jobs;
+    # trusted surfaces (CLI/api_server) still see the whole store.
+    jobs = [
+        _format_job(job)
+        for job in list_jobs(include_disabled=a["include_disabled"])
+        if _caller_may_touch_job(job)
+    ]
     _result = {"success": True, "count": len(jobs), "jobs": jobs}
     # Same inert-job class as create; an empty list has nothing inert.
     if jobs:
@@ -976,7 +1023,14 @@ def _resolve_job_or_error(job_id: str):
                 for m in exc.matches
             ],
         })
-    if not job:
+    if not job or not _caller_may_touch_job(job):
+        # Fork IDOR gate: block cross-origin mutation. resolve_job_ref finds any
+        # job in the profile store by id/name with no ownership check, so a
+        # member of ANY chat bound to this profile could otherwise
+        # remove/update/run/pause/resume ANOTHER chat's job. Report the same
+        # "not found" error a genuine miss would (not "forbidden") so the gate
+        # does not confirm the existence of jobs the caller cannot see. Trusted
+        # surfaces (CLI/api_server) are exempt via _caller_may_touch_job.
         return None, _dumps(
             {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
         )
