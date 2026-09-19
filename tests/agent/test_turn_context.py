@@ -196,7 +196,7 @@ def test_turn_log_reports_resolved_profile_from_session_db(tmp_path, caplog):
     root = tmp_path
     home = root / "profiles" / "billing"
     home.mkdir(parents=True)
-    db = SessionDB(db_path=str(home / "state.db"))
+    db = SessionDB(db_path=home / "state.db")
     db.create_session("sess-prof", source="cli")
 
     agent = _FakeAgent()
