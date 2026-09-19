@@ -825,6 +825,11 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "DINGTALK_REQUIRE_MENTION", "lower"), ("mention_patterns", "DINGTALK_MENTION_PATTERNS", "json"),
     ("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS", "csv"), ("allowed_chats", "DINGTALK_ALLOWED_CHATS", "csv"),
     ("allowed_users", "DINGTALK_ALLOWED_USERS", "csv"),
+    # ``dingtalk.allow_all_users`` in config.yaml needs to reach ``DINGTALK_ALLOW_ALL_USERS`` env so the
+    # ``allow_all_env`` hook registered at register() consults it (authz_mixin reads the env, not YAML).
+    # Without this bridge a YAML-only ``allow_all_users: true`` silently no-ops and every unrecognized DM
+    # falls through to the pairing prompt under multiplex + installed secret-scope.
+    ("allow_all_users", "DINGTALK_ALLOW_ALL_USERS", "lower"),
 )
 
 
