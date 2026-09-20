@@ -151,11 +151,21 @@ class TestBoundSatellitePreflight:
     dozens of bound DingTalk/etc. chats via ``/agent use`` without any static
     route, and cron must not false-block those jobs. See fix db16a085b0."""
 
-    def _seed_primary_binding(self, root: Path, platform: str, profile: str,
-                              chat_id: str = "chat-abc") -> None:
+    def _seed_primary_binding(self, monkeypatch, root: Path, platform: str,
+                              profile: str, chat_id: str = "chat-abc") -> None:
+        """Seed the binding store at the REAL default filename
+        (``gateway_source_agent_bindings.sqlite``) and patch the module
+        constant so the code under test — which reads
+        ``DEFAULT_SOURCE_AGENT_BINDINGS_DB`` directly — sees this isolated
+        store rather than the real one."""
         from gateway.source_agent_binding import SourceAgentBindingStore
 
-        store = SourceAgentBindingStore(db_path=root / "source_agent_bindings.sqlite")
+        db_path = root / "gateway_source_agent_bindings.sqlite"
+        monkeypatch.setattr(
+            "gateway.source_agent_binding.DEFAULT_SOURCE_AGENT_BINDINGS_DB",
+            db_path,
+        )
+        store = SourceAgentBindingStore(db_path=db_path)
         try:
             store.set_binding(
                 f"source:{platform}:group:{chat_id}", profile,
@@ -174,7 +184,7 @@ class TestBoundSatellitePreflight:
         monkeypatch.setattr(
             "hermes_constants.get_default_hermes_root", lambda: root
         )
-        self._seed_primary_binding(root, "dingtalk", "xcx")
+        self._seed_primary_binding(monkeypatch, root, "dingtalk", "xcx")
         token = set_hermes_home_override(str(xcx_home))
         try:
             assert _delivery_platform_routed_from_primary_gateway("dingtalk") is True
@@ -189,7 +199,7 @@ class TestBoundSatellitePreflight:
         monkeypatch.setattr(
             "hermes_constants.get_default_hermes_root", lambda: root
         )
-        self._seed_primary_binding(root, "dingtalk", "xcx")
+        self._seed_primary_binding(monkeypatch, root, "dingtalk", "xcx")
         token = set_hermes_home_override(str(xcx_home))
         try:
             assert _delivery_platform_routed_from_primary_gateway("telegram") is False
@@ -204,7 +214,7 @@ class TestBoundSatellitePreflight:
         monkeypatch.setattr(
             "hermes_constants.get_default_hermes_root", lambda: root
         )
-        self._seed_primary_binding(root, "dingtalk", "different-profile")
+        self._seed_primary_binding(monkeypatch, root, "dingtalk", "different-profile")
         token = set_hermes_home_override(str(xcx_home))
         try:
             assert _delivery_platform_routed_from_primary_gateway("dingtalk") is False
@@ -219,7 +229,7 @@ class TestBoundSatellitePreflight:
             "hermes_constants.get_default_hermes_root", lambda: root
         )
         # Seed a binding that WOULD match — but we're the primary, so ignored.
-        self._seed_primary_binding(root, "dingtalk", "default")
+        self._seed_primary_binding(monkeypatch, root, "dingtalk", "default")
         token = set_hermes_home_override(str(root))
         try:
             assert _delivery_platform_routed_from_primary_gateway("dingtalk") is False
@@ -236,7 +246,7 @@ class TestBoundSatellitePreflight:
         monkeypatch.setattr(
             "hermes_constants.get_default_hermes_root", lambda: root
         )
-        self._seed_primary_binding(root, "dingtalk", "xcx", chat_id="g1")
+        self._seed_primary_binding(monkeypatch, root, "dingtalk", "xcx", chat_id="g1")
         token = set_hermes_home_override(str(xcx_home))
         try:
             with patch("gateway.config.load_gateway_config",

@@ -211,14 +211,19 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
         if primary_home == current_home:
             return False  # this IS the primary home — nothing to consult
 
-        primary_bindings_db = primary_home / "source_agent_bindings.sqlite"
-        if not primary_bindings_db.exists():
-            return False
-
-        from gateway.source_agent_binding import SourceAgentBindingStore
+        from gateway.source_agent_binding import (
+            DEFAULT_SOURCE_AGENT_BINDINGS_DB, SourceAgentBindingStore,
+        )
         from hermes_cli.profiles import profile_matches_home
 
-        store = SourceAgentBindingStore(db_path=primary_bindings_db)
+        # ``DEFAULT_SOURCE_AGENT_BINDINGS_DB`` is a module-level constant computed at import
+        # time from the process's true ``HERMES_HOME`` env var (the primary), not the
+        # per-thread ContextVar override a satellite worker runs under — so it already names
+        # the PRIMARY home's store regardless of which profile this call is scoped to.
+        if not _sched.Path(DEFAULT_SOURCE_AGENT_BINDINGS_DB).exists():
+            return False
+
+        store = SourceAgentBindingStore(db_path=DEFAULT_SOURCE_AGENT_BINDINGS_DB)
         try:
             for binding in store.list_bindings():
                 parts = (binding.source_binding_key or "").split(":")
