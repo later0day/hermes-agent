@@ -1185,3 +1185,106 @@ class TestCardLifecycle:
 # ---------------------------------------------------------------------------
 # AI Card Tests
 # ---------------------------------------------------------------------------
+
+class TestDingTalkAdapterAICards:
+    @pytest.fixture
+    def config(self):
+        return PlatformConfig(
+            enabled=True,
+            extra={
+                "client_id": "test_id",
+                "client_secret": "test_secret",
+                "card_template_id": "test_card_template",
+            },
+        )
+
+    @pytest.fixture
+    def mock_stream_client(self):
+        client = MagicMock()
+        client.get_access_token = MagicMock(return_value="test_token")
+        return client
+
+    @pytest.fixture
+    def mock_http_client(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def mock_message(self):
+        msg = MagicMock()
+        msg.message_id = "test_msg_id"
+        msg.conversation_id = "test_conv_id"
+        msg.conversation_type = "1"
+        msg.sender_id = "sender1"
+        msg.sender_nick = "Test User"
+        msg.sender_staff_id = "staff1"
+        msg.text = MagicMock(content="Hello")
+        msg.session_webhook = "https://api.dingtalk.com/robot/sendBySession?session=test"
+        msg.session_webhook_expired_time = 999999999999
+        msg.create_at = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        msg.at_users = []
+        return msg
+
+    @pytest.mark.asyncio
+    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        adapter = DingTalkAdapter(config)
+        adapter._stream_client = mock_stream_client
+        adapter._http_client = mock_http_client
+        adapter._message_contexts["test_conv_id"] = mock_message
+        adapter._session_webhooks = {"test_conv_id": ("https://api.dingtalk.com/robot/sendBySession?session=test", 9999999999999)}
+        adapter._card_template_id = "test_card_template"
+
+        # Mock the card SDK with proper async methods
+        mock_card_sdk = MagicMock()
+        mock_card_sdk.create_card_with_options_async = AsyncMock()
+        mock_card_sdk.deliver_card_with_options_async = AsyncMock()
+        mock_card_sdk.streaming_update_with_options_async = AsyncMock()
+        adapter._card_sdk = mock_card_sdk
+
+        # Mock access token
+        adapter._get_access_token = AsyncMock(return_value="test_token")
+
+        result = await adapter.send("test_conv_id", "Hello World")
+
+        mock_card_sdk.create_card_with_options_async.assert_called_once()
+        mock_card_sdk.deliver_card_with_options_async.assert_called_once()
+        mock_card_sdk.streaming_update_with_options_async.assert_called_once()
+        assert result.success is True
+
+
+class TestImageResend:
+    """Test the recent-image resend shortcut."""
+
+    def test_wants_recent_image_resend_chinese(self):
+        from gateway.run_turn import _wants_recent_image_resend
+        assert _wants_recent_image_resend("把刚才的图片重新发一下") is True
+        assert _wants_recent_image_resend("重新发图片") is True
+
+    def test_wants_recent_image_resend_english(self):
+        from gateway.run_turn import _wants_recent_image_resend
+        assert _wants_recent_image_resend("resend the last image") is True
+        assert _wants_recent_image_resend("send the latest image") is True
+
+    def test_wants_recent_image_resend_no_match(self):
+        from gateway.run_turn import _wants_recent_image_resend
+        assert _wants_recent_image_resend("what is the weather") is False
+        assert _wants_recent_image_resend("") is False
+        assert _wants_recent_image_resend(None) is False
+
+    def test_find_latest_attached_image_path(self, tmp_path):
+        from gateway.run_turn import _find_latest_attached_image_path
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG")
+        messages = [
+            {"role": "assistant", "content": "Here is the image [Image attached at: /nonexistent/old.png]"},
+            {"role": "assistant", "content": f"Latest [Image attached at: {img}]"},
+        ]
+        path = _find_latest_attached_image_path(messages)
+        assert path == str(img)
+
+    def test_find_latest_attached_image_path_none_when_no_image(self):
+        from gateway.run_turn import _find_latest_attached_image_path
+        messages = [{"role": "assistant", "content": "No images here"}]
+        assert _find_latest_attached_image_path(messages) is None
+        assert _find_latest_attached_image_path([]) is None
