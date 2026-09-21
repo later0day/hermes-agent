@@ -169,7 +169,7 @@ class TurnRunner:
                 and event_type == "subagent.tool"
             ):
                 subagent_tool = tool_name or "subagent"
-                msg = f"🔍 {subagent_tool}"
+                msg = f"🔀 {subagent_tool}"
                 if preview:
                     msg += f" — {preview}"
                 ctx.progress_queue.put(msg)
@@ -180,10 +180,10 @@ class TurnRunner:
             if not subagent_text:
                 return
             if turn_status_card is not None:
-                turn_status_card.on_commentary(f"🔍 {subagent_text}")
+                turn_status_card.on_commentary(f"🔀 {subagent_text}")
                 return
             if ctx.progress_queue is not None:
-                ctx.progress_queue.put(f"🔍 {subagent_text}")
+                ctx.progress_queue.put(f"🔀 {subagent_text}")
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             if turn_status_card is not None:
                 turn_status_card.on_tool_progress(event_type, tool_name, preview, args, **kwargs)
@@ -204,15 +204,15 @@ class TurnRunner:
         if ctx._native_slack_task_cards and event_type in {"tool.started", "tool.completed"}:
             return
         # If tool_progress is off and no turn status card is active, only _thinking passes (above).
+        # The card needs real tool lifecycle events to render progress even with tool_progress off.
+        if not ctx.tool_progress_enabled and turn_status_card is None:
+            return
+        # Only act on tool.started for progress bubbles (tool.completed is handled above for cards).
+        # clarify: send_clarify IS the user-facing rendering (a bubble would duplicate it, and verbose
+        # mode would dump the raw args JSON right under the prompt). Post-`stop`: N parallel tool calls
+        # fire N tool.started events before the interrupt check, so a late stop must not render them.
         if (
-            not ctx.tool_progress_enabled
-            and turn_status_card is None
-            or event_type != "tool.started"
-            # The adapter's send_clarify IS the user-facing rendering (interactive buttons or the
-            # numbered-text fallback), so a progress bubble is pure duplication — and in verbose mode it
-            # dumps the raw tool-call args JSON into the chat. Because
-            # the progress queue drains on a background task, that raw JSON typically lands right underneath
-            # the rendered prompt (#52374).
+            event_type != "tool.started"
             or tool_name == "clarify"
             or self._agent_interrupted()
         ):
@@ -1040,7 +1040,10 @@ class TurnRunner:
             # Turn status card: commentary renders in the card, not as a separate status text.
             _tsc = ctx.turn_status_card_holder[0]
             if _tsc is not None:
-                _tsc.on_commentary(text)
+                if already_streamed:
+                    _tsc.on_delta(None)
+                else:
+                    _tsc.on_commentary(text)
                 return
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
