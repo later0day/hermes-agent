@@ -64,6 +64,13 @@ def _fake_dingtalk_optional_sdks(monkeypatch):
             "RobotRecallEmotionHeaders",
             "RobotMessageFileDownloadRequest",
             "RobotMessageFileDownloadHeaders",
+            # Robot-native proactive message models (webhook fallback + media sends)
+            "OrgGroupSendRequest",
+            "OrgGroupSendHeaders",
+            "PrivateChatSendRequest",
+            "PrivateChatSendHeaders",
+            "BatchSendOTORequest",
+            "BatchSendOTOHeaders",
         )
     })
 
@@ -512,6 +519,437 @@ def _make_gating_adapter(monkeypatch, *, extra=None, env=None):
     from plugins.platforms.dingtalk.adapter import DingTalkAdapter
     return DingTalkAdapter(PlatformConfig(enabled=True, extra=extra or {}))
 
+
+class TestRichMediaAndReactions:
+    """Tests for the fork-ported rich-media send / emotion / status-card methods."""
+
+    def test_extract_emotion_tags_strips_and_collects(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        content, tags = DingTalkAdapter._extract_emotion_tags(
+            "Hello [[emotion:thumbsup]] world [[dingtalk:emotion=fire]]"
+        )
+        assert "thumbsup" in tags
+        assert "fire" in tags
+        assert "[[emotion:" not in content
+        assert "[[dingtalk:" not in content
+
+    def test_extract_emotion_tags_empty_content(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._extract_emotion_tags("") == ("", [])
+
+    def test_prepend_mention_tokens_no_payload(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._prepend_mention_tokens("hello", None) == "hello"
+
+    def test_prepend_mention_tokens_with_at_all(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        result = DingTalkAdapter._prepend_mention_tokens("hello", {"isAtAll": True})
+        assert "@所有人" in result
+        assert "hello" in result
+
+    def test_prepend_mention_tokens_with_mobiles_and_users(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        result = DingTalkAdapter._prepend_mention_tokens(
+            "hello", {"atMobiles": ["13800138000"], "atUserIds": ["staff-1"]}
+        )
+        assert "@13800138000" in result
+        assert "@staff-1" in result
+        assert "hello" in result
+
+    def test_prepend_mention_tokens_dedupes(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        result = DingTalkAdapter._prepend_mention_tokens(
+            "hello", {"atMobiles": ["123", "123"]}
+        )
+        assert result.count("@123") == 1
+
+    def test_build_webhook_at_payload_empty(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter._build_webhook_at_payload({}, {}) is None
+
+    def test_build_webhook_at_payload_with_at_all(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        payload = adapter._build_webhook_at_payload(
+            {"dingtalk_at_all": "true"}, {}
+        )
+        assert payload is not None
+        assert payload["isAtAll"] is True
+
+    def test_build_webhook_at_payload_with_mobiles(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        payload = adapter._build_webhook_at_payload(
+            {"dingtalk_at_mobiles": "13800138000,13900139000"}, {}
+        )
+        assert payload is not None
+        assert "13800138000" in payload["atMobiles"]
+        assert "13900139000" in payload["atMobiles"]
+
+    def test_stage_label_for_tool_terminal_with_git(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        label = DingTalkAdapter._stage_label_for_tool("terminal", "git commit -m hello")
+        assert label == "🌳 提交代码中"
+
+    def test_stage_label_for_tool_unknown_returns_none(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._stage_label_for_tool("nonexistent_tool") is None
+
+    def test_stage_label_for_tool_none_name(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._stage_label_for_tool(None) is None
+
+    def test_stage_label_for_tool_read_file(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        label = DingTalkAdapter._stage_label_for_tool("read_file")
+        assert label == "👀 看文件中"
+
+    def test_read_bool_setting_env_fallback(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        monkeypatch.setenv("TEST_BOOL_SETTING", "yes")
+        assert DingTalkAdapter._read_bool_setting(
+            None, env_name="TEST_BOOL_SETTING", default=False
+        ) is True
+
+    def test_read_bool_setting_default(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        monkeypatch.delenv("TEST_BOOL_DEFAULT", raising=False)
+        assert DingTalkAdapter._read_bool_setting(
+            None, env_name="TEST_BOOL_DEFAULT", default=True
+        ) is True
+
+    def test_metadata_values_list_and_csv(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        values = DingTalkAdapter._metadata_values(
+            {"a": ["x", "y"], "b": "z,w"}, "a", "b"
+        )
+        assert "x" in values
+        assert "y" in values
+        assert "z" in values
+        assert "w" in values
+
+    def test_metadata_bool_false(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._metadata_bool({"x": "false"}, "x") is False
+        assert DingTalkAdapter._metadata_bool({"x": "true"}, "x") is True
+        assert DingTalkAdapter._metadata_bool({}, "x") is False
+
+    def test_image_card_param_map(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        m = DingTalkAdapter._image_card_param_map("media123", "caption")
+        assert m["msgTitle"] == "Hermes"
+        assert m["msgContent"] == "caption"
+        assert m["staticMsgContent"] == "caption"
+        import json
+        sys_obj = json.loads(m["sys_full_json_obj"])
+        assert "media123" in sys_obj["msgImages"]
+
+    def test_card_initial_param_map_custom_template(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"card_template_id": "custom-tmpl"})
+        )
+        m = adapter._card_initial_param_map()
+        # Custom template: just the content key with empty string
+        content_key = adapter._current_card_content_key()
+        assert m == {content_key: ""}
+
+    def test_card_initial_param_map_default_template(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        m = adapter._card_initial_param_map()
+        assert "msgContent" in m
+        assert "staticMsgContent" in m
+        assert "flowStatus" in m
+        assert m["flowStatus"] == "1"
+
+    def test_current_card_content_key_default(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter._current_card_content_key() == "msgContent"
+
+    def test_current_card_content_key_override(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"card_content_key": "customKey"})
+        )
+        assert adapter._current_card_content_key() == "customKey"
+
+    def test_looks_like_mp4_valid(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        p = tmp_path / "test.mp4"
+        p.write_bytes(b"\x00\x00\x00\x20ftypmp42" + b"\x00" * 20)
+        assert DingTalkAdapter._looks_like_mp4(p) is True
+
+    def test_looks_like_mp4_invalid(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        p = tmp_path / "test.txt"
+        p.write_bytes(b"hello world")
+        assert DingTalkAdapter._looks_like_mp4(p) is False
+
+    def test_looks_like_native_audio_ogg(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        p = tmp_path / "test.ogg"
+        p.write_bytes(b"OggS" + b"\x00" * 12)
+        assert DingTalkAdapter._looks_like_native_audio(p, "ogg") is True
+
+    def test_looks_like_native_audio_amr(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        p = tmp_path / "test.amr"
+        p.write_bytes(b"#!AMR\n")
+        assert DingTalkAdapter._looks_like_native_audio(p, "amr") is True
+
+    def test_looks_like_native_audio_wrong(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        p = tmp_path / "test.ogg"
+        p.write_bytes(b"NOT OGG")
+        assert DingTalkAdapter._looks_like_native_audio(p, "ogg") is False
+
+    def test_duration_ms_from_metadata_ms(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._duration_ms_from_metadata({"duration_ms": 5000}) == 5000
+
+    def test_duration_ms_from_metadata_seconds(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._duration_ms_from_metadata({"duration": 2}) == 2000
+
+    def test_duration_ms_from_metadata_none(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._duration_ms_from_metadata({}) is None
+
+    def test_set_pending_reply_state_default_to_success(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter.set_pending_reply_state("chat-1", "unknown")
+        assert adapter._pending_reply_state["chat-1"] == "success"
+
+    def test_set_pending_reply_state_error(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter.set_pending_reply_state("chat-1", "error")
+        assert adapter._pending_reply_state["chat-1"] == "error"
+
+    def test_set_pending_reply_state_empty_chat_ignored(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter.set_pending_reply_state("", "error")
+        assert "" not in adapter._pending_reply_state
+
+
+class TestSendExecApproval:
+    """Test the dangerous-command approval card."""
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_calls_send(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter._http_client = AsyncMock()
+        adapter._get_valid_webhook = lambda chat_id: ("https://api.dingtalk.com/x", 9999999999999)
+        adapter._http_client.post = AsyncMock(
+            return_value=SimpleNamespace(status_code=200, text="ok")
+        )
+        result = await adapter.send_exec_approval(
+            "chat-1", "rm -rf /", "session-1", "test"
+        )
+        assert result.success
+        # The command should appear in the sent payload
+        call_args = adapter._http_client.post.call_args
+        payload = call_args[1]["json"]
+        assert "rm -rf /" in payload["markdown"]["text"]
+
+
+class TestSendVideoVoiceFallback:
+    """send_video / send_voice fall back to send_document when local files don't exist or aren't native format."""
+
+    @pytest.mark.asyncio
+    async def test_send_video_missing_file_returns_error(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        result = await adapter.send_video("chat-1", "/nonexistent/video.mp4")
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_voice_missing_file_returns_error(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        result = await adapter.send_voice("chat-1", "/nonexistent/audio.ogg")
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_remote_url_delegates_to_send(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter._http_client = AsyncMock()
+        adapter._get_valid_webhook = lambda chat_id: ("https://api.dingtalk.com/x", 9999999999999)
+        adapter._http_client.post = AsyncMock(
+            return_value=SimpleNamespace(status_code=200, text="ok")
+        )
+        result = await adapter.send_video(
+            "chat-1", "https://example.com/video.mp4", caption="look"
+        )
+        assert result.success
+
+
+class TestRobotNativeMessage:
+    """Test _send_robot_native_message routing logic."""
+
+    @pytest.mark.asyncio
+    async def test_robot_native_group_send(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        import plugins.platforms.dingtalk.adapter as dt
+        from types import SimpleNamespace
+        # Inline mock of robot SDK models so the test is hermetic.
+        _FakeModel = type("_FakeModel", (), {"__init__": lambda self, **kw: None})
+        monkeypatch.setattr(dt, "dingtalk_robot_models", SimpleNamespace(
+            OrgGroupSendRequest=_FakeModel,
+            OrgGroupSendHeaders=_FakeModel,
+        ), raising=False)
+        monkeypatch.setattr(dt, "tea_util_models", SimpleNamespace(RuntimeOptions=_FakeModel), raising=False)
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter._robot_sdk = MagicMock()
+        adapter._robot_sdk.org_group_send_with_options_async = AsyncMock(
+            return_value=SimpleNamespace(body=SimpleNamespace(process_query_key="qkey-1"))
+        )
+        adapter._get_access_token = AsyncMock(return_value="token")
+        msg = SimpleNamespace(
+            conversation_id="cid-1",
+            conversation_type="2",
+            robot_code="robot-1",
+            sender_staff_id="",
+        )
+        adapter._message_contexts["chat-1"] = msg
+        result = await adapter._send_robot_native_message(
+            "chat-1", "sampleText", {"content": "hello"}
+        )
+        assert result.success
+        assert result.message_id == "qkey-1"
+        adapter._robot_sdk.org_group_send_with_options_async.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_robot_native_no_robot_sdk(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter._robot_sdk = None
+        result = await adapter._send_robot_native_message(
+            "chat-1", "sampleText", {"content": "hello"}
+        )
+        assert not result.success
+        assert "unavailable" in result.error.lower()
+
+
+class TestProactiveMarkdownFallback:
+    """Test _send_markdown_proactive: AI Card first, then robot-native."""
+
+    @pytest.mark.asyncio
+    async def test_proactive_card_success(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        import plugins.platforms.dingtalk.adapter as dt
+        from types import SimpleNamespace
+        _FakeModel = type("_FakeModel", (), {"__init__": lambda self, **kw: None})
+        monkeypatch.setattr(dt, "dingtalk_card_models", SimpleNamespace(
+            CreateCardRequest=_FakeModel,
+            CreateCardRequestCardData=_FakeModel,
+            CreateCardRequestImGroupOpenSpaceModel=_FakeModel,
+            CreateCardRequestImRobotOpenSpaceModel=_FakeModel,
+            CreateCardHeaders=_FakeModel,
+            DeliverCardRequest=_FakeModel,
+            DeliverCardRequestImGroupOpenDeliverModel=_FakeModel,
+            DeliverCardRequestImRobotOpenDeliverModel=_FakeModel,
+            DeliverCardHeaders=_FakeModel,
+            StreamingUpdateRequest=_FakeModel,
+            StreamingUpdateHeaders=_FakeModel,
+        ), raising=False)
+        monkeypatch.setattr(dt, "tea_util_models", SimpleNamespace(RuntimeOptions=_FakeModel), raising=False)
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={"card_template_id": "tmpl-1"}))
+        adapter._card_sdk = MagicMock()
+        adapter._card_sdk.create_card_with_options_async = AsyncMock()
+        adapter._card_sdk.deliver_card_with_options_async = AsyncMock()
+        adapter._card_sdk.streaming_update_with_options_async = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        result = await adapter._send_markdown_proactive("chat-1", "hello world")
+        assert result.success
+        adapter._card_sdk.create_card_with_options_async.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_proactive_empty_content(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        result = await adapter._send_markdown_proactive("chat-1", "   ")
+        assert not result.success
+        assert "empty" in result.error.lower()
+
+
+class TestUploadRobotMedia:
+    """Test _upload_robot_media file validation."""
+
+    @pytest.mark.asyncio
+    async def test_upload_missing_file(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        result = await adapter._upload_robot_media("/nonexistent/file.png", "image")
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_upload_unsupported_type(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        p = tmp_path / "file.xyz"
+        p.write_bytes(b"data")
+        result = await adapter._upload_robot_media(str(p), "document")
+        assert not result.success
+        assert "unsupported" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_upload_no_http_client(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        p = tmp_path / "file.png"
+        p.write_bytes(b"data")
+        result = await adapter._upload_robot_media(str(p), "image")
+        assert not result.success
+
+
+class TestSendImageFileUpload:
+    """Test send_image_file remote URL delegation and local file upload path."""
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_remote_delegates_to_send_image(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter._http_client = AsyncMock()
+        adapter._get_valid_webhook = lambda chat_id: ("https://api.dingtalk.com/x", 9999999999999)
+        adapter._http_client.post = AsyncMock(
+            return_value=SimpleNamespace(status_code=200, text="ok")
+        )
+        result = await adapter.send_image_file(
+            "chat-1", "https://example.com/image.png", caption="look"
+        )
+        assert result.success
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_missing_file(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        result = await adapter.send_image_file("chat-1", "/nonexistent/img.png")
+        assert not result.success
+
+
+class TestSendDocumentUpload:
+    """Test send_document now uses robot media upload."""
+
+    @pytest.mark.asyncio
+    async def test_send_document_missing_file(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        result = await adapter.send_document("chat-1", "/nonexistent/doc.pdf")
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+
 class TestAllowedUsersGate:
 
     def test_empty_allowlist_allows_everyone(self, monkeypatch):
@@ -684,11 +1122,11 @@ class TestCardLifecycle:
 
     @pytest.mark.asyncio
     async def test_intermediate_send_stays_streaming(self, adapter_with_card):
-        """send() without reply_to creates an OPEN card (tool progress /
+        """send(metadata={"expect_edits": True}) creates an OPEN card (tool progress /
         commentary / streaming first chunk).  No flicker closed→streaming
         when edit_message follows."""
         a = adapter_with_card
-        result = await a.send("chat-1", "💻 terminal: ls")
+        result = await a.send("chat-1", "💻 terminal: ls", metadata={"expect_edits": True})
         assert result.success
         call = a._card_sdk.streaming_update_with_options_async.call_args
         assert call[0][0].is_finalize is False
@@ -722,7 +1160,9 @@ class TestCardLifecycle:
 
         extra = {} if missing == "template" else {"card_template_id": "tmpl-1"}
         adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra=extra))
-        card_sdk = None if missing == "sdk" else MagicMock()
+        # With DEFAULT_AI_CARD_TEMPLATE_ID, a missing template still enables cards;
+        # the hard gate is now _card_sdk being None (SDK not initialized on connect()).
+        card_sdk = None if missing in ("sdk", "template") else MagicMock()
         adapter._card_sdk = card_sdk
         adapter._get_access_token = AsyncMock(return_value="token")
 
