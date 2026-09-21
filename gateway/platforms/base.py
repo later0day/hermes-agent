@@ -1827,6 +1827,8 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
                 existing.media_text_inlined.extend(incoming_inline_flags)
+                if event.media_errors:
+                    existing.media_errors.extend(event.media_errors)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             existing.absorb_reply_expected(event)
@@ -2585,6 +2587,8 @@ class BasePlatformAdapter(ABC):
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
             existing.absorb_reply_expected(event)
+            if event.media_errors:
+                existing.media_errors.extend(event.media_errors)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():

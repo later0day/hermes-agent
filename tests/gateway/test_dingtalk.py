@@ -380,6 +380,117 @@ class TestExtractMedia:
         assert mtypes == ["application/octet-stream"]
 
 # ---------------------------------------------------------------------------
+# Per-attachment media-error surfacing
+# ---------------------------------------------------------------------------
+
+
+class TestMediaErrorPropagation:
+    """``_resolve_media_codes`` attaches per-attachment resolution failures via
+    ``_set_media_error``; ``_on_message`` collects them via
+    ``_extract_media_errors`` and surfaces them on the ``MessageEvent`` so the
+    agent can tell the user a referenced image/audio could not be retrieved."""
+
+    def test_on_message_preserves_media_errors(self, monkeypatch):
+        from gateway.platforms.event import MessageType
+        from unittest.mock import AsyncMock
+
+        adapter = _make_gating_adapter(monkeypatch, extra={"require_mention": False})
+        adapter.handle_message = AsyncMock()
+
+        async def _fail_media_resolution(message):
+            adapter._set_media_error(
+                message.image_content,
+                "DingTalk media download failed: robot SDK is unavailable.",
+            )
+
+        adapter._resolve_media_codes = AsyncMock(side_effect=_fail_media_resolution)
+
+        msg = _FakeChatbotMessage.from_dict({
+            "msgId": "msg-media-error",
+            "conversationId": "conv-1",
+            "conversationType": "1",
+            "senderId": "sender-1",
+            "senderNick": "Alice",
+            "text": "",
+        })
+        msg.image_content = {"downloadCode": "dl_image_abc"}
+        msg.message_type = "picture"
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(adapter._on_message(msg))
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == []
+        assert event.media_errors == [
+            "DingTalk media download failed: robot SDK is unavailable."
+        ]
+
+    def test_set_media_error_on_dict_item(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        item = {"downloadCode": "dl1"}
+        DingTalkAdapter._set_media_error(item, "boom")
+        assert DingTalkAdapter._media_error_for_item(item) == "boom"
+
+    def test_set_media_error_on_object_item(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        item = type("X", (), {})()
+        DingTalkAdapter._set_media_error(item, "kaboom")
+        assert DingTalkAdapter._media_error_for_item(item) == "kaboom"
+
+    def test_media_get_dict_vs_attr(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._media_get({"k": "v"}, "k") == "v"
+        assert DingTalkAdapter._media_get({"k": "v"}, "missing", "dflt") == "dflt"
+        obj = type("X", (), {"k": "v"})()
+        assert DingTalkAdapter._media_get(obj, "k") == "v"
+
+    def test_first_media_ref_finds_code_then_url(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        ref, key, is_code = DingTalkAdapter._first_media_ref(
+            {"downloadCode": "dl1", "downloadUrl": "http://x/y.jpg"}
+        )
+        assert ref == "dl1" and is_code is True
+        ref, key, is_code = DingTalkAdapter._first_media_ref(
+            {"downloadUrl": "http://x/y.jpg"}
+        )
+        assert ref == "http://x/y.jpg" and is_code is False
+        assert DingTalkAdapter._first_media_ref({}) == (None, None, False)
+
+    def test_default_media_type_and_extension(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        assert DingTalkAdapter._default_media_type("image") == "image/jpeg"
+        assert DingTalkAdapter._default_media_type("audio") == "audio/ogg"
+        assert DingTalkAdapter._default_media_type("video") == "video/mp4"
+        assert DingTalkAdapter._default_media_type("file") == "application/octet-stream"
+        assert DingTalkAdapter._default_media_type("image", "photo.png") == "image/png"
+        assert DingTalkAdapter._extension_for_media("image") == ".jpg"
+        assert DingTalkAdapter._extension_for_media("audio") == ".ogg"
+        assert DingTalkAdapter._extension_for_media("video") == ".mp4"
+        assert DingTalkAdapter._extension_for_media("image", "image/jpeg") == ".jpg"
+        assert DingTalkAdapter._extension_for_media("image", None, "pic.PNG") == ".PNG"
+
+    def test_extract_media_errors_collects_from_image_and_rich(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = _make_gating_adapter.__wrapped__ if hasattr(_make_gating_adapter, "__wrapped__") else _make_gating_adapter
+        # Build a minimal adapter-like object: _extract_media_errors is an instance method
+        # but only uses self._media_error_for_item (classmethod) and _rich_list (module-level),
+        # so a bare instance works for this test.
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter as DTA
+        inst = DTA.__new__(DTA)
+        msg = type("M", (), {})()
+        msg.image_content = {"_hermes_media_error": "img-fail"}
+        msg.rich_text = [
+            {"downloadCode": "dl1", "_hermes_media_error": "rich-fail-1"},
+            {"downloadCode": "dl2"},
+            {"_hermes_media_error": "rich-fail-2"},
+        ]
+        msg.rich_text_content = None
+        errors = inst._extract_media_errors(msg)
+        assert errors == ["img-fail", "rich-fail-1", "rich-fail-2"]
+
+
+# ---------------------------------------------------------------------------
 # Group gating — require_mention + allowed_users (parity with other platforms)
 # ---------------------------------------------------------------------------
 

@@ -74,6 +74,9 @@ class MessageEvent:
     media_types: List[str] = field(default_factory=list)
     # Per-attachment text-inlining contract; None = legacy "text/* already inlined into ``text``".
     media_text_inlined: List[Optional[bool]] = field(default_factory=list)
+    # Per-attachment resolution failures (e.g. "DingTalk media download failed: …");
+    # surfaced so the agent can tell the user a referenced image/audio could not be retrieved.
+    media_errors: List[str] = field(default_factory=list)
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     reply_to_author_id: Optional[str] = None

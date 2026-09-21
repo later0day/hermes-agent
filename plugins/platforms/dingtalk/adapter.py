@@ -6,11 +6,15 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 import asyncio
 import json
 import logging
+import mimetypes
 import re
 import time
+import shutil
+import subprocess
 import traceback
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 # Optional SDKs: catch broad Exception, not just ImportError — their transitive cryptography
@@ -49,13 +53,22 @@ except Exception:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
 from agent.i18n import t
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    SendResult,
+    _ssrf_redirect_guard,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
+    cache_image_from_bytes,
+    cache_video_from_bytes,
+    safe_url_for_log,
+)
 from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
-from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
+from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text, _rich_list
 
 
 logger = logging.getLogger(__name__)
@@ -549,7 +562,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         await self._resolve_media_codes(message)  # download codes -> URLs so vision tools can use them
         text = self._extract_text(message)
         msg_type, media_urls, media_types = self._extract_media(message)
-        if not text and not media_urls:
+        media_errors = self._extract_media_errors(message)
+        if not text and not media_urls and not media_errors:
             return logger.debug("[%s] Empty message, skipping", self.name)
         source = self.build_source(chat_id=chat_id, chat_name=getattr(message, "conversation_title", None), chat_type="group" if is_group else "dm",
                                    user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None,
@@ -561,7 +575,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             timestamp = datetime.now(tz=timezone.utc)
         logger.debug("[%s] Message from %s in %s: %s", self.name, sender_nick, chat_id[:20] if chat_id else "?", text[:80] if text else "(media)")
         await self.handle_message(MessageEvent(text=text, message_type=msg_type, source=source, message_id=msg_id, raw_message=message,
-                                               media_urls=media_urls, media_types=media_types, timestamp=timestamp))
+                                               media_urls=media_urls, media_types=media_types, media_errors=media_errors, timestamp=timestamp))
 
     _extract_text = staticmethod(extract_text)
 
@@ -774,6 +788,148 @@ class DingTalkAdapter(BasePlatformAdapter):
                 out.append("")
             out.append(line.lstrip() if line.strip().startswith("```") else line)
         return "\n".join(out)
+
+    # -- Per-item media metadata / error infrastructure ---------------------
+    # DingTalk SDK message objects are either SimpleNamespace-like (attribute
+    # access) or plain dicts depending on the SDK version and frame shape.
+    # These helpers abstract over both so the same code path can read/write
+    # download codes, resolved URLs, per-item media-type hints, and
+    # per-item resolution-error markers uniformly.
+
+    _MEDIA_CODE_KEYS = ("downloadCode", "pictureDownloadCode", "download_code")
+    _MEDIA_URL_KEYS = ("downloadUrl", "download_url")
+    _MEDIA_TYPE_KEYS = ("type", "msgtype", "msgType", "fileType", "file_type")
+    _MEDIA_FILENAME_KEYS = ("fileName", "file_name", "filename", "name", "title")
+
+    @staticmethod
+    def _media_get(obj: Any, key: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        value = getattr(obj, key, default)
+        return default if value is None else value
+
+    @staticmethod
+    def _media_set(obj: Any, key: str, value: Any) -> None:
+        if isinstance(obj, dict):
+            obj[key] = value
+            return
+        try:
+            setattr(obj, key, value)
+        except Exception:
+            logger.debug("Failed to set DingTalk media field %s", key, exc_info=True)
+
+    @classmethod
+    def _first_media_ref(cls, item: Any) -> tuple[Optional[str], Optional[str], bool]:
+        """Return ``(ref, key, is_download_code)`` for a DingTalk media item."""
+        for key in cls._MEDIA_CODE_KEYS:
+            value = cls._media_get(item, key)
+            if value:
+                return str(value), key, True
+        for key in cls._MEDIA_URL_KEYS:
+            value = cls._media_get(item, key)
+            if value:
+                return str(value), key, False
+        return None, None, False
+
+    @staticmethod
+    def _default_media_type(mapped: str, filename: Optional[str] = None) -> str:
+        if filename:
+            guessed, _ = mimetypes.guess_type(filename)
+            if guessed:
+                return guessed
+        if mapped == "image":
+            return "image/jpeg"
+        if mapped == "audio":
+            return "audio/ogg"
+        if mapped == "video":
+            return "video/mp4"
+        return "application/octet-stream"
+
+    @classmethod
+    def _extension_for_media(
+        cls,
+        mapped: str,
+        media_type: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> str:
+        if filename:
+            ext = Path(filename).suffix
+            if ext:
+                return ext
+        if media_type:
+            ext = mimetypes.guess_extension(media_type.split(";", 1)[0].strip())
+            if ext:
+                return ".jpg" if ext == ".jpe" else ext
+        if mapped == "image":
+            return ".jpg"
+        if mapped == "audio":
+            return ".ogg"
+        if mapped == "video":
+            return ".mp4"
+        return ".bin"
+
+    @classmethod
+    def _media_type_for_item(
+        cls,
+        item: Any,
+        mapped: str,
+        filename: Optional[str] = None,
+    ) -> str:
+        explicit = cls._media_get(item, "_hermes_media_type")
+        if explicit:
+            return str(explicit)
+        return cls._default_media_type(mapped, filename)
+
+    @classmethod
+    def _set_cached_media_ref(
+        cls,
+        obj: Any,
+        key: str,
+        value: str,
+        media_type: str,
+        filename: Optional[str],
+    ) -> None:
+        cls._media_set(obj, key, value)
+        if isinstance(obj, dict):
+            obj["_hermes_media_type"] = media_type
+            if filename:
+                obj["_hermes_file_name"] = filename
+            return
+        try:
+            setattr(obj, "_hermes_media_type", media_type)
+            if filename:
+                setattr(obj, "_hermes_file_name", filename)
+        except Exception:
+            logger.debug("Failed to attach DingTalk media metadata", exc_info=True)
+
+    @classmethod
+    def _set_media_error(cls, obj: Any, message: str) -> None:
+        if isinstance(obj, dict):
+            obj["_hermes_media_error"] = message
+            return
+        try:
+            setattr(obj, "_hermes_media_error", message)
+        except Exception:
+            logger.debug("Failed to attach DingTalk media error", exc_info=True)
+
+    @classmethod
+    def _media_error_for_item(cls, item: Any) -> Optional[str]:
+        value = cls._media_get(item, "_hermes_media_error")
+        return str(value) if value else None
+
+    def _extract_media_errors(self, message: "ChatbotMessage") -> List[str]:
+        """Collect per-attachment media-resolution failures attached by ``_resolve_media_codes``."""
+        errors: List[str] = []
+        image_content = getattr(message, "image_content", None)
+        if image_content:
+            error = self._media_error_for_item(image_content)
+            if error:
+                errors.append(error)
+        for item in _rich_list(message) or ():
+            error = self._media_error_for_item(item)
+            if error:
+                errors.append(error)
+        return errors
 
 
 class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
