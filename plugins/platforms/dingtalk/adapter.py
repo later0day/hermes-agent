@@ -568,8 +568,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         if self._http_client:
             await self._http_client.aclose()
         self._http_client = self._stream_client = None
-        for store in (self._session_webhooks, self._message_contexts, self._streaming_cards, self._done_emoji_fired, self._pending_reply_state, self._current_stage_label, self._stage_locks, self._dedup, self._bg_tasks):
-            store.clear()
+        for store in (
+            getattr(self, "_session_webhooks", None),
+            getattr(self, "_message_contexts", None),
+            getattr(self, "_streaming_cards", None),
+            getattr(self, "_done_emoji_fired", None),
+            getattr(self, "_pending_reply_state", None),
+            getattr(self, "_current_stage_label", None),
+            getattr(self, "_stage_locks", None),
+            getattr(self, "_dedup", None),
+            getattr(self, "_bg_tasks", None),
+        ):
+            if store is not None and hasattr(store, "clear"):
+                store.clear()
         logger.info("[%s] Disconnected", self.name)
 
     def _csv_setting(self, key: str, env_name: str) -> Set[str]:

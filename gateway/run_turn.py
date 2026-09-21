@@ -3017,6 +3017,18 @@ class GatewayTurnMixin:
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
+        # Per-platform streaming toggle (display.platforms.<plat>.streaming); None = follow global.
+        try:
+            from gateway.config import StreamingConfig
+            _scfg = StreamingConfig()
+        except Exception:
+            _scfg = None
+        _plat_streaming = resolve_display_setting(user_config, platform_key, "streaming")
+        _streaming_enabled = (
+            _scfg is not None and _scfg.enabled and _scfg.transport != "off"
+            if _plat_streaming is None
+            else bool(_plat_streaming)
+        )
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
@@ -3048,6 +3060,7 @@ class GatewayTurnMixin:
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
+            _streaming_enabled=_streaming_enabled,
         )
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
@@ -3107,7 +3120,55 @@ class GatewayTurnMixin:
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
         turn_ctx.native_tool_start_callback = turn_runner.combined_tool_start_callback
         turn_ctx.native_tool_complete_callback = turn_runner.native_tool_complete_callback
+        # DingTalk (and any adapter with SUPPORTS_TURN_STATUS_CARD) editable status card.
+        self._maybe_init_turn_status_card(turn_ctx, disp, source, _cleanup_adapter)
         return turn_ctx, turn_runner, _cleanup_adapter
+
+    def _maybe_init_turn_status_card(
+        self, turn_ctx: TurnContext, disp: "GatewayRunner._RunAgentDisplay",
+        source: SessionSource, adapter: Any,
+    ) -> None:
+        """Create a ``TurnStatusCardCoordinator`` when the platform adapter supports it and
+        at least one progress surface (tool_progress, thinking, interim, streaming) is active.
+
+        The coordinator replaces noisy streaming/interim progress bubbles with a single
+        editable AI Card that renders tool lifecycle, commentary and the final answer."""
+        _ts_adapter = self.adapters.get(source.platform)
+        _enabled = bool(
+            _ts_adapter is not None
+            and getattr(_ts_adapter, "SUPPORTS_TURN_STATUS_CARD", False) is True
+            and (
+                disp.tool_progress_enabled
+                or disp._thinking_enabled
+                or disp.interim_assistant_messages_enabled
+                or disp._streaming_enabled
+            )
+        )
+        if not _enabled or _ts_adapter is None:
+            # When the card is off, the progress queue must exist if tool_progress/thinking are on.
+            return
+        try:
+            from gateway.turn_status_card import TurnStatusCardConfig, TurnStatusCardCoordinator
+            _preview_len = disp.resolve_display_setting(
+                disp.user_config, disp.platform_key, "tool_preview_length", 0,
+            )
+            try:
+                _preview_len = int(_preview_len or 40)
+            except Exception:
+                _preview_len = 40
+            if _preview_len <= 0:
+                _preview_len = 40
+            turn_ctx.turn_status_card_holder[0] = TurnStatusCardCoordinator(
+                adapter=_ts_adapter,
+                chat_id=source.chat_id,
+                metadata=turn_ctx._progress_metadata,
+                config=TurnStatusCardConfig(
+                    edit_interval=0.5,
+                    preview_max_len=_preview_len,
+                ),
+            )
+        except Exception as _tsc_err:
+            logger.debug("Could not set up turn status card: %s", _tsc_err)
 
     def _thread_metadata_for_progress(
         self, source: SessionSource, event_message_id: Optional[str], _progress_thread_id: Any,
@@ -4338,6 +4399,11 @@ class GatewayTurnMixin:
             None if (scheduled_heartbeat or turn_ctx.mute_notification_reply)
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
+        # DingTalk editable status card: start the coordinator's edit loop.
+        turn_status_task = (
+            spawn(turn_ctx.turn_status_card_holder[0].run())
+            if turn_ctx.turn_status_card_holder[0] is not None else None
+        )
 
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
@@ -4351,6 +4417,18 @@ class GatewayTurnMixin:
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
+            # Record the turn outcome so the adapter's done-reaction fires the right emoji.
+            _ts_adapter = self.adapters.get(source.platform)
+            if _ts_adapter is not None and hasattr(_ts_adapter, "set_pending_reply_state"):
+                _reply_state = (
+                    "interrupted" if _interrupt_detected.is_set()
+                    else "error" if (isinstance(response, dict) and response.get("completed") is False)
+                    else "success"
+                )
+                try:
+                    _ts_adapter.set_pending_reply_state(source.chat_id, _reply_state)
+                except Exception:
+                    pass
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
@@ -4358,6 +4436,21 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
+            # Finalize the turn status card, then drain its edit loop so the final
+            # summary edit lands before cleanup.
+            _tsc = turn_ctx.turn_status_card_holder[0]
+            if _tsc is not None:
+                try:
+                    _tsc.finish()
+                except Exception:
+                    pass
+            if turn_status_task:
+                try:
+                    await asyncio.wait_for(turn_status_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    turn_status_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await turn_status_task
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,

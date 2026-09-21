@@ -100,3 +100,5 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # DingTalk (and any adapter with SUPPORTS_TURN_STATUS_CARD) editable status card holder.
+    turn_status_card_holder: list = field(default_factory=lambda: [None])
