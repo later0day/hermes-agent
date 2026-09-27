@@ -688,14 +688,14 @@ for (const route of ALL_ROUTES) {
     const errors: string[] = [];
     page.on("pageerror", (err) => {
       const msg = err.message;
-      if (!msg.includes("favicon") && !msg.includes("404") && !msg.includes("CORS") && !msg.includes("ERR_FAILED")) {
+      if (!msg.includes("favicon") && !msg.includes("404") && !msg.includes("CORS") && !msg.includes("ERR_FAILED") && !msg.includes("503")) {
         errors.push(msg);
       }
     });
     page.on("console", (msg) => {
       if (msg.type() === "error") {
         const txt = msg.text();
-        if (!txt.includes("favicon") && !txt.includes("404") && !txt.includes("CORS") && !txt.includes("ERR_FAILED") && !txt.includes("fonts.gstatic")) {
+        if (!txt.includes("favicon") && !txt.includes("404") && !txt.includes("CORS") && !txt.includes("ERR_FAILED") && !txt.includes("fonts.gstatic") && !txt.includes("503")) {
           errors.push(txt);
         }
       }

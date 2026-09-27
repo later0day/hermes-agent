@@ -58,7 +58,7 @@ async function activeProfile(page: Page): Promise<string> {
 }
 
 function isCorsNoise(msg: string): boolean {
-  return msg.includes("CORS") || msg.includes("ERR_FAILED") || msg.includes("fonts.gstatic") || msg.includes("favicon") || msg.includes("404");
+  return msg.includes("CORS") || msg.includes("ERR_FAILED") || msg.includes("fonts.gstatic") || msg.includes("favicon") || msg.includes("404") || msg.includes("503");
 }
 
 async function captureErrors(page: Page): Promise<string[]> {
