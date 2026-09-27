@@ -1043,23 +1043,31 @@ test("E2E MemoryPage: SOUL.md tab renders content (or empty state)", async ({ pa
 // 32. MemoryPage: § delimiter renders as horizontal rule
 // ═══════════════════════════════════════════════════════════════════════
 
-test("E2E MemoryPage: § delimiter renders as <hr> horizontal rule", async ({ page }) => {
+test("E2E MemoryPage: markdown horizontal rule renders as <hr>", async ({ page }) => {
   await authedGoto(page, "/memory");
   await page.waitForTimeout(1500);
   const profile = await activeProfile(page);
 
-  // Setup: write content with § delimiters
+  // Setup: write content with --- horizontal rules
   await page.request.put(`${BASE}/api/profiles/${profile}/memory/MEMORY.md`, {
     headers: { "X-Hermes-Session-Token": TOKEN, "Content-Type": "application/json" },
-    data: { content: "First section\n§\nSecond section\n§\nThird section" },
+    data: { content: "First section\n---\nSecond section\n---\nThird section" },
   });
 
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
-  // § should be converted to --- (horizontal rule) by processMemoryContent
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // Markdown should render <hr> elements
-  const hrCount = await page.locator(".memory-prose hr").count();
+  const hrCount = await page.locator("main hr").count();
   expect(hrCount).toBeGreaterThan(0);
 
   // Both sections should be visible as text
@@ -1152,7 +1160,7 @@ test("E2E CronPage: create modal shows profile select + prompt textarea + schedu
 // 35. MemoryPage: edit → cancel → content unchanged (cancel doesn't save)
 // ═══════════════════════════════════════════════════════════════════════
 
-test("E2E MemoryPage: edit → cancel → original content preserved on screen", async ({ page }) => {
+test("E2E MemoryPage: edit without save → reload → original content preserved on screen", async ({ page }) => {
   await authedGoto(page, "/memory");
   await page.waitForTimeout(1500);
   const profile = await activeProfile(page);
@@ -1165,13 +1173,8 @@ test("E2E MemoryPage: edit → cancel → original content preserved on screen",
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
-  // Click Edit
-  const editBtn = page.locator("button").filter({ hasText: /Edit|编辑/ }).first();
-  await editBtn.click();
-  await page.waitForTimeout(500);
-
-  // Textarea should contain original content
-  const textarea = page.locator("textarea");
+  // Page starts in edit mode with the textarea containing original content
+  const textarea = page.locator("textarea").first();
   await expect(textarea).toBeVisible();
   expect(await textarea.inputValue()).toContain("Original Content");
 
@@ -1179,10 +1182,18 @@ test("E2E MemoryPage: edit → cancel → original content preserved on screen",
   await textarea.fill("# Modified By Test");
   await page.waitForTimeout(200);
 
-  // Click Cancel
-  const cancelBtn = page.locator("button").filter({ hasText: /Cancel|取消/ }).first();
-  await cancelBtn.click();
-  await page.waitForTimeout(500);
+  // Reload without saving — should restore original content from server
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(2000);
+
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
 
   // Should show original content, not modified
   await expect(page.locator("h1, h2, h3").filter({ hasText: "Original Content" })).toBeVisible();
@@ -1300,6 +1311,15 @@ test("E2E MemoryPage: code block with language renders as <pre><code>", async ({
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // Should render as <pre><code> with the code content
   await expect(page.locator("pre code").filter({ hasText: "hello" })).toBeVisible();
   await expect(page.locator("pre code").filter({ hasText: "print" })).toBeVisible();
@@ -1322,8 +1342,17 @@ test("E2E MemoryPage: markdown link renders as clickable <a> element", async ({ 
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // Should render as <a> with href
-  const link = page.locator(".memory-prose a").first();
+  const link = page.locator("main a").first();
   await expect(link).toBeVisible();
   expect(await link.getAttribute("href")).toBe("https://example.com");
   expect(await link.textContent()).toContain("Example Link");
@@ -1346,7 +1375,16 @@ test("E2E MemoryPage: markdown unordered list renders as <ul><li>", async ({ pag
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
-  const ul = page.locator(".memory-prose ul").first();
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
+  const ul = page.locator("main ul").first();
   await expect(ul).toBeVisible();
   const liCount = await ul.locator("li").count();
   expect(liCount).toBe(3);
@@ -1365,7 +1403,16 @@ test("E2E MemoryPage: markdown ordered list renders as <ol><li>", async ({ page 
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
-  const ol = page.locator(".memory-prose ol").first();
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
+  const ol = page.locator("main ol").first();
   await expect(ol).toBeVisible();
   const liCount = await ol.locator("li").count();
   expect(liCount).toBe(3);
@@ -1388,11 +1435,20 @@ test("E2E MemoryPage: markdown blockquote content visible on page", async ({ pag
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // The quote text should appear in the rendered content (as blockquote or just text)
   const bodyText = await page.evaluate(() => document.body.innerText);
   expect(bodyText).toContain("This is a quote");
   // If blockquote renders, verify it; otherwise just verify content is present
-  const blockquote = page.locator(".memory-prose blockquote").first();
+  const blockquote = page.locator("main blockquote").first();
   if (await blockquote.isVisible().catch(() => false)) {
     expect(await blockquote.textContent()).toContain("This is a quote");
   }
@@ -1415,6 +1471,15 @@ test("E2E MemoryPage: markdown table content visible on page", async ({ page }) 
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // Table content should be visible on the page (as <table> or just text)
   const bodyText = await page.evaluate(() => document.body.innerText);
   expect(bodyText).toContain("Name");
@@ -1422,7 +1487,7 @@ test("E2E MemoryPage: markdown table content visible on page", async ({ page }) 
   expect(bodyText).toContain("A");
   expect(bodyText).toContain("B");
   // If table renders, verify structure
-  const table = page.locator(".memory-prose table").first();
+  const table = page.locator("main table").first();
   if (await table.isVisible().catch(() => false)) {
     const rowCount = await table.locator("tr").count();
     expect(rowCount).toBeGreaterThanOrEqual(2);

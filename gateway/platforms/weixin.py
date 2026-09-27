@@ -815,8 +815,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 ret, errcode = response.get("ret", 0), response.get("errcode", 0)
                 if ret not in {0, None} or errcode not in {0, None}:
                     if _is_session_expired(response, ret, errcode):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
-                        await asyncio.sleep(600)
+                        logger.error("[%s] Session expired; pausing for 60 seconds", self.name)
+                        await asyncio.sleep(60)
                         consecutive_failures = 0
                         continue
                     consecutive_failures += 1

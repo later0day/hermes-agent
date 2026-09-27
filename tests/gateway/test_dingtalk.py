@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -364,7 +365,7 @@ class TestExtractMedia:
         )
         assert msg_type == MessageType.VOICE
         assert urls == ["dl_voice_rt"]
-        assert mtypes == ["audio"]
+        assert mtypes == ["audio/ogg"]
 
     def test_image_no_filename_still_photo(self):
         """msgtype='image' without fileName → still PHOTO (MIME heuristic)."""

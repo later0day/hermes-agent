@@ -406,6 +406,26 @@ class GatewayAuthorizationMixin:
         extra = getattr(platforms.get(platform), "extra", None) if platforms is not None else None
         return extra if isinstance(extra, dict) else {}
 
+    def _platform_config_allow_all_users(self, platform: Optional[Platform]) -> bool:
+        """Config-side fallback for ``{PLATFORM}_ALLOW_ALL_USERS``.
+
+        Reads ``gateway.platforms.<platform>.extra.allow_all_users`` so operators can
+        grant open access from config.yaml instead of the environment.  Called only
+        when the platform's ``{PLATFORM}_ALLOW_ALL_USERS`` env var is absent/empty,
+        so an explicit env var (true or false) always wins — this is what stops a
+        config ``allow_all_users: true`` from overriding an operator's deliberate
+        ``DINGTALK_ALLOW_ALL_USERS=false``.  Strict parse: only true-ish strings/bools
+        open the gate; absent both env and config, the platform default-denies.
+        """
+        if not platform:
+            return False
+        val = self._config_extra(platform).get("allow_all_users")
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in {"true", "1", "yes", "on"}
+        return False
+
     def _adapter_setting(self, platform, attr: str, extra_key: str, profile):
         """Live adapter's resolved ``attr`` (folds in the ``<PLATFORM>_*`` env override),
         else ``config.extra[extra_key]`` for bare runners with no adapter."""
@@ -651,6 +671,9 @@ class GatewayAuthorizationMixin:
                 platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
         if platform_allow_all_var and _env_truthy(platform_allow_all_var):
             return True
+        elif platform_allow_all_var and not _auth_env(platform_allow_all_var):
+            if self._platform_config_allow_all_users(source.platform):
+                return True
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
         if allow_adapter_delegation and getattr(source, "role_authorized", False) is True:
             return True

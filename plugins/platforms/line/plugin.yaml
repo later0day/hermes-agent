@@ -2,64 +2,56 @@ name: line-platform
 label: LINE
 kind: platform
 version: 1.0.0
-description: >
-  LINE Messaging API gateway adapter for Hermes Agent.
-  Runs an aiohttp webhook server that receives LINE webhook events
-  (with HMAC-SHA256 signature verification) and relays messages between
-  LINE chats (1:1, groups, rooms) and the Hermes agent. Outbound replies
-  prefer the free reply token and fall back to the metered Push API
-  when the token has expired or is absent. Slow LLM responses surface a
-  Template Buttons postback bubble so the user can fetch the answer with
-  a fresh reply token (free) once it's ready.
+description: Hermes Agent 的 LINE Messaging API 网关适配器。运行 aiohttp webhook 服务器接收 LINE webhook 事件（带 HMAC-SHA256 签名验证），在 LINE 聊天（1:1、群组、房间）与 Hermes 代理之间中继消息。出站回复优先使用免费 reply token，当 token 过期或不存在时回退到按量计费的 Push API。LLM 响应较慢时会弹出 Template Buttons postback 气泡，用户可在回复就绪后使用新的 reply token（免费）获取答案。
 author: Hermes Agent contributors
 # ``requires_env`` and ``optional_env`` entries are surfaced in the
 # ``hermes config`` UI via the platform-plugin env var injector in
 # ``hermes_cli/config.py``.
 requires_env:
   - name: LINE_CHANNEL_ACCESS_TOKEN
-    description: "LINE channel long-lived access token (LINE Developers Console > Messaging API > Channel access token)"
+    description: "LINE channel 长期访问令牌（LINE Developers Console > Messaging API > Channel access token）"
     prompt: "LINE channel access token"
     url: "https://developers.line.biz/console/"
     password: true
   - name: LINE_CHANNEL_SECRET
-    description: "LINE channel secret (used for HMAC-SHA256 webhook signature verification)"
+    description: "LINE channel 密钥（用于 HMAC-SHA256 webhook 签名验证）"
     prompt: "LINE channel secret"
     url: "https://developers.line.biz/console/"
     password: true
 optional_env:
   - name: LINE_PORT
-    description: "Webhook listen port (default: 8646)"
-    prompt: "Webhook port"
+    description: "Webhook 监听端口（默认：8646）"
+    prompt: "Webhook 端口"
     password: false
   - name: LINE_HOST
-    description: "Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6)"
-    prompt: "Webhook host"
+    description: "Webhook 绑定主机（默认：未设置 → 双栈，所有 IPv4+IPv6 接口）"
+    prompt: "Webhook 主机"
     password: false
   - name: LINE_PUBLIC_URL
-    description: "Public HTTPS base URL for serving images/audio/video to LINE (e.g. https://my-tunnel.example.com). Required for media sending when the bind address is not directly reachable."
-    prompt: "Public HTTPS base URL"
+    description: "用于向 LINE 提供图片/音频/视频的公共 HTTPS base URL（例如 https://my-tunnel.example.com）。当绑定地址不可直接访问时，发送媒体需设置此项。"
+    prompt: "公共 HTTPS base URL"
     password: false
   - name: LINE_ALLOWED_USERS
-    description: "Comma-separated LINE user IDs allowed to DM the bot (U-prefixed)"
-    prompt: "Allowed user IDs (comma-separated)"
+    description: "允许私信机器人的 LINE 用户 ID 列表（U 前缀，逗号分隔）"
+    prompt: "允许的用户 ID（逗号分隔）"
     password: false
   - name: LINE_ALLOWED_GROUPS
-    description: "Comma-separated LINE group IDs the bot will respond in (C-prefixed)"
-    prompt: "Allowed group IDs (comma-separated)"
+    description: "机器人将响应的 LINE 群组 ID 列表（C 前缀，逗号分隔）"
+    prompt: "允许的群组 ID（逗号分隔）"
     password: false
   - name: LINE_ALLOWED_ROOMS
-    description: "Comma-separated LINE room IDs the bot will respond in (R-prefixed)"
-    prompt: "Allowed room IDs (comma-separated)"
+    description: "机器人将响应的 LINE 房间 ID 列表（R 前缀，逗号分隔）"
+    prompt: "允许的房间 ID（逗号分隔）"
     password: false
   - name: LINE_ALLOW_ALL_USERS
-    description: "Allow any LINE user to talk to the bot (dev only — disables allowlist)"
-    prompt: "Allow all users? (true/false)"
+    description: "允许任何 LINE 用户与机器人对话（仅用于开发 — 禁用白名单）"
+    prompt: "允许所有用户？(true/false)"
     password: false
   - name: LINE_HOME_CHANNEL
-    description: "Default user/group/room ID for cron / notification delivery"
-    prompt: "Home channel ID (or empty)"
+    description: "cron / 通知投递的默认用户/群组/房间 ID"
+    prompt: "主频道 ID（或留空）"
     password: false
   - name: LINE_SLOW_RESPONSE_THRESHOLD
-    description: "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)"
-    prompt: "Slow response threshold (seconds)"
+    description: "慢速 LLM postback 按钮触发的秒数（默认：45；设为 0 禁用并始终回退到 Push）"
+    prompt: "慢响应阈值（秒）"
     password: false

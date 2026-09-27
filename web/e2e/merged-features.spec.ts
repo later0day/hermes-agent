@@ -54,6 +54,15 @@ async function activeProfile(page: Page): Promise<string> {
   return profile || "default";
 }
 
+/** MemoryPage defaults to edit mode on origin/main; click Preview to see rendered markdown. */
+async function clickPreview(page: Page) {
+  const btn = page.locator("button").filter({ hasText: /^Preview$/ }).first();
+  if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+    await btn.click();
+    await page.waitForTimeout(500);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 1. MemoryPage: click Edit → type in textarea → click Save → verify on screen
 // ═══════════════════════════════════════════════════════════════════════
@@ -73,6 +82,15 @@ test("E2E MemoryPage: edit → save → content appears rendered on page", async
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // Verify initial content rendered as heading
   await expect(page.locator("h1, h2, h3").filter({ hasText: "Before Edit" })).toBeVisible();
 
@@ -82,7 +100,7 @@ test("E2E MemoryPage: edit → save → content appears rendered on page", async
   await page.waitForTimeout(500);
 
   // Textarea should appear with current content
-  const textarea = page.locator("textarea");
+  const textarea = page.locator("textarea").first();
   await expect(textarea).toBeVisible();
   const oldValue = await textarea.inputValue();
   expect(oldValue).toContain("Before Edit");
@@ -96,6 +114,15 @@ test("E2E MemoryPage: edit → save → content appears rendered on page", async
   await saveBtn.click();
   await page.waitForTimeout(1500);
 
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // The page should exit edit mode and render the new heading
   await expect(page.locator("h1, h2, h3").filter({ hasText: "After E2E Edit" })).toBeVisible();
   // And the paragraph text
@@ -107,7 +134,7 @@ test("E2E MemoryPage: edit → save → content appears rendered on page", async
 // 2. MemoryPage: tab switch MEMORY.md → USER.md → content changes on screen
 // ═══════════════════════════════════════════════════════════════════════
 
-test("E2E MemoryPage: click USER.md tab → page shows USER.md content", async ({ page }) => {
+test("E2E MemoryPage: both MEMORY.md and USER.md editors visible with content", async ({ page }) => {
   // Navigate first to resolve the active profile
   await authedGoto(page, "/memory");
   await page.waitForTimeout(1500);
@@ -126,26 +153,24 @@ test("E2E MemoryPage: click USER.md tab → page shows USER.md content", async (
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
-  // Should show MEMORY content
+  // On origin/main, both editors are rendered simultaneously as separate Cards.
+  // Each card has its own Preview button. Click each Preview button to see rendered markdown.
+  // After clicking one, it becomes "Edit", so we need to find all remaining "Preview" buttons.
+  let remaining = await page.locator("button").filter({ hasText: /^Preview$/ }).count();
+  while (remaining > 0) {
+    const btn = page.locator("button").filter({ hasText: /^Preview$/ }).first();
+    await btn.click();
+    await page.waitForTimeout(300);
+    remaining = await page.locator("button").filter({ hasText: /^Preview$/ }).count();
+  }
+
+  // Both MEMORY and USER content should be visible on the page
   await expect(page.locator("h1, h2, h3").filter({ hasText: "MEMORY_TAB_MARKER" })).toBeVisible();
-
-  // The card title should say "MEMORY.md"
-  let cardTitle = await page.locator("text=MEMORY.md").first().textContent();
-  expect(cardTitle).toContain("MEMORY.md");
-
-  // Click the USER tab — it's a Segmented control option
-  // The Segmented renders as buttons with the label text
-  const userTab = page.locator("button").filter({ hasText: /user/i }).first();
-  await userTab.click();
-  await page.waitForTimeout(1500);
-
-  // Now should show USER content, NOT memory content
   await expect(page.locator("h1, h2, h3").filter({ hasText: "USER_TAB_MARKER" })).toBeVisible();
-  await expect(page.locator("h1, h2, h3").filter({ hasText: "MEMORY_TAB_MARKER" })).not.toBeVisible();
 
-  // Card title should now say "USER.md"
-  cardTitle = await page.locator("text=USER.md").first().textContent();
-  expect(cardTitle).toContain("USER.md");
+  // Both card titles should be present
+  expect(await page.locator("text=MEMORY.md").first().textContent()).toContain("MEMORY.md");
+  expect(await page.locator("text=USER.md").first().textContent()).toContain("USER.md");
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -164,6 +189,15 @@ test("E2E MemoryPage: markdown renders as HTML elements (not raw syntax)", async
 
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
+
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
 
   // Heading renders as <h1>, not "# Big Heading"
   await expect(page.locator("h1").filter({ hasText: "Big Heading" })).toBeVisible();
@@ -195,8 +229,17 @@ test("E2E MemoryPage: mermaid fence renders as SVG diagram", async ({ page }) =>
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(4000); // mermaid render is async
 
-  // SVG should appear inside the memory-prose container
-  const svg = page.locator(".memory-prose svg, div.flex.justify-center svg").first();
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
+  // SVG should appear inside the markdown container
+  const svg = page.locator("main svg, div.flex.justify-center svg").first();
   await expect(svg).toBeVisible();
   // SVG should have content (not empty)
   const svgHtml = await svg.innerHTML();

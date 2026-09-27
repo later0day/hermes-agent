@@ -2,55 +2,45 @@ name: ntfy-platform
 label: ntfy
 kind: platform
 version: 1.0.0
-description: >
-  ntfy push-notification gateway adapter for Hermes Agent.
-  Subscribes to a topic on ntfy.sh or any self-hosted ntfy server via
-  HTTP streaming, and publishes replies via HTTP POST. Lightweight —
-  no external SDK, only httpx (already a Hermes dependency).
-
-  ntfy has no native user-identity primitive; the adapter treats each
-  topic as a single trusted channel and never derives user identity
-  from publisher-controlled fields. Use a private topic + read token
-  for any real trust boundary.
+description: Hermes Agent 的 ntfy 推送通知网关适配器。通过 HTTP 流式传输订阅 ntfy.sh 或任何自托管 ntfy 服务器上的主题，并通过
+  HTTP POST 发布回复。轻量级 —— 无外部 SDK，仅使用 httpx（Hermes 现有的依赖项）。ntfy 没有原生的用户身份原语；适配器将每个主题视为单个受信任频道，并且从不从发布者控制的字段派生用户身份。对于真正的信任边界，请使用私有主题
+  + 读取令牌。
 author: sprmn24
-# ``requires_env`` and ``optional_env`` entries are surfaced in the
-# ``hermes config`` UI via the platform-plugin env var injector in
-# ``hermes_cli/config.py``.
 requires_env:
-  - name: NTFY_TOPIC
-    description: "Topic name to subscribe to (e.g. hermes-in)"
-    prompt: "ntfy subscribe topic"
-    password: false
+- name: NTFY_TOPIC
+  description: 要订阅的主题名称 (例如 hermes-in)
+  prompt: ntfy subscribe topic
+  password: false
 optional_env:
-  - name: NTFY_SERVER_URL
-    description: "ntfy server URL (default: https://ntfy.sh)"
-    prompt: "ntfy server URL"
-    password: false
-  - name: NTFY_TOKEN
-    description: "Bearer token or 'user:pass' for Basic auth (optional)"
-    prompt: "ntfy auth token (or empty)"
-    password: true
-  - name: NTFY_PUBLISH_TOPIC
-    description: "Topic to publish replies to (defaults to NTFY_TOPIC)"
-    prompt: "ntfy publish topic (or empty)"
-    password: false
-  - name: NTFY_MARKDOWN
-    description: "Send replies with X-Markdown: true header (true/false, default: false)"
-    prompt: "Enable markdown formatting? (true/false)"
-    password: false
-  - name: NTFY_ALLOWED_USERS
-    description: "Comma-separated topic names allowed (allowlist)"
-    prompt: "Allowed topic names (comma-separated)"
-    password: false
-  - name: NTFY_ALLOW_ALL_USERS
-    description: "Allow any topic to talk to the bot (dev only — disables allowlist)"
-    prompt: "Allow all topics? (true/false)"
-    password: false
-  - name: NTFY_HOME_CHANNEL
-    description: "Default topic for cron / notification delivery"
-    prompt: "Home channel topic (or empty)"
-    password: false
-  - name: NTFY_HOME_CHANNEL_NAME
-    description: "Human label for the home channel (defaults to the topic name)"
-    prompt: "Home channel display name (or empty)"
-    password: false
+- name: NTFY_SERVER_URL
+  description: 'ntfy server URL (default: https://ntfy.sh)'
+  prompt: ntfy server URL
+  password: false
+- name: NTFY_TOKEN
+  description: 用于基本认证的 Bearer 令牌或 'user:pass' (可选)
+  prompt: ntfy auth token (or empty)
+  password: true
+- name: NTFY_PUBLISH_TOPIC
+  description: 要发布回复的主题 (默认为 NTFY_TOPIC)
+  prompt: ntfy publish topic (or empty)
+  password: false
+- name: NTFY_MARKDOWN
+  description: '发送带有 X-Markdown: true 请求头的回复 (true/false, 默认: false)'
+  prompt: Enable markdown formatting? (true/false)
+  password: false
+- name: NTFY_ALLOWED_USERS
+  description: 允许的逗号分隔的主题名称 (白名单)
+  prompt: Allowed topic names (comma-separated)
+  password: false
+- name: NTFY_ALLOW_ALL_USERS
+  description: Allow any topic to talk to the bot (dev only — disables allowlist)
+  prompt: Allow all topics? (true/false)
+  password: false
+- name: NTFY_HOME_CHANNEL
+  description: 定时任务/通知投递的默认主题
+  prompt: Home channel topic (or empty)
+  password: false
+- name: NTFY_HOME_CHANNEL_NAME
+  description: 主频道的友好名称 (defaults to the topic name)
+  prompt: Home channel display name (or empty)
+  password: false

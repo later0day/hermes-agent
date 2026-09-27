@@ -211,6 +211,46 @@ def _mutate_cron_for_profile(target_profile: Optional[str], func_name: str, *arg
     return result
 
 
+def _delete_cron_jobs_for_profile(profile_name: str) -> int:
+    """Remove the deleted profile's cron jobs from its own cron store.
+
+    Cron storage is partitioned per profile (``profiles/<name>/cron/jobs.json``),
+    so this routes through the same per-profile helpers used by the single-job
+    delete endpoint. A bare ``rmtree`` of the profile directory removes the
+    on-disk store but does NOT trigger ``on_jobs_changed()``, leaving the
+    scheduler's in-memory registration stale — armed fires would then dispatch
+    against a deleted store. Each ``remove_job`` triggers
+    ``_notify_cron_provider_for_profile`` so the scheduler disarms the job.
+    """
+    if not profile_name:
+        return 0
+    removed = 0
+    try:
+        jobs = list(_call_cron_for_profile(profile_name, "list_jobs", True))
+    except Exception:
+        _log.debug(
+            "Failed to list cron jobs while deleting profile %s",
+            profile_name,
+            exc_info=True,
+        )
+        return 0
+    for job in jobs:
+        job_ref = str(job.get("id") or job.get("name") or "")
+        if not job_ref:
+            continue
+        try:
+            if _mutate_cron_for_profile(profile_name, "remove_job", job_ref):
+                removed += 1
+        except Exception:
+            _log.debug(
+                "Failed to remove cron job %s while deleting profile %s",
+                job_ref,
+                profile_name,
+                exc_info=True,
+            )
+    return removed
+
+
 def _find_cron_job_profile(job_id: str) -> Optional[str]:
     for profile in _cron_profile_dicts():
         name = str(profile.get("name") or "")
