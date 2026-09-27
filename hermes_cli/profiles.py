@@ -936,7 +936,7 @@ def _cached_skill_count(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-"""Read ``profile.yaml`` -> ``{description, description_auto, display_name,
+    """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
     previous_names}`` (empty defaults when missing/unreadable). Never raises — a
     corrupt file on one profile must not break ``hermes profile list``."""
     def _read() -> dict:

@@ -124,7 +124,9 @@ def extract_media(message: Any) -> Tuple[MessageType, List[str], List[str]]:
         item_type = item.get("type", "")
         mapped = DINGTALK_TYPE_MAPPING.get(item_type, "file")
         # "voice" items are native voice notes → STT (VOICE); "audio" file uploads stay AUDIO.
-        mime, promoted = ("audio", MessageType.VOICE if item_type == "voice" else MessageType.AUDIO) if mapped == "audio" else _RICH_MEDIA[mapped]
+        # Match _default_media_type's audio→"audio/ogg" so downstream media routing (send_voice,
+        # transcript enrichment) sees the OGG container format and not a bare "audio" wildcard.
+        mime, promoted = ("audio/ogg", MessageType.VOICE if item_type == "voice" else MessageType.AUDIO) if mapped == "audio" else _RICH_MEDIA[mapped]
         media_urls.append(dl_code)
         media_types.append(mime)
         if msg_type == MessageType.TEXT:

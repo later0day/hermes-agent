@@ -113,6 +113,7 @@ router = APIRouter()
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
+_delete_cron_jobs_for_profile = late("_delete_cron_jobs_for_profile", "hermes_cli.web_server_cron")
 
 # ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
@@ -1035,6 +1036,16 @@ async def delete_profile_endpoint(name: str):
     the generic 500 made a dashboard client read a completed delete as a failure (its retry
     then 404'd)."""
     from hermes_cli import profiles as profiles_mod
+    # Unregister the profile's cron jobs BEFORE rmtree: a bare rmtree removes the on-disk
+    # jobs.json but does not trigger ``on_jobs_changed()``, leaving the scheduler's in-memory
+    # registration stale — armed fires would dispatch against a deleted store. Each
+    # ``remove_job`` triggers ``_notify_cron_provider_for_profile`` so the scheduler disarms
+    # the job before its store disappears.
+    try:
+        profile_name = profiles_mod.normalize_profile_name(name)
+    except ValueError:
+        profile_name = name
+    _delete_cron_jobs_for_profile(profile_name)
     try:
         with _profile_errors("DELETE /api/profiles/%s failed", name):
             # Polls a running gateway's PID for up to 10 s, then rmtree()s the directory; on the
@@ -1109,10 +1120,17 @@ async def get_profile_memory(name: str, doc: str):
     mem_path = _resolve_profile_dir(name) / "memories" / doc
     if mem_path.exists():
         try:
-            return {"content": mem_path.read_text(encoding="utf-8"), "exists": True}
+            content = mem_path.read_text(encoding="utf-8")
+            return {
+                "name": mem_path.name,
+                "path": str(mem_path),
+                "exists": True,
+                "content": content,
+                "bytes": mem_path.stat().st_size,
+            }
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Could not read {doc}: {e}")
-    return {"content": "", "exists": False}
+    return {"name": doc, "path": str(mem_path), "exists": False, "content": "", "bytes": 0}
 
 
 @router.put("/api/profiles/{name}/memory/{doc}")
@@ -1138,7 +1156,12 @@ async def update_profile_memory(name: str, doc: str, body: ProfileMemoryUpdate):
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/memory/%s failed", name, doc)
         raise HTTPException(status_code=500, detail=f"Could not write {doc}: {e}")
-    return {"ok": True}
+    return {
+        "ok": True,
+        "name": mem_path.name,
+        "path": str(mem_path),
+        "bytes": mem_path.stat().st_size if mem_path.exists() else 0,
+    }
 
 
 @router.put("/api/profiles/{name}/description")

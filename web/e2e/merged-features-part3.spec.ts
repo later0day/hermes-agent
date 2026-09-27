@@ -709,13 +709,23 @@ test("REAL MemoryPage: edit → save → 'Saved' toast visible on screen", async
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
+  // Page starts in edit mode — no need to click Edit, just use the textarea directly
+  // First switch to preview to verify initial content, then back to edit
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // Click Edit
   const editBtn = page.locator("button").filter({ hasText: /Edit|编辑/ }).first();
   await editBtn.click();
   await page.waitForTimeout(500);
 
   // Modify content
-  const textarea = page.locator("textarea");
+  const textarea = page.locator("textarea").first();
   await expect(textarea).toBeVisible();
   await textarea.fill("# Post-toast test\n\nContent saved by E2E");
   await page.waitForTimeout(200);
@@ -732,6 +742,15 @@ test("REAL MemoryPage: edit → save → 'Saved' toast visible on screen", async
     return Array.from(toasts).map((t) => t.textContent?.trim() || "").join(" ");
   });
   expect(toastText.toLowerCase()).toContain("saved");
+
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
 
   // Verify the content was actually saved and rendered
   await expect(page.locator("h1, h2, h3").filter({ hasText: "Post-toast test" })).toBeVisible();
@@ -1070,22 +1089,31 @@ def test():
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
+  // Switch to preview mode to see rendered markdown
+  {
+    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
+    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await previewBtn.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
   // Verify each element rendered as proper HTML
   // Heading
-  await expect(page.locator(".memory-prose h1").filter({ hasText: "E2E Full Markdown Test" })).toBeVisible();
+  await expect(page.locator("main h1").filter({ hasText: "E2E Full Markdown Test" })).toBeVisible();
   // Bold
-  await expect(page.locator(".memory-prose strong").filter({ hasText: "bold" })).toBeVisible();
+  await expect(page.locator("main strong").filter({ hasText: "bold" })).toBeVisible();
   // Inline code
-  await expect(page.locator(".memory-prose code").filter({ hasText: "inline code" })).toBeVisible();
+  await expect(page.locator("main code").filter({ hasText: "inline code" })).toBeVisible();
   // Unordered list
-  await expect(page.locator(".memory-prose ul li").filter({ hasText: "Item 1" })).toBeVisible();
-  await expect(page.locator(".memory-prose ul li").filter({ hasText: "Item 2" })).toBeVisible();
+  await expect(page.locator("main ul li").filter({ hasText: "Item 1" })).toBeVisible();
+  await expect(page.locator("main ul li").filter({ hasText: "Item 2" })).toBeVisible();
   // Link
-  const link = page.locator(".memory-prose a").first();
+  const link = page.locator("main a").first();
   await expect(link).toBeVisible();
   expect(await link.getAttribute("href")).toBe("https://example.com");
   // Code block
-  await expect(page.locator(".memory-prose pre code").filter({ hasText: "def test" })).toBeVisible();
+  await expect(page.locator("main pre code").filter({ hasText: "def test" })).toBeVisible();
 });
 
 // ═══════════════════════════════════════════════════════════════════════

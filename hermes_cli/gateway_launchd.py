@@ -356,6 +356,8 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = _gw().get_launchd_label()
 
+    venv_dir = _gw()._service_venv_dir()
+    pythonpath = str(_gw().PROJECT_ROOT)
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
     priority_dirs = _gw()._build_service_path_dirs()
@@ -411,6 +413,8 @@ def generate_launchd_plist() -> str:
         <string>{hermes_home}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
         <string>1</string>
+        <key>PYTHONPATH</key>
+        <string>{pythonpath}</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>

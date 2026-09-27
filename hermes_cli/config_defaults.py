@@ -3131,6 +3131,20 @@ OPTIONAL_ENV_VARS = {
         password=None),
     "QQ_SANDBOX": _msg("Enable QQ sandbox mode for development testing (true/false)",
         "QQ Sandbox Mode", password=None),
+    "DINGTALK_CLIENT_ID": _msg(
+        "DingTalk Stream Mode client ID (AppKey) from the Channels page",
+        "DingTalk Client ID (AppKey)", url="https://open-dev.dingtalk.com",
+        password=True),
+    "DINGTALK_CLIENT_SECRET": _msg(
+        "DingTalk Stream Mode client secret (AppSecret)",
+        "DingTalk Client Secret (AppSecret)", url="https://open-dev.dingtalk.com",
+        password=True),
+    "DINGTALK_HOME_CHANNEL": _msg(
+        "Default DingTalk conversation for cron delivery and notifications",
+        "DingTalk Home Channel", password=None),
+    "DINGTALK_HOME_CHANNEL_NAME": _msg(
+        "Display name for the DingTalk home channel", "DingTalk Home Channel Name",
+        password=None),
     "IRC_SERVER": _msg("IRC server hostname (e.g. irc.libera.chat)", "IRC server", None),
     "IRC_CHANNEL": _msg("IRC channel to join (e.g. #hermes)", "IRC channel", None),
     "IRC_NICKNAME": _msg("Bot nickname on IRC (default: hermes-bot)", "IRC nickname", None),

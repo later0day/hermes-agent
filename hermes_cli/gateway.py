@@ -69,6 +69,41 @@ from hermes_cli.setup import (  # noqa: F401 — resolved lazily by siblings thr
 from hermes_cli.colors import Colors, color
 logger = logging.getLogger(__name__)
 
+
+def _prefer_project_package(package_name: str) -> None:
+    """Prefer a source-tree package over profile runtime state directories."""
+    project_entry = str(PROJECT_ROOT)
+    sys.path[:] = [entry for entry in sys.path if entry != project_entry]
+    sys.path.insert(0, project_entry)
+
+    module = sys.modules.get(package_name)
+    if module is None:
+        return
+
+    expected_dir = (PROJECT_ROOT / package_name).resolve()
+    locations: list[Path] = []
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        try:
+            locations.append(Path(module_file).resolve())
+        except OSError:
+            pass
+    module_path = getattr(module, "__path__", None)
+    if module_path:
+        for path_entry in module_path:
+            try:
+                locations.append(Path(path_entry).resolve())
+            except OSError:
+                pass
+
+    if any(loc == expected_dir or expected_dir in loc.parents for loc in locations):
+        return
+
+    for loaded_name in list(sys.modules):
+        if loaded_name == package_name or loaded_name.startswith(f"{package_name}."):
+            sys.modules.pop(loaded_name, None)
+
+
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
 _CAPTURE_TEXT = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -4625,7 +4660,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
-    sys.path.insert(0, str(PROJECT_ROOT))
+    _prefer_project_package("cron")
     _apply_startup_watchdog_config()
     from hermes_cli.observability.shared_metrics_process import begin_process
     begin_process("gateway")

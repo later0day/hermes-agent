@@ -26,6 +26,7 @@ import time
 import threading
 import atexit
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -666,7 +667,42 @@ def _ensure_terminal_env_bridged() -> None:
 
 
 # Default cwd per backend; anything else (container backends, plugins) is "/root".
-_DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD}
+_DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD, "agentproxy": "/root"}
+
+
+def _repair_deleted_cwd() -> Optional[str]:
+    """Move the process back to a real directory if its cwd was removed.
+
+    Background cleanup runs long after the command that created a scratch cwd
+    may have finished. If that cwd is deleted, unrelated cleanup work can hit
+    FileNotFoundError through stdlib helpers that implicitly call getcwd().
+    """
+    try:
+        os.getcwd()
+        return None
+    except FileNotFoundError:
+        repo_root = str(Path(__file__).resolve().parents[1])
+        candidates = [
+            _tenv("TERMINAL_CWD"),
+            os.getenv("HERMES_CWD"),
+            repo_root,
+            os.path.expanduser("~"),
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            expanded = os.path.expanduser(candidate)
+            if not os.path.isabs(expanded):
+                expanded = os.path.join(repo_root, expanded)
+            if not os.path.isdir(expanded):
+                continue
+            try:
+                os.chdir(expanded)
+                logger.info("Recovered process cwd after deleted working directory: %s", expanded)
+                return expanded
+            except OSError:
+                continue
+        return None
 
 
 def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
@@ -715,6 +751,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
 
 def _get_env_config() -> Dict[str, Any]:
     """Resolve the terminal configuration dict from TERMINAL_* env vars."""
+    _repair_deleted_cwd()
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_image
     _ensure_terminal_env_bridged()
     env_type = _tenv("TERMINAL_ENV", "local")
@@ -785,6 +822,15 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_persist_across_processes": _tenv_bool("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"),
         "docker_shared_container_key": _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip(),
         "docker_orphan_reaper": _tenv_bool("TERMINAL_DOCKER_ORPHAN_REAPER", "true"),
+        # AgentProxy-specific config (env_type="agentproxy"): run commands in a
+        # Docker container on a remote AgentProxy agent over the Dashboard task API.
+        "ap_agent_id": _tenv("TERMINAL_AP_AGENT", "home"),
+        "ap_container": _tenv("TERMINAL_AP_CONTAINER", "hermes-reverse"),
+        "ap_image": _tenv("TERMINAL_AP_IMAGE", default_image),
+        "ap_cloud_url": _tenv("TERMINAL_AP_CLOUD_URL", "https://127.0.0.1:8080"),
+        "ap_env_file": _tenv("TERMINAL_AP_ENV_FILE", "/opt/agentproxy/.env"),
+        "ap_path_prefix": _tenv("TERMINAL_AP_PATH_PREFIX", "/usr/local/bin"),
+        "ap_docker_run_args": _tenv("TERMINAL_AP_DOCKER_RUN_ARGS", ""),
     }
 
 

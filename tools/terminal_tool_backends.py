@@ -51,7 +51,7 @@ def terminal_backend_unavailable_reason() -> Optional[str]:
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh, agentproxy"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -86,6 +86,19 @@ def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
 def _container_config_from_config(config: Dict[str, Any]) -> dict:
     """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
+
+
+def _agentproxy_config_from_config(config: Dict[str, Any]) -> dict:
+    """``agentproxy_config`` for :func:`_create_environment`."""
+    return {
+        "ap_agent_id": config.get("ap_agent_id", "home"),
+        "ap_container": config.get("ap_container", "hermes-reverse"),
+        "ap_image": config.get("ap_image", "nikolaik/python-nodejs:python3.11-nodejs20"),
+        "ap_cloud_url": config.get("ap_cloud_url", "https://127.0.0.1:8080"),
+        "ap_env_file": config.get("ap_env_file", "/opt/agentproxy/.env"),
+        "ap_path_prefix": config.get("ap_path_prefix", "/usr/local/bin"),
+        "ap_docker_run_args": config.get("ap_docker_run_args", ""),
+    }
 
 
 def _resources(cc: Dict[str, Any]) -> dict:
@@ -208,6 +221,21 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
                            key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only)
 
 
+def _build_agentproxy_env(*, image, cwd, timeout, cc, **_):
+    from tools.environments.agentproxy import AgentProxyEnvironment as _AgentProxyEnv
+    return _AgentProxyEnv(
+        agent_id=cc.get("ap_agent_id", "home"),
+        container=cc.get("ap_container", "hermes-reverse"),
+        image=cc.get("ap_image", image),
+        cloud_url=cc.get("ap_cloud_url", "https://127.0.0.1:8080"),
+        env_file=cc.get("ap_env_file", "/opt/agentproxy/.env"),
+        path_prefix=cc.get("ap_path_prefix", "/usr/local/bin"),
+        docker_run_args=cc.get("ap_docker_run_args", ""),
+        cwd=cwd,
+        timeout=timeout,
+    )
+
+
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
@@ -232,11 +260,12 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
 _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
                  "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
-                 "ssh": _build_ssh_env}
+                 "ssh": _build_ssh_env, "agentproxy": _build_agentproxy_env}
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
+                        agentproxy_config: dict = None,
                         local_config: dict = None, task_id: str = "default",
                         host_cwd: Optional[str] = None, probe_only: bool = False):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
@@ -244,7 +273,10 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
     connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
     builder = _ENV_BUILDERS.get(env_type)
-    kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
+    cc = container_config or {}
+    if env_type == "agentproxy" and agentproxy_config:
+        cc = agentproxy_config
+    kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=cc, task_id=task_id,
                   ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)
     if builder is not None:
         env = builder(**kwargs)
@@ -311,6 +343,20 @@ def _daytona_post(config: Dict[str, Any]) -> bool:
     return get_secret("DAYTONA_API_KEY") is not None
 
 
+def _check_agentproxy(config: Dict[str, Any]) -> bool:
+    """AgentProxy backend needs DASHBOARD_TOKEN or the ap .env file."""
+    from agent.secret_scope import get_secret
+    if get_secret("DASHBOARD_TOKEN"):
+        return True
+    env_file = config.get("ap_env_file", "/opt/agentproxy/.env")
+    if os.path.exists(env_file):
+        return True
+    return _reject(
+        f"agentproxy backend selected but no Dashboard token found: set "
+        f"$DASHBOARD_TOKEN or provide the ap env file ({env_file})."
+    )
+
+
 _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
@@ -321,6 +367,7 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
               "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
+    "agentproxy": {"post": _check_agentproxy},
 }
 
 

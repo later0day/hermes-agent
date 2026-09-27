@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from tools.environments.singularity import _get_scratch_dir
 from tools.terminal_tool_backends import (
+    _agentproxy_config_from_config,
     _container_config_from_config,
     _ssh_config_from_config,
 )
@@ -76,6 +77,9 @@ def _create_configured_env(
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
         container_config=(
             _container_config_from_config(config) if _is_container_backend(env_type) else None
+        ),
+        agentproxy_config=(
+            _agentproxy_config_from_config(config) if env_type == "agentproxy" else None
         ),
         local_config=local_config, task_id=task_id, host_cwd=host_cwd,
     )
