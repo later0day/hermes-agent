@@ -733,6 +733,36 @@ class TestWeixinPollLoopSyncBuf:
         assert [buf for buf, _ in saves] == ["buf-1", "buf-2"]
 
 
+class TestWeixinSessionExpiredBackoff:
+    """A session-expired poll pauses 60s, doubling to a 600s cap, and resets after a good poll —
+    so a session that needs a re-login is not polled and logged every minute forever."""
+
+    def test_pause_doubles_to_the_cap_and_resets_after_a_good_poll(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = Mock()
+        expired = {"ret": weixin.SESSION_EXPIRED_ERRCODE, "errmsg": "session timeout"}
+        responses = iter([expired] * 6 + [{"ret": 0, "msgs": []}] + [expired] * 2)
+        pauses = []
+
+        async def _get_updates(*args, **kwargs):
+            try:
+                return next(responses)
+            except StopIteration:
+                adapter._running = False
+                return {"ret": 0, "msgs": []}
+
+        async def _sleep(seconds):
+            pauses.append(seconds)
+
+        monkeypatch.setattr(weixin, "_get_updates", _get_updates)
+        monkeypatch.setattr(weixin, "_load_sync_buf", lambda *a: "")
+        monkeypatch.setattr(weixin.asyncio, "sleep", _sleep)
+        asyncio.run(adapter._poll_loop())
+
+        assert pauses == [60, 120, 240, 480, 600, 600, 60, 120]
+
+
 class TestWeixinVoiceAlwaysDownloaded:
     """Regression tests for #27300: when WeChat (Weixin) returns a
     ``voice_item.text`` (Tencent Cloud's STT) we must still download
