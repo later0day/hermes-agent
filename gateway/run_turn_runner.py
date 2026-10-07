@@ -149,7 +149,7 @@ class TurnRunner:
         # Runs BEFORE the progress_queue guard so the user-message reaction updates even when
         # tool progress bubbles are off and the status card is disabled.
         if event_type in {"tool.started", "subagent.tool"} and tool_name:
-            _stage_adapter = self._runner.adapters.get(ctx.source.platform)
+            _stage_adapter = self._runner._delivery_adapter_for(ctx.source)
             if _stage_adapter is not None and hasattr(_stage_adapter, "notify_tool_started"):
                 try:
                     _stage_adapter.notify_tool_started(ctx.source.chat_id, tool_name, preview=preview)
@@ -157,33 +157,20 @@ class TurnRunner:
                     logger.debug("notify_tool_started failed for %s", tool_name, exc_info=True)
         if not ctx.progress_queue and turn_status_card is None:
             return
-        # Subagent tool events map into the turn status card as ordinary tool progress.
+        # Subagent events render only on the turn status card (tool progress and commentary);
+        # without a card they are dropped here, as before the card existed.
         if event_type in {"subagent.tool", "subagent.tool.completed"}:
-            mapped_event = "tool.completed" if event_type == "subagent.tool.completed" else "tool.started"
             if turn_status_card is not None:
+                mapped_event = "tool.completed" if event_type == "subagent.tool.completed" else "tool.started"
                 turn_status_card.on_tool_progress(mapped_event, tool_name, preview, args, **kwargs)
-                return
-            if (
-                ctx.progress_queue is not None
-                and ctx.tool_progress_enabled
-                and event_type == "subagent.tool"
-            ):
-                subagent_tool = tool_name or "subagent"
-                msg = f"🔀 {subagent_tool}"
-                if preview:
-                    msg += f" — {preview}"
-                ctx.progress_queue.put(msg)
             return
-        # Subagent lifecycle events render as card commentary.
         if event_type in {"subagent.start", "subagent.progress", "subagent.thinking"}:
             subagent_text = preview or tool_name or ""
-            if not subagent_text:
-                return
-            if turn_status_card is not None:
-                turn_status_card.on_commentary(f"🔀 {subagent_text}")
-                return
-            if ctx.progress_queue is not None:
-                ctx.progress_queue.put(f"🔀 {subagent_text}")
+            if turn_status_card is not None and subagent_text:
+                # delegate_tool_progress already prefixes its batch lines with 🔀.
+                turn_status_card.on_commentary(
+                    subagent_text if subagent_text.startswith("🔀") else f"🔀 {subagent_text}")
+            return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             if turn_status_card is not None:
                 turn_status_card.on_tool_progress(event_type, tool_name, preview, args, **kwargs)
@@ -1016,7 +1003,7 @@ class TurnRunner:
                     stream_consumer.stream_deltas_enabled = consumer_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
-# Deltas tee to the stream consumer (when text streaming is on), the turn status card,
+        # Deltas tee to the stream consumer (when text streaming is on), the turn status card,
         # and streaming TTS.
         _tsc = ctx.turn_status_card_holder[0]
         delta_sinks = [
