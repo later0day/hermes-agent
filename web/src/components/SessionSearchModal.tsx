@@ -26,6 +26,12 @@ function toUnified(s: SessionInfo): UnifiedSession {
   return { id: s.id, title: s.title, source: s.source, last_active: s.last_active };
 }
 
+// Search hits are per message, so one session can match many times: keep its best (first) hit.
+function uniqueSessions(sessions: UnifiedSession[]): UnifiedSession[] {
+  const seen = new Set<string>();
+  return sessions.filter((s) => !seen.has(s.id) && seen.add(s.id));
+}
+
 function toUnifiedFromSearch(s: SessionSearchResult): UnifiedSession {
   return {
     id: s.session_id,
@@ -66,7 +72,7 @@ export function SessionSearchModal({ open, onClose }: Props) {
       try {
         if (query) {
           const res = await api.searchSessions(query);
-          setSessions((res.results ?? []).map(toUnifiedFromSearch));
+          setSessions(uniqueSessions((res.results ?? []).map(toUnifiedFromSearch)));
         } else {
           const res = await api.getSessions(10, 0, undefined, "recent");
           setSessions((res.sessions ?? []).map(toUnified));
@@ -82,7 +88,7 @@ export function SessionSearchModal({ open, onClose }: Props) {
 
   const select = useCallback(
     (s: UnifiedSession) => {
-      navigate(`/chat?session=${s.id}`);
+      navigate(`/chat?resume=${encodeURIComponent(s.id)}`);
       onClose();
     },
     [navigate, onClose],
