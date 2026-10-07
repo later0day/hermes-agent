@@ -37,6 +37,7 @@ def _seed_profile_identity(profile_dir: Path, *, template: bool = False,
         skills_dir.mkdir(parents=True, exist_ok=True)
         for s in skills:
             (skills_dir / s).mkdir(parents=True, exist_ok=True)
+            (skills_dir / s / "SKILL.md").write_text(f"---\nname: {s}\n---\n", encoding="utf-8")
 
 
 def _source(chat_id="group-x", user_id="u1", chat_type="group"):
@@ -83,13 +84,14 @@ def env(tmp_path, monkeypatch):
 async def test_list_reports_real_model_and_skills_and_template_marker(env):
     _seed_profile_identity(
         env.root / "profiles" / "coder",
-        config={"model": "claude-opus-4-6"},
+        # The real shape: ``model`` is a mapping, which used to print as a raw dict.
+        config={"model": {"default": "claude-opus-4-6", "provider": "anthropic"}},
         skills=["skill-a", "skill-b"],
     )
     _seed_profile_identity(env.root / "profiles" / "librarian", template=True)
     r = _runner(env.store, audit_path=env.audit)
     out = await r._handle_agent_command(_event(_source(), "/agent list"))
-    assert "coder" in out and "claude-opus-4-6" in out and "skills: 2" in out
+    assert "`coder` (model claude-opus-4-6, skills: 2)" in out
     assert "librarian" in out and "template" in out
 
 
