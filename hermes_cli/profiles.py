@@ -1949,6 +1949,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+    _settle_source_agent_bindings(canon, None)
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the
@@ -2468,6 +2469,19 @@ def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
         logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
 
 
+def _settle_source_agent_bindings(old_canon: str, new_canon: Optional[str]) -> None:
+    """Fork ``/agent use`` bindings follow the profile (gateway.source_agent_binding); a store
+    error is reported, never allowed to fail a delete/rename that already happened."""
+    try:
+        from gateway.source_agent_binding import settle_profile_bindings
+        changed = settle_profile_bindings(old_canon, new_canon)
+    except Exception as exc:
+        print(f"⚠ Could not update /agent bindings for '{old_canon}': {exc}")
+        return
+    if changed:
+        print(f"✓ {'Re-pointed' if new_canon else 'Removed'} {changed} /agent binding(s)")
+
+
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2561,6 +2575,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # key otherwise resolves to a profile that no longer exists on every inbound event.
     from hermes_cli.profile_identity import _migrate_profile_identity
     _migrate_profile_identity(old_canon, new_canon, live_mux)
+    _settle_source_agent_bindings(old_canon, new_canon)
 
     # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:

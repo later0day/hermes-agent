@@ -4508,22 +4508,34 @@ class GatewayRunner(
         # (``agent:<profile>``) AND the profile the turn runs under
         # (``_resolve_profile_home_for_source``). Resolving here keeps those two
         # dimensions in agreement.
-        bound = self._binding_profile_for_source(source)
-        if bound:
-            if bound in (getattr(self, "_profiles_being_deleted", set()) or set()):
-                from gateway.profile_routing import ProfileRouteRejected
-
-                raise ProfileRouteRejected(bound)
-            return bound
-        routes = getattr(config, "profile_routes", None)
-        if not routes:
-            return None
+        from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         if adapter_profile is None:
             # Sources built outside ``build_source`` may still carry the receiving adapter as provenance.
             owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
             if isinstance(owner, tuple):
                 adapter_profile = owner[1]
-        from gateway.profile_routing import ProfileRouteRejected, match_profile_route
+        # A binding is made in a chat of the primary bot, so like a route without ``bot_profile`` it
+        # applies to the primary bot's chats only — a secondary profile's own bot keeps its chats —
+        # and, like any route, only to a profile this gateway serves.
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        bound = self._binding_profile_for_source(source) if adapter_profile in (None, primary) else None
+        if bound:
+            if bound in (getattr(self, "_profiles_being_deleted", set()) or set()):
+                raise ProfileRouteRejected(bound)
+            try:
+                served = {name for name, _home in _multiplex_profile_homes(config)}
+            except Exception as exc:
+                logger.warning("Rejecting binding to %r: the served-profile set could not be resolved", bound,
+                               exc_info=True)
+                raise ProfileRouteRejected(bound) from exc
+            if bound not in served:
+                logger.warning("Rejecting binding of %s/%s: profile %r is not served by this gateway",
+                               source.platform, source.chat_id, bound)
+                raise ProfileRouteRejected(bound)
+            return bound
+        routes = getattr(config, "profile_routes", None)
+        if not routes:
+            return None
         try:
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
