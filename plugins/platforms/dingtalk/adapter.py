@@ -11,7 +11,6 @@ import mimetypes
 import os
 import re
 import time
-import shutil
 import struct
 import subprocess
 import tempfile
@@ -56,6 +55,7 @@ except Exception:
     dingtalk_card_client = dingtalk_card_models = dingtalk_robot_client = dingtalk_robot_models = None
     open_api_models = tea_util_models = None
 
+from agent.i18n import t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
 from gateway.platforms.base import (
@@ -268,64 +268,65 @@ class DingTalkAdapter(BasePlatformAdapter):
     # original user message.  ``notify_tool_started`` swaps Thinking for a
     # category-specific label; ``_fire_done_reaction`` recalls whatever label
     # was last fired so the final reaction lands on the correct anchor.
-    REACTION_THINKING = "🤔 想一想"
-    REACTION_DONE = "✅ 搞定了"
-    REACTION_ERROR = "😓 遇到麻烦了"
-    REACTION_INTERRUPTED = "⏸️ 先停一下"
+    # Texts live in this plugin's language pack (``locales/``) under dingtalk.*.
+    @property
+    def REACTION_THINKING(self) -> str:  # noqa: N802
+        return t("dingtalk.reaction.thinking")
 
-    # Tool -> broad category label. Categories are coarse on purpose:
+    @property
+    def REACTION_DONE(self) -> str:  # noqa: N802
+        return t("dingtalk.reaction.done")
+
+    @property
+    def REACTION_ERROR(self) -> str:  # noqa: N802
+        return t("dingtalk.reaction.error")
+
+    @property
+    def REACTION_INTERRUPTED(self) -> str:  # noqa: N802
+        return t("dingtalk.reaction.interrupted")
+
+    # Tool -> broad stage (a dingtalk.stage.* key). Categories are coarse on purpose:
     # back-to-back terminal calls or back-to-back file reads should
     # not produce a flicker of swaps, only the FIRST call in a new
     # category triggers a label change. Tools missing from this map
     # do not swap the label (the previous stage label stays).
-    _TOOL_STAGE_LABELS: Dict[str, str] = {
-        "terminal":           "⌨️ 敲命令中",
-        "code_execution":     "⌨️ 敲命令中",
-        "execute_code":       "🔬 跑代码中",
-        "read_file":          "👀 看文件中",
-        "write_file":         "✍️ 写代码中",
-        "patch":              "✍️ 改代码中",
-        "search_files":       "🔎 搜文件中",
-        "web_search":         "🔍 搜一搜",
-        "web_extract":        "🌍 抓网页中",
-        "browser_navigate":   "🧭 逛网页中",
-        "browser_click":      "🧭 逛网页中",
-        "browser_type":       "🧭 逛网页中",
-        "browser_screenshot": "🧭 逛网页中",
-        "browser_back":       "🧭 逛网页中",
-        "browser_scroll":     "🧭 逛网页中",
-        "browser_press":      "🧭 逛网页中",
-        "browser_vision":     "🧭 逛网页中",
-        "browser_console":    "🧭 逛网页中",
-        "browser_get_images": "🧭 逛网页中",
-        "memory":             "💡 想起来了",
-        "delegate_task":      "🤖 叫小弟去办",
-        "todo":               "📋 整理一下",
-        "clarify":            "🙋 稍等确认",
-        "skill_manage":       "🎯 加载技能",
-        "vision":             "👁️ 看图中",
-        "image_generation":   "🎨 画画中",
-        "video_generation":   "🎬 剪片中",
+    _TOOL_STAGES: Dict[str, str] = {
+        "terminal":           "command",
+        "code_execution":     "command",
+        "execute_code":       "code",
+        "read_file":          "read",
+        "write_file":         "write",
+        "patch":              "edit",
+        "search_files":       "find_files",
+        "web_search":         "search",
+        "web_extract":        "fetch",
+        **dict.fromkeys((
+            "browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_back",
+            "browser_scroll", "browser_press", "browser_vision", "browser_console", "browser_get_images",
+        ), "browse"),
+        "memory":             "memory",
+        "delegate_task":      "delegate",
+        "todo":               "todo",
+        "clarify":            "clarify",
+        "skill_manage":       "skill",
+        "vision":             "vision",
+        "image_generation":   "image",
+        "video_generation":   "video",
     }
 
-    # Terminal command -> more specific reaction label.
-    # Matched in order; first hit wins.
-    _TERMINAL_STAGE_LABELS: List[Tuple[re.Pattern, str]] = [
-        (re.compile(r"^\s*git\b"),                          "🌳 提交代码中"),
-        (re.compile(r"^\s*(pytest|unittest|jest|vitest|mocha|cargo\s+test|go\s+test|npm\s+test|pnpm\s+test)\b"), "🧪 跑测试中"),
-        (re.compile(r"^\s*(pip|pip3|uv|npm|pnpm|yarn|cargo|brew|apt|apt-get)\s+(install|add|i|sync)\b"), "📦 装依赖中"),
-        (re.compile(r"^\s*(docker|docker-compose|kubectl|helm)\b"),  "🐳 跑容器中"),
-        (re.compile(r"^\s*(curl|wget|http)\b"),             "📡 请求接口中"),
-        (re.compile(r"^\s*(grep|rg|ripgrep|ag)\b"),         "🔍 搜一搜"),
-        (re.compile(r"^\s*(python|python3|node|deno|ruby|bash|sh|tsx|ts-node)\b"), "▶️ 跑脚本中"),
-        (re.compile(r"^\s*(make|cmake|cargo\s+build|go\s+build|mvn)\b"), "🔨 编译中"),
-        (re.compile(r"^\s*(cat|head|tail|bat)\b"),           "👀 看文件中"),
-        (re.compile(r"^\s*(ls|find|tree|fd)\b"),             "🗂️ 翻目录中"),
+    # Terminal command -> more specific stage. Matched in order; first hit wins.
+    _TERMINAL_STAGES: List[Tuple[re.Pattern, str]] = [
+        (re.compile(r"^\s*git\b"),                          "git"),
+        (re.compile(r"^\s*(pytest|unittest|jest|vitest|mocha|cargo\s+test|go\s+test|npm\s+test|pnpm\s+test)\b"), "test"),
+        (re.compile(r"^\s*(pip|pip3|uv|npm|pnpm|yarn|cargo|brew|apt|apt-get)\s+(install|add|i|sync)\b"), "install"),
+        (re.compile(r"^\s*(docker|docker-compose|kubectl|helm)\b"),  "container"),
+        (re.compile(r"^\s*(curl|wget|http)\b"),             "http"),
+        (re.compile(r"^\s*(grep|rg|ripgrep|ag)\b"),         "search"),
+        (re.compile(r"^\s*(python|python3|node|deno|ruby|bash|sh|tsx|ts-node)\b"), "script"),
+        (re.compile(r"^\s*(make|cmake|cargo\s+build|go\s+build|mvn)\b"), "build"),
+        (re.compile(r"^\s*(cat|head|tail|bat)\b"),           "read"),
+        (re.compile(r"^\s*(ls|find|tree|fd)\b"),             "list"),
     ]
-
-    # One-shot text notice delivered when the editable AI Card path fails so the user
-    # knows real-time progress is unavailable rather than seeing silence.
-    _DEGRADED_PROGRESS_NOTICE = "⚠️ 实时进度暂不可用，答案稍后返回"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DINGTALK)
@@ -736,15 +737,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Return the stage label for *tool_name*, or None to keep current label.
 
         For ``terminal`` calls, *preview* (the command string) is used to
-        pick a more specific label from ``_TERMINAL_STAGE_LABELS``.
+        pick a more specific label from ``_TERMINAL_STAGES``.
         """
         if not tool_name:
             return None
+        stage = cls._TOOL_STAGES.get(tool_name)
         if tool_name == "terminal" and preview:
-            for pattern, label in cls._TERMINAL_STAGE_LABELS:
-                if pattern.match(preview):
-                    return label
-        return cls._TOOL_STAGE_LABELS.get(tool_name)
+            stage = next((st for pattern, st in cls._TERMINAL_STAGES if pattern.match(preview)), stage)
+        return t(f"dingtalk.stage.{stage}") if stage else None
 
     def notify_tool_started(
         self, chat_id: str, tool_name: Optional[str], preview: str = "",
@@ -755,7 +755,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         Looks up a broad category label for the tool and, if the
         category has changed since the last swap on this chat, fires
         a recall+reply pair to update the visible label. Tools not in
-        ``_TOOL_STAGE_LABELS`` (or repeat calls of the same category)
+        ``_TOOL_STAGES`` (or repeat calls of the same category)
         are no-ops, so a run of 5 back-to-back terminal calls costs
         exactly one swap.
         """
@@ -818,7 +818,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             "msgtype": "markdown",
             "markdown": {
                 "title": "Hermes",
-                "text": self._DEGRADED_PROGRESS_NOTICE,
+                "text": t("dingtalk.degraded_progress"),
             },
         }
         try:
@@ -2709,6 +2709,7 @@ def _is_connected(config) -> bool:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_locale_dir(Path(__file__).parent / "locales")
     ctx.register_platform(
         name="dingtalk", label="DingTalk", adapter_factory=DingTalkAdapter, check_fn=dingtalk_deps_present,
         ensure_deps_fn=ensure_dingtalk_deps, is_connected=_is_connected, validate_config=_is_connected,
