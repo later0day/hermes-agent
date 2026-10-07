@@ -176,3 +176,33 @@ def test_a_same_named_job_in_another_chat_neither_leaks_nor_blocks(temp_cron_hom
         clear_session_vars(tok)
     assert "aaaa1111" not in raw
     assert json.loads(raw)["success"] is True
+
+
+def _as_cron_run(platform="", chat_id=""):
+    from gateway.session_context import _VAR_MAP
+
+    tokens = set_session_vars(platform="", chat_id="", chat_name="", cron_session="1")
+    _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(platform)
+    _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(chat_id)
+    return tokens
+
+
+def test_a_cron_run_acts_for_the_chat_it_delivers_to(two_group_store):
+    """cron.allow_agent_scheduling: a job's run clears the session origin, which used to give it
+    the CLI's full-store view — group B could schedule a job that lists/removes group A's."""
+    from tools.cronjob_tools import cronjob
+
+    tokens = _as_cron_run("dingtalk", GROUP_A)
+    try:
+        created = json.loads(cronjob(action="create", schedule="every 2h", prompt="noop", name="spawned"))
+        assert created["success"] is True
+        assert _list_names() == {"job-A", "spawned"}
+        assert json.loads(cronjob(action="remove", job_id="bbbb2222"))["success"] is False
+    finally:
+        clear_session_vars(tokens)
+
+    tokens = _as_cron_run()
+    try:
+        assert _list_names() == set()
+    finally:
+        clear_session_vars(tokens)
