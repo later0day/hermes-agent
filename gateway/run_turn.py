@@ -14,7 +14,6 @@ import inspect
 import json
 import os
 import queue
-import re
 import threading
 import time
 from agent.i18n import t
@@ -3125,54 +3124,9 @@ class GatewayTurnMixin:
         turn_ctx.native_tool_start_callback = turn_runner.combined_tool_start_callback
         turn_ctx.native_tool_complete_callback = turn_runner.native_tool_complete_callback
         # DingTalk (and any adapter with SUPPORTS_TURN_STATUS_CARD) editable status card.
-        self._maybe_init_turn_status_card(turn_ctx, disp, source, _cleanup_adapter)
+        from gateway.turn_status_card import maybe_start_turn_status_card
+        maybe_start_turn_status_card(self, turn_ctx, disp, source)
         return turn_ctx, turn_runner, _cleanup_adapter
-
-    def _maybe_init_turn_status_card(
-        self, turn_ctx: TurnContext, disp: "GatewayRunner._RunAgentDisplay",
-        source: SessionSource, adapter: Any,
-    ) -> None:
-        """Create a ``TurnStatusCardCoordinator`` when the platform adapter supports it and
-        at least one progress surface (tool_progress, thinking, interim, streaming) is active.
-
-        The coordinator replaces noisy streaming/interim progress bubbles with a single
-        editable AI Card that renders tool lifecycle, commentary and the final answer."""
-        _ts_adapter = self._delivery_adapter_for(source)
-        _enabled = bool(
-            _ts_adapter is not None
-            and getattr(_ts_adapter, "SUPPORTS_TURN_STATUS_CARD", False) is True
-            and (
-                disp.tool_progress_enabled
-                or disp._thinking_enabled
-                or disp.interim_assistant_messages_enabled
-                or disp._streaming_enabled
-            )
-        )
-        if not _enabled or _ts_adapter is None:
-            # When the card is off, the progress queue must exist if tool_progress/thinking are on.
-            return
-        try:
-            from gateway.turn_status_card import TurnStatusCardConfig, TurnStatusCardCoordinator
-            _preview_len = disp.resolve_display_setting(
-                disp.user_config, disp.platform_key, "tool_preview_length", 0,
-            )
-            try:
-                _preview_len = int(_preview_len or 40)
-            except Exception:
-                _preview_len = 40
-            if _preview_len <= 0:
-                _preview_len = 40
-            turn_ctx.turn_status_card_holder[0] = TurnStatusCardCoordinator(
-                adapter=_ts_adapter,
-                chat_id=source.chat_id,
-                metadata=turn_ctx._progress_metadata,
-                config=TurnStatusCardConfig(
-                    edit_interval=0.5,
-                    preview_max_len=_preview_len,
-                ),
-            )
-        except Exception as _tsc_err:
-            logger.debug("Could not set up turn status card: %s", _tsc_err)
 
     def _thread_metadata_for_progress(
         self, source: SessionSource, event_message_id: Optional[str], _progress_thread_id: Any,
@@ -4446,19 +4400,8 @@ class GatewayTurnMixin:
         finally:
             # Finalize the turn status card, then drain its edit loop so the final
             # summary edit lands before cleanup.
-            _tsc = turn_ctx.turn_status_card_holder[0]
-            if _tsc is not None:
-                try:
-                    _tsc.finish()
-                except Exception:
-                    pass
-            if turn_status_task:
-                try:
-                    await asyncio.wait_for(turn_status_task, timeout=5.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    turn_status_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await turn_status_task
+            from gateway.turn_status_card import finish_turn_status_card
+            await finish_turn_status_card(turn_ctx.turn_status_card_holder[0], turn_status_task)
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,

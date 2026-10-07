@@ -827,3 +827,46 @@ __all__ = [
     "TurnStatusCardConfig",
     "TurnStatusCardCoordinator",
 ]
+
+
+def maybe_start_turn_status_card(runner: Any, turn_ctx: Any, disp: Any, source: Any) -> None:
+    """Put a ``TurnStatusCardCoordinator`` in ``turn_ctx.turn_status_card_holder`` when the
+    delivering adapter supports one (``SUPPORTS_TURN_STATUS_CARD``) and at least one progress
+    surface — tool progress, thinking, interim messages or streaming — is on for the turn. The card
+    then replaces those bubbles with one editable AI Card (tool lifecycle, commentary, answer)."""
+    adapter = runner._delivery_adapter_for(source)
+    if adapter is None or getattr(adapter, "SUPPORTS_TURN_STATUS_CARD", False) is not True:
+        return
+    if not (disp.tool_progress_enabled or disp._thinking_enabled
+            or disp.interim_assistant_messages_enabled or disp._streaming_enabled):
+        return
+    preview_len = disp.resolve_display_setting(disp.user_config, disp.platform_key, "tool_preview_length", 0)
+    try:
+        preview_len = int(preview_len or 40)
+    except (TypeError, ValueError):
+        preview_len = 40
+    turn_ctx.turn_status_card_holder[0] = TurnStatusCardCoordinator(
+        adapter=adapter,
+        chat_id=source.chat_id,
+        metadata=turn_ctx._progress_metadata,
+        config=TurnStatusCardConfig(edit_interval=0.5, preview_max_len=preview_len if preview_len > 0 else 40),
+    )
+
+
+async def finish_turn_status_card(card: Optional["TurnStatusCardCoordinator"], task: Any) -> None:
+    """Finalize the turn's card and drain its edit loop so the closing edit lands before cleanup."""
+    import asyncio
+    from contextlib import suppress
+
+    if card is not None:
+        try:
+            card.finish()
+        except Exception:
+            logger.debug("turn status card finish failed", exc_info=True)
+    if task:
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
