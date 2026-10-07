@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 from gateway.config import PlatformConfig
 
 class _FakeDingTalkModel:
@@ -591,7 +593,7 @@ class TestRichMediaAndReactions:
     def test_stage_label_for_tool_terminal_with_git(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         label = DingTalkAdapter._stage_label_for_tool("terminal", "git commit -m hello")
-        assert label == "🌳 提交代码中"
+        assert label == t("dingtalk.stage.git")
 
     def test_stage_label_for_tool_unknown_returns_none(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
@@ -604,7 +606,7 @@ class TestRichMediaAndReactions:
     def test_stage_label_for_tool_read_file(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         label = DingTalkAdapter._stage_label_for_tool("read_file")
-        assert label == "👀 看文件中"
+        assert label == t("dingtalk.stage.read")
 
     def test_reply_at_sender_is_read_from_the_profiles_own_settings(self, monkeypatch, tmp_path):
         """Another profile's DINGTALK_REPLY_AT_SENDER in the process env must not leak into a
