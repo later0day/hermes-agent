@@ -899,6 +899,11 @@ class GatewaySlashCommandsMixin(
                 "Dynamic profile binding is disabled. "
                 "Enable `gateway.multiplex_profiles` first."
             )
+        # Rebinding a chat hands it another profile's secrets, memory and terminal, and
+        # create/delete reshape profiles: same bar as cross-origin /resume — an EXPLICITLY
+        # configured admin, never "everyone" under the default ungated slash policy.
+        if action not in ("status", "list") and not self._resume_caller_is_admin(source):
+            return t("gateway.agent.admin_only", action=action)
 
         if action == "status":
             profile = self._binding_profile_for_source(source)

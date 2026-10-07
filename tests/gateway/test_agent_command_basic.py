@@ -33,6 +33,9 @@ def _source(chat_id="group-x", user_id="u1", chat_type="group"):
 
 def _runner(store: SourceAgentBindingStore, *, multiplex=True, audit_path=None):
     r = object.__new__(GatewayRunner)
+    # Handler behavior for an authorized caller; the admin gate itself is pinned in
+    # test_agent_command_dispatch.py through the real dispatch + slash-access policy.
+    r._resume_caller_is_admin = lambda source: True
     cfg = SimpleNamespace(
         profile_routes=[],
         multiplex_profiles=multiplex,

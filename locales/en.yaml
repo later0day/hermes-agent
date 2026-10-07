@@ -196,6 +196,8 @@ gateway:
     example_line: "\nExample: `{preview}`"
     state_on: "ON"
     state_off: "OFF"
+  agent:
+    admin_only: "⛔ /agent {action} requires an explicitly configured gateway admin (allow_admin_from for DMs, group_allow_admin_from for groups)."
   goal:
     unavailable: "Goals unavailable on this session."
     no_goal_set: "No goal set."
