@@ -9,6 +9,7 @@ Shared helpers are reached via the late-binding seam in :mod:`hermes_cli.web_dep
 so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps working.
 """
 
+import asyncio
 import contextlib
 import copy
 import functools
@@ -1135,13 +1136,19 @@ async def update_profile_memory(name: str, doc: str, body: ProfileMemoryUpdate):
         raise HTTPException(status_code=404, detail="Unknown memory document")
     mem_dir = _resolve_profile_dir(name) / "memories"
     mem_path = mem_dir / doc
-    try:
+
+    def _write() -> None:
+        from tools.memory_tool_store import MemoryStore
         from utils import atomic_write_text
 
         mem_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(
-            mem_path, body.content, preserve_mode=True, create_mode=0o644
-        )
+        # The memory tool's read-modify-write holds this lock; writing outside it would let a
+        # concurrent agent update overwrite the dashboard edit (or the reverse).
+        with MemoryStore._file_lock(mem_path):
+            atomic_write_text(mem_path, body.content, preserve_mode=True, create_mode=0o644)
+
+    try:
+        await asyncio.to_thread(_write)
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/memory/%s failed", name, doc)
         raise HTTPException(status_code=500, detail=f"Could not write {doc}: {e}")

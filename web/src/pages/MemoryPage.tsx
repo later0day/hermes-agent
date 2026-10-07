@@ -8,6 +8,8 @@ import {
 import { Brain, Eye, Pencil, RotateCw, Save, User } from "lucide-react";
 import { api } from "@/lib/api";
 import { Markdown } from "@/components/Markdown";
+import { loadErrorCopy } from "@/lib/load-error-copy";
+import { memoryPreviewMarkdown } from "@/lib/memory-markdown";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -113,7 +115,7 @@ function MemoryEditor({
         setOriginal(res.content);
         setExists(res.exists);
       })
-      .catch(() => !cancelled && showToast(t.common.loading, "error"))
+      .catch(() => !cancelled && showToast(loadErrorCopy(t.common, meta.doc).title, "error"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
@@ -188,7 +190,7 @@ function MemoryEditor({
         ) : preview ? (
           <div className="min-h-[280px] border border-input bg-transparent px-3 py-2">
             {text.trim() ? (
-              <Markdown content={text} />
+              <Markdown content={memoryPreviewMarkdown(text)} />
             ) : (
               <span className="text-sm text-muted-foreground">{emptyLabel}</span>
             )}
