@@ -1,7 +1,9 @@
 // The E2E suite drives the operator's real dashboard, and many tests save what they edit:
 // ConfigPage once left model.context_length: 42 in two profiles, the MCP page replaced a real
 // server with /bin/echo, the hooks page stacked `echo e2e-test-hook` entries, and the Keys page
-// overwrote a real credential in a profile's .env. Snapshot every profile's mutable state before
+// overwrote a real credential in a profile's .env, and the MemoryPage tests replaced the real
+// MEMORY.md/USER.md that every new session injects into its system prompt. Snapshot every
+// profile's mutable state before
 // the run and put the exact bytes back afterwards, however a test exits. Copies live in a 0700
 // temp dir (they include .env secrets) that teardown deletes.
 import {
@@ -13,7 +15,10 @@ import { dirname, join } from "node:path";
 const BASE = "http://localhost:9119";
 const POINTER = join(tmpdir(), "hermes-e2e-state-snapshot.path");
 // Per-profile files the dashboard writes, relative to the profile home.
-const TRACKED = ["config.yaml", ".env", join("cron", "jobs.json")];
+const TRACKED = [
+  "config.yaml", ".env", join("cron", "jobs.json"), "SOUL.md",
+  join("memories", "MEMORY.md"), join("memories", "USER.md"),
+];
 
 interface Entry {
   path: string;
