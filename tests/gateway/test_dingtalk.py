@@ -606,19 +606,23 @@ class TestRichMediaAndReactions:
         label = DingTalkAdapter._stage_label_for_tool("read_file")
         assert label == "👀 看文件中"
 
-    def test_read_bool_setting_env_fallback(self, monkeypatch):
+    def test_reply_at_sender_is_read_from_the_profiles_own_settings(self, monkeypatch, tmp_path):
+        """Another profile's DINGTALK_REPLY_AT_SENDER in the process env must not leak into a
+        scoped profile's adapter; its own YAML ``reply_at_sender`` still applies."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from gateway.config import PlatformConfig
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        monkeypatch.setenv("TEST_BOOL_SETTING", "yes")
-        assert DingTalkAdapter._read_bool_setting(
-            None, env_name="TEST_BOOL_SETTING", default=False
-        ) is True
 
-    def test_read_bool_setting_default(self, monkeypatch):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        monkeypatch.delenv("TEST_BOOL_DEFAULT", raising=False)
-        assert DingTalkAdapter._read_bool_setting(
-            None, env_name="TEST_BOOL_DEFAULT", default=True
-        ) is True
+        monkeypatch.setenv("DINGTALK_REPLY_AT_SENDER", "true")
+        token = set_secret_scope({"DINGTALK_CLIENT_ID": "x", "DINGTALK_CLIENT_SECRET": "y"},
+                                 profile_home=str(tmp_path))
+        try:
+            plain = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+            opted_in = DingTalkAdapter(PlatformConfig(enabled=True, extra={"reply_at_sender": True}))
+        finally:
+            reset_secret_scope(token)
+        assert plain._reply_at_sender is False
+        assert opted_in._reply_at_sender is True
 
     def test_metadata_values_list_and_csv(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
