@@ -115,84 +115,6 @@ def routed_profile_fire(home=None) -> bool:
     return hermes_home_key(target) != hermes_home_key(get_routing_process_hermes_home())
 
 
-def _bound_platforms_for_profile(profile_name: str) -> set[str]:
-    """Lowercased platform names this profile has a dynamic ``/agent use`` binding for.
-
-    A binding key is ``source:<platform>:<type>:<chat_id>[:...]``; the platform is segment 1.
-    Its presence is PROOF the profile's traffic on that platform arrives through — and must
-    reply on — the primary gateway's shared adapter (the same "one shared credential serves
-    N routed profiles" topology the inbound reply path honours). Handing the satellite its
-    own credential for that platform is a ``duplicate_credential`` fatal, so it legitimately
-    holds no adapter of its own and must borrow the shared one for cron delivery.
-    Best-effort: any lookup failure returns an EMPTY set, so the augmentation below is
-    skipped and the fork's strict per-profile behaviour stands (a missing/corrupt store must
-    never cause a secondary to borrow the shared bot without positive binding evidence)."""
-    name = str(profile_name or "").strip()
-    if not name:
-        return set()
-    try:
-        from gateway.source_agent_binding import (
-            DEFAULT_SOURCE_AGENT_BINDINGS_DB, SourceAgentBindingStore,
-        )
-        if not Path(DEFAULT_SOURCE_AGENT_BINDINGS_DB).exists():
-            return set()
-        store = SourceAgentBindingStore(db_path=DEFAULT_SOURCE_AGENT_BINDINGS_DB)
-        try:
-            platforms: set[str] = set()
-            # Filter by profile in SQL so one tenant's bindings can never authorise another
-            # tenant's borrow.
-            for binding in store.list_bindings(profile_name=name):
-                parts = (binding.source_binding_key or "").split(":")
-                if len(parts) >= 2 and parts[0] == "source" and parts[1]:
-                    platforms.add(parts[1].lower())
-            return platforms
-        finally:
-            store.close()
-    except Exception:
-        logger.debug(
-            "binding-platform lookup for profile %r failed; skipping shared-adapter "
-            "augmentation", profile_name, exc_info=True,
-        )
-        return set()
-
-
-def _augment_secondary_adapters_from_shared(
-    secondary_adapters: dict, *, shared_adapters, profile_name: str,
-) -> dict:
-    """Return a per-profile adapter map with shared adapters added ONLY for the platforms
-    this profile has dynamic bindings for (and does not already own).
-
-    Preserves the strict per-profile rule — a secondary with its OWN adapter for a platform
-    uses that adapter, never the shared/default one (no wrong-bot cross-delivery). The
-    single, evidence-gated exception: a platform the secondary has a source binding for but
-    holds no adapter of its own is delivered through the shared adapter (the credential
-    lives on the primary; the binding proves this profile's traffic on that platform is the
-    primary's to carry). Forward-compatible with per-tenant bots: once a tenant configures
-    its own adapter, ``platform in original`` short-circuits and no borrow happens.
-
-    When no platform is actually borrowed, the ORIGINAL ``secondary_adapters`` object is
-    returned unchanged (identity preserved) — the strict per-profile behaviour is
-    byte-for-byte intact whenever there is no binding evidence to act on."""
-    original = secondary_adapters or {}
-    shared = shared_adapters or {}
-    if not shared:
-        return original
-    bound_platforms = _bound_platforms_for_profile(profile_name)
-    if not bound_platforms:
-        return original
-    borrowable = {
-        platform: adapter
-        for platform, adapter in shared.items()
-        if platform not in original
-        and str(getattr(platform, "value", platform)).lower() in bound_platforms
-    }
-    if not borrowable:
-        return original
-    target = dict(original)
-    target.update(borrowable)
-    return target
-
-
 @contextlib.contextmanager
 def _profile_cron_scope(home):
     """Scope the calling thread to one profile's home + cron store for the block."""
@@ -619,7 +541,7 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home,
+            SharedRouteAdapters, _satellite_routes_for_current_home,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
@@ -635,25 +557,14 @@ class InProcessCronScheduler(CronScheduler):
 
         def tick_adapters_for(profile_name):
             # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
-            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter for:
-            #   (a) targets an exact enabled static ``profile_routes`` entry maps here, OR
-            #   (b) platforms this profile has a dynamic ``/agent use`` source binding for
-            #       (borrow the shared adapter for those platforms via dict augmentation).
-            # Anything else fails closed (delivery skipped this tick).
+            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets an
+            # exact enabled route maps here — a static ``profile_routes`` entry or a dynamic
+            # ``/agent use`` binding of that chat; else fail closed (delivery skipped this tick).
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            # (b) Binding-based borrow: dict augmentation for platforms this profile is bound
-            # to but holds no adapter of its own. Identity-preserving when there is no
-            # binding evidence, so the fall-through below (SharedRouteAdapters for static
-            # routes) is unaffected.
-            bound_augmented = _augment_secondary_adapters_from_shared(
-                tick_adapters, shared_adapters=adapters, profile_name=profile_name,
-            )
-            if bound_augmented is not tick_adapters:
-                return bound_augmented
             if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                return SharedRouteAdapters(adapters, _satellite_routes_for_current_home(profile_name))
             return tick_adapters
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
