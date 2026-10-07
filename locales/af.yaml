@@ -193,6 +193,12 @@ gateway:
     example_line: "\nVoorbeeld: `{preview}`"
     state_on: "AAN"
     state_off: "AF"
+  image_resend:
+    not_found: "Ek kon nie 'n onlangse prent in hierdie klets vind nie. Laai dit asseblief weer op."
+    failed: "Kon nie die prent weer stuur nie. Probeer asseblief later weer."
+    caption: "Hier is die mees onlangse prent weer."
+  agent:
+    admin_only: "⛔ /agent {action} vereis 'n uitdruklik gekonfigureerde gateway-admin (allow_admin_from vir DM's, group_allow_admin_from vir groepe)."
   goal:
     unavailable: "Doelwitte is nie beskikbaar in hierdie sessie nie."
     no_goal_set: "Geen doelwit gestel nie."

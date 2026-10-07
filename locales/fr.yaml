@@ -219,6 +219,12 @@ gateway:
     example_line: "\nExemple : `{preview}`"
     state_on: "ACTIVÉ"
     state_off: "DÉSACTIVÉ"
+  image_resend:
+    not_found: "Aucune image récente trouvée dans cette conversation. Merci de la renvoyer."
+    failed: "Le renvoi de l'image a échoué. Réessayez plus tard."
+    caption: "Voici à nouveau l'image la plus récente."
+  agent:
+    admin_only: "⛔ /agent {action} nécessite un administrateur de la passerelle configuré explicitement (allow_admin_from pour les messages privés, group_allow_admin_from pour les groupes)."
   goal:
     unavailable: "Les objectifs ne sont pas disponibles dans cette session."
     no_goal_set: "Aucun objectif défini."

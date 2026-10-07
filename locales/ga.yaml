@@ -193,6 +193,12 @@ gateway:
     example_line: "\nSampla: `{preview}`"
     state_on: "AR"
     state_off: "AS"
+  image_resend:
+    not_found: "Níor aimsíodh íomhá le déanaí sa chomhrá seo. Uaslódáil arís í, le do thoil."
+    failed: "Theip ar an íomhá a athsheoladh. Bain triail eile as ar ball."
+    caption: "Seo an íomhá is déanaí arís."
+  agent:
+    admin_only: "⛔ Teastaíonn riarthóir geata atá cumraithe go sainráite le haghaidh /agent {action} (allow_admin_from do theachtaireachtaí díreacha, group_allow_admin_from do ghrúpaí)."
   goal:
     unavailable: "Níl spriocanna ar fáil sa seisiún seo."
     no_goal_set: "Níl aon sprioc socraithe."

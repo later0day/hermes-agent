@@ -193,6 +193,12 @@ gateway:
     example_line: "\nExemplo: `{preview}`"
     state_on: "LIGADO"
     state_off: "DESLIGADO"
+  image_resend:
+    not_found: "Não encontrei uma imagem recente nesta conversa. Envie-a novamente, por favor."
+    failed: "Falha ao reenviar a imagem. Tente novamente mais tarde."
+    caption: "Aqui está novamente a imagem mais recente."
+  agent:
+    admin_only: "⛔ /agent {action} requer um administrador do gateway configurado explicitamente (allow_admin_from para mensagens diretas, group_allow_admin_from para grupos)."
   goal:
     unavailable: "Os objetivos não estão disponíveis nesta sessão."
     no_goal_set: "Nenhum objetivo definido."

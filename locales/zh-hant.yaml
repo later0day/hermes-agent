@@ -193,6 +193,12 @@ gateway:
     example_line: "\n範例：`{preview}`"
     state_on: "開啟"
     state_off: "關閉"
+  image_resend:
+    not_found: "找不到最近的圖片，請重新上傳。"
+    failed: "圖片重新傳送失敗，請稍後再試。"
+    caption: "最近一張圖片重新傳給你。"
+  agent:
+    admin_only: "⛔ /agent {action} 需要明確設定的閘道管理員（私訊用 allow_admin_from，群組用 group_allow_admin_from）。"
   goal:
     unavailable: "此工作階段不支援目標功能。"
     no_goal_set: "未設定目標。"

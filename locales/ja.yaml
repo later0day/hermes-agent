@@ -193,6 +193,12 @@ gateway:
     example_line: "\n例: `{preview}`"
     state_on: "オン"
     state_off: "オフ"
+  image_resend:
+    not_found: "このチャットに最近の画像が見つかりませんでした。もう一度アップロードしてください。"
+    failed: "画像の再送信に失敗しました。しばらくしてからもう一度お試しください。"
+    caption: "最新の画像をもう一度お送りします。"
+  agent:
+    admin_only: "⛔ /agent {action} には明示的に設定されたゲートウェイ管理者が必要です（DM は allow_admin_from、グループは group_allow_admin_from）。"
   goal:
     unavailable: "このセッションでは目標機能を利用できません。"
     no_goal_set: "目標が設定されていません。"

@@ -193,6 +193,12 @@ gateway:
     example_line: "\nПример: `{preview}`"
     state_on: "ВКЛ."
     state_off: "ВЫКЛ."
+  image_resend:
+    not_found: "В этом чате не найдено недавнее изображение. Загрузите его ещё раз."
+    failed: "Не удалось повторно отправить изображение. Попробуйте позже."
+    caption: "Вот последнее изображение ещё раз."
+  agent:
+    admin_only: "⛔ Для /agent {action} нужен явно настроенный администратор шлюза (allow_admin_from для личных сообщений, group_allow_admin_from для групп)."
   goal:
     unavailable: "Цели недоступны в этом сеансе."
     no_goal_set: "Цель не задана."

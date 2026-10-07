@@ -193,6 +193,12 @@ gateway:
     example_line: "\nEsempio: `{preview}`"
     state_on: "ATTIVO"
     state_off: "DISATTIVO"
+  image_resend:
+    not_found: "Non ho trovato un'immagine recente in questa chat. Caricala di nuovo, per favore."
+    failed: "Il reinvio dell'immagine non è riuscito. Riprova più tardi."
+    caption: "Ecco di nuovo l'immagine più recente."
+  agent:
+    admin_only: "⛔ /agent {action} richiede un amministratore del gateway configurato esplicitamente (allow_admin_from per i messaggi diretti, group_allow_admin_from per i gruppi)."
   goal:
     unavailable: "Gli obiettivi non sono disponibili in questa sessione."
     no_goal_set: "Nessun obiettivo impostato."

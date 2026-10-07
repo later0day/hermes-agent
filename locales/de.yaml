@@ -193,6 +193,12 @@ gateway:
     example_line: "\nBeispiel: `{preview}`"
     state_on: "AN"
     state_off: "AUS"
+  image_resend:
+    not_found: "In diesem Chat wurde kein aktuelles Bild gefunden. Bitte lade es erneut hoch."
+    failed: "Das Bild konnte nicht erneut gesendet werden. Bitte versuche es später noch einmal."
+    caption: "Hier ist das neueste Bild noch einmal."
+  agent:
+    admin_only: "⛔ /agent {action} erfordert einen explizit konfigurierten Gateway-Admin (allow_admin_from für DMs, group_allow_admin_from für Gruppen)."
   goal:
     unavailable: "Ziele sind in dieser Sitzung nicht verfügbar."
     no_goal_set: "Kein Ziel gesetzt."
