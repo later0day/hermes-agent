@@ -648,11 +648,11 @@ def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters,
     ``bindings`` (optional) seeds an ISOLATED source-agent binding store as a
     list of ``(source_binding_key, profile_name)`` pairs; the module constant
     is patched (via ``monkeypatch``, required when ``bindings`` is given) so
-    the ticker's shared-adapter augmentation reads this store and never the
-    production one. When ``None`` no patch is applied — the augmentation's
+    the ticker's binding routes read this store and never the
+    production one. When ``None`` no patch is applied — the binding routes'
     own ``Path(...).exists()`` guard means a missing/irrelevant real store
-    still yields no borrow, so the fork's strict per-profile behaviour is
-    what these baseline cases assert."""
+    still yields no borrow, so the strict per-profile behaviour is what
+    these baseline cases assert."""
     from cron.scheduler_provider import InProcessCronScheduler
 
     p_default = tmp_path / "default"
@@ -902,21 +902,14 @@ def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     assert str(gamma) in ticked, ticked
 
 
-def test_multiplex_bound_secondary_borrows_shared_adapter_for_bound_platform(
-    tmp_path, monkeypatch,
-):
-    """A secondary with NO adapter of its own but a dynamic source binding for a
-    platform borrows the shared (primary/default) adapter for THAT platform.
-
-    This is the observed xcx/dingtalk topology: the dingtalk credential lives on
-    the primary (a second copy is a duplicate_credential fatal), so the secondary
-    legitimately holds no dingtalk adapter — yet its bound groups' cron output
-    must go out the primary's dingtalk bot (the same adapter the inbound reply
-    path answers on). Without the borrow, every such job is silently dropped with
-    'platform dingtalk not configured/enabled'."""
+def test_multiplex_binding_lends_the_primary_bot_for_the_bound_chat_only(tmp_path, monkeypatch):
+    """A credentialless secondary bound to a chat by ``/agent use`` delivers that chat's cron
+    output through the primary's bot (its credential lives on the primary; a second copy is a
+    duplicate_credential fatal) — and ONLY that chat: other chats on the platform, and platforms
+    it has no binding for, fail closed."""
     from gateway.config import Platform
 
-    shared = {Platform.DINGTALK: "PRIMARY_DINGTALK"}
+    shared = {Platform.DINGTALK: "PRIMARY_DINGTALK", Platform.WEIXIN: "PRIMARY_WEIXIN"}
     default_ad, sec_ad = _run_multiplex_capture(
         tmp_path,
         profile_adapters={"home-ops": {}},
@@ -925,62 +918,35 @@ def test_multiplex_bound_secondary_borrows_shared_adapter_for_bound_platform(
         monkeypatch=monkeypatch,
     )
     assert default_ad is shared
-    assert sec_ad.get(Platform.DINGTALK) == "PRIMARY_DINGTALK"
-
-
-def test_multiplex_bound_secondary_borrows_only_bound_platform(tmp_path, monkeypatch):
-    """The borrow is per-platform: a weixin binding pulls in the shared weixin
-    adapter but NOT the shared dingtalk adapter the secondary has no binding
-    for. A profile never inherits the whole shared set — only platforms it has
-    positive binding evidence for."""
-    from gateway.config import Platform
-
-    shared = {
-        Platform.DINGTALK: "PRIMARY_DINGTALK",
-        Platform.WEIXIN: "PRIMARY_WEIXIN",
-    }
-    _, sec_ad = _run_multiplex_capture(
-        tmp_path,
-        profile_adapters={"home-ops": {}},
-        shared_adapters=shared,
-        bindings=[("source:weixin:dm:openidX", "home-ops")],
-        monkeypatch=monkeypatch,
-    )
-    assert sec_ad.get(Platform.WEIXIN) == "PRIMARY_WEIXIN"
-    assert Platform.DINGTALK not in sec_ad
+    assert sec_ad.get(Platform.DINGTALK, {"chat_id": "cidABC=="}) == "PRIMARY_DINGTALK"
+    assert sec_ad.get(Platform.DINGTALK, {"chat_id": "cidOTHER=="}) is None
+    assert sec_ad.get(Platform.WEIXIN, {"chat_id": "cidABC=="}) is None
 
 
 def test_multiplex_secondary_with_own_adapter_never_borrows(tmp_path, monkeypatch):
-    """Forward-compatible with per-tenant bots: a secondary that configured its
-    OWN adapter for a platform keeps it even when it also has a binding for that
-    platform — the shared/primary adapter must never override a tenant's own bot
-    (that would be cross-tenant misdelivery)."""
+    """A secondary that configured its OWN adapter keeps it even when it also has a binding:
+    the primary's bot must never override a tenant's own bot (cross-tenant misdelivery)."""
     from gateway.config import Platform
 
-    shared = {Platform.DINGTALK: "PRIMARY_DINGTALK"}
     _, sec_ad = _run_multiplex_capture(
         tmp_path,
         profile_adapters={"home-ops": {Platform.DINGTALK: "TENANT_OWN_DINGTALK"}},
-        shared_adapters=shared,
+        shared_adapters={Platform.DINGTALK: "PRIMARY_DINGTALK"},
         bindings=[("source:dingtalk:group:cidABC==:1", "home-ops")],
         monkeypatch=monkeypatch,
     )
-    assert sec_ad.get(Platform.DINGTALK) == "TENANT_OWN_DINGTALK"
+    assert sec_ad == {Platform.DINGTALK: "TENANT_OWN_DINGTALK"}
 
 
 def test_multiplex_binding_for_other_profile_does_not_authorize_borrow(tmp_path, monkeypatch):
-    """A binding owned by a DIFFERENT profile must not let this secondary borrow
-    the shared adapter — the store is queried per-profile so one tenant's
-    bindings can never authorize another tenant's borrow."""
+    """One tenant's binding never lends the primary's bot to another tenant."""
     from gateway.config import Platform
 
-    shared = {Platform.DINGTALK: "PRIMARY_DINGTALK"}
     _, sec_ad = _run_multiplex_capture(
         tmp_path,
         profile_adapters={"home-ops": {}},
-        shared_adapters=shared,
+        shared_adapters={Platform.DINGTALK: "PRIMARY_DINGTALK"},
         bindings=[("source:dingtalk:group:cidABC==:1", "some-other-profile")],
         monkeypatch=monkeypatch,
     )
-    assert not sec_ad
-    assert Platform.DINGTALK not in sec_ad
+    assert sec_ad.get(Platform.DINGTALK, {"chat_id": "cidABC=="}) is None

@@ -1379,47 +1379,6 @@ def _resolve_target_transport(
                 platform)
     if transport is None:
         transport = resolve_delivery_transport(platform, config, target_adapters)
-    if transport is None:
-        # Satellite-borrow escape hatch (multiplex, dict-augmented map). The multiplex ticker
-        # (``scheduler_provider._augment_secondary_adapters_from_shared``) lends the shared
-        # adapter into a secondary's tick map for platforms it has a dynamic source binding
-        # for, but ``resolve_delivery_transport`` still rejects that borrow because THIS
-        # home's own config reads the platform as disabled (it legitimately has no
-        # credential — a second copy is a ``duplicate_credential`` fatal). Same shape as the
-        # ``SharedRouteAdapters`` static-route branch above: the credential lives elsewhere,
-        # and the native configured/enabled gate must not veto a live transport the gateway
-        # already owns. Authorize the borrow with the SAME primary-routing predicate
-        # preflight uses (static ``profile_routes`` OR a dynamic source binding for this
-        # profile), so an unrouted platform still fails closed and no wrong-bot
-        # cross-delivery is possible once real per-tenant bots exist.
-        _borrow_adapter = (
-            (target_adapters or {}).get(platform)
-            if not isinstance(target_adapters, _preflight.SharedRouteAdapters) else None
-        )
-        if _borrow_adapter is not None \
-                and _preflight._delivery_platform_routed_from_primary_gateway(platform_name):
-            from dataclasses import replace
-            from gateway.config import PlatformConfig
-            own = config.platforms.get(platform)
-            pconfig_borrow = (
-                replace(own, enabled=True)
-                if own is not None else PlatformConfig(enabled=True)
-            )
-            # The live-send path rebuilds a ``DeliveryRouter(config, adapters)`` and
-            # re-runs ``resolve_delivery_transport`` against THIS ``config``, so the borrow
-            # must also be reflected there or the router raises "No adapter configured for
-            # <platform>" and falls through to the standalone (credential-less) path.
-            # Enable the platform on this per-call config copy so the router resolves the
-            # same borrowed adapter. ``config`` is a per-call ``load_gateway_config()``
-            # local (never a shared/cached object), so this mutation is scoped to this
-            # delivery only.
-            config.platforms[platform] = pconfig_borrow
-            transport = DeliveryTransport(_borrow_adapter, pconfig_borrow, platform)
-            logger.info(
-                "Job '%s': delivering %s via primary gateway's shared adapter "
-                "(satellite has no own credential; binding-routed)",
-                job["id"], platform_name,
-            )
     if transport is not None:
         pconfig = transport.config
         runtime_adapter = transport.adapter

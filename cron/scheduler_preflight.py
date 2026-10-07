@@ -200,49 +200,52 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
     ):
         return True
 
-    # (2) Dynamic bindings. Read from the PRIMARY home only, so no satellite
-    # platform config leaks into this process. A binding key is
-    # ``source:<platform>:<type>:<chat_id>[:...]``; the platform is segment 1.
+    # (2) Dynamic ``/agent use`` bindings for this profile, read from the primary's store.
+    return any(route.platform.lower() == platform_key for route in _primary_binding_routes_for_current_home())
+
+
+def _primary_binding_routes_for_current_home(profile_name: Optional[str] = None) -> list:
+    """Dynamic ``/agent use`` source bindings for the profile being served, as chat-exact
+    ``ProfileRoute``s; ``[]`` on the primary home. A binding proves the primary's bot carries
+    THAT chat for this profile, so it authorizes exactly that chat — never the whole platform.
+    The multiplex ticker knows the served profile's name and passes it; otherwise the current
+    home is matched. The bindings store is root-global (the primary owns it). Lookup failures
+    fail closed."""
     try:
         from hermes_constants import get_default_hermes_root, get_hermes_home
-
-        primary_home = get_default_hermes_root().expanduser().resolve(strict=False)
-        current_home = _sched.Path(get_hermes_home()).expanduser().resolve(strict=False)
-        if primary_home == current_home:
-            return False  # this IS the primary home — nothing to consult
-
-        from gateway.source_agent_binding import (
-            DEFAULT_SOURCE_AGENT_BINDINGS_DB, SourceAgentBindingStore,
-        )
+        if (get_default_hermes_root().expanduser().resolve(strict=False)
+                == _sched.Path(get_hermes_home()).expanduser().resolve(strict=False)):
+            return []
+        from gateway.profile_routing import ProfileRoute
+        from gateway.source_agent_binding import DEFAULT_SOURCE_AGENT_BINDINGS_DB, SourceAgentBindingStore
         from hermes_cli.profiles import profile_matches_home
-
-        # ``DEFAULT_SOURCE_AGENT_BINDINGS_DB`` is a module-level constant computed at import
-        # time from the process's true ``HERMES_HOME`` env var (the primary), not the
-        # per-thread ContextVar override a satellite worker runs under — so it already names
-        # the PRIMARY home's store regardless of which profile this call is scoped to.
         if not _sched.Path(DEFAULT_SOURCE_AGENT_BINDINGS_DB).exists():
-            return False
-
+            return []
         store = SourceAgentBindingStore(db_path=DEFAULT_SOURCE_AGENT_BINDINGS_DB)
         try:
-            for binding in store.list_bindings():
-                parts = (binding.source_binding_key or "").split(":")
-                if (
-                    len(parts) >= 2
-                    and parts[0] == "source"
-                    and parts[1].lower() == platform_key
-                    and profile_matches_home(binding.profile_name)
-                ):
-                    return True
+            bindings = (store.list_bindings(profile_name=profile_name) if profile_name
+                        else [b for b in store.list_bindings() if profile_matches_home(b.profile_name)])
         finally:
             store.close()
     except Exception:
-        logger.debug(
-            "preflight: primary source-agent binding lookup unavailable",
-            exc_info=True,
-        )
-    return False
+        logger.debug("cron: source-agent binding lookup unavailable", exc_info=True)
+        return []
+    routes = []
+    for binding in bindings:
+        # ``source:<platform>:<chat_type>:<chat_id>[:<user or thread>]``
+        parts = (binding.source_binding_key or "").split(":")
+        if len(parts) >= 4 and parts[0] == "source" and parts[1] and parts[3]:
+            routes.append(ProfileRoute(name=f"binding:{binding.source_binding_key}", platform=parts[1],
+                                       profile=binding.profile_name, chat_id=parts[3]))
+    return routes
 
+
+
+def _satellite_routes_for_current_home(profile_name: Optional[str] = None) -> list:
+    """Every route that lends the primary's bot to the profile being served: static
+    ``profile_routes`` plus ``/agent use`` bindings. The multiplex ticker builds a credentialless
+    satellite's ``SharedRouteAdapters`` from exactly this list."""
+    return _primary_profile_routes_for_current_home() + _primary_binding_routes_for_current_home(profile_name)
 
 class SharedRouteAdapters:
     """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
