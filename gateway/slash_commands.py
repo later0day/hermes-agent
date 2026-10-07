@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import inspect
 import logging
 import os
@@ -904,6 +905,12 @@ class GatewaySlashCommandsMixin(
         # configured admin, never "everyone" under the default ungated slash policy.
         if action not in ("status", "list") and not self._resume_caller_is_admin(source):
             return t("gateway.agent.admin_only", action=action)
+        if action in ("use", "clear"):
+            owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
+            bot_profile = owner[1] if isinstance(owner, tuple) else None
+            if bot_profile not in (None, getattr(self, "_primary_profile_name", None) or "default"):
+                return (f"This chat is served by profile `{bot_profile}`'s own bot; /agent bindings "
+                        "apply only to chats of the primary gateway bot.")
 
         if action == "status":
             profile = self._binding_profile_for_source(source)
@@ -1101,12 +1108,10 @@ class GatewaySlashCommandsMixin(
                     tmpl_meta = read_profile_meta(get_profile_dir(parsed.from_template))
                     if not tmpl_meta.get("template"):
                         return f"Profile `{parsed.from_template}` is not marked as a template."
-                    create_profile(
-                        target_name,
-                        clone_from=parsed.from_template,
-                        clone_env=parsed.with_env,
-                        clone_skills=parsed.with_env,
-                    )
+                    # create/delete stop processes, copy trees and may spawn skill installs: off the loop.
+                    await self._run_in_executor_with_context(functools.partial(
+                        create_profile, target_name, clone_from=parsed.from_template,
+                        clone_env=parsed.with_env, clone_skills=parsed.with_env))
                     self._append_agent_audit(
                         "agent.template_clone",
                         profile_name=target_name,
@@ -1115,12 +1120,9 @@ class GatewaySlashCommandsMixin(
                         actor_user_name=actor_user_name,
                     )
                 else:
-                    create_profile(
-                        target_name,
-                        clone_from="default",
-                        clone_env=parsed.with_env,
-                        clone_skills=parsed.with_env,
-                    )
+                    await self._run_in_executor_with_context(functools.partial(
+                        create_profile, target_name, clone_from="default",
+                        clone_env=parsed.with_env, clone_skills=parsed.with_env))
                     self._append_agent_audit(
                         "agent.create",
                         after={"profile_name": target_name, "orchestrator": parsed.orchestrator},
@@ -1162,6 +1164,8 @@ class GatewaySlashCommandsMixin(
             import secrets as _secrets
             import time as _t
 
+            from gateway.session import SessionSource
+            from gateway.session_identity import restore_identity
             from hermes_cli.profiles import delete_profile
 
             if not args:
@@ -1222,7 +1226,7 @@ class GatewaySlashCommandsMixin(
             if _profiles_being_deleted is not None:
                 _profiles_being_deleted.add(target_name)
             try:
-                delete_profile(target_name, yes=True)
+                await self._run_in_executor_with_context(delete_profile, target_name, True)
             except Exception as exc:  # noqa: BLE001
                 return f"Failed: {exc}"
             finally:
@@ -1247,25 +1251,22 @@ class GatewaySlashCommandsMixin(
                 if target_chat_id == issuing_chat_id or target_chat_id in notified_chats:
                     continue
                 notified_chats.add(target_chat_id)
-                platform_name = b.fallback_target.get("platform")
-                for pt, adapter in getattr(self, "adapters", {}).items():
-                    if getattr(pt, "value", None) != platform_name:
-                        continue
-                    metadata_to_send: dict = {}
-                    if b.fallback_extra and "session_webhook" in b.fallback_extra:
-                        metadata_to_send["session_webhook"] = b.fallback_extra["session_webhook"]
-                    try:
+                metadata_to_send: dict = {}
+                if b.fallback_extra and "session_webhook" in b.fallback_extra:
+                    metadata_to_send["session_webhook"] = b.fallback_extra["session_webhook"]
+                try:
+                    # Back through the bot that served the bound chat (bindings are primary-bot only).
+                    target = SessionSource.from_dict(b.fallback_target)
+                    restore_identity(target, runner=self, transport_profile=None)
+                    adapter = self._delivery_adapter_for(target)
+                    if adapter is not None:
                         await adapter.send(
                             target_chat_id,
                             f"Agent profile `{target_name}` was deleted. This chat has been unbound.",
                             metadata=metadata_to_send,
                         )
-                    except Exception as _notify_exc:  # noqa: BLE001
-                        logger.debug(
-                            "/agent delete: failed to notify binding %s: %s",
-                            target_chat_id,
-                            _notify_exc,
-                        )
+                except Exception as _notify_exc:  # noqa: BLE001
+                    logger.debug("/agent delete: failed to notify binding %s: %s", target_chat_id, _notify_exc)
             return f"Deleted agent profile `{target_name}`."
 
         return "Usage: /agent <use|clear|status|webhook|list|create|delete> ..."

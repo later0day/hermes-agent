@@ -260,6 +260,18 @@ class SourceAgentBindingStore:
             self._secure_files()
             return int(cur.rowcount or 0)
 
+    def rename_profile(self, old_profile: str, new_profile: str) -> int:
+        """Re-point every binding of ``old_profile`` at ``new_profile``; returns the row count."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE source_agent_bindings SET profile_name = ?, updated_at = ? "
+                "WHERE profile_name = ? COLLATE NOCASE",
+                (new_profile, time.time(), old_profile),
+            )
+            self._conn.commit()
+            self._secure_files()
+            return int(cur.rowcount or 0)
+
     def list_bindings(self, *, profile_name: str | None = None) -> list[SourceAgentBinding]:
         params: Iterable[Any]
         sql = "SELECT * FROM source_agent_bindings"
@@ -277,3 +289,21 @@ class SourceAgentBindingStore:
                 for row in rows
                 if (binding := self._binding_from_row(row)) is not None
             ]
+
+
+def settle_profile_bindings(old_profile: str, new_profile: str | None = None) -> int:
+    """Follow a profile through its lifecycle: re-point its ``/agent use`` bindings on a rename,
+    drop them on a delete (``new_profile=None``). Otherwise a deleted profile's bindings would hand
+    its chats — and the cron delivery they authorize — to any later profile of the same name, and
+    a renamed profile's chats would silently fall back to the default profile. The store is
+    root-global; resolved at call time. Returns the number of bindings changed."""
+    db_path = get_default_hermes_root() / "gateway_source_agent_bindings.sqlite"
+    if not db_path.exists():
+        return 0
+    store = SourceAgentBindingStore(db_path=db_path)
+    try:
+        if new_profile:
+            return store.rename_profile(old_profile, new_profile)
+        return store.delete_bindings_for_profile(old_profile)
+    finally:
+        store.close()
