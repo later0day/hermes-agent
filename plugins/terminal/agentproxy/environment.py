@@ -34,7 +34,6 @@ Two things this transport needs that SSH doesn't:
 
 import json
 import logging
-import os
 import re
 import shlex
 import ssl
@@ -55,12 +54,15 @@ _EC_RE = re.compile(re.escape(_EC_MARK) + r"(-?\d+)" + re.escape(_EC_MARK))
 def _read_token(env_file: str) -> str:
     """Resolve the Dashboard bearer token.
 
-    Order: ``$DASHBOARD_TOKEN`` env var → ``DASHBOARD_TOKEN=`` line in
+    Order: the profile's ``DASHBOARD_TOKEN`` secret → ``DASHBOARD_TOKEN=`` line in
     *env_file* (the systemd EnvironmentFile that is the cloud's own source of
     truth).  Mirrors the resolution the ``ap`` CLI now uses so token rotation
-    is picked up automatically.
+    is picked up automatically.  The secret is read through the profile's secret
+    scope, never ``os.environ``: one gateway process can serve several profiles.
     """
-    tok = os.getenv("DASHBOARD_TOKEN", "").strip()
+    from agent.secret_scope import get_secret
+
+    tok = (get_secret("DASHBOARD_TOKEN") or "").strip()
     if tok:
         return tok
     try:
