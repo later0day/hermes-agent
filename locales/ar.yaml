@@ -197,6 +197,15 @@ gateway:
     not_found: "لم أجد صورة حديثة في هذه المحادثة. يرجى رفعها مرة أخرى."
     failed: "فشلت إعادة إرسال الصورة. يرجى المحاولة لاحقًا."
     caption: "إليك أحدث صورة مرة أخرى."
+  status_card:
+    heading: "التقدم"
+    tools_heading: "الأدوات"
+    tools_hidden: "… تم إخفاء {count} من الأدوات السابقة"
+    generating: "⌛ جارٍ إنشاء الإجابة..."
+    working: "جارٍ العمل..."
+    answer_below: "الإجابة أدناه"
+    tools: "{count} أدوات"
+    failed: "{count} فشلت"
   agent:
     admin_only: "⛔ يتطلب ‎/agent {action}‎ مسؤول بوابة مُعدًّا صراحةً (allow_admin_from للرسائل المباشرة، و group_allow_admin_from للمجموعات)."
   goal:

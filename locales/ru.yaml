@@ -197,6 +197,15 @@ gateway:
     not_found: "В этом чате не найдено недавнее изображение. Загрузите его ещё раз."
     failed: "Не удалось повторно отправить изображение. Попробуйте позже."
     caption: "Вот последнее изображение ещё раз."
+  status_card:
+    heading: "Ход работы"
+    tools_heading: "Инструменты"
+    tools_hidden: "… скрыто более ранних инструментов: {count}"
+    generating: "⌛ Формирую ответ..."
+    working: "Работаю..."
+    answer_below: "Ответ ниже"
+    tools: "инструментов: {count}"
+    failed: "с ошибкой: {count}"
   agent:
     admin_only: "⛔ Для /agent {action} нужен явно настроенный администратор шлюза (allow_admin_from для личных сообщений, group_allow_admin_from для групп)."
   goal:

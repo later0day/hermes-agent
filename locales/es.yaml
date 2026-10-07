@@ -197,6 +197,15 @@ gateway:
     not_found: "No encontré una imagen reciente en este chat. Vuelve a subirla, por favor."
     failed: "No se pudo reenviar la imagen. Inténtalo de nuevo más tarde."
     caption: "Aquí tienes de nuevo la imagen más reciente."
+  status_card:
+    heading: "Progreso"
+    tools_heading: "Herramientas"
+    tools_hidden: "… {count} herramientas anteriores ocultas"
+    generating: "⌛ Generando la respuesta..."
+    working: "Trabajando..."
+    answer_below: "Respuesta abajo"
+    tools: "{count} herramientas"
+    failed: "{count} fallidas"
   agent:
     admin_only: "⛔ /agent {action} requiere un administrador del gateway configurado explícitamente (allow_admin_from para mensajes directos, group_allow_admin_from para grupos)."
   goal:

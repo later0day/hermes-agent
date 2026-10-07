@@ -197,6 +197,15 @@ gateway:
     not_found: "找不到最近的圖片，請重新上傳。"
     failed: "圖片重新傳送失敗，請稍後再試。"
     caption: "最近一張圖片重新傳給你。"
+  status_card:
+    heading: "進度"
+    tools_heading: "工具"
+    tools_hidden: "… 省略較早的 {count} 個工具"
+    generating: "⌛ 正在生成回答..."
+    working: "工作中..."
+    answer_below: "答案見下方"
+    tools: "{count} 工具"
+    failed: "{count} 失敗"
   agent:
     admin_only: "⛔ /agent {action} 需要明確設定的閘道管理員（私訊用 allow_admin_from，群組用 group_allow_admin_from）。"
   goal:

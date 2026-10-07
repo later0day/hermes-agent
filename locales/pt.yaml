@@ -197,6 +197,15 @@ gateway:
     not_found: "Não encontrei uma imagem recente nesta conversa. Envie-a novamente, por favor."
     failed: "Falha ao reenviar a imagem. Tente novamente mais tarde."
     caption: "Aqui está novamente a imagem mais recente."
+  status_card:
+    heading: "Progresso"
+    tools_heading: "Ferramentas"
+    tools_hidden: "… {count} ferramentas anteriores ocultas"
+    generating: "⌛ Gerando a resposta..."
+    working: "Trabalhando..."
+    answer_below: "Resposta abaixo"
+    tools: "{count} ferramentas"
+    failed: "{count} com falha"
   agent:
     admin_only: "⛔ /agent {action} requer um administrador do gateway configurado explicitamente (allow_admin_from para mensagens diretas, group_allow_admin_from para grupos)."
   goal:

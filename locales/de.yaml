@@ -197,6 +197,15 @@ gateway:
     not_found: "In diesem Chat wurde kein aktuelles Bild gefunden. Bitte lade es erneut hoch."
     failed: "Das Bild konnte nicht erneut gesendet werden. Bitte versuche es später noch einmal."
     caption: "Hier ist das neueste Bild noch einmal."
+  status_card:
+    heading: "Fortschritt"
+    tools_heading: "Werkzeuge"
+    tools_hidden: "… {count} frühere Werkzeuge ausgeblendet"
+    generating: "⌛ Antwort wird erstellt..."
+    working: "Arbeite..."
+    answer_below: "Antwort unten"
+    tools: "{count} Werkzeuge"
+    failed: "{count} fehlgeschlagen"
   agent:
     admin_only: "⛔ /agent {action} erfordert einen explizit konfigurierten Gateway-Admin (allow_admin_from für DMs, group_allow_admin_from für Gruppen)."
   goal:

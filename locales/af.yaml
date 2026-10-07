@@ -197,6 +197,15 @@ gateway:
     not_found: "Ek kon nie 'n onlangse prent in hierdie klets vind nie. Laai dit asseblief weer op."
     failed: "Kon nie die prent weer stuur nie. Probeer asseblief later weer."
     caption: "Hier is die mees onlangse prent weer."
+  status_card:
+    heading: "Vordering"
+    tools_heading: "Gereedskap"
+    tools_hidden: "… {count} vroeëre gereedskap versteek"
+    generating: "⌛ Antwoord word gegenereer..."
+    working: "Besig..."
+    answer_below: "Antwoord hieronder"
+    tools: "{count} gereedskap"
+    failed: "{count} misluk"
   agent:
     admin_only: "⛔ /agent {action} vereis 'n uitdruklik gekonfigureerde gateway-admin (allow_admin_from vir DM's, group_allow_admin_from vir groepe)."
   goal:

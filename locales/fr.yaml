@@ -223,6 +223,15 @@ gateway:
     not_found: "Aucune image récente trouvée dans cette conversation. Merci de la renvoyer."
     failed: "Le renvoi de l'image a échoué. Réessayez plus tard."
     caption: "Voici à nouveau l'image la plus récente."
+  status_card:
+    heading: "Progression"
+    tools_heading: "Outils"
+    tools_hidden: "… {count} outils précédents masqués"
+    generating: "⌛ Génération de la réponse..."
+    working: "En cours..."
+    answer_below: "Réponse ci-dessous"
+    tools: "{count} outils"
+    failed: "{count} en échec"
   agent:
     admin_only: "⛔ /agent {action} nécessite un administrateur de la passerelle configuré explicitement (allow_admin_from pour les messages privés, group_allow_admin_from pour les groupes)."
   goal:

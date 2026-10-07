@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger("gateway.turn_status_card")
 
 _DONE = object()
@@ -609,7 +611,7 @@ class TurnStatusCardCoordinator:
         now = time.monotonic()
 
         lines: list[str] = []
-        lines.append("**进度**")
+        lines.append(f"**{t('gateway.status_card.heading')}**")
         lines.append(self._status_line())
 
         if self._tool_order:
@@ -619,11 +621,11 @@ class TurnStatusCardCoordinator:
                 self._tools[k].status == "running" for k in self._tool_order
             )
             header_spinner = f" {self._SPINNER[self._frame]}" if running_any else ""
-            lines.append(f"**🛠 工具**{header_spinner}")
+            lines.append(f"**🛠 {t('gateway.status_card.tools_heading')}**{header_spinner}")
             order = self._tool_order[-max(1, int(self.config.max_tools or 12)):]
             hidden = max(0, len(self._tool_order) - len(order))
             if hidden:
-                lines.append(f"- … 省略较早的 {hidden} 个工具")
+                lines.append(f"- {t('gateway.status_card.tools_hidden', count=hidden)}")
             for key in order:
                 lines.append(self._render_tool_line(self._tools[key], self._frame, now))
         return "\n".join(lines).strip()
@@ -707,12 +709,12 @@ class TurnStatusCardCoordinator:
         # full content. Showing it twice is the duplication the user
         # called out as "reading difficulty".
         if self._streaming_only_activation and not self._tool_order:
-            return "⌛ 正在生成回答..."
+            return t("gateway.status_card.generating")
         if self._assistant_text:
             return self._compact_text(
                 self._assistant_text, self.config.assistant_preview_max_len,
             )
-        return "工作中..."
+        return t("gateway.status_card.working")
 
     def _final_summary_line(self) -> str:
         n_tools = len(self._tool_order)
@@ -720,7 +722,7 @@ class TurnStatusCardCoordinator:
             1 for entry in self._tools.values() if entry.status == "failed"
         )
         if n_tools == 0:
-            return "✅ 答案见下方"
+            return f"✅ {t('gateway.status_card.answer_below')}"
         total_duration = 0.0
         for entry in self._tools.values():
             if entry.duration is not None:
@@ -728,12 +730,12 @@ class TurnStatusCardCoordinator:
         # Prefix reflects the worst tool outcome; the card body still
         # lists each tool's status individually.
         prefix = "⚠️" if n_failed else "✅"
-        bits = [f"{n_tools} 工具"]
+        bits = [t("gateway.status_card.tools", count=n_tools)]
         if n_failed:
-            bits.append(f"{n_failed} 失败")
+            bits.append(t("gateway.status_card.failed", count=n_failed))
         if total_duration > 0:
             bits.append(f"{total_duration:.1f}s")
-        bits.append("答案见下方")
+        bits.append(t("gateway.status_card.answer_below"))
         return f"{prefix} {' · '.join(bits)}"
 
     def _should_flush(self, *, immediate: bool = False) -> bool:

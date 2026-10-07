@@ -197,6 +197,15 @@ gateway:
     not_found: "Níor aimsíodh íomhá le déanaí sa chomhrá seo. Uaslódáil arís í, le do thoil."
     failed: "Theip ar an íomhá a athsheoladh. Bain triail eile as ar ball."
     caption: "Seo an íomhá is déanaí arís."
+  status_card:
+    heading: "Dul chun cinn"
+    tools_heading: "Uirlisí"
+    tools_hidden: "… {count} uirlis níos luaithe i bhfolach"
+    generating: "⌛ Freagra á ghiniúint..."
+    working: "Ag obair..."
+    answer_below: "Freagra thíos"
+    tools: "{count} uirlis"
+    failed: "{count} theip"
   agent:
     admin_only: "⛔ Teastaíonn riarthóir geata atá cumraithe go sainráite le haghaidh /agent {action} (allow_admin_from do theachtaireachtaí díreacha, group_allow_admin_from do ghrúpaí)."
   goal:
