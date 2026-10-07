@@ -14,6 +14,7 @@ from hermes_cli.config import (
     find_provider_entry,
     read_raw_config,
 )
+from hermes_cli.web_server_dashboard import _BUILTIN_DASHBOARD_THEMES
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
@@ -136,7 +137,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
-        "Web dashboard visual theme", "default", "nous-blue", "google", "midnight", "ember", "mono", "cyberpunk", "rose"
+        "Web dashboard visual theme", *(theme["name"] for theme in _BUILTIN_DASHBOARD_THEMES)
     ),
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),

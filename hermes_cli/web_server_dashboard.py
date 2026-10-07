@@ -258,6 +258,8 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "pure-ink-light", "label": "Pure Ink Light", "description": "Pure grayscale light theme adapted from Hermes Web UI"},
+    {"name": "pure-ink-dark",  "label": "Pure Ink Dark",  "description": "Pure grayscale dark theme adapted from Hermes Web UI"},
 ]
 
 
