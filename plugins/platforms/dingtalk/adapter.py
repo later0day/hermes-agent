@@ -2350,25 +2350,9 @@ class DingTalkAdapter(BasePlatformAdapter):
     # -- Card content key / param maps ------------------------------------
 
     def _current_card_content_key(self) -> str:
-        """Return the dashboard-configured AI Card content key.
-
-        Read dynamically so Dashboard config changes take effect for the next
-        card update without a gateway restart.  Empty config falls back to
-        DingTalk's default markdown card variable.
-        """
-        try:
-            if self._card_content_key_override:
-                return self._card_content_key_override
-            from hermes_cli.config import load_config_readonly
-            config = load_config_readonly()
-            dingtalk_config = config.get("dingtalk")
-            if isinstance(dingtalk_config, dict):
-                configured = str(dingtalk_config.get("card_content_key") or "").strip()
-                if configured:
-                    return configured
-        except Exception as exc:
-            logger.debug("[%s] Failed to read DingTalk card_content_key: %s", self.name, exc)
-        return DEFAULT_AI_CARD_CONTENT_KEY
+        """The AI Card content variable: ``card_content_key`` from this adapter's own config
+        (``extra``, seeded from the profile's ``dingtalk:`` block), else DingTalk's default."""
+        return self._card_content_key_override or DEFAULT_AI_CARD_CONTENT_KEY
 
     def _card_initial_param_map(self) -> Dict[str, str]:
         """Return initial card data for custom templates or the SDK default."""
@@ -2685,6 +2669,9 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 )
 
 
+_CARD_EXTRA_KEYS = ("card_template_id", "card_content_key")
+
+
 def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml dingtalk: keys → DINGTALK_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra``. The docs put the allowlist at
@@ -2693,7 +2680,10 @@ def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
     cfg = dict(dingtalk_cfg)
     if cfg.get("allowed_users") is None:
         cfg["allowed_users"] = _nested_allowed_users(yaml_cfg, dingtalk_cfg)
-    return _apply_yaml_bridge(cfg, _YAML_BRIDGE)
+    seeded = _apply_yaml_bridge(cfg, _YAML_BRIDGE) or {}
+    # Card settings live in extra only (no env); the adapter reads them per profile from there.
+    seeded.update({k: str(cfg[k]).strip() for k in _CARD_EXTRA_KEYS if str(cfg.get(k) or "").strip()})
+    return seeded or None
 
 
 
