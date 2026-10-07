@@ -31,6 +31,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { canUninstallSkill, waitForAction } from "@/lib/skill-uninstall";
 import type {
   SkillInfo,
   ToolsetInfo,
@@ -228,13 +229,12 @@ export default function SkillsPage() {
     onDelete: useCallback(
       async (name: string) => {
         try {
-          await api.uninstallSkillFromHub(name, selectedProfile || undefined);
+          const res = await api.uninstallSkillFromHub(name, selectedProfile || undefined);
           setSkills((prev) => prev.filter((s) => s.name !== name));
           showToast(`Uninstalling ${name}…`, "success");
-          // Reconcile against the real list (the CLI runs async; a builtin
-          // or in-use skill may survive, in which case it should re-appear).
-          api
-            .getSkills(selectedProfile || undefined)
+          // Reconcile once the async CLI has exited (an in-use skill may survive and re-appear).
+          void waitForAction((n) => api.getActionStatus(n, 0), res.name)
+            .then(() => api.getSkills(selectedProfile || undefined))
             .then(setSkills)
             .catch(() => {});
         } catch (e) {
@@ -546,7 +546,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
-                        onDelete={() => skillDelete.requestDelete(skill.name)}
+                        onDelete={canUninstallSkill(skill) ? () => skillDelete.requestDelete(skill.name) : undefined}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -621,7 +621,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
-                        onDelete={() => skillDelete.requestDelete(skill.name)}
+                        onDelete={canUninstallSkill(skill) ? () => skillDelete.requestDelete(skill.name) : undefined}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -845,16 +845,18 @@ function SkillRow({
       >
         <Pencil />
       </Button>
-      <Button
-        ghost
-        size="icon"
-        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
-        title="Delete skill"
-        aria-label={`Delete ${skill.name}`}
-        onClick={onDelete}
-      >
-        <Trash2 />
-      </Button>
+      {onDelete && (
+        <Button
+          ghost
+          size="icon"
+          className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+          title="Delete skill"
+          aria-label={`Delete ${skill.name}`}
+          onClick={onDelete}
+        >
+          <Trash2 />
+        </Button>
+      )}
     </div>
   );
 }
@@ -887,7 +889,7 @@ interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }

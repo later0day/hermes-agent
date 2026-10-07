@@ -2480,6 +2480,8 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+  /** "bundled" | "hub" | "agent" (hermes_cli/web_routers/skills.py) */
+  provenance?: string;
 }
 
 export interface SkillContent {
