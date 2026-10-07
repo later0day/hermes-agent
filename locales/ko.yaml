@@ -197,6 +197,15 @@ gateway:
     not_found: "이 대화에서 최근 이미지를 찾지 못했습니다. 다시 업로드해 주세요."
     failed: "이미지를 다시 보내지 못했습니다. 잠시 후 다시 시도해 주세요."
     caption: "가장 최근 이미지를 다시 보내드립니다."
+  status_card:
+    heading: "진행 상황"
+    tools_heading: "도구"
+    tools_hidden: "… 이전 도구 {count}개 생략"
+    generating: "⌛ 답변 생성 중..."
+    working: "작업 중..."
+    answer_below: "답변은 아래에 있습니다"
+    tools: "도구 {count}개"
+    failed: "{count}개 실패"
   agent:
     admin_only: "⛔ /agent {action}에는 명시적으로 설정된 게이트웨이 관리자가 필요합니다(DM은 allow_admin_from, 그룹은 group_allow_admin_from)."
   goal:

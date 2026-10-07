@@ -197,6 +197,15 @@ gateway:
     not_found: "没找到最近的图片，请重新上传。"
     failed: "图片重发失败，请稍后再试。"
     caption: "最近一张图片重新发给你。"
+  status_card:
+    heading: "进度"
+    tools_heading: "工具"
+    tools_hidden: "… 省略较早的 {count} 个工具"
+    generating: "⌛ 正在生成回答..."
+    working: "工作中..."
+    answer_below: "答案见下方"
+    tools: "{count} 工具"
+    failed: "{count} 失败"
   agent:
     admin_only: "⛔ /agent {action} 需要显式配置的网关管理员（私聊用 allow_admin_from，群组用 group_allow_admin_from）。"
   goal:

@@ -18,6 +18,18 @@ from gateway.turn_status_card import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _chinese_ui(monkeypatch):
+    """These assertions read the card in Chinese; the language contract itself is pinned in
+    test_turn_status_card_language.py."""
+    from agent.i18n import reset_language_cache
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    reset_language_cache()
+    yield
+    reset_language_cache()
+
+
 def _register_tool_emoji(name: str, emoji: str) -> None:
     """Register a stub tool entry so get_tool_emoji() resolves to *emoji*.
 

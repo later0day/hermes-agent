@@ -197,6 +197,15 @@ gateway:
     not_found: "Bu sohbette yakın tarihli bir görsel bulamadım. Lütfen yeniden yükleyin."
     failed: "Görsel yeniden gönderilemedi. Lütfen daha sonra tekrar deneyin."
     caption: "İşte en son görsel tekrar."
+  status_card:
+    heading: "İlerleme"
+    tools_heading: "Araçlar"
+    tools_hidden: "… önceki {count} araç gizlendi"
+    generating: "⌛ Yanıt oluşturuluyor..."
+    working: "Çalışıyor..."
+    answer_below: "Yanıt aşağıda"
+    tools: "{count} araç"
+    failed: "{count} başarısız"
   agent:
     admin_only: "⛔ /agent {action} için açıkça yapılandırılmış bir gateway yöneticisi gerekir (DM'ler için allow_admin_from, gruplar için group_allow_admin_from)."
   goal:

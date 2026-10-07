@@ -200,6 +200,15 @@ gateway:
     not_found: "Nem találtam friss képet ebben a csevegésben. Kérlek, töltsd fel újra."
     failed: "A kép újraküldése nem sikerült. Próbáld újra később."
     caption: "Itt van újra a legutóbbi kép."
+  status_card:
+    heading: "Haladás"
+    tools_heading: "Eszközök"
+    tools_hidden: "… {count} korábbi eszköz elrejtve"
+    generating: "⌛ Válasz készítése..."
+    working: "Dolgozom..."
+    answer_below: "A válasz lent olvasható"
+    tools: "{count} eszköz"
+    failed: "{count} sikertelen"
   agent:
     admin_only: "⛔ A /agent {action} kifejezetten beállított gateway-adminisztrátort igényel (allow_admin_from a privát üzenetekhez, group_allow_admin_from a csoportokhoz)."
   goal:
