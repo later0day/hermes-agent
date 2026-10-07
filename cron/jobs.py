@@ -1832,6 +1832,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    owner_chat: Optional[Dict[str, str]] = None,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
@@ -1851,7 +1852,8 @@ def create_job(
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
-    (a venv can be rebuilt or moved after creation)."""
+    (a venv can be rebuilt or moved after creation). owner_chat: the chat that may manage an
+    origin-less job (one created from a cron run); never used for delivery."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1930,6 +1932,7 @@ def create_job(
         "failure_streak": 0,
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        **({"owner_chat": owner_chat} if owner_chat else {}),
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
     }

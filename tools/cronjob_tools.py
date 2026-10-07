@@ -684,6 +684,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
             deliver=_resolve_cron_context_deliver(deliver),
             origin=_origin_from_env(a["schedule"]),
+            owner_chat=_cron_run_caller() or None,
             skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
@@ -725,21 +726,42 @@ def _action_create(a: Dict[str, Any]) -> str:
 # and api_server (non-push, so _origin_from_env returns None; its API key gates the caller).
 
 
+def _cron_run_caller() -> Optional[Dict[str, str]]:
+    """The chat a running cron job acts for (its auto-delivery target), ``{}`` for a cron run
+    without one, ``None`` outside cron runs."""
+    from gateway.session_context import get_session_env
+    from utils import is_truthy_value
+    if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
+        return None
+    platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip()
+    chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
+    return {"platform": platform, "chat_id": chat_id} if platform and chat_id else {}
+
+
 def _caller_may_touch_job(job: Dict[str, Any]) -> bool:
     """Authorize the current session to see/operate ``job`` (fork IDOR gate).
 
     Full access without a session origin (CLI/TUI, api_server). Otherwise only the creating
     chat (same origin.platform + origin.chat_id) may see/operate the job; jobs missing an
     origin are system jobs, surfaced to trusted surfaces only (fail-closed for chat callers).
+    A cron run (cron.allow_agent_scheduling) has no session origin; it acts for the chat it
+    delivers to, and fails closed when it delivers nowhere concrete. Jobs it creates carry no
+    origin (their delivery is resolved concretely instead), so they record that chat as
+    ``owner_chat``.
     """
     caller = _origin_from_env()
     if caller is None:
-        return True
+        caller = _cron_run_caller()
+        if caller is None:
+            return True
+    if not caller:
+        return False
     origin = job.get("origin") or {}
+    owner = origin if origin.get("chat_id") else job.get("owner_chat") or {}
     return bool(
-        origin.get("platform") == caller.get("platform")
-        and origin.get("chat_id")
-        and origin.get("chat_id") == caller.get("chat_id")
+        owner.get("chat_id")
+        and owner.get("platform") == caller["platform"]
+        and owner["chat_id"] == caller["chat_id"]
     )
 
 
