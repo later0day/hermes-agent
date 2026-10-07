@@ -3030,17 +3030,9 @@ class GatewayTurnMixin:
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
         # Per-platform streaming toggle (display.platforms.<plat>.streaming); None = follow global.
-        try:
-            from gateway.config import StreamingConfig
-            _scfg = StreamingConfig()
-        except Exception:
-            _scfg = None
-        _plat_streaming = resolve_display_setting(user_config, platform_key, "streaming")
-        _streaming_enabled = (
-            _scfg is not None and _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
-        )
+        from gateway.config import StreamingConfig
+        _scfg = getattr(getattr(self, "config", None), "streaming", None) or StreamingConfig()
+        _streaming_enabled = _scfg.enabled_for(resolve_display_setting(user_config, platform_key, "streaming"))
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
@@ -3145,7 +3137,7 @@ class GatewayTurnMixin:
 
         The coordinator replaces noisy streaming/interim progress bubbles with a single
         editable AI Card that renders tool lifecycle, commentary and the final answer."""
-        _ts_adapter = self.adapters.get(source.platform)
+        _ts_adapter = self._delivery_adapter_for(source)
         _enabled = bool(
             _ts_adapter is not None
             and getattr(_ts_adapter, "SUPPORTS_TURN_STATUS_CARD", False) is True
@@ -3377,6 +3369,7 @@ class GatewayTurnMixin:
         Peek WITHOUT consuming: the event must stay for the post-run ``_dequeue_pending_event()``
         (popping races the agent finishing). Transcribe BEFORE signaling so voice interrupts carry
         the real transcript."""
+        from gateway.platforms.event import prepend_media_error_note
         from gateway.run import _build_media_placeholder
         _peek_event = adapter._pending_messages.get(session_key)
         pending_text = None
@@ -3389,6 +3382,7 @@ class GatewayTurnMixin:
                 )
             elif not pending_text and (getattr(_peek_event, "media_urls", None) or []):
                 pending_text = _build_media_placeholder(_peek_event)
+            pending_text = prepend_media_error_note(_peek_event, pending_text)
         log()
         agent.interrupt(pending_text)
         _interrupt_detected.set()
@@ -4436,17 +4430,13 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             # Record the turn outcome so the adapter's done-reaction fires the right emoji.
-            _ts_adapter = self.adapters.get(source.platform)
-            if _ts_adapter is not None and hasattr(_ts_adapter, "set_pending_reply_state"):
-                _reply_state = (
+            if adapter is not None and hasattr(adapter, "set_pending_reply_state"):
+                adapter.set_pending_reply_state(
+                    source.chat_id,
                     "interrupted" if _interrupt_detected.is_set()
                     else "error" if (isinstance(response, dict) and response.get("completed") is False)
-                    else "success"
+                    else "success",
                 )
-                try:
-                    _ts_adapter.set_pending_reply_state(source.chat_id, _reply_state)
-                except Exception:
-                    pass
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
