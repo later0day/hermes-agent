@@ -197,26 +197,22 @@ test("MERGED FEATURE: per-profile cron cleanup — deleting profile removes its 
 // 3. Agent bindings — source_agent_binding store
 // ═══════════════════════════════════════════════════════════════════════
 
-test("MERGED FEATURE: agent bindings — /agent slash commands appear in chat autocomplete", async ({ page }) => {
+test("MERGED FEATURE: agent bindings — gateway-only /agent stays out of the embedded TUI's completions", async ({ page }) => {
+  // /agent is gateway_only (it binds a messaging chat to a profile), so the dashboard's
+  // embedded TUI must not offer it. Its behaviour is covered on the gateway path by
+  // tests/gateway/test_agent_command_*.py. The terminal's screen-reader rows expose the
+  // real TUI text, so the completion list is asserted from what the user actually sees.
   await authedGoto(page, "/chat");
-  await page.waitForTimeout(3000);
+  const terminal = page.locator(".xterm");
+  await expect(terminal).toBeVisible({ timeout: 15000 });
+  await terminal.click();
+  await page.keyboard.type("/agent", { delay: 50 });
 
-  // Type /agent in the chat input to trigger slash autocomplete
-  const chatInput = page.locator("textarea, input[type='text']").first();
-  if (await chatInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await chatInput.fill("/agent");
-    await page.waitForTimeout(1000);
-
-    // Slash autocomplete should show /agent commands
-    const bodyText = await page.evaluate(() => document.body.innerText);
-    const hasAgentCommands =
-      bodyText.includes("/agent use") ||
-      bodyText.includes("/agent status") ||
-      bodyText.includes("/agent clear") ||
-      bodyText.includes("/agent create") ||
-      bodyText.includes("/agent list");
-    expect(hasAgentCommands).toBe(true);
-  }
+  const rows = page.locator(".xterm-accessibility");
+  // Non-vacuous: the TUI's own /agents completion must render first.
+  await expect(rows).toContainText("/agents", { timeout: 15000 });
+  const text = await rows.innerText();
+  expect(text).not.toMatch(/\/agent (use|clear|status|webhook|list|create|delete)\b/);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -792,7 +788,8 @@ test("MERGED FEATURE: gateway status — /api/status reports stopped state with 
 
   // When gateway is stopped, these fields should reflect that
   if (!status.gateway_running) {
-    expect(status.gateway_state).toBeNull();
+    // null with no runtime file; "stopped" when an operator stop is retained on disk.
+    expect([null, "stopped"]).toContain(status.gateway_state);
     expect(status.gateway_platforms).toEqual({});
     expect(status.gateway_heartbeat_stale_s).toBeNull();
     expect(status.active_agents).toBe(0);
