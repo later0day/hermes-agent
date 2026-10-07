@@ -193,6 +193,10 @@ gateway:
     example_line: "\n示例：`{preview}`"
     state_on: "ON"
     state_off: "OFF"
+  image_resend:
+    not_found: "没找到最近的图片，请重新上传。"
+    failed: "图片重发失败，请稍后再试。"
+    caption: "最近一张图片重新发给你。"
   agent:
     admin_only: "⛔ /agent {action} 需要显式配置的网关管理员（私聊用 allow_admin_from，群组用 group_allow_admin_from）。"
   goal:

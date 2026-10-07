@@ -196,6 +196,10 @@ gateway:
     example_line: "\nExample: `{preview}`"
     state_on: "ON"
     state_off: "OFF"
+  image_resend:
+    not_found: "I couldn't find a recent image in this chat. Please upload it again."
+    failed: "Re-sending the image failed. Please try again later."
+    caption: "Here's the most recent image again."
   agent:
     admin_only: "⛔ /agent {action} requires an explicitly configured gateway admin (allow_admin_from for DMs, group_allow_admin_from for groups)."
   goal:

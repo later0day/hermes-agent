@@ -1,8 +1,8 @@
 """Tests for image resend pattern matching + attached-image path scanning.
 
 Covers the ``_wants_recent_image_resend`` and ``_find_latest_attached_image_path``
-helpers from ``gateway.run_turn``, which handle DingTalk users asking for an
-image re-send without re-uploading it.
+helpers from ``gateway.run_turn_image_resend``, which handle DingTalk users asking for an
+image re-send without re-uploading it, plus the shortcut end to end against a real SessionDB.
 """
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ import tempfile
 
 import pytest
 
-from gateway.run_turn import (
+from gateway.run_turn_image_resend import (
     _IMAGE_ATTACHED_RE,
-    _RECENT_IMAGE_RESEND_NOT_HANDLED,
+    RECENT_IMAGE_RESEND_NOT_HANDLED as _RECENT_IMAGE_RESEND_NOT_HANDLED,
     _RESEND_IMAGE_PATTERNS,
-    _find_latest_attached_image_path,
-    _wants_recent_image_resend,
+    find_latest_attached_image_path as _find_latest_attached_image_path,
+    wants_recent_image_resend as _wants_recent_image_resend,
 )
 
 
@@ -59,6 +59,10 @@ class TestWantsRecentImageResend:
         "",  # empty
         "image",
         "图片",  # just "image" without resend context
+        # Requests that merely mention an image must still reach the agent.
+        "这张图片重新设计一下再发给我",
+        "帮我把图片重新生成后发群里",
+        "发一下刚才说的图片描述",
     ])
     def test_non_matching_patterns(self, text):
         assert _wants_recent_image_resend(text) is False
@@ -179,3 +183,30 @@ class TestFindLatestAttachedImagePath:
 def test_sentinel_is_unique_object():
     assert _RECENT_IMAGE_RESEND_NOT_HANDLED is not None
     assert _RECENT_IMAGE_RESEND_NOT_HANDLED != object()
+
+@pytest.mark.asyncio
+async def test_resend_shortcut_redelivers_the_image_from_the_real_session_transcript(tmp_path):
+    from types import SimpleNamespace
+
+    from gateway.config import Platform
+    from gateway.run_turn_image_resend import maybe_resend_recent_image
+    from hermes_state import AsyncSessionDB, SessionDB
+
+    image = tmp_path / "cat.png"
+    image.write_bytes(b"png")
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="dingtalk")
+    db.append_message("s1", "user", f"look [Image attached at: {image}]")
+    sent = []
+
+    class Adapter:
+        async def send_image_file(self, *, chat_id, image_path, **_):
+            sent.append((chat_id, image_path))
+
+    runner = SimpleNamespace(_session_db=AsyncSessionDB(db), _delivery_adapter_for=lambda source: Adapter())
+    source = SimpleNamespace(platform=Platform.DINGTALK, chat_id="c1")
+    event = SimpleNamespace(text="把刚才的图片重新发一下", message_id="m1")
+
+    assert await maybe_resend_recent_image(runner, event, source, "s1") is None
+    assert sent == [("c1", str(image))]
+    assert db.get_messages("s1")[-1]["content"] == f"[resent image attachment: {image}]"
