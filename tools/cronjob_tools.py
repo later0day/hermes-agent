@@ -717,40 +717,27 @@ def _action_create(a: Dict[str, Any]) -> str:
     return _dumps(_with_guidance(_result, job, deliver))
 
 
-# Platforms whose sessions are multi-tenant chat surfaces: one bound profile
-# can serve MANY distinct groups/DMs (source->profile binding), so any member
-# of any bound group could otherwise list/mutate every other group's cron jobs
-# in the same profile store (cross-origin IDOR — fork port-plan §4.1). Jobs
-# carry origin.platform+origin.chat_id (the creating chat); we gate list/mutate
-# so a chat can only see/operate jobs it created. Trusted management surfaces —
-# CLI/TUI (no session origin → origin is None) and api_server (gated by its
-# own per-profile API key) — are exempt and retain full-store access.
-_CRON_ORIGIN_SCOPED_PLATFORMS = frozenset({
-    "dingtalk", "weixin", "wecom", "wechat", "feishu", "lark",
-    "slack", "discord", "telegram", "matrix", "line", "whatsapp",
-})
+# One profile store can serve many chats (source->profile bindings, several groups on one bot),
+# so any member of any of them could otherwise list/mutate every other chat's cron jobs
+# (cross-origin IDOR — fork port-plan §4.1). Jobs carry origin.platform+origin.chat_id (the
+# creating chat); a caller with a session origin sees/operates only the jobs its chat created.
+# Trusted management surfaces have no origin and keep full-store access: CLI/TUI (no session)
+# and api_server (non-push, so _origin_from_env returns None; its API key gates the caller).
 
 
 def _caller_may_touch_job(job: Dict[str, Any]) -> bool:
     """Authorize the current session to see/operate ``job`` (fork IDOR gate).
 
-    Returns True (full access) for trusted management surfaces:
-      * CLI/TUI and any path without a captured session origin (origin None).
-      * api_server (its own API key already gates the caller).
-    For multi-tenant chat platforms, only the creating chat (same
-    origin.platform + origin.chat_id) may see/operate the job. Jobs missing an
-    origin are treated as unowned/system jobs and only surfaced to trusted
-    surfaces (fail-closed for scoped chat callers).
+    Full access without a session origin (CLI/TUI, api_server). Otherwise only the creating
+    chat (same origin.platform + origin.chat_id) may see/operate the job; jobs missing an
+    origin are system jobs, surfaced to trusted surfaces only (fail-closed for chat callers).
     """
     caller = _origin_from_env()
     if caller is None:
         return True
-    platform = caller.get("platform")
-    if platform not in _CRON_ORIGIN_SCOPED_PLATFORMS:
-        return True
     origin = job.get("origin") or {}
     return bool(
-        origin.get("platform") == platform
+        origin.get("platform") == caller.get("platform")
         and origin.get("chat_id")
         and origin.get("chat_id") == caller.get("chat_id")
     )
@@ -1015,14 +1002,19 @@ def _resolve_job_or_error(job_id: str):
     try:
         job = resolve_job_ref(job_id)
     except AmbiguousJobReference as exc:
-        return None, _dumps({
-            "success": False,
-            "error": str(exc),
-            "matches": [
-                {"id": m["id"], "name": m.get("name"), "schedule": m.get("schedule_display"), "next_run_at": m.get("next_run_at")}
-                for m in exc.matches
-            ],
-        })
+        # Ambiguity is judged among the caller's own jobs: another chat's same-named job must
+        # neither leak through ``matches`` nor block this chat from naming its own.
+        visible = [m for m in exc.matches if _caller_may_touch_job(m)]
+        if len(visible) > 1:
+            return None, _dumps({
+                "success": False,
+                "error": str(AmbiguousJobReference(job_id, visible)),
+                "matches": [
+                    {"id": m["id"], "name": m.get("name"), "schedule": m.get("schedule_display"), "next_run_at": m.get("next_run_at")}
+                    for m in visible
+                ],
+            })
+        job = visible[0] if visible else None
     if not job or not _caller_may_touch_job(job):
         # Fork IDOR gate: block cross-origin mutation. resolve_job_ref finds any
         # job in the profile store by id/name with no ownership check, so a

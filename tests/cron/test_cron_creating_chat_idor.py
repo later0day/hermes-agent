@@ -93,7 +93,9 @@ def test_cli_sees_full_store(two_group_store):
 
 
 def test_api_server_sees_full_store(two_group_store):
-    tok = _as_chat("api_server", "api")
+    # As gateway/platforms/api_server.py binds it: a non-push surface (async_delivery=False).
+    tok = set_session_vars(platform="api_server", chat_id="api", chat_name="", cron_session="",
+                           async_delivery=False)
     try:
         names = _list_names()
     finally:
@@ -149,3 +151,28 @@ def test_cli_can_remove_any_job(two_group_store):
     res = json.loads(cronjob(action="remove", job_id="bbbb2222"))
     assert res["success"] is True
     assert not any(j["id"] == "bbbb2222" for j in cron_jobs.load_jobs())
+
+
+def test_every_chat_platform_is_scoped_not_just_a_listed_few(temp_cron_home):
+    _seed_job("mm000001", "job-M1", platform="mattermost", chat_id="chan-1")
+    _seed_job("mm000002", "job-M2", platform="mattermost", chat_id="chan-2")
+    tok = _as_chat("mattermost", "chan-2")
+    try:
+        names = _list_names()
+    finally:
+        clear_session_vars(tok)
+    assert names == {"job-M2"}
+
+
+def test_a_same_named_job_in_another_chat_neither_leaks_nor_blocks(temp_cron_home):
+    from tools.cronjob_tools import cronjob
+
+    _seed_job("aaaa1111", "daily", platform="dingtalk", chat_id=GROUP_A)
+    _seed_job("bbbb2222", "daily", platform="dingtalk", chat_id=GROUP_B)
+    tok = _as_chat("dingtalk", GROUP_B)
+    try:
+        raw = cronjob(action="pause", job_id="daily")
+    finally:
+        clear_session_vars(tok)
+    assert "aaaa1111" not in raw
+    assert json.loads(raw)["success"] is True
