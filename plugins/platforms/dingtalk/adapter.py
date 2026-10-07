@@ -2223,7 +2223,9 @@ class DingTalkAdapter(BasePlatformAdapter):
     @staticmethod
     def _probe_media_duration_ms(path: Path) -> Optional[int]:
         """Probe media duration via ffprobe (best-effort; None on any failure)."""
-        ffprobe = shutil.which("ffprobe")
+        from tools.transcription_audio import _find_ffprobe_binary
+
+        ffprobe = _find_ffprobe_binary()
         if not ffprobe:
             return None
         try:
@@ -2238,6 +2240,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                     "default=noprint_wrappers=1:nokey=1",
                     str(path),
                 ],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 check=False,
                 text=True,
@@ -2278,7 +2281,9 @@ class DingTalkAdapter(BasePlatformAdapter):
     @staticmethod
     def _generate_video_cover(path: Path) -> Optional[Path]:
         """Generate a JPEG thumbnail from the first frame via ffmpeg (best-effort)."""
-        ffmpeg = shutil.which("ffmpeg")
+        from tools.transcription_audio import _find_ffmpeg_binary
+
+        ffmpeg = _find_ffmpeg_binary()
         if not ffmpeg:
             return None
         output = Path(tempfile.gettempdir()) / f"hermes_dingtalk_video_{uuid.uuid4().hex}.jpg"
@@ -2295,6 +2300,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                     "3",
                     str(output),
                 ],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 check=False,
                 timeout=10,

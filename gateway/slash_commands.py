@@ -1050,9 +1050,9 @@ class GatewaySlashCommandsMixin(
                 try:
                     cfg_path = get_profile_dir(p.name) / "config.yaml"
                     if cfg_path.is_file():
-                        import hermes_yaml as _yaml
+                        from hermes_cli.config import read_user_config_raw
 
-                        cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                        cfg = read_user_config_raw(cfg_path)
                         model_name = str(cfg.get("model") or cfg.get("default_model") or "unset")
                 except Exception:  # noqa: BLE001
                     pass
@@ -1128,16 +1128,17 @@ class GatewaySlashCommandsMixin(
                 if parsed.template:
                     write_profile_meta(p_dir, template=True)
                 if parsed.orchestrator:
-                    import hermes_yaml as _yaml
+                    from hermes_cli.config import read_user_config_raw
+                    from utils import atomic_yaml_write
 
                     cfg_path = p_dir / "config.yaml"
                     if cfg_path.exists():
-                        cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                        cfg = read_user_config_raw(cfg_path)
                         ts = cfg.get("toolsets", [])
                         if "kanban" not in ts:
                             ts.append("kanban")
                             cfg["toolsets"] = ts
-                            cfg_path.write_text(_yaml.safe_dump(cfg), encoding="utf-8")
+                            atomic_yaml_write(cfg_path, cfg)
                 out = f"Created agent profile `{target_name}`."
                 out += (
                     " .env copied. skills copied."

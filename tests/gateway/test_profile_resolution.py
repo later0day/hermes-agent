@@ -89,14 +89,9 @@ class TestMissingProfileWarning:
     """Tests for warning when a profile doesn't exist on disk."""
     
     def test_nonexistent_profile_warning(self, mock_runner, discord_source, caplog):
-        """When source.profile points to a nonexistent profile, log a WARNING.
-
-        Legacy non-multiplex fallback: warn and drop back to global HERMES_HOME.
-        Under multiplexing the resolver now rejects instead — see the fork's
-        harden pass — so this test pins the non-multiplex path explicitly.
-        """
+        """When source.profile points to a nonexistent profile, log a WARNING."""
         discord_source.profile = "nonexistent"
-        mock_runner.config.multiplex_profiles = False
+        
 
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
             with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
