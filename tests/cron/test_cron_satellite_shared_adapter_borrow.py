@@ -31,8 +31,7 @@ def satellite(tmp_path, monkeypatch):
     store = SourceAgentBindingStore(db_path=root / "gateway_source_agent_bindings.sqlite")
     store.set_binding("source:dingtalk:group:A", "sat")
     store.close()
-    monkeypatch.setattr("gateway.source_agent_binding.DEFAULT_SOURCE_AGENT_BINDINGS_DB",
-                        root / "gateway_source_agent_bindings.sqlite")
+    monkeypatch.setattr("gateway.source_agent_binding.source_agent_bindings_db_path", lambda: root / "gateway_source_agent_bindings.sqlite")
 
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(sat))
