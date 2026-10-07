@@ -2,7 +2,12 @@ name: google_chat-platform
 label: Google Chat
 kind: platform
 version: 1.0.0
-description: Hermes Agent 的 Google Chat 网关适配器。通过已认证的 HTTP 回调或可选的 Cloud Pub/Sub 拉取订阅接收入站事件，并使用 Google Chat REST API 发送出站消息。原生文件附件通过每用户 OAuth 投递（每个用户需在自己的私信中运行一次 /setup-files）。
+description: >
+  Google Chat gateway adapter for Hermes Agent.
+  Connects through authenticated HTTP callbacks or an optional Cloud Pub/Sub
+  pull subscription for inbound events, and uses the Google Chat REST API for
+  outbound messages. Native file attachments are delivered via per-user OAuth
+  (each user runs /setup-files once in their own DM).
 author: Ramón Fernández
 # ``requires_env`` entries are surfaced in ``hermes config`` UI via the
 # platform-plugin env var injector in ``hermes_cli/config.py``.  Using the
@@ -10,36 +15,36 @@ author: Ramón Fernández
 # see helpful guidance instead of the auto-generated fallback text.
 requires_env:
   - name: GOOGLE_CHAT_SERVICE_ACCOUNT_JSON
-    description: "Service Account JSON 密钥路径（或内联 JSON）。留空则在 Cloud Run / GCE 上使用 Application Default Credentials，回退到 GOOGLE_APPLICATION_CREDENTIALS。"
-    prompt: "SA JSON 路径（留空使用 ADC）"
+    description: "Path to Service Account JSON key (or inline JSON). Leave empty to use Application Default Credentials on Cloud Run / GCE. Falls back to GOOGLE_APPLICATION_CREDENTIALS."
+    prompt: "Path to SA JSON (or empty for ADC)"
     password: true
 optional_env:
   - name: GOOGLE_CHAT_HTTP_EVENTS_URL
-    description: "用于接收 Chat 消息事件的已认证 HTTP 端点。"
-    prompt: "HTTP 事件回调 URL"
+    description: "Authenticated HTTP endpoint for Chat message events."
+    prompt: "HTTP events callback URL"
     password: false
   - name: GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE
-    description: "Google 签名的 HTTP 事件 bearer token 的预期 audience。默认为 GOOGLE_CHAT_HTTP_EVENTS_URL。"
-    prompt: "HTTP 事件 token audience"
+    description: "Expected audience for Google-signed HTTP event bearer tokens. Defaults to GOOGLE_CHAT_HTTP_EVENTS_URL."
+    prompt: "HTTP events token audience"
     password: false
   - name: GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL
-    description: "HTTP 事件 bearer token 的预期 Google 服务账号邮箱。"
-    prompt: "HTTP 事件服务账号邮箱"
+    description: "Expected Google service account email for HTTP event bearer tokens."
+    prompt: "HTTP events service account email"
     password: false
   - name: GOOGLE_CHAT_PROJECT_ID
-    description: "可选 Pub/Sub 入站模式的 GCP 项目 ID。回退到 GOOGLE_CLOUD_PROJECT。"
-    prompt: "GCP 项目 ID"
+    description: "GCP project ID for optional Pub/Sub inbound mode. Falls back to GOOGLE_CLOUD_PROJECT."
+    prompt: "GCP project ID"
     url: "https://console.cloud.google.com/"
     password: false
   - name: GOOGLE_CHAT_SUBSCRIPTION_NAME
-    description: "可选的 Pub/Sub 订阅路径，用于拉取模式入站事件。"
-    prompt: "Pub/Sub 订阅名称"
+    description: "Optional Pub/Sub subscription path for pull-mode inbound events."
+    prompt: "Pub/Sub subscription name"
     password: false
   - name: GOOGLE_CHAT_ALLOWED_USERS
-    description: "允许与机器人交互的用户邮箱列表（逗号分隔）。"
-    prompt: "允许的用户邮箱（逗号分隔）"
+    description: "Comma-separated user emails allowed to interact with the bot."
+    prompt: "Allowed user emails (comma-separated)"
     password: false
   - name: GOOGLE_CHAT_HOME_CHANNEL
-    description: "cron / 通知投递的默认 space（例如 spaces/AAAA...）。"
-    prompt: "主 space ID（或留空）"
+    description: "Default space for cron / notification delivery (e.g. spaces/AAAA...)."
+    prompt: "Home space ID (or empty)"
     password: false
