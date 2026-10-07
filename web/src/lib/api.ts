@@ -1236,28 +1236,18 @@ export const api = {
   // rewrite in withManagementProfile doesn't reach them — send it explicitly
   // or an approval lands in the wrong profile's whitelist.
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
-  // `arg` is EITHER a server-side request_id (surfaced by the pending list) OR
-  // a one-time code the user relayed from their DM. The backend has distinct
-  // `request_id` / `code` fields and dispatches on which is set — a request_id
-  // that lands in `code` would be brute-force-lockout gated and never match.
-  // Route by shape here so a manually typed code reaches the code path:
-  // request ids are 16 lowercase-hex chars, codes are 8 uppercase chars.
-  approvePairing: (platform: string, arg: string) => {
-    const value = (arg || "").trim();
-    const isRequestId = /^[0-9a-fA-F]{16}$/.test(value);
-    return fetchJSON<{ ok: boolean; user: PairingUser }>(
-      "/api/pairing/approve",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          platform,
-          ...(isRequestId ? { request_id: value } : { code: value }),
-          profile: getManagementProfile() || undefined,
-        }),
-      },
-    );
-  },
+  // Approve by the pending list's `request_id` or by a one-time `code` the user
+  // relayed from their DM; the caller knows which it holds, so it names it.
+  approvePairing: (platform: string, target: { request_id: string } | { code: string }) =>
+    fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        platform,
+        ...target,
+        profile: getManagementProfile() || undefined,
+      }),
+    }),
   revokePairing: (platform: string, user_id: string) =>
     fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
       method: "POST",

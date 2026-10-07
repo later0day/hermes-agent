@@ -64,14 +64,14 @@ export default function PairingPage() {
     const code = (manualCodes[key] || "").trim().toUpperCase();
     // A typed code wins; otherwise fall back to the click-to-approve
     // request_id. One of the two must be present.
-    const approveArg = code || user.request_id;
-    if (!approveArg) {
+    const target = code ? { code } : user.request_id ? { request_id: user.request_id } : null;
+    if (!target) {
       showToast("Enter a pairing code or missing request", "error");
       return;
     }
     setApproving(key);
     try {
-      await api.approvePairing(user.platform, approveArg);
+      await api.approvePairing(user.platform, target);
       showToast(`Approved: "${getUserLabel(user)}"`, "success");
       setManualCodes((prev) => {
         const next = { ...prev };
