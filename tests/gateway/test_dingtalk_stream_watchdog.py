@@ -118,21 +118,13 @@ async def test_watchdog_exits_on_cancellation_without_force_close(adapter_mod):
     assert websocket.close.await_count == 0
 
 
-def test_env_int_uses_defaults_and_clamps_below_minimum(adapter_mod, monkeypatch):
-    """Watchdog tunables must fall back to their constants on empty/invalid env."""
-    monkeypatch.delenv("DINGTALK_STREAM_PING_INTERVAL", raising=False)
-    monkeypatch.delenv("DINGTALK_STREAM_PING_TIMEOUT", raising=False)
-    assert adapter_mod._env_int("DINGTALK_STREAM_PING_INTERVAL", adapter_mod.STREAM_PING_INTERVAL) == 60
-    assert adapter_mod._env_int("DINGTALK_STREAM_PING_TIMEOUT", adapter_mod.STREAM_PING_TIMEOUT) == 20
-
-    monkeypatch.setenv("DINGTALK_STREAM_PING_INTERVAL", "not-a-number")
-    assert adapter_mod._env_int("DINGTALK_STREAM_PING_INTERVAL", 60) == 60
-
-    monkeypatch.setenv("DINGTALK_STREAM_PING_INTERVAL", "0")
-    assert adapter_mod._env_int("DINGTALK_STREAM_PING_INTERVAL", 60, minimum=1) == 60
-
-    monkeypatch.setenv("DINGTALK_STREAM_PING_INTERVAL", "45")
-    assert adapter_mod._env_int("DINGTALK_STREAM_PING_INTERVAL", 60) == 45
+def test_ping_tunables_fall_back_to_defaults_on_blank_or_invalid_values(adapter_mod):
+    """Watchdog tunables must fall back to their constants on empty/invalid settings."""
+    assert adapter_mod._positive_int("", adapter_mod.STREAM_PING_INTERVAL) == adapter_mod.STREAM_PING_INTERVAL
+    assert adapter_mod._positive_int(None, adapter_mod.STREAM_PING_TIMEOUT) == adapter_mod.STREAM_PING_TIMEOUT
+    assert adapter_mod._positive_int("not-a-number", 60) == 60
+    assert adapter_mod._positive_int("0", 60, minimum=1) == 60
+    assert adapter_mod._positive_int("45", 60) == 45
 
 
 @pytest.mark.asyncio
@@ -171,6 +163,7 @@ async def test_disconnect_cancels_watchdog_before_websocket_close(adapter_mod):
     adapter._done_emoji_fired = set()
     adapter._dedup = types.SimpleNamespace(clear=lambda: None)
     adapter._bg_tasks = set()
+    adapter._bg_futures = set()
 
     # No-ops for the disconnect helpers that touch other subsystems
     adapter._mark_disconnected = lambda: None

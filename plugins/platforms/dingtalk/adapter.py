@@ -4,6 +4,7 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 ``extra.client_id`` / ``extra.client_secret`` (or DINGTALK_CLIENT_ID / DINGTALK_CLIENT_SECRET)."""
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import mimetypes
@@ -21,11 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-try:
-    import concurrent.futures
-except ImportError:
-    pass  # only used for background future tracking
 
 # Optional SDKs: catch broad Exception, not just ImportError — their transitive cryptography
 # dependency can raise AttributeError on version skew; a broken optional SDK must degrade gracefully.
@@ -73,6 +69,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
 )
 from gateway.platforms.event import MessageEvent
+from utils import is_truthy_value
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
@@ -116,11 +113,10 @@ STREAM_PING_INTERVAL = 60  # seconds between liveness pings
 STREAM_PING_TIMEOUT = 20  # seconds to await the pong before declaring half-open
 
 
-def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
-    """Read a positive int from env, falling back to ``default`` on any error."""
-    import os
+def _positive_int(raw: Any, default: int, *, minimum: int = 1) -> int:
+    """``raw`` as an int of at least ``minimum``, else ``default`` (unset, blank or invalid)."""
     try:
-        value = int(os.getenv(name, "").strip() or default)
+        value = int(str(raw).strip() or default)
     except (TypeError, ValueError):
         return default
     return value if value >= minimum else default
@@ -341,19 +337,18 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._stream_client = self._stream_task = self._http_client = self._card_sdk = self._robot_sdk = None
         # Liveness watchdog for half-open Stream Mode connections; see ``STREAM_PING_INTERVAL``.
         self._watchdog_task: Optional[asyncio.Task] = None
-        self._ping_interval: int = _env_int("DINGTALK_STREAM_PING_INTERVAL", STREAM_PING_INTERVAL)
-        self._ping_timeout: int = _env_int("DINGTALK_STREAM_PING_TIMEOUT", STREAM_PING_TIMEOUT)
+        self._ping_interval: int = _positive_int(
+            _extra_or_secret(extra, "stream_ping_interval", "DINGTALK_STREAM_PING_INTERVAL"), STREAM_PING_INTERVAL)
+        self._ping_timeout: int = _positive_int(
+            _extra_or_secret(extra, "stream_ping_timeout", "DINGTALK_STREAM_PING_TIMEOUT"), STREAM_PING_TIMEOUT)
         self._robot_code: str = extra.get("robot_code") or self._client_id
         # Robot-native OpenAPI routing: app_code for PrivateChatSend, corp_id/agent_id reserved for future.
         self._app_code: str = extra.get("app_code", "")
         self._corp_id: str = extra.get("corp_id", "")
         self._agent_id: str = extra.get("agent_id", "")
         # Whether to @ the group sender in final replies (DingTalk card delivery supports structured @).
-        self._reply_at_sender: bool = self._read_bool_setting(
-            extra.get("reply_at_sender"),
-            env_name="DINGTALK_REPLY_AT_SENDER",
-            default=False,
-        )
+        self._reply_at_sender: bool = is_truthy_value(
+            _extra_or_secret(extra, "reply_at_sender", "DINGTALK_REPLY_AT_SENDER"), default=False)
         self._dedup = MessageDeduplicator(max_size=1000)
         self._session_webhooks: Dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
         self._message_contexts: Dict[str, Any] = {}  # chat_id -> last inbound ChatbotMessage (per-chat: no clobber)
@@ -374,6 +369,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         # re-opens a finalized card, so we track them and auto-close as siblings on the next ``send()``.
         self._streaming_cards: Dict[str, Dict[str, str]] = {}
         self._bg_tasks: Set[asyncio.Task] = set()  # fire-and-forget emoji tasks, kept referenced (GC) + cancellable
+        # Tool-progress callbacks run on the agent's worker thread; their emoji swaps are handed to the
+        # adapter's loop (captured in connect) instead of a create_task with no loop to run on.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._bg_futures: Set[concurrent.futures.Future] = set()
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to DingTalk via Stream Mode."""
@@ -398,6 +397,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 else:
                     logger.info("[%s] Robot SDK initialized (media download)", self.name)
             self._stream_client.register_callback_handler(dingtalk_stream.ChatbotMessage.TOPIC, _IncomingHandler(self, asyncio.get_running_loop()))
+            self._loop = asyncio.get_running_loop()
             self._stream_task = asyncio.create_task(self._run_stream())
             self._watchdog_task = asyncio.create_task(self._run_watchdog())
             self._mark_connected()
@@ -560,6 +560,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             task.cancel()
         if self._bg_tasks:
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+        for fut in list(self._bg_futures):
+            fut.cancel()
+        self._bg_futures.clear()
         # Finalize open streaming cards BEFORE the HTTP client closes so they don't stay stuck
         # in streaming state after a gateway restart. Outer try guards the token fetch.
         for _chat_id in list(self._streaming_cards):
@@ -633,9 +636,22 @@ class DingTalkAdapter(BasePlatformAdapter):
         )
 
     def _spawn_bg(self, coro) -> None:
-        """Start a fire-and-forget coroutine and track it for cleanup."""
-        self._bg_tasks.add(task := asyncio.create_task(coro))
-        task.add_done_callback(self._bg_tasks.discard)
+        """Start a fire-and-forget coroutine and track it for cleanup — from the adapter's loop or,
+        for tool-progress callbacks, from the agent's worker thread (handed to the adapter's loop)."""
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        target = self._loop if self._loop is not None and self._loop.is_running() else None
+        if target is not None and running is not target:
+            self._bg_futures.add(fut := asyncio.run_coroutine_threadsafe(coro, target))
+            fut.add_done_callback(self._bg_futures.discard)
+        elif running is not None:
+            self._bg_tasks.add(task := running.create_task(coro))
+            task.add_done_callback(self._bg_tasks.discard)
+        else:
+            coro.close()
+            logger.debug("[%s] Dropped background coroutine: no running event loop", self.name)
 
     async def _close_streaming_siblings(self, chat_id: str) -> None:
         """Finalize open streaming cards for this chat at the start of every ``send()`` — the gateway has no "turn end" signal, so this is what closes lingering tool-progress cards."""
@@ -1966,22 +1982,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         return "\n".join(out)
 
     # -- Config / metadata / rich-text helpers (ported from fork) -----------
-
-    @staticmethod
-    def _read_bool_setting(
-        value: Any,
-        *,
-        env_name: str,
-        default: bool = False,
-    ) -> bool:
-        """Read a bool from config first, then env, matching gateway config style."""
-        if value is None:
-            value = os.getenv(env_name)
-        if value is None:
-            return default
-        if isinstance(value, str):
-            return value.lower() in {"true", "1", "yes", "on"}
-        return bool(value)
 
     @staticmethod
     def _metadata_values(metadata: Dict[str, Any], *keys: str) -> List[str]:
