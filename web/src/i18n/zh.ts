@@ -10,6 +10,8 @@ export const zh: Translations = {
     delete: "删除",
     refresh: "刷新",
     retry: "重试",
+    errorBoundaryTitle: "出错了",
+    errorBoundaryDescription: "此页面遇到意外错误。你可以重试，或重新加载仪表盘。",
     search: "搜索...",
     loading: "加载中...",
     create: "创建",

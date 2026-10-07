@@ -20,6 +20,9 @@ export type Locale =
 export interface Translations {
   // ── Common ──
   common: {
+    /** Optional — the boundary keeps its English copy until translated. */
+    errorBoundaryTitle?: string;
+    errorBoundaryDescription?: string;
     save: string;
     saving: string;
     cancel: string;

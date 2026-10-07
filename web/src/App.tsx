@@ -805,6 +805,8 @@ export default function App() {
                 <ProfileKeyedRoutes>
                   <ErrorBoundary
                     resetKeys={[pathname]}
+                    title={t.common.errorBoundaryTitle}
+                    description={t.common.errorBoundaryDescription}
                     retryLabel={t.common.retry}
                     reloadLabel={t.common.refresh}
                   >
