@@ -217,11 +217,12 @@ def _primary_binding_routes_for_current_home(profile_name: Optional[str] = None)
                 == _sched.Path(get_hermes_home()).expanduser().resolve(strict=False)):
             return []
         from gateway.profile_routing import ProfileRoute
-        from gateway.source_agent_binding import DEFAULT_SOURCE_AGENT_BINDINGS_DB, SourceAgentBindingStore
+        from gateway.source_agent_binding import SourceAgentBindingStore, source_agent_bindings_db_path
         from hermes_cli.profiles import profile_matches_home
-        if not _sched.Path(DEFAULT_SOURCE_AGENT_BINDINGS_DB).exists():
+        db_path = source_agent_bindings_db_path()
+        if not db_path.exists():
             return []
-        store = SourceAgentBindingStore(db_path=DEFAULT_SOURCE_AGENT_BINDINGS_DB)
+        store = SourceAgentBindingStore(db_path=db_path)
         try:
             bindings = (store.list_bindings(profile_name=profile_name) if profile_name
                         else [b for b in store.list_bindings() if profile_matches_home(b.profile_name)])

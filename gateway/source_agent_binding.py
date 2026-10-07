@@ -14,9 +14,9 @@ from typing import Any, Iterable
 from hermes_constants import get_default_hermes_root
 
 
-DEFAULT_SOURCE_AGENT_BINDINGS_DB = (
-    get_default_hermes_root() / "gateway_source_agent_bindings.sqlite"
-)
+def source_agent_bindings_db_path() -> Path:
+    """The root-global bindings store; resolved per call, never frozen at import time."""
+    return get_default_hermes_root() / "gateway_source_agent_bindings.sqlite"
 _SQLITE_INIT_LOCK = threading.RLock()
 
 
@@ -69,7 +69,7 @@ class SourceAgentBindingStore:
         self.db_path = (
             Path(db_path)
             if db_path is not None
-            else DEFAULT_SOURCE_AGENT_BINDINGS_DB
+            else source_agent_bindings_db_path()
         )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -297,7 +297,7 @@ def settle_profile_bindings(old_profile: str, new_profile: str | None = None) ->
     its chats — and the cron delivery they authorize — to any later profile of the same name, and
     a renamed profile's chats would silently fall back to the default profile. The store is
     root-global; resolved at call time. Returns the number of bindings changed."""
-    db_path = get_default_hermes_root() / "gateway_source_agent_bindings.sqlite"
+    db_path = source_agent_bindings_db_path()
     if not db_path.exists():
         return 0
     store = SourceAgentBindingStore(db_path=db_path)

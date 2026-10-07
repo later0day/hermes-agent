@@ -156,15 +156,12 @@ class TestBoundSatellitePreflight:
         """Seed the binding store at the REAL default filename
         (``gateway_source_agent_bindings.sqlite``) and patch the module
         constant so the code under test — which reads
-        ``DEFAULT_SOURCE_AGENT_BINDINGS_DB`` directly — sees this isolated
+        ``source_agent_bindings_db_path()`` directly — sees this isolated
         store rather than the real one."""
         from gateway.source_agent_binding import SourceAgentBindingStore
 
         db_path = root / "gateway_source_agent_bindings.sqlite"
-        monkeypatch.setattr(
-            "gateway.source_agent_binding.DEFAULT_SOURCE_AGENT_BINDINGS_DB",
-            db_path,
-        )
+        monkeypatch.setattr("gateway.source_agent_binding.source_agent_bindings_db_path", lambda: db_path)
         store = SourceAgentBindingStore(db_path=db_path)
         try:
             store.set_binding(

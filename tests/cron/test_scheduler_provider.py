@@ -665,10 +665,7 @@ def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters,
         assert monkeypatch is not None, "bindings requires monkeypatch"
         from gateway.source_agent_binding import SourceAgentBindingStore
         bind_db = tmp_path / "gateway_source_agent_bindings.sqlite"
-        monkeypatch.setattr(
-            "gateway.source_agent_binding.DEFAULT_SOURCE_AGENT_BINDINGS_DB",
-            bind_db,
-        )
+        monkeypatch.setattr("gateway.source_agent_binding.source_agent_bindings_db_path", lambda: bind_db)
         _store = SourceAgentBindingStore(db_path=bind_db)
         for key, prof in bindings:
             _store.set_binding(key, prof, fallback_target={"platform": key.split(":")[1]})
