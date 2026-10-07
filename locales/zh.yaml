@@ -193,6 +193,8 @@ gateway:
     example_line: "\n示例：`{preview}`"
     state_on: "ON"
     state_off: "OFF"
+  agent:
+    admin_only: "⛔ /agent {action} 需要显式配置的网关管理员（私聊用 allow_admin_from，群组用 group_allow_admin_from）。"
   goal:
     unavailable: "此会话不支持目标功能。"
     no_goal_set: "未设置目标。"

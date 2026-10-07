@@ -48,6 +48,9 @@ def _source(chat_id="group-x", user_id="u1", chat_type="group"):
 
 def _runner(store, *, multiplex=True, audit_path=None, adapters=None):
     r = object.__new__(GatewayRunner)
+    # Handler behavior for an authorized caller; the admin gate itself is pinned in
+    # test_agent_command_dispatch.py through the real dispatch + slash-access policy.
+    r._resume_caller_is_admin = lambda source: True
     r.config = SimpleNamespace(
         profile_routes=[], multiplex_profiles=multiplex,
         group_sessions_per_user=True, thread_sessions_per_user=False,
