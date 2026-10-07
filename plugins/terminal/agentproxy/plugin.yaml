@@ -1,0 +1,5 @@
+name: terminal-agentproxy
+version: 1.0.0
+description: "AgentProxy terminal backend: runs every command inside a Docker container on a remote AgentProxy agent over the Dashboard task API (no SSH). Select with terminal.backend: agentproxy; needs DASHBOARD_TOKEN (profile .env or the AgentProxy env file)."
+author: later0day
+kind: backend

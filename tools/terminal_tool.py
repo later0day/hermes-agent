@@ -667,7 +667,7 @@ def _ensure_terminal_env_bridged() -> None:
 
 
 # Default cwd per backend; anything else (container backends, plugins) is "/root".
-_DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD, "agentproxy": "/root"}
+_DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD}
 
 
 def _repair_deleted_cwd() -> Optional[str]:
@@ -822,15 +822,6 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_persist_across_processes": _tenv_bool("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"),
         "docker_shared_container_key": _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip(),
         "docker_orphan_reaper": _tenv_bool("TERMINAL_DOCKER_ORPHAN_REAPER", "true"),
-        # AgentProxy-specific config (env_type="agentproxy"): run commands in a
-        # Docker container on a remote AgentProxy agent over the Dashboard task API.
-        "ap_agent_id": _tenv("TERMINAL_AP_AGENT", "home"),
-        "ap_container": _tenv("TERMINAL_AP_CONTAINER", "hermes-reverse"),
-        "ap_image": _tenv("TERMINAL_AP_IMAGE", default_image),
-        "ap_cloud_url": _tenv("TERMINAL_AP_CLOUD_URL", "https://127.0.0.1:8080"),
-        "ap_env_file": _tenv("TERMINAL_AP_ENV_FILE", "/opt/agentproxy/.env"),
-        "ap_path_prefix": _tenv("TERMINAL_AP_PATH_PREFIX", "/usr/local/bin"),
-        "ap_docker_run_args": _tenv("TERMINAL_AP_DOCKER_RUN_ARGS", ""),
     }
 
 
