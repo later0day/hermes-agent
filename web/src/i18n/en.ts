@@ -10,6 +10,8 @@ export const en: Translations = {
     delete: "Delete",
     refresh: "Refresh",
     retry: "Retry",
+    errorBoundaryTitle: "Something went wrong",
+    errorBoundaryDescription: "This view hit an unexpected error. You can try again, or reload the dashboard.",
     loadFailed: "Could not load {what}. Check that the dashboard server is running and click Retry.",
     loadFailedDetails: "Details: {detail}",
     search: "Search...",

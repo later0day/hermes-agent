@@ -10,6 +10,8 @@ export const zhHant: Translations = {
     delete: "刪除",
     refresh: "重新整理",
     retry: "重試",
+    errorBoundaryTitle: "發生錯誤",
+    errorBoundaryDescription: "此頁面遇到意外錯誤。你可以重試，或重新載入儀表板。",
     search: "搜尋...",
     loading: "載入中...",
     create: "建立",
