@@ -26,7 +26,6 @@ import time
 import threading
 import atexit
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -670,41 +669,6 @@ def _ensure_terminal_env_bridged() -> None:
 _DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD}
 
 
-def _repair_deleted_cwd() -> Optional[str]:
-    """Move the process back to a real directory if its cwd was removed.
-
-    Background cleanup runs long after the command that created a scratch cwd
-    may have finished. If that cwd is deleted, unrelated cleanup work can hit
-    FileNotFoundError through stdlib helpers that implicitly call getcwd().
-    """
-    try:
-        os.getcwd()
-        return None
-    except FileNotFoundError:
-        repo_root = str(Path(__file__).resolve().parents[1])
-        candidates = [
-            _tenv("TERMINAL_CWD"),
-            os.getenv("HERMES_CWD"),
-            repo_root,
-            os.path.expanduser("~"),
-        ]
-        for candidate in candidates:
-            if not candidate:
-                continue
-            expanded = os.path.expanduser(candidate)
-            if not os.path.isabs(expanded):
-                expanded = os.path.join(repo_root, expanded)
-            if not os.path.isdir(expanded):
-                continue
-            try:
-                os.chdir(expanded)
-                logger.info("Recovered process cwd after deleted working directory: %s", expanded)
-                return expanded
-            except OSError:
-                continue
-        return None
-
-
 def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     """``(cwd, host_cwd)`` from TERMINAL_CWD for *env_type*.
 
@@ -751,7 +715,6 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
 
 def _get_env_config() -> Dict[str, Any]:
     """Resolve the terminal configuration dict from TERMINAL_* env vars."""
-    _repair_deleted_cwd()
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_image
     _ensure_terminal_env_bridged()
     env_type = _tenv("TERMINAL_ENV", "local")
