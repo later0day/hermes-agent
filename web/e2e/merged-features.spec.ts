@@ -371,26 +371,19 @@ test("E2E CronPage: create cron job via modal → appears in list → delete", a
   const hasNewJob = bodyText.includes(testPrompt) || bodyText.includes("E2E browser test");
   expect(hasNewJob).toBe(true);
 
-  // Find and click the delete button for the new job
-  // Cron jobs have a trash icon button in their row
-  const jobText = page.locator(`text=${testPrompt}`).first();
-  if (await jobText.isVisible().catch(() => false)) {
-    // Find the delete button in the same row/card
-    const jobCard = jobText.locator("xpath=ancestor::*[contains(@class,'card') or contains(@class,'Card')][1]");
-    if (await jobCard.isVisible().catch(() => false)) {
-      const delBtn = jobCard.locator("button").filter({ has: page.locator("svg") }).last();
-      if (await delBtn.isVisible().catch(() => false)) {
-        await delBtn.click();
-        await page.waitForTimeout(500);
-        // Confirm deletion
-        const confirm = page.locator("button").filter({ hasText: /Delete|Confirm|删除/i }).first();
-        if (await confirm.isVisible().catch(() => false)) {
-          await confirm.click();
-          await page.waitForTimeout(1500);
-        }
-      }
-    }
-  }
+  // Delete it deterministically: the job is a real schedule in the operator's cron store and
+  // would otherwise fire an LLM turn every 30 minutes forever.
+  const headers = { "X-Hermes-Session-Token": TOKEN };
+  const findJob = async () => {
+    const jobs = await (await page.request.get(`${BASE}/api/cron/jobs`, { headers })).json();
+    return (jobs as { id: string; prompt?: string; profile?: string }[]).find((j) => j.prompt === testPrompt);
+  };
+  const job = await findJob();
+  expect(job).toBeTruthy();
+  const scope = job!.profile ? `?profile=${encodeURIComponent(job!.profile)}` : "";
+  const del = await page.request.delete(`${BASE}/api/cron/jobs/${job!.id}${scope}`, { headers });
+  expect(del.ok()).toBe(true);
+  expect(await findJob()).toBeUndefined();
 });
 
 // ═══════════════════════════════════════════════════════════════════════
