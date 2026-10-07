@@ -4577,24 +4577,12 @@ class GatewayRunner(
             if not name:
                 name = get_active_profile_name() or "default"
             profile_dir = get_profile_dir(name)
-            # An explicit missing profile cannot fall through to the global
-            # home while multiplexing: the source was already stamped into
-            # ``agent:<profile>`` and that fallback would split history and
-            # runtime state across two profiles. Legacy non-multiplex callers
-            # retain the historical best-effort fallback.
             if explicit_profile and not profile_exists(name):
-                multiplexing = bool(
-                    getattr(getattr(self, "config", None), "multiplex_profiles", False)
-                )
                 logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s); %s",
+                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
+                    "falling back to global HERMES_HOME",
                     explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None),
-                    ("rejecting explicitly scoped multiplex turn" if multiplexing
-                     else "falling back to global HERMES_HOME"),
-                )
-                if multiplexing:
-                    raise ProfileRouteRejected(explicit_profile)
+                    getattr(source, "guild_id", None))
                 return get_hermes_home()
             return profile_dir
         except ProfileRouteRejected:
