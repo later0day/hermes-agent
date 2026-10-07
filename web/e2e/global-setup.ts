@@ -1,5 +1,5 @@
-import { snapshotConfigs } from "./config-snapshot";
+import { snapshotState } from "./state-snapshot";
 
 export default async function globalSetup(): Promise<void> {
-  await snapshotConfigs();
+  await snapshotState();
 }
