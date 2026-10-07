@@ -41,11 +41,8 @@ import ssl
 import threading
 import urllib.request
 
-from tools.environments.base import (
-    BaseEnvironment,
-    EnvironmentConnectionError,
-    _ThreadedProcessHandle,
-)
+from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
+from tools.environments.base_output import _ThreadedProcessHandle
 
 logger = logging.getLogger(__name__)
 

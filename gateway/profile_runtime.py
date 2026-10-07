@@ -53,7 +53,7 @@ def load_profile_config(profile_home: Path) -> dict[str, Any]:
     if not config_path.exists():
         return {}
     try:
-        import yaml
+        import hermes_yaml as yaml
 
         with config_path.open("r", encoding="utf-8") as fh:
             loaded = yaml.safe_load(fh) or {}
