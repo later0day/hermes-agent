@@ -100,17 +100,6 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
-def _clear_task_cwd(task_id: str) -> None:
-    """Remove task-specific cwd overrides for an ACP session."""
-    if not task_id:
-        return
-    try:
-        from tools.terminal_tool import clear_task_env_overrides
-        clear_task_env_overrides(task_id)
-    except Exception:
-        logger.debug("Failed to clear ACP task cwd override", exc_info=True)
-
-
 def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
                                  mcp_server_names: List[str] | None = None) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
@@ -218,15 +207,6 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def remove_session(self, session_id: str) -> bool:
-        """Remove a session from memory and database. Returns True if it existed."""
-        with self._lock:
-            existed = self._sessions.pop(session_id, None) is not None
-        db_existed = self._delete_persisted(session_id)
-        if existed or db_existed:
-            _clear_task_cwd(session_id)
-        return existed or db_existed
-
     def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
         normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
@@ -320,25 +300,6 @@ class SessionManager:
         if ended:
             logger.info("Ended %d ACP session(s) on shutdown (%s)", ended, end_reason)
         return ended
-
-    def cleanup(self) -> None:
-        """Remove all sessions (memory and database) and clear task-specific cwd overrides."""
-        with self._lock:
-            session_ids = list(self._sessions.keys())
-            self._sessions.clear()
-        for session_id in session_ids:
-            _clear_task_cwd(session_id)
-            self._delete_persisted(session_id)
-        db = self._get_db()
-        if db is not None:
-            try:
-                rows = db.search_sessions(source="acp", limit=10000)
-                for row in rows:
-                    sid = row["id"]
-                    _clear_task_cwd(sid)
-                    db.delete_session(sid)
-            except Exception:
-                logger.debug("Failed to cleanup ACP sessions from DB", exc_info=True)
 
     # ---- persistence via SessionDB ------------------------------------------
 
@@ -481,17 +442,6 @@ class SessionManager:
                 logger.debug("Failed to publish ACP git metadata for %s", session_id, exc_info=True)
 
         threading.Thread(target=_run, name=f"acp-git-meta-{session_id[:8]}", daemon=True).start()
-
-    def _delete_persisted(self, session_id: str) -> bool:
-        """Delete a session from the database. Returns True if it existed."""
-        db = self._get_db()
-        if db is None:
-            return False
-        try:
-            return db.delete_session(session_id)
-        except Exception:
-            logger.debug("Failed to delete ACP session %s from DB", session_id, exc_info=True)
-            return False
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
         """Load an ACP session from the database into memory, recreating the AIAgent."""
