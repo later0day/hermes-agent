@@ -276,38 +276,13 @@ class GatewayAgentCommandsMixin:
         return "No webhook found in raw message."
 
     async def _agent_list(self, c: "_AgentCommand") -> str:
-        from hermes_cli.profiles import (
-            get_profile_dir,
-            list_profiles,
-            read_profile_meta,
-        )
+        from hermes_cli.profiles import list_profiles, read_profile_meta
 
         lines = []
         for p in list_profiles():
-            meta = read_profile_meta(get_profile_dir(p.name))
+            meta = read_profile_meta(p.path)
             tag = ", template" if meta.get("template") else ""
-            # Real model/skill counts: read the profile's config.yaml
-            # (model) and count the skills dir (installed skills). Both
-            # are best-effort; profiles without either resolve to "unset"
-            # / 0 rather than crashing the list.
-            model_name = "unset"
-            try:
-                cfg_path = get_profile_dir(p.name) / "config.yaml"
-                if cfg_path.is_file():
-                    from hermes_cli.config import read_user_config_raw
-
-                    cfg = read_user_config_raw(cfg_path)
-                    model_name = str(cfg.get("model") or cfg.get("default_model") or "unset")
-            except Exception:  # noqa: BLE001
-                pass
-            skill_count = 0
-            try:
-                skills_dir = get_profile_dir(p.name) / "skills"
-                if skills_dir.is_dir():
-                    skill_count = sum(1 for _ in skills_dir.iterdir() if _.is_dir())
-            except Exception:  # noqa: BLE001
-                pass
-            lines.append(f"- `{p.name}` (model {model_name}, skills: {skill_count}{tag})")
+            lines.append(f"- `{p.name}` (model {p.model or 'unset'}, skills: {p.skill_count}{tag})")
         return "\n".join(lines) or "No profiles."
 
     async def _agent_create(self, c: "_AgentCommand") -> str:
