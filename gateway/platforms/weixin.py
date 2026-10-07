@@ -54,6 +54,7 @@ EP_GET_CONFIG, EP_GET_UPLOAD_URL = "ilink/bot/getconfig", "ilink/bot/getuploadur
 EP_GET_BOT_QR, EP_GET_QR_STATUS = "ilink/bot/get_bot_qrcode", "ilink/bot/get_qrcode_status"
 LONG_POLL_TIMEOUT_MS, API_TIMEOUT_MS, CONFIG_TIMEOUT_MS, QR_TIMEOUT_MS = 35_000, 15_000, 10_000, 35_000
 MAX_CONSECUTIVE_FAILURES, RETRY_DELAY_SECONDS, BACKOFF_DELAY_SECONDS = 3, 2, 30
+SESSION_EXPIRED_PAUSE_MIN_SECONDS, SESSION_EXPIRED_PAUSE_MAX_SECONDS = 60, 600
 SESSION_EXPIRED_ERRCODE, RATE_LIMIT_ERRCODE = -14, -2  # -2: iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
 MEDIA_IMAGE, MEDIA_VIDEO, MEDIA_FILE, MEDIA_VOICE = 1, 2, 3, 4  # getuploadurl media_type
@@ -799,6 +800,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
         timeout_ms = LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
+        # Session-expired pauses back off 60s → 600s: a transient ret=-2 recovers quickly, while a
+        # session that truly needs a re-login stops being polled (and logged) every minute.
+        expired_pause = SESSION_EXPIRED_PAUSE_MIN_SECONDS
 
         async def backoff() -> int:
             """Sleep for the failure streak; returns the new streak count (0 after a full streak)."""
@@ -815,8 +819,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 ret, errcode = response.get("ret", 0), response.get("errcode", 0)
                 if ret not in {0, None} or errcode not in {0, None}:
                     if _is_session_expired(response, ret, errcode):
-                        logger.error("[%s] Session expired; pausing for 60 seconds", self.name)
-                        await asyncio.sleep(60)
+                        logger.error("[%s] Session expired; pausing for %d seconds", self.name, expired_pause)
+                        await asyncio.sleep(expired_pause)
+                        expired_pause = min(expired_pause * 2, SESSION_EXPIRED_PAUSE_MAX_SECONDS)
                         consecutive_failures = 0
                         continue
                     consecutive_failures += 1
@@ -825,6 +830,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     consecutive_failures = await backoff()
                     continue
                 consecutive_failures = 0
+                expired_pause = SESSION_EXPIRED_PAUSE_MIN_SECONDS
                 # Dispatch before persisting: the off-loop write is an await, and a disconnect that
                 # cancels it must not leave the advanced cursor on disk with this batch undelivered.
                 for message in response.get("msgs") or []:
