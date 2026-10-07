@@ -1050,7 +1050,7 @@ class GatewaySlashCommandsMixin(
                 try:
                     cfg_path = get_profile_dir(p.name) / "config.yaml"
                     if cfg_path.is_file():
-                        import yaml as _yaml
+                        import hermes_yaml as _yaml
 
                         cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                         model_name = str(cfg.get("model") or cfg.get("default_model") or "unset")
@@ -1128,7 +1128,7 @@ class GatewaySlashCommandsMixin(
                 if parsed.template:
                     write_profile_meta(p_dir, template=True)
                 if parsed.orchestrator:
-                    import yaml as _yaml
+                    import hermes_yaml as _yaml
 
                     cfg_path = p_dir / "config.yaml"
                     if cfg_path.exists():

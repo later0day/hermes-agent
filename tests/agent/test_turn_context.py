@@ -191,6 +191,8 @@ def test_turn_log_reports_resolved_profile_from_session_db(tmp_path, caplog):
     'default' (#86313 class)."""
     import logging
 
+    from hermes_state import SessionDB
+
     # Lay out <root>/profiles/billing/state.db so _agent_home() -> that home
     # and _profile_name_for_home() names it "billing" (not "default").
     root = tmp_path

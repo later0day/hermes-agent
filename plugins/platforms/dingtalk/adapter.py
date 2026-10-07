@@ -62,7 +62,6 @@ except Exception:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
-from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
