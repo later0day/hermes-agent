@@ -1258,23 +1258,23 @@ class TestImageResend:
     """Test the recent-image resend shortcut."""
 
     def test_wants_recent_image_resend_chinese(self):
-        from gateway.run_turn import _wants_recent_image_resend
+        from gateway.run_turn_image_resend import wants_recent_image_resend as _wants_recent_image_resend
         assert _wants_recent_image_resend("把刚才的图片重新发一下") is True
         assert _wants_recent_image_resend("重新发图片") is True
 
     def test_wants_recent_image_resend_english(self):
-        from gateway.run_turn import _wants_recent_image_resend
+        from gateway.run_turn_image_resend import wants_recent_image_resend as _wants_recent_image_resend
         assert _wants_recent_image_resend("resend the last image") is True
         assert _wants_recent_image_resend("send the latest image") is True
 
     def test_wants_recent_image_resend_no_match(self):
-        from gateway.run_turn import _wants_recent_image_resend
+        from gateway.run_turn_image_resend import wants_recent_image_resend as _wants_recent_image_resend
         assert _wants_recent_image_resend("what is the weather") is False
         assert _wants_recent_image_resend("") is False
         assert _wants_recent_image_resend(None) is False
 
     def test_find_latest_attached_image_path(self, tmp_path):
-        from gateway.run_turn import _find_latest_attached_image_path
+        from gateway.run_turn_image_resend import find_latest_attached_image_path as _find_latest_attached_image_path
         img = tmp_path / "test.png"
         img.write_bytes(b"\x89PNG")
         messages = [
@@ -1285,7 +1285,7 @@ class TestImageResend:
         assert path == str(img)
 
     def test_find_latest_attached_image_path_none_when_no_image(self):
-        from gateway.run_turn import _find_latest_attached_image_path
+        from gateway.run_turn_image_resend import find_latest_attached_image_path as _find_latest_attached_image_path
         messages = [{"role": "assistant", "content": "No images here"}]
         assert _find_latest_attached_image_path(messages) is None
         assert _find_latest_attached_image_path([]) is None
