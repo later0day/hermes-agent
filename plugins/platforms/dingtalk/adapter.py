@@ -363,6 +363,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._pending_reply_state: Dict[str, str] = {}
         # Stage-aware reaction state: the label currently rendered on the user message for each chat.
         self._current_stage_label: Dict[str, str] = {}
+        # The outcome label last put on each chat's current message, so a late outcome can replace it.
+        self._final_reaction_label: Dict[str, str] = {}
         # Per-chat lock that serializes stage-label swaps so parallel tool.started events don't race.
         self._stage_locks: Dict[str, asyncio.Lock] = {}
         # Open streaming cards: chat_id -> {out_track_id: last_content}. ``edit_message(finalize=False)``
@@ -577,6 +579,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             getattr(self, "_done_emoji_fired", None),
             getattr(self, "_pending_reply_state", None),
             getattr(self, "_current_stage_label", None),
+            getattr(self, "_final_reaction_label", None),
             getattr(self, "_stage_locks", None),
             getattr(self, "_dedup", None),
             getattr(self, "_bg_tasks", None),
@@ -674,6 +677,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         if chat_id in self._done_emoji_fired:
             return
         self._done_emoji_fired.add(chat_id)
+        self._swap_final_reaction(chat_id, self._pending_reply_state.pop(chat_id, "success"))
+
+    def _swap_final_reaction(self, chat_id: str, state: str) -> None:
+        """Replace the label currently on the user's message with the one for ``state``."""
         msg = self._message_contexts.get(chat_id)
         if not msg:
             return
@@ -681,18 +688,13 @@ class DingTalkAdapter(BasePlatformAdapter):
         conversation_id = getattr(msg, "conversation_id", "") or ""
         if not (msg_id and conversation_id):
             return
-        state = self._pending_reply_state.pop(chat_id, "success")
-        if state == "error":
-            final_label = self.REACTION_ERROR
-        elif state == "interrupted":
-            final_label = self.REACTION_INTERRUPTED
-        else:
-            final_label = self.REACTION_DONE
+        final_label = {"error": self.REACTION_ERROR, "interrupted": self.REACTION_INTERRUPTED}.get(
+            state, self.REACTION_DONE)
 
         async def _swap() -> None:
             lock = self._stage_locks.setdefault(chat_id, asyncio.Lock())
             async with lock:
-                current = self._current_stage_label.pop(
+                current = self._final_reaction_label.pop(chat_id, None) or self._current_stage_label.pop(
                     chat_id, self.REACTION_THINKING,
                 )
                 await self._send_emotion(
@@ -701,6 +703,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 await self._send_emotion(
                     msg_id, conversation_id, final_label, recall=False,
                 )
+                self._final_reaction_label[chat_id] = final_label
 
         self._spawn_bg(_swap())
 
@@ -719,7 +722,12 @@ class DingTalkAdapter(BasePlatformAdapter):
             return
         if state not in ("success", "error", "interrupted"):
             state = "success"
-        self._pending_reply_state[chat_id] = state
+        if chat_id not in self._done_emoji_fired:
+            self._pending_reply_state[chat_id] = state
+        elif state != "success":
+            # A streamed reply's final edit already fired the default Done before the runner knew
+            # the outcome; correct it now rather than leave the state to mislabel the next turn.
+            self._swap_final_reaction(chat_id, state)
 
     @classmethod
     def _stage_label_for_tool(
@@ -833,6 +841,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                 self.name, exc,
             )
 
+    def _begin_reply_cycle(self, chat_id: str, message: Any) -> None:
+        """Make ``message`` the chat's current one with its own Thinking→outcome reaction cycle;
+        nothing recorded for the previous message may label this one."""
+        self._message_contexts[chat_id] = message
+        self._done_emoji_fired.discard(chat_id)
+        self._pending_reply_state.pop(chat_id, None)
+        self._final_reaction_label.pop(chat_id, None)
+
     async def _on_message(self, message: "ChatbotMessage") -> None:
         """Process an incoming DingTalk chatbot message."""
         msg_id = getattr(message, "message_id", None) or uuid.uuid4().hex
@@ -846,10 +862,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             return logger.debug("[%s] Dropping message from non-allowlisted user staff_id=%s sender_id=%s", self.name, sender_staff_id, sender_id)
         if not self._should_process_message(message, self._extract_text(message) or "", is_group, chat_id):  # wake-word gate needs text early
             return logger.debug("[%s] Dropping group message that failed mention gate message_id=%s chat_id=%s", self.name, msg_id, chat_id)
-        # Per-chat context; reset the Done marker so this message gets its own Thinking→Done cycle.
         if chat_id:
-            self._message_contexts[chat_id] = message
-            self._done_emoji_fired.discard(chat_id)
+            self._begin_reply_cycle(chat_id, message)
         session_webhook = getattr(message, "session_webhook", None) or ""
         if session_webhook and chat_id and _DINGTALK_WEBHOOK_RE.match(session_webhook):
             if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
