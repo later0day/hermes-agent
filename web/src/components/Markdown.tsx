@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { mermaidThemeFor } from "@/lib/mermaid-theme";
+import { useTheme } from "@/themes/context";
+
 /**
  * Lightweight markdown renderer for LLM output.
  * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
@@ -60,14 +63,7 @@ let mermaidPromise: Promise<MermaidApi> | null = null;
  */
 function loadMermaid(): Promise<MermaidApi> {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid").then(({ default: mermaid }) => {
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        securityLevel: "strict",
-      });
-      return mermaid;
-    });
+    mermaidPromise = import("mermaid").then(({ default: mermaid }) => mermaid);
   }
   return mermaidPromise;
 }
@@ -83,6 +79,7 @@ let mermaidSeq = 0;
 function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
+  const diagramTheme = mermaidThemeFor(useTheme().theme.palette.background.hex);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,7 +90,11 @@ function MermaidBlock({ code }: { code: string }) {
 
     const id = `mermaid-${mermaidSeq++}`;
     loadMermaid()
-      .then((mermaid) => mermaid.render(id, source))
+      .then((mermaid) => {
+        // initialize() is global; set the theme for this render so a theme switch redraws in it.
+        mermaid.initialize({ startOnLoad: false, theme: diagramTheme, securityLevel: "strict" });
+        return mermaid.render(id, source);
+      })
       .then(({ svg }) => {
         if (cancelled || !ref.current) return;
         ref.current.innerHTML = svg;
@@ -107,7 +108,7 @@ function MermaidBlock({ code }: { code: string }) {
     return () => {
       cancelled = true;
     };
-  }, [code]);
+  }, [code, diagramTheme]);
 
   if (failed) {
     return (

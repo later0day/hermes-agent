@@ -148,16 +148,12 @@ export default defineConfig({
               test: /node_modules[\\/]@nous-research[\\/]ui([\\/]|$)/,
             },
             {
-              // Mermaid + its heavy transitive graph deps (d3, dagre,
-              // cytoscape, …). Only loaded on demand when a chat message
-              // actually contains a ```mermaid diagram (dynamic import in
-              // Markdown.tsx), so keep it out of the shared vendor chunk.
-              name: "mermaid",
-              test: /node_modules[\\/](mermaid|d3|d3-[^\\/]+|dagre|dagre-d3-es|cytoscape|cytoscape-[^\\/]+|khroma|@braintree|@mermaid-js|elkjs|internmap|delaunator|robust-predicates)([\\/]|$)/,
-            },
-            {
+              // Mermaid and its graph-layout deps stay OUT of every group: it is
+              // dynamically imported on the first diagram, and mermaid in turn
+              // lazy-loads each diagram type, so natural splitting fetches only
+              // the core plus the diagrams a chat actually draws.
               name: "vendor",
-              test: /node_modules[\\/]/,
+              test: /node_modules[\\/](?!(mermaid|d3|d3-[^\\/]+|dagre-d3-es|cytoscape|cytoscape-[^\\/]+|khroma|@braintree|@mermaid-js|elkjs|internmap|delaunator|robust-predicates|katex|roughjs|lodash-es|dayjs|marked|stylis|ts-dedent|uuid|dompurify)([\\/]|$))/,
             },
           ],
         },
