@@ -9,7 +9,8 @@ from pathlib import Path
 import hermes_yaml as yaml
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
-from plugins.platforms.dingtalk.adapter import DEFAULT_AI_CARD_CONTENT_KEY, DingTalkAdapter
+from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+from plugins.platforms.dingtalk.adapter_cards import DEFAULT_AI_CARD_CONTENT_KEY
 
 
 def _write_config(home: Path, block: dict) -> None:
