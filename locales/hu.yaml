@@ -196,6 +196,12 @@ gateway:
     example_line: "\nPélda: `{preview}`"
     state_on: "ON"
     state_off: "KI"
+  image_resend:
+    not_found: "Nem találtam friss képet ebben a csevegésben. Kérlek, töltsd fel újra."
+    failed: "A kép újraküldése nem sikerült. Próbáld újra később."
+    caption: "Itt van újra a legutóbbi kép."
+  agent:
+    admin_only: "⛔ A /agent {action} kifejezetten beállított gateway-adminisztrátort igényel (allow_admin_from a privát üzenetekhez, group_allow_admin_from a csoportokhoz)."
   goal:
     unavailable: "A célok nem érhetők el ebben a munkamenetben."
     no_goal_set: "Nincs cél beállítva."

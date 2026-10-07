@@ -193,6 +193,12 @@ gateway:
     example_line: "\nمثال: `{preview}`"
     state_on: "مُفعّل"
     state_off: "مُعطّل"
+  image_resend:
+    not_found: "لم أجد صورة حديثة في هذه المحادثة. يرجى رفعها مرة أخرى."
+    failed: "فشلت إعادة إرسال الصورة. يرجى المحاولة لاحقًا."
+    caption: "إليك أحدث صورة مرة أخرى."
+  agent:
+    admin_only: "⛔ يتطلب ‎/agent {action}‎ مسؤول بوابة مُعدًّا صراحةً (allow_admin_from للرسائل المباشرة، و group_allow_admin_from للمجموعات)."
   goal:
     unavailable: "الأهداف غير متاحة في هذه الجلسة."
     no_goal_set: "لم يُحدَّد هدف."

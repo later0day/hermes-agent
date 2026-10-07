@@ -193,6 +193,12 @@ gateway:
     example_line: "\nÖrnek: `{preview}`"
     state_on: "AÇIK"
     state_off: "KAPALI"
+  image_resend:
+    not_found: "Bu sohbette yakın tarihli bir görsel bulamadım. Lütfen yeniden yükleyin."
+    failed: "Görsel yeniden gönderilemedi. Lütfen daha sonra tekrar deneyin."
+    caption: "İşte en son görsel tekrar."
+  agent:
+    admin_only: "⛔ /agent {action} için açıkça yapılandırılmış bir gateway yöneticisi gerekir (DM'ler için allow_admin_from, gruplar için group_allow_admin_from)."
   goal:
     unavailable: "Bu oturumda hedefler kullanılamıyor."
     no_goal_set: "Hedef ayarlanmadı."
