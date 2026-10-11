@@ -164,7 +164,7 @@ class TestExtractEmotionTags:
         assert content.strip() == "so funny"
 
     def test_trims_emotion_name_whitespace(self):
-        content, emotions = DingTalkAdapter._extract_emotion_tags(
+        _content, emotions = DingTalkAdapter._extract_emotion_tags(
             "[[emotion: big grin ]] haha"
         )
         assert emotions == ["big grin"]
@@ -180,7 +180,7 @@ class TestExtractEmotionTags:
 
     def test_caps_emotion_name_at_64_chars(self):
         long_name = "a" * 100
-        content, emotions = DingTalkAdapter._extract_emotion_tags(
+        _content, emotions = DingTalkAdapter._extract_emotion_tags(
             f"[[emotion:{long_name}]]"
         )
         assert len(emotions[0]) == 64

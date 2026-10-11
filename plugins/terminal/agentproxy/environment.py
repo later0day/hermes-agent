@@ -66,7 +66,7 @@ def _read_token(env_file: str) -> str:
     if tok:
         return tok
     try:
-        with open(env_file, "r", encoding="utf-8", errors="replace") as fh:
+        with open(env_file, "r", encoding="utf-8-sig", errors="replace") as fh:
             for line in fh:
                 if line.startswith("DASHBOARD_TOKEN="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -166,8 +166,7 @@ class AgentProxyEnvironment(BaseEnvironment):
                     line = raw.decode("utf-8", errors="replace").rstrip("\n")
                     if not line or line.startswith("event:"):
                         continue
-                    if line.startswith("data: "):
-                        line = line[len("data: ") :]
+                    line = line.removeprefix("data: ")
                     try:
                         evt = json.loads(line)
                     except (ValueError, TypeError):

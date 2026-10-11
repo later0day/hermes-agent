@@ -23,7 +23,7 @@ try:
     from dingtalk_stream.frames import CallbackMessage, AckMessage
 
     DINGTALK_STREAM_AVAILABLE = True
-except Exception:  # noqa: BLE001
+except Exception:
     DINGTALK_STREAM_AVAILABLE = False
     dingtalk_stream = ChatbotMessage = CallbackMessage = None  # type: ignore[assignment]
     AckMessage = type("AckMessage", (), {"STATUS_OK": 200, "STATUS_SYSTEM_EXCEPTION": 500})  # type: ignore[assignment]
@@ -191,7 +191,7 @@ def ensure_dingtalk_deps() -> bool:
     try:
         from pm.extras import ensure_import
         ensure_import("dingtalk")
-        import dingtalk_stream as _ds, httpx as _httpx  # noqa: E401
+        import dingtalk_stream as _ds, httpx as _httpx
         from dingtalk_stream import ChatbotMessage as _CM
         from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
     except Exception:
@@ -222,14 +222,14 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     @property
-    def SUPPORTS_MESSAGE_EDITING(self) -> bool:  # noqa: N802
+    def SUPPORTS_MESSAGE_EDITING(self) -> bool:
         """Edits only exist with AI Cards; the gateway gates streaming cursor/edit on this."""
         return bool(self._card_template_id and self._card_sdk)
 
     REQUIRES_EDIT_FINALIZE = SUPPORTS_MESSAGE_EDITING  # AI Cards need an explicit ``finalize=True`` edit to close the streaming indicator
 
     @property
-    def SUPPORTS_TURN_STATUS_CARD(self) -> bool:  # noqa: N802
+    def SUPPORTS_TURN_STATUS_CARD(self) -> bool:
         """DingTalk AI Cards can keep one editable progress/status card per turn."""
         return bool(self._card_template_id and self._card_sdk)
 

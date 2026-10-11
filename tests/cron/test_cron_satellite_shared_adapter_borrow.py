@@ -44,7 +44,7 @@ def _deliver_via(platform: Platform, chat_id: str):
     from cron.scheduler_preflight import SharedRouteAdapters, _satellite_routes_for_current_home
     # The same map the multiplex ticker hands a credentialless satellite.
     adapters = SharedRouteAdapters(PRIMARY, _satellite_routes_for_current_home())
-    resolved, err = _resolve_target_transport(
+    resolved, _err = _resolve_target_transport(
         {"id": "job"}, platform, platform.value, {"platform": platform.value, "chat_id": chat_id},
         adapters, load_gateway_config())
     return resolved[2] if resolved else None

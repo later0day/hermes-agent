@@ -3473,7 +3473,7 @@ class GatewayRunner(
         try:
             from hermes_constants import get_default_hermes_root
             self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._agent_audit_path = None
         # Profiles currently inside the destructive /agent delete window.
         # Ingress rejects their new turns until the tombstone is in place,

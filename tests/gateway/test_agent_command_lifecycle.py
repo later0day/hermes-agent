@@ -135,14 +135,13 @@ async def test_create_with_env_copies_env_and_skills(env):
 
 @pytest.mark.asyncio
 async def test_create_orchestrator_folds_kanban_into_toolsets(env):
-    (env.root / "config.yaml").write_text("model: m\ntoolsets:\n - core\n", encoding="utf-8")
+    (env.root / "config.yaml").write_text("model: m  # pinned by ops\ntoolsets:\n - core\n", encoding="utf-8")
     r = _runner(env.store, audit_path=env.audit)
     out = await r._handle_agent_command(_event(_source(), "/agent create orch --orchestrator"))
     assert "kanban orchestrator tools enabled" in out
-    cfg = yaml.safe_load(
-        (env.root / "profiles" / "orch" / "config.yaml").read_text(encoding="utf-8")
-    )
-    assert "kanban" in cfg.get("toolsets", [])
+    text = (env.root / "profiles" / "orch" / "config.yaml").read_text(encoding="utf-8")
+    assert "kanban" in yaml.safe_load(text).get("toolsets", [])
+    assert "# pinned by ops" in text  # written through the comment-preserving config writer
 
 
 @pytest.mark.asyncio

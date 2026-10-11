@@ -1110,7 +1110,7 @@ async def get_profile_memory(name: str, doc: str):
     mem_path = _resolve_profile_dir(name) / "memories" / doc
     if mem_path.exists():
         try:
-            content = mem_path.read_text(encoding="utf-8")
+            content = mem_path.read_text(encoding="utf-8-sig")
             return {
                 "name": mem_path.name,
                 "path": str(mem_path),

@@ -20,7 +20,7 @@ import pytest
 
 TOKEN = "ap-test-token"
 
-DOCKER_SHIM = """#!/bin/bash
+DOCKER_SHIM = """#!/usr/bin/env bash
 # Container cwd /root maps to a scratch dir on the test host.
 case "$1" in
   inspect) echo true ;;
@@ -47,7 +47,8 @@ def fake_dashboard(tmp_path):
             seen["auth"].add(self.headers.get("Authorization"))
             seen["agents"].add(body["agent_id"])
             run = subprocess.run(["bash", "-c", body["prompt"]], capture_output=True, text=True,
-                                 env={"PATH": "/usr/bin:/bin", "FAKE_ROOT": str(fake_root)}, stdin=subprocess.DEVNULL)
+                                 env={"PATH": "/usr/bin:/bin", "FAKE_ROOT": str(fake_root)}, stdin=subprocess.DEVNULL,
+                                 check=False)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()

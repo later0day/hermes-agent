@@ -78,7 +78,7 @@ class GatewaySourceBindingMixin:
                             fallback_target=binding.fallback_target,
                             fallback_extra=binding.fallback_extra,
                         )
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.debug("Could not canonicalize binding %s: %s", key, exc)
                 return profile
 
@@ -101,7 +101,7 @@ class GatewaySourceBindingMixin:
                     profile = _valid_profile(store.get_binding(chat_key), chat_key)
                     if profile:
                         return profile
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug(
                 "binding store lookup failed for source %s: %s",
                 getattr(source, "chat_id", "?"), exc,

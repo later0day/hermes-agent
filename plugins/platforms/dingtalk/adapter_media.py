@@ -800,9 +800,9 @@ class DingTalkMediaMixin:
                 obj["_hermes_file_name"] = filename
             return
         try:
-            setattr(obj, "_hermes_media_type", media_type)
+            obj._hermes_media_type = media_type
             if filename:
-                setattr(obj, "_hermes_file_name", filename)
+                obj._hermes_file_name = filename
         except Exception:
             logger.debug("Failed to attach DingTalk media metadata", exc_info=True)
 
@@ -812,7 +812,7 @@ class DingTalkMediaMixin:
             obj["_hermes_media_error"] = message
             return
         try:
-            setattr(obj, "_hermes_media_error", message)
+            obj._hermes_media_error = message
         except Exception:
             logger.debug("Failed to attach DingTalk media error", exc_info=True)
 

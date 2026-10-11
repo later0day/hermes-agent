@@ -55,7 +55,7 @@ class GatewayAgentCommandsMixin:
                     _os.chmod(self._agent_audit_path, 0o600)
                 except OSError:
                     pass
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     async def _handle_agent_command(self, event) -> str:
@@ -343,8 +343,7 @@ class GatewayAgentCommandsMixin:
             if parsed.template:
                 write_profile_meta(p_dir, template=True)
             if parsed.orchestrator:
-                from hermes_cli.config import read_user_config_raw
-                from utils import atomic_yaml_write
+                from hermes_cli.config import atomic_config_write, read_user_config_raw
 
                 cfg_path = p_dir / "config.yaml"
                 if cfg_path.exists():
@@ -353,7 +352,7 @@ class GatewayAgentCommandsMixin:
                     if "kanban" not in ts:
                         ts.append("kanban")
                         cfg["toolsets"] = ts
-                        atomic_yaml_write(cfg_path, cfg)
+                        atomic_config_write(cfg_path, cfg)
             out = f"Created agent profile `{target_name}`."
             out += (
                 " .env copied. skills copied."
@@ -365,7 +364,7 @@ class GatewayAgentCommandsMixin:
             if parsed.template:
                 out += " Marked as template."
             return out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return f"Failed: {exc}"
 
     async def _agent_delete(self, c: _AgentCommand) -> str:
@@ -436,7 +435,7 @@ class GatewayAgentCommandsMixin:
             _profiles_being_deleted.add(target_name)
         try:
             await self._run_in_executor_with_context(delete_profile, target_name, True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return f"Failed: {exc}"
         finally:
             if _profiles_being_deleted is not None:
@@ -474,6 +473,6 @@ class GatewayAgentCommandsMixin:
                         f"Agent profile `{target_name}` was deleted. This chat has been unbound.",
                         metadata=metadata_to_send,
                     )
-            except Exception as _notify_exc:  # noqa: BLE001
+            except Exception as _notify_exc:
                 logger.debug("/agent delete: failed to notify binding %s: %s", target_chat_id, _notify_exc)
         return f"Deleted agent profile `{target_name}`."

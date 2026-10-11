@@ -15,7 +15,7 @@ def test_dashboard_memory_save_happens_inside_the_memory_lock(tmp_path, monkeypa
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import hermes_cli.web_server  # noqa: F401  — mounts the routers' late() targets
+    import hermes_cli.web_server
     from hermes_cli.web_routers.profiles import ProfileMemoryUpdate, update_profile_memory
 
     held = []

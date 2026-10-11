@@ -19,7 +19,7 @@ def test_refused_delete_keeps_the_profiles_cron_jobs(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import hermes_cli.web_server  # noqa: F401  — mounts the routers' late() targets
+    import hermes_cli.web_server
     from hermes_cli.web_routers.profiles import delete_profile_endpoint
     from hermes_cli.web_server_cron import _call_cron_for_profile
 

@@ -39,19 +39,19 @@ class DingTalkReactionsMixin:
     # was last fired so the final reaction lands on the correct anchor.
     # Texts live in this plugin's language pack (``locales/``) under dingtalk.*.
     @property
-    def REACTION_THINKING(self) -> str:  # noqa: N802
+    def REACTION_THINKING(self) -> str:
         return t("dingtalk.reaction.thinking")
 
     @property
-    def REACTION_DONE(self) -> str:  # noqa: N802
+    def REACTION_DONE(self) -> str:
         return t("dingtalk.reaction.done")
 
     @property
-    def REACTION_ERROR(self) -> str:  # noqa: N802
+    def REACTION_ERROR(self) -> str:
         return t("dingtalk.reaction.error")
 
     @property
-    def REACTION_INTERRUPTED(self) -> str:  # noqa: N802
+    def REACTION_INTERRUPTED(self) -> str:
         return t("dingtalk.reaction.interrupted")
 
     # Tool -> broad stage (a dingtalk.stage.* key). Categories are coarse on purpose:

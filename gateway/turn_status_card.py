@@ -653,7 +653,7 @@ class TurnStatusCardCoordinator:
                 override = skin.tool_emojis.get(entry.name)
                 if override:
                     return override
-        except Exception:  # noqa: BLE001 - presentation must never raise
+        except Exception:
             pass
         if entry.name == "terminal":
             return _terminal_emoji_for_command(entry.preview)
@@ -664,7 +664,7 @@ class TurnStatusCardCoordinator:
             emoji = registry.get_emoji(entry.name, default="")
             if emoji:
                 return emoji
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         return "⚡"
 

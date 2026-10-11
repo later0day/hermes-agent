@@ -457,11 +457,11 @@ class TestMediaErrorPropagation:
 
     def test_first_media_ref_finds_code_then_url(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        ref, key, is_code = DingTalkAdapter._first_media_ref(
+        ref, _key, is_code = DingTalkAdapter._first_media_ref(
             {"downloadCode": "dl1", "downloadUrl": "http://x/y.jpg"}
         )
         assert ref == "dl1" and is_code is True
-        ref, key, is_code = DingTalkAdapter._first_media_ref(
+        ref, _key, is_code = DingTalkAdapter._first_media_ref(
             {"downloadUrl": "http://x/y.jpg"}
         )
         assert ref == "http://x/y.jpg" and is_code is False
@@ -481,7 +481,6 @@ class TestMediaErrorPropagation:
         assert DingTalkAdapter._extension_for_media("image", None, "pic.PNG") == ".PNG"
 
     def test_extract_media_errors_collects_from_image_and_rich(self):
-        adapter = _make_gating_adapter.__wrapped__ if hasattr(_make_gating_adapter, "__wrapped__") else _make_gating_adapter
         # Build a minimal adapter-like object: _extract_media_errors is an instance method
         # but only uses self._media_error_for_item (classmethod) and _rich_list (module-level),
         # so a bare instance works for this test.
