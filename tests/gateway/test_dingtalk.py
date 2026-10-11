@@ -396,12 +396,12 @@ class TestExtractMedia:
 
 class TestMediaErrorPropagation:
     """``_resolve_media_codes`` attaches per-attachment resolution failures via
-    ``_set_media_error``; ``_on_message`` collects them via
-    ``_extract_media_errors`` and surfaces them on the ``MessageEvent`` so the
-    agent can tell the user a referenced image/audio could not be retrieved."""
+    ``_set_media_error``; ``_on_message`` appends one ``[Media attachment unavailable: …]`` line per
+    failure to the event text, so the agent learns the user sent something it cannot see instead
+    of getting an empty turn (the text flows through batching, queueing and interrupts as-is)."""
 
-    def test_on_message_preserves_media_errors(self, monkeypatch):
-        from gateway.platforms.event import MessageType
+    @staticmethod
+    def _deliver_with_failed_image(monkeypatch, text):
         from unittest.mock import AsyncMock
 
         adapter = _make_gating_adapter(monkeypatch, extra={"require_mention": False})
@@ -414,27 +414,27 @@ class TestMediaErrorPropagation:
             )
 
         adapter._resolve_media_codes = AsyncMock(side_effect=_fail_media_resolution)
-
         msg = _FakeChatbotMessage.from_dict({
-            "msgId": "msg-media-error",
-            "conversationId": "conv-1",
-            "conversationType": "1",
-            "senderId": "sender-1",
-            "senderNick": "Alice",
-            "text": "",
+            "msgId": "msg-media-error", "conversationId": "conv-1", "conversationType": "1",
+            "senderId": "sender-1", "senderNick": "Alice", "text": text,
         })
         msg.image_content = {"downloadCode": "dl_image_abc"}
         msg.message_type = "picture"
-
         import asyncio
         asyncio.get_event_loop().run_until_complete(adapter._on_message(msg))
+        return adapter.handle_message.await_args.args[0]
 
-        event = adapter.handle_message.await_args.args[0]
+    def test_a_failed_attachment_reaches_the_agent_as_a_note(self, monkeypatch):
+        from gateway.platforms.event import MessageType
+
+        event = self._deliver_with_failed_image(monkeypatch, "")
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == []
-        assert event.media_errors == [
-            "DingTalk media download failed: robot SDK is unavailable."
-        ]
+        assert event.text == "[Media attachment unavailable: DingTalk media download failed: robot SDK is unavailable.]"
+
+    def test_the_note_follows_the_users_own_text(self, monkeypatch):
+        event = self._deliver_with_failed_image(monkeypatch, "/status what is in this photo?")
+        assert event.text.startswith("/status what is in this photo?\n\n[Media attachment unavailable: ")
 
     def test_set_media_error_on_dict_item(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter

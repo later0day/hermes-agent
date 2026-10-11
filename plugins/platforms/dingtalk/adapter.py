@@ -607,8 +607,11 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         await self._resolve_media_codes(message)  # download codes -> URLs so vision tools can use them
         text = self._extract_text(message)
         msg_type, media_urls, media_types = self._extract_media(message)
-        media_errors = self._extract_media_errors(message)
-        if not text and not media_urls and not media_errors:
+        # Attachments that failed before they became files: tell the agent in the message itself,
+        # so it learns the user sent something it cannot see instead of getting an empty turn.
+        text = "\n\n".join(filter(None, [text, *(f"[Media attachment unavailable: {error}]"
+                                                    for error in self._extract_media_errors(message))]))
+        if not text and not media_urls:
             return logger.debug("[%s] Empty message, skipping", self.name)
         source = self.build_source(chat_id=chat_id, chat_name=getattr(message, "conversation_title", None), chat_type="group" if is_group else "dm",
                                    user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None,
@@ -620,7 +623,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
             timestamp = datetime.now(tz=UTC)
         logger.debug("[%s] Message from %s in %s: %s", self.name, sender_nick, chat_id[:20] if chat_id else "?", text[:80] if text else "(media)")
         await self.handle_message(MessageEvent(text=text, message_type=msg_type, source=source, message_id=msg_id, raw_message=message,
-                                               media_urls=media_urls, media_types=media_types, media_errors=media_errors, timestamp=timestamp))
+                                               media_urls=media_urls, media_types=media_types, timestamp=timestamp))
 
     _extract_text = staticmethod(extract_text)
 

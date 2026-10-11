@@ -74,9 +74,6 @@ class MessageEvent:
     media_types: list[str] = field(default_factory=list)
     # Per-attachment text-inlining contract; None = legacy "text/* already inlined into ``text``".
     media_text_inlined: list[Optional[bool]] = field(default_factory=list)
-    # Per-attachment resolution failures (e.g. "DingTalk media download failed: …");
-    # surfaced so the agent can tell the user a referenced image/audio could not be retrieved.
-    media_errors: list[str] = field(default_factory=list)
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     reply_to_author_id: Optional[str] = None
@@ -145,13 +142,3 @@ class MessageEvent:
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
-
-
-def prepend_media_error_note(event: "MessageEvent", text: str) -> str:
-    """Prefix *text* with one ``[Media attachment unavailable: …]`` line per attachment that failed
-    before it became a file, so the agent learns the user sent something it cannot see instead of
-    getting an empty turn."""
-    note = "\n".join(f"[Media attachment unavailable: {error}]" for error in (event.media_errors or []))
-    if not note:
-        return text
-    return f"{note}\n\n{text}" if text else note

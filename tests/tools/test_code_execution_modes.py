@@ -159,11 +159,12 @@ def test_mode_schema_matches_config_without_claiming_isolation(mode, description
     assert not any(word in text for word in ("sandbox", "isolated", "cloud"))
 
 
+@pytest.mark.usefixtures("child_env")
 @pytest.mark.parametrize("error", [FileNotFoundError, PermissionError])
-def test_project_cwd_falls_back_to_staging_when_the_process_cwd_is_unusable(child_env, monkeypatch, error):
+def test_project_cwd_falls_back_to_staging_when_the_process_cwd_is_unusable(tmp_path, monkeypatch, error):
     """A deleted or TCC-protected process cwd makes os.getcwd() raise; execute_code must still run
     in the staging dir instead of failing the whole call."""
-    monkeypatch.setenv("TERMINAL_CWD", str(child_env / "missing"))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "missing"))
 
     def unusable():
         raise error("cwd")

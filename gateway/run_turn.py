@@ -3323,7 +3323,6 @@ class GatewayTurnMixin:
         Peek WITHOUT consuming: the event must stay for the post-run ``_dequeue_pending_event()``
         (popping races the agent finishing). Transcribe BEFORE signaling so voice interrupts carry
         the real transcript."""
-        from gateway.platforms.event import prepend_media_error_note
         from gateway.run import _build_media_placeholder
         _peek_event = adapter._pending_messages.get(session_key)
         pending_text = None
@@ -3336,7 +3335,6 @@ class GatewayTurnMixin:
                 )
             elif not pending_text and (getattr(_peek_event, "media_urls", None) or []):
                 pending_text = _build_media_placeholder(_peek_event)
-            pending_text = prepend_media_error_note(_peek_event, pending_text)
         log()
         agent.interrupt(pending_text)
         _interrupt_detected.set()
