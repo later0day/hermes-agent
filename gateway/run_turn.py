@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- fork hooks only (status card start/finish, turn outcome, image resend, AI-card heartbeat flag), each one line into gateway/turn_status_card.py or run_turn_image_resend.py; offsetting means moving upstream code, which re-conflicts on every sync
 """Agent-turn execution for GatewayRunner: _handle_message_with_agent, _run_agent*, proxy path,
 background tasks, MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
 are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.X")`` still works.

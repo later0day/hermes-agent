@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- fork hooks only (/agent binding call, mixin base + import, deletion guard); offsetting means moving upstream functions out of this facade, which re-conflicts on every upstream sync
 """Gateway runner - entry point for messaging platform integrations.
 
 Provides ``start_gateway()`` (start all configured adapters) and ``GatewayRunner`` (lifecycle).

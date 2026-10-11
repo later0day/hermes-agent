@@ -307,3 +307,16 @@ def settle_profile_bindings(old_profile: str, new_profile: str | None = None) ->
         return store.delete_bindings_for_profile(old_profile)
     finally:
         store.close()
+
+
+def report_profile_binding_settlement(old_profile: str, new_profile: str | None) -> None:
+    """``settle_profile_bindings`` for ``hermes profile delete/rename``: prints the outcome, and a
+    store error is reported, never allowed to fail a delete/rename that already happened."""
+    try:
+        changed = settle_profile_bindings(old_profile, new_profile)
+    except (sqlite3.Error, OSError) as exc:
+        print(f"⚠ Could not update /agent bindings for '{old_profile}': {exc}")
+        return
+    if changed:
+        print(f"✓ {'Re-pointed' if new_profile else 'Removed'} {changed} /agent binding(s)")
+

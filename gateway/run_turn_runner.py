@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- fork hooks only (progress/interim routing to the DingTalk status card, card as a delta sink); the logic lives in gateway/turn_status_card.py; offsetting means moving upstream code, which re-conflicts on every sync
 """Per-turn callback runner (progress/status/voice/run_sync) for the gateway agent turn.
 
 ``TurnRunner`` owns the per-turn callbacks ``GatewayRunner._run_agent_inner`` binds. ``gateway.run``

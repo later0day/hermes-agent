@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- fork hooks only (/agent template flag, clone_env/clone_skills for /agent create, binding settle calls); offsetting means moving upstream functions, which re-conflicts on every sync
 """Profile management for multiple isolated Hermes instances."""
 
 import contextlib
@@ -5,7 +6,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import shlex
 import shutil
 import stat
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.file_safety import HOME_CREDENTIAL_DIRS
+from gateway.source_agent_binding import report_profile_binding_settlement
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
@@ -681,9 +682,7 @@ class ProfileInfo:
     # True when ``description`` was LLM-generated and not yet user-confirmed (dashboard
     # shows a "review" badge).
     description_auto: bool = False
-    # True when this profile is meant to be used as a template source by
-    # ``/agent create --from-template`` (does not affect direct routing).
-    template: bool = False
+    template: bool = False  # a source for ``/agent create --from-template``; no routing effect
     # Presentation-only display name; resolution/comparison/spawn always use ``name``.
     display_name: str = ""
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
@@ -1352,9 +1351,7 @@ def cloned_plugin_names(profile_dir: Path) -> list[str]:
 
 
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
-                           sync_imports: bool = False,
-                           clone_env: bool = True,
-                           clone_skills: bool = True) -> None:
+                           sync_imports: bool = False, clone_env: bool = True, clone_skills: bool = True) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
     AND user-installed skills), and memory/identity files from *source_dir*.
@@ -1449,10 +1446,7 @@ def create_profile(
         if clone_all and source_dir:
             _clone_all_into(source_dir, staging, canon)
         else:
-            _bootstrap_profile_dir(
-                staging, source_dir, sync_imports=sync_imports,
-                clone_env=clone_env, clone_skills=clone_skills,
-            )
+            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports, clone_env=clone_env, clone_skills=clone_skills)
         if source_dir is not None:
             from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
             release_setup_copy(staging, setup_state=setup_marker_state(source_dir))
@@ -1930,7 +1924,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
-    _settle_source_agent_bindings(canon, None)
+    report_profile_binding_settlement(canon, None)  # /agent use bindings follow the profile
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the
@@ -2451,19 +2445,6 @@ def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
         logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
 
 
-def _settle_source_agent_bindings(old_canon: str, new_canon: Optional[str]) -> None:
-    """Fork ``/agent use`` bindings follow the profile (gateway.source_agent_binding); a store
-    error is reported, never allowed to fail a delete/rename that already happened."""
-    from gateway.source_agent_binding import settle_profile_bindings
-    try:
-        changed = settle_profile_bindings(old_canon, new_canon)
-    except (sqlite3.Error, OSError) as exc:
-        print(f"⚠ Could not update /agent bindings for '{old_canon}': {exc}")
-        return
-    if changed:
-        print(f"✓ {'Re-pointed' if new_canon else 'Removed'} {changed} /agent binding(s)")
-
-
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2557,7 +2538,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # key otherwise resolves to a profile that no longer exists on every inbound event.
     from hermes_cli.profile_identity import _migrate_profile_identity
     _migrate_profile_identity(old_canon, new_canon, live_mux)
-    _settle_source_agent_bindings(old_canon, new_canon)
+    report_profile_binding_settlement(old_canon, new_canon)
 
     # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:
