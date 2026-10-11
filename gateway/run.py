@@ -3467,14 +3467,10 @@ class GatewayRunner(
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: dict[Platform, BasePlatformAdapter] = {}
-        # Append-only audit trail for /agent binding actions (use/clear/...).
-        # One JSON line per action under the root Hermes dir. Best-effort;
-        # _append_agent_audit no-ops if this is unset.
-        try:
-            from hermes_constants import get_default_hermes_root
-            self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
-        except Exception:
-            self._agent_audit_path = None
+        # Append-only audit trail for /agent binding actions (use/clear/...): one JSON line per
+        # action under the root Hermes dir.
+        from hermes_constants import get_default_hermes_root
+        self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
         # Profiles currently inside the destructive /agent delete window.
         # Ingress rejects their new turns until the tombstone is in place,
         # closing the check-then-delete race with the shared multiplexer.

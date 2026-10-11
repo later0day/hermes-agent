@@ -51,12 +51,9 @@ class GatewayAgentCommandsMixin:
             with open(self._agent_audit_path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(entry) + "\n")
             if _os.name == "posix":
-                try:
-                    _os.chmod(self._agent_audit_path, 0o600)
-                except OSError:
-                    pass
-        except Exception:
-            pass
+                _os.chmod(self._agent_audit_path, 0o600)
+        except OSError:
+            logger.warning("Could not append to the /agent audit log %s", self._agent_audit_path, exc_info=True)
 
     async def _handle_agent_command(self, event) -> str:
         """Handle /agent — bind THIS chat/source to an agent profile.
@@ -365,6 +362,7 @@ class GatewayAgentCommandsMixin:
                 out += " Marked as template."
             return out
         except Exception as exc:
+            logger.exception("/agent create %s failed", target_name)
             return f"Failed: {exc}"
 
     async def _agent_delete(self, c: _AgentCommand) -> str:
@@ -436,6 +434,7 @@ class GatewayAgentCommandsMixin:
         try:
             await self._run_in_executor_with_context(delete_profile, target_name, True)
         except Exception as exc:
+            logger.exception("/agent delete %s failed", target_name)
             return f"Failed: {exc}"
         finally:
             if _profiles_being_deleted is not None:
@@ -473,6 +472,6 @@ class GatewayAgentCommandsMixin:
                         f"Agent profile `{target_name}` was deleted. This chat has been unbound.",
                         metadata=metadata_to_send,
                     )
-            except Exception as _notify_exc:
-                logger.debug("/agent delete: failed to notify binding %s: %s", target_chat_id, _notify_exc)
+            except Exception:
+                logger.warning("/agent delete: failed to notify binding %s", target_chat_id, exc_info=True)
         return f"Deleted agent profile `{target_name}`."

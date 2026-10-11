@@ -1089,26 +1089,12 @@ def build_turn_context(
     _turn_fmt = (
         "conversation turn: session=%s profile=%s model=%s provider=%s platform=%s history=%d msg=%r"
     )
-    # Resolve the profile this turn actually runs as. Under multiplex
-    # (e.g. api_server's /p/<profile>/… prefix, or per-turn source→profile
-    # binding) the turn log otherwise only shows model/provider, making it
-    # impossible to confirm the request entered the intended profile scope.
-    # Reuse the same override-aware, session-db-fallback resolution as
-    # system_prompt so worker threads that lost the HERMES_HOME ContextVar
-    # (ContextVars don't propagate into threading.Thread) don't misreport
-    # as "default" (#86313 class).
-    try:
-        from agent.system_prompt import _agent_home, _profile_name_for_home
+    # The profile this turn actually runs as: under multiplex (api_server's /p/<profile>/ prefix,
+    # source→profile bindings) the log otherwise cannot confirm the turn entered the intended
+    # scope. Same agent-home-first resolution as the system prompt (#86313 class).
+    from agent.system_prompt import _active_profile_name, _ambient_plugin_profile_name
 
-        _home = _agent_home(agent)
-        if _home is not None:
-            _profile_name = _profile_name_for_home(_home)
-        else:
-            from hermes_cli.profiles import get_active_profile_name
-
-            _profile_name = str(get_active_profile_name() or "default")
-    except Exception:
-        _profile_name = "default"
+    _profile_name = _active_profile_name(agent, _ambient_plugin_profile_name)
     _turn_args = [
         agent.session_id or "none", _profile_name, agent.model, agent.provider or "unknown",
         agent.platform or "unknown", len(conversation_history or []),

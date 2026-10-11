@@ -570,7 +570,7 @@ class TurnStatusCardCoordinator:
                         err = parsed.get("error") or parsed.get("message") or ""
                         if err:
                             text = str(err)
-                except Exception:
+                except ValueError:
                     text = stripped
             if not text:
                 text = stripped
@@ -646,27 +646,16 @@ class TurnStatusCardCoordinator:
         Lazy import keeps this module importable in non-CLI / non-gateway
         contexts.
         """
-        try:
-            from agent.display import _get_skin
-            skin = _get_skin()
-            if skin and getattr(skin, "tool_emojis", None):
-                override = skin.tool_emojis.get(entry.name)
-                if override:
-                    return override
-        except Exception:
-            pass
+        from agent.display import _get_skin, get_tool_emoji
+
+        skin = _get_skin()
+        if skin and skin.tool_emojis and skin.tool_emojis.get(entry.name):
+            return skin.tool_emojis[entry.name]
         if entry.name == "terminal":
             return _terminal_emoji_for_command(entry.preview)
         if entry.name == "read_file":
             return _read_file_emoji_for_path(entry.preview)
-        try:
-            from tools.registry import registry
-            emoji = registry.get_emoji(entry.name, default="")
-            if emoji:
-                return emoji
-        except Exception:
-            pass
-        return "⚡"
+        return get_tool_emoji(entry.name)
 
     @classmethod
     def _render_tool_line(

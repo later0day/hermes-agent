@@ -84,19 +84,15 @@ def _audit_profile_action(
     api_server audit-suffix lines) to the shared ``hermes_cli.web_server`` logger, which already
     lands in errors.log/agent.log. It carries NO secrets: only the action, the profile name, the
     outcome, and an optional non-secret detail (e.g. the rename target or import archive
-    basename). Best-effort: any logging failure is swallowed so audit never breaks the mutation
-    itself.
+    basename).
     """
-    try:
-        parts = [f"action={action!r}", f"profile={name!r}", f"outcome={outcome!r}"]
-        if detail:
-            # Single-line, bounded — mirror api_server's clean-log-value convention.
-            safe = str(detail).replace("\r", " ").replace("\n", " ").strip()[:300]
-            if safe:
-                parts.append(f"detail={safe!r}")
-        _log.info("profile_audit %s", " ".join(parts))
-    except Exception:
-        pass
+    parts = [f"action={action!r}", f"profile={name!r}", f"outcome={outcome!r}"]
+    if detail:
+        # Single-line, bounded — mirror api_server's clean-log-value convention.
+        safe = str(detail).replace("\r", " ").replace("\n", " ").strip()[:300]
+        if safe:
+            parts.append(f"detail={safe!r}")
+    _log.info("profile_audit %s", " ".join(parts))
 
 
 def _audit_outcome_for_status(status_code: int) -> str:

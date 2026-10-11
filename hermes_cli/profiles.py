@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import shlex
 import shutil
 import stat
@@ -2453,10 +2454,10 @@ def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
 def _settle_source_agent_bindings(old_canon: str, new_canon: Optional[str]) -> None:
     """Fork ``/agent use`` bindings follow the profile (gateway.source_agent_binding); a store
     error is reported, never allowed to fail a delete/rename that already happened."""
+    from gateway.source_agent_binding import settle_profile_bindings
     try:
-        from gateway.source_agent_binding import settle_profile_bindings
         changed = settle_profile_bindings(old_canon, new_canon)
-    except Exception as exc:
+    except (sqlite3.Error, OSError) as exc:
         print(f"⚠ Could not update /agent bindings for '{old_canon}': {exc}")
         return
     if changed:

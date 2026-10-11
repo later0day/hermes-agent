@@ -6,6 +6,7 @@ GatewayRunner side that reads it for ``_profile_name_for_source``.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Optional
 
 from gateway.session import SessionSource
@@ -78,8 +79,8 @@ class GatewaySourceBindingMixin:
                             fallback_target=binding.fallback_target,
                             fallback_extra=binding.fallback_extra,
                         )
-                    except Exception as exc:
-                        logger.debug("Could not canonicalize binding %s: %s", key, exc)
+                    except sqlite3.Error:
+                        logger.debug("Could not canonicalize binding %s", key, exc_info=True)
                 return profile
 
             key = build_source_binding_key(
@@ -101,10 +102,11 @@ class GatewaySourceBindingMixin:
                     profile = _valid_profile(store.get_binding(chat_key), chat_key)
                     if profile:
                         return profile
-        except Exception as exc:
-            logger.debug(
-                "binding store lookup failed for source %s: %s",
-                getattr(source, "chat_id", "?"), exc,
+        except Exception:
+            # Ingress boundary: a broken store must not drop the message; it routes to the
+            # default profile instead, so log loudly enough to notice.
+            logger.warning(
+                "binding store lookup failed for source %s", getattr(source, "chat_id", "?"), exc_info=True,
             )
         return None
 
