@@ -3467,14 +3467,6 @@ class GatewayRunner(
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: dict[Platform, BasePlatformAdapter] = {}
-        # Append-only audit trail for /agent binding actions (use/clear/...): one JSON line per
-        # action under the root Hermes dir.
-        from hermes_constants import get_default_hermes_root
-        self._agent_audit_path = get_default_hermes_root() / "agent-audit.jsonl"
-        # Profiles currently inside the destructive /agent delete window.
-        # Ingress rejects their new turns until the tombstone is in place,
-        # closing the check-then-delete race with the shared multiplexer.
-        self._profiles_being_deleted: set[str] = set()
         # Non-None means SessionDB init failed — the gateway broadcasts a one-time warning to the home
         # channel(s) after connecting so the user learns persistence is broken before /resume fails.
         # See #88235.
@@ -4401,40 +4393,17 @@ class GatewayRunner(
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
-        # Dynamic source->agent binding takes precedence over static profile_routes.
-        # This is the SINGLE stamping path: whatever we return is stamped onto
-        # ``source.profile`` at ingress, which selects BOTH the session-key namespace
-        # (``agent:<profile>``) AND the profile the turn runs under
-        # (``_resolve_profile_home_for_source``). Resolving here keeps those two
-        # dimensions in agreement.
-        from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         if adapter_profile is None:
             # Sources built outside ``build_source`` may still carry the receiving adapter as provenance.
             owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
             if isinstance(owner, tuple):
                 adapter_profile = owner[1]
-        # A binding is made in a chat of the primary bot, so like a route without ``bot_profile`` it
-        # applies to the primary bot's chats only — a secondary profile's own bot keeps its chats —
-        # and, like any route, only to a profile this gateway serves.
-        primary = getattr(self, "_primary_profile_name", None) or "default"
-        bound = self._binding_profile_for_source(source) if adapter_profile in (None, primary) else None
-        if bound:
-            if bound in (getattr(self, "_profiles_being_deleted", set()) or set()):
-                raise ProfileRouteRejected(bound)
-            try:
-                served = {name for name, _home in _multiplex_profile_homes(config)}
-            except Exception as exc:
-                logger.warning("Rejecting binding to %r: the served-profile set could not be resolved", bound,
-                               exc_info=True)
-                raise ProfileRouteRejected(bound) from exc
-            if bound not in served:
-                logger.warning("Rejecting binding of %s/%s: profile %r is not served by this gateway",
-                               source.platform, source.chat_id, bound)
-                raise ProfileRouteRejected(bound)
+        if bound := self._bound_profile_for_source(source, adapter_profile, config):  # /agent use outranks routes
             return bound
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
+        from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         try:
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
@@ -4447,10 +4416,7 @@ class GatewayRunner(
                 source.platform, source.chat_id, exc_info=True)
             raise ProfileRouteRejected("matcher") from exc
         if matched:
-            if matched.profile in (
-                getattr(self, "_profiles_being_deleted", set()) or set()
-            ):
-                raise ProfileRouteRejected(matched.name)
+            self._reject_profile_being_deleted(matched.profile, matched.name)
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
             except Exception as exc:
@@ -4527,7 +4493,6 @@ class GatewayRunner(
         _native_slack_task_cards: Any = None
         needs_progress_queue: Any = None
         _generic_status_phrase: Any = None
-        _streaming_enabled: bool = False
 
     @dataclasses.dataclass
     class _RunAgentWorker:

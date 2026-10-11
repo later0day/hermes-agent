@@ -95,3 +95,14 @@ async def maybe_resend_recent_image(runner, event, source, session_id: str):
     except Exception:
         logger.debug("image resend: could not record the exchange", exc_info=True)
     return None
+
+
+async def answer_recent_image_resend(runner, event, source, session_id: str) -> bool:
+    """Handle a DingTalk "send me that image again" from the transcript, without an agent turn.
+    True when the message was such a request (re-delivered, or answered with a notice)."""
+    result = await maybe_resend_recent_image(runner, event, source, session_id)
+    if result is RECENT_IMAGE_RESEND_NOT_HANDLED:
+        return False
+    if result and (adapter := runner._delivery_adapter_for(source)) is not None:
+        await adapter.send(source.chat_id, result, reply_to=runner._reply_anchor_for_event(event))
+    return True

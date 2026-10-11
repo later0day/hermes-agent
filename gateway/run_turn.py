@@ -36,6 +36,8 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.run_turn_image_resend import answer_recent_image_resend
+from gateway.turn_status_card import finish_turn_status_card, maybe_start_turn_status_card, record_turn_outcome
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -163,6 +165,7 @@ def hygiene_no_commit_reason(agent) -> str:
     if getattr(agent, "_session_db", None) is None:
         return "no session_db on the hygiene agent"
     return "in-place commit did not complete"
+
 
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
@@ -2164,18 +2167,8 @@ class GatewayTurnMixin:
         history, message_text = prepared.history, prepared.message_text
 
         try:
-            # DingTalk "send me that image again" — answered from the transcript, no agent turn,
-            # so it runs before agent:start (whose agent:end only the agent path emits).
-            from gateway.run_turn_image_resend import RECENT_IMAGE_RESEND_NOT_HANDLED, maybe_resend_recent_image
-            _resend_result = await maybe_resend_recent_image(self, event, source, session_entry.session_id)
-            if _resend_result is not RECENT_IMAGE_RESEND_NOT_HANDLED:
-                if _resend_result:
-                    _resend_adapter = self._delivery_adapter_for(source)
-                    if _resend_adapter is not None:
-                        await _resend_adapter.send(
-                            source.chat_id, _resend_result, reply_to=self._reply_anchor_for_event(event))
-                return
-
+            if await answer_recent_image_resend(self, event, source, session_entry.session_id):
+                return  # no agent turn, so before agent:start (whose agent:end only the agent path emits)
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -3028,10 +3021,6 @@ class GatewayTurnMixin:
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
-        # Per-platform streaming toggle (display.platforms.<plat>.streaming); None = follow global.
-        from gateway.config import StreamingConfig
-        _scfg = getattr(getattr(self, "config", None), "streaming", None) or StreamingConfig()
-        _streaming_enabled = _scfg.enabled_for(resolve_display_setting(user_config, platform_key, "streaming"))
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
@@ -3063,7 +3052,6 @@ class GatewayTurnMixin:
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
-            _streaming_enabled=_streaming_enabled,
         )
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
@@ -3123,9 +3111,7 @@ class GatewayTurnMixin:
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
         turn_ctx.native_tool_start_callback = turn_runner.combined_tool_start_callback
         turn_ctx.native_tool_complete_callback = turn_runner.native_tool_complete_callback
-        # DingTalk (and any adapter with SUPPORTS_TURN_STATUS_CARD) editable status card.
-        from gateway.turn_status_card import maybe_start_turn_status_card
-        maybe_start_turn_status_card(self, turn_ctx, disp, source)
+        maybe_start_turn_status_card(self, turn_ctx, disp, source)  # adapters with SUPPORTS_TURN_STATUS_CARD
         return turn_ctx, turn_runner, _cleanup_adapter
 
     def _thread_metadata_for_progress(
@@ -4270,15 +4256,9 @@ class GatewayTurnMixin:
                         session_key, agent_holder[0], _executor_task_holder[0]
                     ):
                         break
-                    # The next interval edits this same message in place, so
-                    # declare the editable lifecycle up front.  Without it an
-                    # AI-Card adapter finalizes on create and the follow-up
-                    # edit reopens the card (closed→streaming flicker).
-                    _heartbeat_metadata = _interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform))
-                    _heartbeat_metadata["expect_edits"] = True
                     _notify_res = await _notify_adapter.send(
-                        source.chat_id, _heartbeat_text,
-                        metadata=_heartbeat_metadata,
+                        source.chat_id, _heartbeat_text,  # edited in place later: an AI Card must not finalize on create
+                        metadata={**_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)), "expect_edits": True},
                     )
                     if getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None):
                         _heartbeat_msg_id = str(_notify_res.message_id)
@@ -4363,11 +4343,7 @@ class GatewayTurnMixin:
             None if (scheduled_heartbeat or turn_ctx.mute_notification_reply)
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
-        # DingTalk editable status card: start the coordinator's edit loop.
-        turn_status_task = (
-            spawn(turn_ctx.turn_status_card_holder[0].run())
-            if turn_ctx.turn_status_card_holder[0] is not None else None
-        )
+        turn_status_task = spawn(card.run()) if (card := turn_ctx.turn_status_card_holder[0]) else None
 
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
@@ -4381,14 +4357,7 @@ class GatewayTurnMixin:
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
-            # Record the turn outcome so the adapter's done-reaction fires the right emoji.
-            if adapter is not None and hasattr(adapter, "set_pending_reply_state"):
-                adapter.set_pending_reply_state(
-                    source.chat_id,
-                    "interrupted" if _interrupt_detected.is_set()
-                    else "error" if (isinstance(response, dict) and response.get("completed") is False)
-                    else "success",
-                )
+            record_turn_outcome(adapter, source, response, interrupted=_interrupt_detected.is_set())
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
@@ -4396,9 +4365,6 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
-            # Finalize the turn status card, then drain its edit loop so the final
-            # summary edit lands before cleanup.
-            from gateway.turn_status_card import finish_turn_status_card
             await finish_turn_status_card(turn_ctx.turn_status_card_holder[0], turn_status_task)
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,

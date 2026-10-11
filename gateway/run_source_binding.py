@@ -5,9 +5,11 @@ GatewayRunner side that reads it for ``_profile_name_for_source``.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import sqlite3
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from gateway.session import SessionSource
 
@@ -15,6 +17,54 @@ logger = logging.getLogger("gateway.run")
 
 
 class GatewaySourceBindingMixin:
+    @functools.cached_property
+    def _profiles_being_deleted(self) -> set[str]:
+        """Profiles inside the destructive ``/agent delete`` window: ingress rejects their new turns
+        until the tombstone is in place, closing the check-then-delete race with the multiplexer."""
+        return set()
+
+    @functools.cached_property
+    def _agent_audit_path(self) -> Path:
+        """Append-only JSONL audit trail of ``/agent`` actions, under the root Hermes dir."""
+        from hermes_constants import get_default_hermes_root
+        return get_default_hermes_root() / "agent-audit.jsonl"
+
+    def _reject_profile_being_deleted(self, profile: str, route_name: str) -> None:
+        if profile in self._profiles_being_deleted:
+            from gateway.profile_routing import ProfileRouteRejected
+            raise ProfileRouteRejected(route_name)
+
+    def _bound_profile_for_source(self, source: SessionSource, adapter_profile: Optional[str],
+                                  config: Any) -> Optional[str]:
+        """The profile an ``/agent use`` binding stamps onto *source*, ahead of ``profile_routes``.
+
+        The single stamping path: the result selects BOTH the session-key namespace
+        (``agent:<profile>``) and the profile the turn runs under, so the two always agree. A
+        binding is made in a chat of the primary bot, so like a route without ``bot_profile`` it
+        applies to the primary bot's chats only (a secondary profile's own bot keeps its chats) and,
+        like any route, only to a profile this gateway serves; otherwise ``ProfileRouteRejected``.
+        """
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        if adapter_profile not in (None, primary):
+            return None
+        bound = self._binding_profile_for_source(source)
+        if not bound:
+            return None
+        from gateway.profile_routing import ProfileRouteRejected
+        from gateway.run import _multiplex_profile_homes
+        self._reject_profile_being_deleted(bound, bound)
+        try:
+            served = {name for name, _home in _multiplex_profile_homes(config)}
+        except Exception as exc:
+            logger.warning("Rejecting binding to %r: the served-profile set could not be resolved", bound,
+                           exc_info=True)
+            raise ProfileRouteRejected(bound) from exc
+        if bound not in served:
+            logger.warning("Rejecting binding of %s/%s: profile %r is not served by this gateway",
+                           source.platform, source.chat_id, bound)
+            raise ProfileRouteRejected(bound)
+        return bound
+
     def _binding_profile_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the profile a source->agent binding maps this source to, or None.
 

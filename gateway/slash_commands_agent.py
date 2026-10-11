@@ -36,9 +36,8 @@ class GatewayAgentCommandsMixin:
     def _append_agent_audit(self, action, **kwargs):
         """Best-effort append-only audit of /agent binding actions.
 
-        Writes one JSON line per action to ``self._agent_audit_path`` (set on the
-        GatewayRunner). Silently no-ops if the path was never configured, so this
-        mixin method is safe on any host object.
+        Writes one JSON line per action to ``self._agent_audit_path``
+        (``GatewaySourceBindingMixin``); a host without one, or with it set to None, skips the audit.
         """
         if not getattr(self, "_agent_audit_path", None):
             return

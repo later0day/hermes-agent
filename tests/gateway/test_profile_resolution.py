@@ -20,12 +20,10 @@ def mock_runner():
     runner = MagicMock(spec=GatewayRunner)
     runner.config = MagicMock(profile_routes=[])
     # Bind the actual methods to the mock
-    # No source->agent binding in these route-resolution tests: the dynamic
-    # binding store takes precedence over profile_routes inside
-    # _profile_name_for_source, so stub it to None here to exercise the static
-    # profile_routes path these tests are pinning.
-    runner._binding_profile_for_source = lambda source: None
+    # No /agent binding here: it outranks profile_routes, and these tests pin the routes path.
+    runner._bound_profile_for_source = lambda source, adapter_profile, config: None
     runner._profiles_being_deleted = set()
+    runner._reject_profile_being_deleted = GatewayRunner._reject_profile_being_deleted.__get__(runner)
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
     # _handle_message's ingress gates (profile route rejection) live in this helper.
@@ -92,7 +90,6 @@ class TestMissingProfileWarning:
         """When source.profile points to a nonexistent profile, log a WARNING."""
         discord_source.profile = "nonexistent"
         
-
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
             with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
                 mock_get_dir.return_value = Path("/hermes/profiles/nonexistent")

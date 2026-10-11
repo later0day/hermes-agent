@@ -828,8 +828,11 @@ def maybe_start_turn_status_card(runner: Any, turn_ctx: Any, disp: Any, source: 
     adapter = runner._delivery_adapter_for(source)
     if adapter is None or getattr(adapter, "SUPPORTS_TURN_STATUS_CARD", False) is not True:
         return
+    from gateway.config import StreamingConfig
+    streaming = (getattr(runner.config, "streaming", None) or StreamingConfig()).enabled_for(
+        disp.resolve_display_setting(disp.user_config, disp.platform_key, "streaming"))
     if not (disp.tool_progress_enabled or disp._thinking_enabled
-            or disp.interim_assistant_messages_enabled or disp._streaming_enabled):
+            or disp.interim_assistant_messages_enabled or streaming):
         return
     preview_len = disp.resolve_display_setting(disp.user_config, disp.platform_key, "tool_preview_length", 0)
     try:
@@ -861,3 +864,86 @@ async def finish_turn_status_card(card: Optional[TurnStatusCardCoordinator], tas
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+
+def record_turn_outcome(adapter: Any, source: Any, response: Any, *, interrupted: bool) -> None:
+    """Tell an adapter with outcome reactions (``set_pending_reply_state``) how the turn ended, so its
+    final reaction shows done / error / interrupted."""
+    if adapter is None or not hasattr(adapter, "set_pending_reply_state"):
+        return
+    failed = isinstance(response, dict) and response.get("completed") is False
+    adapter.set_pending_reply_state(
+        source.chat_id, "interrupted" if interrupted else "error" if failed else "success")
+
+
+_SUBAGENT_TOOL_EVENTS = {"subagent.tool": "tool.started", "subagent.tool.completed": "tool.completed"}
+_SUBAGENT_TEXT_EVENTS = frozenset({"subagent.start", "subagent.progress", "subagent.thinking"})
+
+
+def _notify_tool_stage(turn: Any, event_type: str, tool_name: Optional[str], preview: Optional[str]) -> None:
+    """Stage-aware reaction on the user's message (adapters with ``notify_tool_started``), whatever
+    the progress surface: it updates even with tool progress off and no card."""
+    if event_type not in {"tool.started", "subagent.tool"} or not tool_name:
+        return
+    adapter = turn._runner._delivery_adapter_for(turn._ctx.source)
+    if adapter is None or not hasattr(adapter, "notify_tool_started"):
+        return
+    try:
+        adapter.notify_tool_started(turn._ctx.source.chat_id, tool_name, preview=preview)
+    except Exception:
+        logger.debug("notify_tool_started failed for %s", tool_name, exc_info=True)
+
+
+def _card_tool_event(turn: Any, card: TurnStatusCardCoordinator, event_type: str, tool_name: Optional[str],
+                     preview: Optional[str], args: Any, kwargs: dict) -> None:
+    """Tool lifecycle on the card. The card renders progress itself (even with tool progress off),
+    except a clarify prompt (send_clarify is its rendering) and calls fired after a stop."""
+    ctx = turn._ctx
+    if ctx._native_slack_task_cards:
+        return
+    if event_type == "tool.completed":
+        card.on_tool_progress(event_type, tool_name, preview, args, **kwargs)
+        if not ctx.long_tool_hint_fired[0]:
+            turn._progress_onboarding_hint(kwargs)
+    elif event_type == "tool.started" and tool_name != "clarify" and not turn._agent_interrupted():
+        card.on_tool_progress(event_type, tool_name, preview, args, **kwargs)
+
+
+def route_progress_event(turn: Any, event_type: str, tool_name: Optional[str], preview: Optional[str],
+                         args: Any, kwargs: dict) -> bool:
+    """``TurnRunner.progress_callback`` hook. Fires stage reactions, then — when the turn has a status
+    card — renders the event on the card and returns True: the card replaces progress bubbles, and
+    subagent tool/commentary events show only there. False hands the event to the normal path."""
+    ctx = turn._ctx
+    if not ctx._run_still_current():
+        return False
+    _notify_tool_stage(turn, event_type, tool_name, preview)
+    card = ctx.turn_status_card_holder[0]
+    if card is None:
+        return False
+    if event_type in _SUBAGENT_TOOL_EVENTS:
+        card.on_tool_progress(_SUBAGENT_TOOL_EVENTS[event_type], tool_name, preview, args, **kwargs)
+    elif event_type in _SUBAGENT_TEXT_EVENTS:
+        text = preview or tool_name or ""
+        if text:  # delegate_tool_progress already prefixes its batch lines with 🔀
+            card.on_commentary(text if text.startswith("🔀") else f"🔀 {text}")
+    elif event_type == "_thinking" or tool_name == "_thinking":
+        thinking = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
+        if thinking:
+            card.on_tool_progress(event_type, tool_name, f"💬 {thinking}", args, **kwargs)
+    else:
+        _card_tool_event(turn, card, event_type, tool_name, preview, args, kwargs)
+    return True
+
+
+def card_takes_interim(ctx: Any, text: str, already_streamed: bool) -> bool:
+    """Interim assistant commentary renders in the turn's status card, not as separate status text."""
+    card = ctx.turn_status_card_holder[0]
+    if card is None:
+        return False
+    if already_streamed:
+        card.on_delta(None)
+    else:
+        card.on_commentary(text)
+    return True
+
