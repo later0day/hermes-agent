@@ -1,6 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -481,7 +481,6 @@ class TestMediaErrorPropagation:
         assert DingTalkAdapter._extension_for_media("image", None, "pic.PNG") == ".PNG"
 
     def test_extract_media_errors_collects_from_image_and_rich(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = _make_gating_adapter.__wrapped__ if hasattr(_make_gating_adapter, "__wrapped__") else _make_gating_adapter
         # Build a minimal adapter-like object: _extract_media_errors is an instance method
         # but only uses self._media_error_for_item (classmethod) and _rich_list (module-level),
@@ -1227,7 +1226,7 @@ class TestDingTalkAdapterAICards:
         msg.text = MagicMock(content="Hello")
         msg.session_webhook = "https://api.dingtalk.com/robot/sendBySession?session=test"
         msg.session_webhook_expired_time = 999999999999
-        msg.create_at = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        msg.create_at = int(datetime.now(tz=UTC).timestamp() * 1000)
         msg.at_users = []
         return msg
 

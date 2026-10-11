@@ -6,16 +6,12 @@ image re-send without re-uploading it, plus the shortcut end to end against a re
 """
 from __future__ import annotations
 
-import os
-import re
-import tempfile
 
 import pytest
 
 from gateway.run_turn_image_resend import (
     _IMAGE_ATTACHED_RE,
     RECENT_IMAGE_RESEND_NOT_HANDLED as _RECENT_IMAGE_RESEND_NOT_HANDLED,
-    _RESEND_IMAGE_PATTERNS,
     find_latest_attached_image_path as _find_latest_attached_image_path,
     wants_recent_image_resend as _wants_recent_image_resend,
 )

@@ -10,7 +10,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
@@ -122,7 +122,7 @@ class _SdkLogGuard(logging.Filter):
     def __init__(self, on_exception=None, window: float = _SDK_LOG_REPEAT_WINDOW):
         super().__init__()
         self._on_exception, self._window = on_exception, window
-        self._seen: Dict[tuple, list] = {}  # key -> [last_emitted_monotonic, suppressed_count]
+        self._seen: dict[tuple, list] = {}  # key -> [last_emitted_monotonic, suppressed_count]
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -157,7 +157,7 @@ _NUMBERED_RE = re.compile(r"^\d+\.\s")
 _NO_LOCAL_UPLOAD = "DingTalk session webhook replies do not support local %s. Only markdown/text replies are supported without OpenAPI %s."
 
 
-def _csv_set(raw: Any) -> Set[str]:
+def _csv_set(raw: Any) -> set[str]:
     """Split a list, JSON-list string or comma-separated string into a set of stripped, non-empty items."""
     raw = _decode_json_list_literal(raw)
     parts = raw if isinstance(raw, list) else str(raw).split(",")
@@ -244,8 +244,8 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         extra = config.extra or {}
         self._client_id, self._client_secret = _credentials(extra)
         # Group-chat gating; mention state is the SDK's structured ``is_in_at_list``, not text parsing.
-        self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
-        self._allowed_users: Set[str] = {item.lower() for item in self._csv_setting("allowed_users", "DINGTALK_ALLOWED_USERS")}
+        self._mention_patterns: list[re.Pattern] = self._compile_mention_patterns()
+        self._allowed_users: set[str] = {item.lower() for item in self._csv_setting("allowed_users", "DINGTALK_ALLOWED_USERS")}
         self._stream_client = self._stream_task = self._http_client = self._card_sdk = self._robot_sdk = None
         # Liveness watchdog for half-open Stream Mode connections; see ``STREAM_PING_INTERVAL``.
         self._watchdog_task: Optional[asyncio.Task] = None
@@ -262,31 +262,31 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         self._reply_at_sender: bool = is_truthy_value(
             _extra_or_secret(extra, "reply_at_sender", "DINGTALK_REPLY_AT_SENDER"), default=False)
         self._dedup = MessageDeduplicator(max_size=1000)
-        self._session_webhooks: Dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
-        self._message_contexts: Dict[str, Any] = {}  # chat_id -> last inbound ChatbotMessage (per-chat: no clobber)
+        self._session_webhooks: dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
+        self._message_contexts: dict[str, Any] = {}  # chat_id -> last inbound ChatbotMessage (per-chat: no clobber)
         # AI Card template: use a SDK-proven default when none is configured so card delivery works out-of-box.
         configured_template = str(extra.get("card_template_id") or "").strip()
         self._card_template_id: Optional[str] = configured_template or DEFAULT_AI_CARD_TEMPLATE_ID
         self._card_uses_default_template: bool = not configured_template
         self._card_content_key_override: str = str(extra.get("card_content_key") or "").strip()
-        self._done_emoji_fired: Set[str] = set()  # chats whose Done reaction fired this turn; reset per inbound
+        self._done_emoji_fired: set[str] = set()  # chats whose Done reaction fired this turn; reset per inbound
         # Per-chat reply state (success/error/interrupted) set by the gateway runner so the final
         # reaction matches the turn outcome.  Popped on use; defaults to "success" when unset.
-        self._pending_reply_state: Dict[str, str] = {}
+        self._pending_reply_state: dict[str, str] = {}
         # Stage-aware reaction state: the label currently rendered on the user message for each chat.
-        self._current_stage_label: Dict[str, str] = {}
+        self._current_stage_label: dict[str, str] = {}
         # The outcome label last put on each chat's current message, so a late outcome can replace it.
-        self._final_reaction_label: Dict[str, str] = {}
+        self._final_reaction_label: dict[str, str] = {}
         # Per-chat lock that serializes stage-label swaps so parallel tool.started events don't race.
-        self._stage_locks: Dict[str, asyncio.Lock] = {}
+        self._stage_locks: dict[str, asyncio.Lock] = {}
         # Open streaming cards: chat_id -> {out_track_id: last_content}. ``edit_message(finalize=False)``
         # re-opens a finalized card, so we track them and auto-close as siblings on the next ``send()``.
-        self._streaming_cards: Dict[str, Dict[str, str]] = {}
-        self._bg_tasks: Set[asyncio.Task] = set()  # fire-and-forget emoji tasks, kept referenced (GC) + cancellable
+        self._streaming_cards: dict[str, dict[str, str]] = {}
+        self._bg_tasks: set[asyncio.Task] = set()  # fire-and-forget emoji tasks, kept referenced (GC) + cancellable
         # Tool-progress callbacks run on the agent's worker thread; their emoji swaps are handed to the
         # adapter's loop (captured in connect) instead of a create_task with no loop to run on.
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._bg_futures: Set[concurrent.futures.Future] = set()
+        self._bg_futures: set[concurrent.futures.Future] = set()
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to DingTalk via Stream Mode."""
@@ -454,7 +454,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
             self._watchdog_task.cancel()
             try:
                 await asyncio.wait_for(self._watchdog_task, timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 logger.debug("[%s] watchdog task did not exit cleanly during disconnect", self.name)
             self._watchdog_task = None
         # Close the websocket first so the stream task sees the disconnect instead of awaiting frames that never arrive.
@@ -467,7 +467,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
             self._stream_task.cancel()
             try:
                 await asyncio.wait_for(self._stream_task, timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
             self._stream_task = None
         for task in list(self._bg_tasks):
@@ -500,7 +500,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
                 store.clear()
         logger.info("[%s] Disconnected", self.name)
 
-    def _csv_setting(self, key: str, env_name: str) -> Set[str]:
+    def _csv_setting(self, key: str, env_name: str) -> set[str]:
         """List/CSV setting from config.extra[key], falling back to the env var."""
         return _csv_set(_extra_or_secret(self.config.extra, key, env_name, blank_is_unset=False))
 
@@ -509,11 +509,11 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         configured = _extra_or_secret(self.config.extra, "require_mention", "DINGTALK_REQUIRE_MENTION", "false", blank_is_unset=False)
         return configured.lower() in _TRUTHY if isinstance(configured, str) else bool(configured)
 
-    def _dingtalk_allowed_chats(self) -> Set[str]:
+    def _dingtalk_allowed_chats(self) -> set[str]:
         """Group chat whitelist; non-empty = hard gate even when @mentioned. DMs never filtered."""
         return self._csv_setting("allowed_chats", "DINGTALK_ALLOWED_CHATS")
 
-    def _compile_mention_patterns(self) -> List[re.Pattern]:
+    def _compile_mention_patterns(self) -> list[re.Pattern]:
         """Compile optional regex wake-word patterns (config list, or env as JSON / lines / CSV)."""
         patterns = (self.config.extra or {}).get("mention_patterns")
         if patterns is None and (raw := str(_get_scoped_secret("DINGTALK_MENTION_PATTERNS", "") or "").strip()):
@@ -614,9 +614,9 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
                                    message_id=msg_id)
         create_at = getattr(message, "create_at", None)
         try:
-            timestamp = datetime.fromtimestamp(int(create_at) / 1000, tz=timezone.utc) if create_at else datetime.now(tz=timezone.utc)
+            timestamp = datetime.fromtimestamp(int(create_at) / 1000, tz=UTC) if create_at else datetime.now(tz=UTC)
         except (ValueError, OSError, TypeError):
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
         logger.debug("[%s] Message from %s in %s: %s", self.name, sender_nick, chat_id[:20] if chat_id else "?", text[:80] if text else "(media)")
         await self.handle_message(MessageEvent(text=text, message_type=msg_type, source=source, message_id=msg_id, raw_message=message,
                                                media_urls=media_urls, media_types=media_types, media_errors=media_errors, timestamp=timestamp))
@@ -626,7 +626,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
     def _extract_media(self, message: "ChatbotMessage"):
         return extract_media(message)
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a markdown reply via DingTalk session webhook, AI Card, or robot-native proactive fallback."""
         metadata = metadata or {}
         content = str(content or "")
@@ -822,7 +822,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         command: str,
         session_key: str,
         description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a formatted approval-request card for a dangerous command.
 
@@ -857,8 +857,8 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         self,
         chat_id: str,
         content: str,
-        at_payload: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        at_payload: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         *,
         emotion_names: Optional[list] = None,
         fire_final_reaction: bool = False,
@@ -937,8 +937,8 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         self,
         chat_id: str,
         msg_key: str,
-        msg_param: Dict[str, Any],
-        metadata: Optional[Dict[str, Any]] = None,
+        msg_param: dict[str, Any],
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a DingTalk native robot message via OpenAPI (OrgGroupSend / PrivateChatSend / BatchSendOTO)."""
         metadata = metadata or {}
@@ -1091,7 +1091,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
 
 
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
         return {"name": chat_id, "type": "group" if "group" in chat_id.lower() else "dm"}
 
@@ -1099,7 +1099,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         """Get a non-expired session webhook for chat_id (5-minute safety margin)."""
         info = self._session_webhooks.get(chat_id)
         expired_time_ms = info[1] if info else 0
-        if expired_time_ms and expired_time_ms > 0 and int(datetime.now(tz=timezone.utc).timestamp() * 1000) + 5 * 60 * 1000 >= expired_time_ms:
+        if expired_time_ms and expired_time_ms > 0 and int(datetime.now(tz=UTC).timestamp() * 1000) + 5 * 60 * 1000 >= expired_time_ms:
             self._session_webhooks.pop(chat_id, None)
             return None
         return info or None
@@ -1136,9 +1136,9 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
     # -- Config / metadata / rich-text helpers (ported from fork) -----------
 
     @staticmethod
-    def _metadata_values(metadata: Dict[str, Any], *keys: str) -> List[str]:
+    def _metadata_values(metadata: dict[str, Any], *keys: str) -> list[str]:
         """Collect a list from one or more metadata keys (comma-separated or list values)."""
-        values: List[str] = []
+        values: list[str] = []
         for key in keys:
             raw = metadata.get(key)
             if raw is None:
@@ -1150,7 +1150,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         return [value for value in values if value]
 
     @staticmethod
-    def _metadata_bool(metadata: Dict[str, Any], *keys: str) -> bool:
+    def _metadata_bool(metadata: dict[str, Any], *keys: str) -> bool:
         """Read a bool from the first non-None metadata key among *keys*."""
         for key in keys:
             raw = metadata.get(key)
@@ -1162,7 +1162,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         return False
 
     @staticmethod
-    def _metadata_path(metadata: Dict[str, Any], *keys: str) -> Optional[Path]:
+    def _metadata_path(metadata: dict[str, Any], *keys: str) -> Optional[Path]:
         """Read a Path from the first metadata key whose value points to an existing file."""
         for key in keys:
             raw = metadata.get(key)
@@ -1174,7 +1174,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         return None
 
     @staticmethod
-    def _first_raw_value(data: Dict[str, Any], *keys: str) -> Any:
+    def _first_raw_value(data: dict[str, Any], *keys: str) -> Any:
         for key in keys:
             value = data.get(key)
             if value not in (None, ""):
@@ -1182,7 +1182,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         return None
 
     @classmethod
-    def _fill_missing_raw_fields(cls, chatbot_msg: Any, data: Dict[str, Any]) -> None:
+    def _fill_missing_raw_fields(cls, chatbot_msg: Any, data: dict[str, Any]) -> None:
         """Backfill raw callback fields that SDK model mapping may miss."""
         field_map = {
             "message_id": ("msgId", "messageId", "message_id"),
@@ -1229,10 +1229,10 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
     def _collect_at_users(
         self,
         chat_id: str,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
         *,
         include_sender: bool,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Collect DingTalk user IDs for @ mentions.
 
         Values are accepted from metadata for explicit sends and optionally
@@ -1240,7 +1240,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         sender.  The returned mapping shape matches DingTalk card deliver
         ``atUserIds`` while webhook payloads use just the keys.
         """
-        users: Dict[str, str] = {}
+        users: dict[str, str] = {}
         for user_id in self._metadata_values(
             metadata, "dingtalk_at_user_ids", "at_user_ids", "atUserIds",
         ):
@@ -1259,7 +1259,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
     @staticmethod
     def _prepend_mention_tokens(
         content: str,
-        at_payload: Optional[Dict[str, Any]],
+        at_payload: Optional[dict[str, Any]],
     ) -> str:
         """Prepend DingTalk mention tokens required by webhook @ delivery.
 
@@ -1270,7 +1270,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         if not at_payload:
             return content
 
-        mentions: List[str] = []
+        mentions: list[str] = []
         if at_payload.get("isAtAll"):
             mentions.append("@所有人")
         for mobile in at_payload.get("atMobiles") or []:
@@ -1292,9 +1292,9 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
 
     def _build_webhook_at_payload(
         self,
-        metadata: Dict[str, Any],
-        at_users: Dict[str, str],
-    ) -> Optional[Dict[str, Any]]:
+        metadata: dict[str, Any],
+        at_users: dict[str, str],
+    ) -> Optional[dict[str, Any]]:
         """Build the webhook ``at`` payload from metadata + collected at_users."""
         at_mobiles = self._metadata_values(
             metadata, "dingtalk_at_mobiles", "at_mobiles", "atMobiles",

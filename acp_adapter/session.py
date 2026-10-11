@@ -100,8 +100,8 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
-def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
-                                 mcp_server_names: List[str] | None = None) -> List[str]:
+def _expand_acp_enabled_toolsets(toolsets: list[str] | None = None,
+                                 mcp_server_names: list[str] | None = None) -> list[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     names = [n for n in (["hermes-acp"] if toolsets is None else toolsets) if n]
     names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
@@ -207,7 +207,7 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
+    def list_sessions(self, cwd: str | None = None) -> list[dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
         normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
         db = self._get_db()

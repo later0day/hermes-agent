@@ -93,7 +93,7 @@ def _container_config_from_config(config: dict[str, Any]) -> dict:
     return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
 
 
-def _resources(cc: Dict[str, Any]) -> dict:
+def _resources(cc: dict[str, Any]) -> dict:
     """Common sandbox resource kwargs (cpu/memory in MB/disk in MB/persistence)."""
     return {out: cc.get(key, default) for out, key, default in _RESOURCE_KEYS}
 
@@ -317,7 +317,7 @@ def _daytona_post(config: dict[str, Any]) -> bool:
     return get_secret("DAYTONA_API_KEY") is not None
 
 
-_BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
+_BACKEND_SPECS: dict[str, dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
                           "Docker is not installed — no docker executable in PATH or the usual install locations")},

@@ -6,7 +6,7 @@ the adapter module (``_dt()``) so the facade stays the one patch seam."""
 import asyncio
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from agent.i18n import t
 
@@ -59,7 +59,7 @@ class DingTalkReactionsMixin:
     # not produce a flicker of swaps, only the FIRST call in a new
     # category triggers a label change. Tools missing from this map
     # do not swap the label (the previous stage label stays).
-    _TOOL_STAGES: Dict[str, str] = {
+    _TOOL_STAGES: dict[str, str] = {
         "terminal":           "command",
         "code_execution":     "command",
         "execute_code":       "code",
@@ -84,7 +84,7 @@ class DingTalkReactionsMixin:
     }
 
     # Terminal command -> more specific stage. Matched in order; first hit wins.
-    _TERMINAL_STAGES: List[Tuple[re.Pattern, str]] = [
+    _TERMINAL_STAGES: list[tuple[re.Pattern, str]] = [
         (re.compile(r"^\s*git\b"),                          "git"),
         (re.compile(r"^\s*(pytest|unittest|jest|vitest|mocha|cargo\s+test|go\s+test|npm\s+test|pnpm\s+test)\b"), "test"),
         (re.compile(r"^\s*(pip|pip3|uv|npm|pnpm|yarn|cargo|brew|apt|apt-get)\s+(install|add|i|sync)\b"), "install"),
@@ -241,11 +241,11 @@ class DingTalkReactionsMixin:
             logger.debug("[%s] _send_emotion %s failed", self.name, action, exc_info=True)
 
     @classmethod
-    def _extract_emotion_tags(cls, content: str) -> tuple[str, List[str]]:
+    def _extract_emotion_tags(cls, content: str) -> tuple[str, list[str]]:
         """Extract ``[[emotion:...]]``/``[[dingtalk:emotion=...]]`` tags."""
         if not content:
             return content, []
-        emotions: List[str] = []
+        emotions: list[str] = []
 
         def _replace(match: re.Match) -> str:
             name = (match.group(1) or "").strip()
@@ -256,7 +256,7 @@ class DingTalkReactionsMixin:
         cleaned = _DINGTALK_EMOTION_TAG_RE.sub(_replace, content)
         return cleaned.strip(), emotions
 
-    def _fire_custom_reactions(self, chat_id: str, emotion_names: List[str]) -> None:
+    def _fire_custom_reactions(self, chat_id: str, emotion_names: list[str]) -> None:
         """Reply with custom DingTalk text emotions requested in message tags."""
         if not emotion_names:
             return

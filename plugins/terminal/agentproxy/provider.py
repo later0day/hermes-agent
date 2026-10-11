@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 
@@ -27,7 +27,7 @@ _SETTINGS = (
 )
 
 
-def agentproxy_settings() -> Dict[str, str]:
+def agentproxy_settings() -> dict[str, str]:
     from tools.terminal_scope import terminal_env
 
     return {key: terminal_env(var, default) for key, var, default in _SETTINGS}
@@ -69,7 +69,7 @@ class AgentProxyTerminalProvider(TerminalEnvironmentProvider):
 
         return bool(get_secret("DASHBOARD_TOKEN")) or os.path.exists(agentproxy_settings()["env_file"])
 
-    def check_requirements(self, config: Dict[str, Any]) -> bool:
+    def check_requirements(self, config: dict[str, Any]) -> bool:
         if self.is_available():
             return True
         logger.error(
@@ -77,7 +77,7 @@ class AgentProxyTerminalProvider(TerminalEnvironmentProvider):
             "AgentProxy env file (%s).", agentproxy_settings()["env_file"])
         return False
 
-    def setup_instructions(self) -> List[str]:
+    def setup_instructions(self) -> list[str]:
         return [
             "Set DASHBOARD_TOKEN in this profile's .env (or keep it in the AgentProxy env file,",
             "default /opt/agentproxy/.env). Optional: TERMINAL_AP_AGENT, TERMINAL_AP_CONTAINER,",
@@ -86,7 +86,7 @@ class AgentProxyTerminalProvider(TerminalEnvironmentProvider):
 
     def create_environment(
         self, *, cwd: str, timeout: int, task_id: str = "default", image: Optional[str] = None,
-        container_config: Optional[Dict[str, Any]] = None, **kwargs: Any,
+        container_config: Optional[dict[str, Any]] = None, **kwargs: Any,
     ):
         from plugins.terminal.agentproxy.environment import AgentProxyEnvironment
 

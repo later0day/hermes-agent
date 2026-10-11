@@ -1827,7 +1827,7 @@ def create_job(
     enabled_toolsets: Optional[list[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
-    owner_chat: Optional[Dict[str, str]] = None,
+    owner_chat: Optional[dict[str, str]] = None,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,

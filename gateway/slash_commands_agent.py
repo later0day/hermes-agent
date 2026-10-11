@@ -140,7 +140,7 @@ class GatewayAgentCommandsMixin:
             chat_level_key=chat_level_key, actor_user_id=actor_user_id, actor_user_name=actor_user_name,
         ))
 
-    async def _agent_status(self, c: "_AgentCommand") -> str:
+    async def _agent_status(self, c: _AgentCommand) -> str:
         source, store, source_key, chat_level_key = c.source, c.store, c.source_key, c.chat_level_key
         profile = self._binding_profile_for_source(source)
         if profile:
@@ -157,7 +157,7 @@ class GatewayAgentCommandsMixin:
         effective = effective or get_active_profile_name() or "default"
         return f"No dynamic binding. Effective profile: `{effective}`."
 
-    async def _agent_clear(self, c: "_AgentCommand") -> str:
+    async def _agent_clear(self, c: _AgentCommand) -> str:
         source, store, source_key, chat_level_key, actor_user_id, actor_user_name = c.source, c.store, c.source_key, c.chat_level_key, c.actor_user_id, c.actor_user_name
         removed = store.delete_binding(source_key)
         if chat_level_key != source_key:
@@ -175,7 +175,7 @@ class GatewayAgentCommandsMixin:
         prefix = "Cleared dynamic binding." if removed else "No dynamic binding existed."
         return f"{prefix} Effective profile: `{effective}`."
 
-    async def _agent_use(self, c: "_AgentCommand") -> str:
+    async def _agent_use(self, c: _AgentCommand) -> str:
         event, source, store, args, source_key, chat_level_key, actor_user_id, actor_user_name = c.event, c.source, c.store, c.args, c.source_key, c.chat_level_key, c.actor_user_id, c.actor_user_name
         if not args:
             return "Usage: /agent use <profile>"
@@ -234,7 +234,7 @@ class GatewayAgentCommandsMixin:
             f"DingTalk fallback webhook is {wh_status}."
         )
 
-    async def _agent_webhook(self, c: "_AgentCommand") -> str:
+    async def _agent_webhook(self, c: _AgentCommand) -> str:
         event, store, source_key, chat_level_key, actor_user_id, actor_user_name = c.event, c.store, c.source_key, c.chat_level_key, c.actor_user_id, c.actor_user_name
         binding = store.get_binding(source_key)
         if not binding:
@@ -275,7 +275,7 @@ class GatewayAgentCommandsMixin:
             return f"Stored DingTalk fallback webhook for agent `{binding.profile_name}`."
         return "No webhook found in raw message."
 
-    async def _agent_list(self, c: "_AgentCommand") -> str:
+    async def _agent_list(self, c: _AgentCommand) -> str:
         from hermes_cli.profiles import list_profiles, read_profile_meta
 
         lines = []
@@ -285,7 +285,7 @@ class GatewayAgentCommandsMixin:
             lines.append(f"- `{p.name}` (model {p.model or 'unset'}, skills: {p.skill_count}{tag})")
         return "\n".join(lines) or "No profiles."
 
-    async def _agent_create(self, c: "_AgentCommand") -> str:
+    async def _agent_create(self, c: _AgentCommand) -> str:
         args, actor_user_id, actor_user_name = c.args, c.actor_user_id, c.actor_user_name
         import argparse
 
@@ -368,7 +368,7 @@ class GatewayAgentCommandsMixin:
         except Exception as exc:  # noqa: BLE001
             return f"Failed: {exc}"
 
-    async def _agent_delete(self, c: "_AgentCommand") -> str:
+    async def _agent_delete(self, c: _AgentCommand) -> str:
         source, store, args, source_key, actor_user_id, actor_user_name = c.source, c.store, c.args, c.source_key, c.actor_user_id, c.actor_user_name
         import secrets as _secrets
         import time as _t

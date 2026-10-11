@@ -6,7 +6,7 @@ the adapter module (``_dt()``) so the facade stays the one patch seam."""
 import json
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.base import SendResult
@@ -91,7 +91,7 @@ class DingTalkCardsMixin:
         content: str,
         *,
         finalize: bool = True,
-        at_users: Optional[Dict[str, str]] = None,
+        at_users: Optional[dict[str, str]] = None,
     ) -> Optional[SendResult]:
         """Create, deliver and stream an AI Card; ``finalize=False`` leaves it open for ``edit_message`` by out_track_id.
 
@@ -105,7 +105,7 @@ class DingTalkCardsMixin:
             out_track_id, models = f"hermes_{uuid.uuid4().hex[:12]}", _dt().dingtalk_card_models
             is_group = str(getattr(message, "conversation_type", "1")) == "2"
             sender_staff_id = getattr(message, "sender_staff_id", "") or ""
-            create_kwargs: Dict[str, Any] = {
+            create_kwargs: dict[str, Any] = {
                 "card_template_id": self._card_template_id,
                 "out_track_id": out_track_id,
                 "card_data": models.CreateCardRequestCardData(card_param_map=self._card_initial_param_map()),
@@ -119,7 +119,7 @@ class DingTalkCardsMixin:
             await self._sdk_call(self._card_sdk.create_card_with_options_async, create_request, models.CreateCardHeaders, token)
             if is_group:
                 open_space_id = f"dtv1.card//IM_GROUP.{getattr(message, 'conversation_id', '') or ''}"
-                deliver_kwargs: Dict[str, Any] = {"robot_code": self._robot_code}
+                deliver_kwargs: dict[str, Any] = {"robot_code": self._robot_code}
                 if at_users:
                     deliver_kwargs["at_user_ids"] = at_users
                 deliver_model = {"im_group_open_deliver_model": models.DeliverCardRequestImGroupOpenDeliverModel(**deliver_kwargs)}
@@ -178,7 +178,7 @@ class DingTalkCardsMixin:
         (``extra``, seeded from the profile's ``dingtalk:`` block), else DingTalk's default."""
         return self._card_content_key_override or DEFAULT_AI_CARD_CONTENT_KEY
 
-    def _card_initial_param_map(self) -> Dict[str, str]:
+    def _card_initial_param_map(self) -> dict[str, str]:
         """Return initial card data for custom templates or the SDK default."""
         if not self._card_uses_default_template:
             return {self._current_card_content_key(): ""}
@@ -199,7 +199,7 @@ class DingTalkCardsMixin:
         }
 
     @staticmethod
-    def _image_card_param_map(media_id: str, caption: Optional[str]) -> Dict[str, str]:
+    def _image_card_param_map(media_id: str, caption: Optional[str]) -> dict[str, str]:
         """Card param map for a DM image delivery via card_1_0."""
         content = caption or ""
         order = [

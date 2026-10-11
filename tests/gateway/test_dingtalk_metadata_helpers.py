@@ -8,9 +8,7 @@ _media_error_for_item, _default_media_type, _looks_like_mp4, _looks_like_native_
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
-import pytest
 
 from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
@@ -230,7 +228,6 @@ class TestLooksLikeMp4:
     def test_real_mp4_magic(self, tmp_path):
         f = tmp_path / "test.mp4"
         # Minimal valid MP4 header: ftyp box
-        import struct
         f.write_bytes(
             b"\x00\x00\x00\x18"  # box size
             b"ftyp"              # box type

@@ -14,7 +14,7 @@ import tempfile
 import uuid
 import zlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.platforms.base import (
     SendResult,
@@ -88,7 +88,7 @@ class DingTalkMediaMixin:
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send local MP4 as native DingTalk video, falling back to file."""
@@ -185,7 +185,7 @@ class DingTalkMediaMixin:
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send OGG/AMR as native DingTalk audio, falling back to file."""
@@ -322,7 +322,7 @@ class DingTalkMediaMixin:
         media_id: str,
         *,
         caption: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an uploaded image through DingTalk's card_1_0 delivery path for DM images."""
         metadata = metadata or {}
@@ -553,7 +553,7 @@ class DingTalkMediaMixin:
             logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
 
     @staticmethod
-    def _duration_ms_from_metadata(metadata: Dict[str, Any]) -> Optional[int]:
+    def _duration_ms_from_metadata(metadata: dict[str, Any]) -> Optional[int]:
         """Read a media duration in ms from metadata (ms keys first, then seconds keys)."""
         for key in ("dingtalk_duration_ms", "duration_ms"):
             raw = metadata.get(key)
@@ -821,9 +821,9 @@ class DingTalkMediaMixin:
         value = cls._media_get(item, "_hermes_media_error")
         return str(value) if value else None
 
-    def _extract_media_errors(self, message: "ChatbotMessage") -> List[str]:
+    def _extract_media_errors(self, message: "ChatbotMessage") -> list[str]:
         """Collect per-attachment media-resolution failures attached by ``_resolve_media_codes``."""
-        errors: List[str] = []
+        errors: list[str] = []
         image_content = getattr(message, "image_content", None)
         if image_content:
             error = self._media_error_for_item(image_content)

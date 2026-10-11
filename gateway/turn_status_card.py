@@ -14,7 +14,7 @@ import queue
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.i18n import t
 
@@ -311,15 +311,15 @@ class TurnStatusCardCoordinator:
         *,
         adapter: Any,
         chat_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         config: Optional[TurnStatusCardConfig] = None,
     ) -> None:
         self.adapter = adapter
         self.chat_id = chat_id
         self.metadata = dict(metadata or {})
         self.config = config or TurnStatusCardConfig()
-        self._queue: "queue.Queue[Any]" = queue.Queue()
-        self._tools: Dict[str, ToolStatusEntry] = {}
+        self._queue: queue.Queue[Any] = queue.Queue()
+        self._tools: dict[str, ToolStatusEntry] = {}
         self._tool_order: list[str] = []
         self._assistant_text = ""
         self._commentary = ""
@@ -457,7 +457,7 @@ class TurnStatusCardCoordinator:
         tool_name: Optional[str],
         preview: Optional[str],
         args: Optional[dict],
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> None:
         if event_type == "tool.started":
             if not tool_name:
@@ -516,14 +516,14 @@ class TurnStatusCardCoordinator:
                 self._streaming_only_activation = False
                 self._dirty = True
 
-    def _tool_key(self, tool_name: str, kwargs: Dict[str, Any]) -> str:
+    def _tool_key(self, tool_name: str, kwargs: dict[str, Any]) -> str:
         key = self._identity_tool_key(kwargs)
         if key is not None:
             return key
         self._fallback_counter += 1
         return f"fallback:{self._fallback_counter}:{tool_name}"
 
-    def _identity_tool_key(self, kwargs: Dict[str, Any]) -> Optional[str]:
+    def _identity_tool_key(self, kwargs: dict[str, Any]) -> Optional[str]:
         scope = kwargs.get("subagent_id") or kwargs.get("child_session_id") or ""
         scope_prefix = f"{scope}:" if scope else ""
         call_id = kwargs.get("tool_call_id") or kwargs.get("call_id")
@@ -534,7 +534,7 @@ class TurnStatusCardCoordinator:
             return f"{scope_prefix}idx:{index}"
         return None
 
-    def _find_tool_key(self, tool_name: str, kwargs: Dict[str, Any]) -> Optional[str]:
+    def _find_tool_key(self, tool_name: str, kwargs: dict[str, Any]) -> Optional[str]:
         key = self._identity_tool_key(kwargs)
         if key is not None and key in self._tools:
             return key
@@ -855,7 +855,7 @@ def maybe_start_turn_status_card(runner: Any, turn_ctx: Any, disp: Any, source: 
     )
 
 
-async def finish_turn_status_card(card: Optional["TurnStatusCardCoordinator"], task: Any) -> None:
+async def finish_turn_status_card(card: Optional[TurnStatusCardCoordinator], task: Any) -> None:
     """Finalize the turn's card and drain its edit loop so the closing edit lands before cleanup."""
     import asyncio
     from contextlib import suppress
@@ -868,7 +868,7 @@ async def finish_turn_status_card(card: Optional["TurnStatusCardCoordinator"], t
     if task:
         try:
             await asyncio.wait_for(task, timeout=5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
