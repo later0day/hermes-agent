@@ -5,6 +5,7 @@ Mixed into :class:`~plugins.platforms.dingtalk.adapter.DingTalkAdapter`; SDK mod
 the adapter module (``_dt()``) so the facade stays the one patch seam."""
 
 import asyncio
+import contextlib
 import logging
 import mimetypes
 import os
@@ -57,7 +58,7 @@ class DingTalkMediaMixin:
         if image_path.startswith(("http://", "https://")):
             return await self.send_image(chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata)
         path = Path(image_path)
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             return SendResult(success=False, error=f"Local file not found: {image_path}")
         upload = await self._upload_robot_media(str(path), media_type="image")
         if not upload.success:
@@ -69,7 +70,7 @@ class DingTalkMediaMixin:
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
         """Upload a local file and send it as a DingTalk sampleFile robot message."""
         path = Path(file_path)
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             return SendResult(success=False, error=f"Local file not found: {file_path}")
         metadata = metadata or {}
         upload = await self._upload_robot_media(str(path), media_type="file")
@@ -104,7 +105,7 @@ class DingTalkMediaMixin:
             )
 
         path = Path(video_path)
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             return SendResult(success=False, error=f"Local file not found: {video_path}")
 
         metadata = metadata or {}
@@ -165,10 +166,8 @@ class DingTalkMediaMixin:
                             return native_result
                 finally:
                     if generated_cover:
-                        try:
+                        with contextlib.suppress(OSError):
                             cover_path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
 
         return await self.send_document(
             chat_id=chat_id,
@@ -201,7 +200,7 @@ class DingTalkMediaMixin:
             )
 
         path = Path(audio_path)
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             return SendResult(success=False, error=f"Local file not found: {audio_path}")
 
         metadata = metadata or {}
@@ -253,8 +252,8 @@ class DingTalkMediaMixin:
 
     async def _upload_robot_media(self, file_path: str, media_type: str) -> SendResult:
         """Upload a local file to DingTalk's robot media endpoint for a temporary ``media_id``."""
-        path = Path(file_path).expanduser()
-        if not path.is_file():
+        path = await asyncio.to_thread(Path(file_path).expanduser)
+        if not await asyncio.to_thread(path.is_file):
             return SendResult(success=False, error=f"Local file not found: {file_path}")
         if media_type not in {"image", "file", "voice", "video"}:
             return SendResult(success=False, error=f"Unsupported DingTalk media type: {media_type}")
@@ -283,7 +282,7 @@ class DingTalkMediaMixin:
                 )
             try:
                 body = response.json()
-            except Exception:
+            except ValueError:
                 body = {}
             if response.status_code >= 300:
                 return SendResult(
@@ -313,7 +312,7 @@ class DingTalkMediaMixin:
             )
             return SendResult(success=True, message_id=str(media_id), raw_response=body)
         except Exception as exc:
-            logger.warning("[%s] DingTalk media upload failed: %s", self.name, exc)
+            logger.warning("[%s] DingTalk media upload failed: %s", self.name, exc, exc_info=True)
             return SendResult(success=False, error=f"DingTalk media upload failed: {exc}")
 
     async def _send_robot_card_1_0_image(
@@ -440,6 +439,7 @@ class DingTalkMediaMixin:
                 exc,
                 str(open_conversation_id)[:20],
                 route,
+                exc_info=True,
             )
             return SendResult(success=False, error=f"DingTalk card_1_0 image failed: {exc}")
 
@@ -518,6 +518,7 @@ class DingTalkMediaMixin:
                 self.name,
                 safe_url_for_log(url),
                 exc,
+                exc_info=True,
             )
             return
         self._set_cached_media_ref(obj, key, path, media_type, filename)
@@ -550,7 +551,7 @@ class DingTalkMediaMixin:
             elif url and isinstance(obj, dict):
                 obj[key] = url
         except Exception as e:
-            logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+            logger.error("[%s] Error resolving media code %s: %s", self.name, code, e, exc_info=True)
 
     @staticmethod
     def _duration_ms_from_metadata(metadata: dict[str, Any]) -> Optional[int]:
@@ -609,7 +610,7 @@ class DingTalkMediaMixin:
             seconds = float((result.stdout or "").strip())
             duration_ms = int(seconds * 1000)
             return duration_ms if duration_ms > 0 else None
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError):
             return None
 
     @staticmethod
@@ -618,7 +619,7 @@ class DingTalkMediaMixin:
         try:
             with path.open("rb") as fh:
                 header = fh.read(32)
-        except Exception:
+        except OSError:
             return False
         return len(header) >= 12 and b"ftyp" in header[:16]
 
@@ -628,7 +629,7 @@ class DingTalkMediaMixin:
         try:
             with path.open("rb") as fh:
                 header = fh.read(16)
-        except Exception:
+        except OSError:
             return False
         if ext == "ogg":
             return header.startswith(b"OggS")
@@ -665,12 +666,10 @@ class DingTalkMediaMixin:
             )
             if result.returncode == 0 and output.is_file() and output.stat().st_size > 0:
                 return output
-        except Exception:
-            pass
-        try:
+        except (OSError, subprocess.SubprocessError):
+            logger.debug("ffmpeg video cover generation failed for %s", path, exc_info=True)
+        with contextlib.suppress(OSError):
             output.unlink(missing_ok=True)
-        except Exception:
-            pass
         return None
 
     @staticmethod
@@ -698,11 +697,9 @@ class DingTalkMediaMixin:
             )
             output.write_bytes(png)
             return output
-        except Exception:
-            try:
+        except OSError:
+            with contextlib.suppress(OSError):
                 output.unlink(missing_ok=True)
-            except Exception:
-                pass
             return None
 
     @staticmethod

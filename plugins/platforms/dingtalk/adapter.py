@@ -412,6 +412,8 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         websocket closed, which unblocks the SDK's inner ``async for`` and triggers a fresh
         reconnect with a new ticket. See ``STREAM_PING_INTERVAL`` for the full rationale.
         """
+        from websockets.exceptions import ConnectionClosed
+
         while self._running:
             await asyncio.sleep(self._ping_interval)
             if not self._running:
@@ -427,9 +429,8 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
                 await asyncio.wait_for(pong_waiter, timeout=self._ping_timeout)
             except asyncio.CancelledError:
                 return
-            except Exception as exc:
-                # Includes ``asyncio.TimeoutError`` (pong never arrived) and any
-                # ``ConnectionClosed*`` raised by ``ping()`` on an already-dead socket.
+            except (TimeoutError, ConnectionClosed, OSError) as exc:
+                # The pong never arrived, or ``ping()`` hit an already-dead socket.
                 if not self._running:
                     return
                 logger.warning("[%s] Stream liveness check failed (%s: %s) — forcing reconnect on "
@@ -1085,6 +1086,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
                 msg_key,
                 str(open_conversation_id)[:20],
                 send_route,
+                exc_info=True,
             )
             return SendResult(success=False, error=f"DingTalk native send failed: {exc}")
 
