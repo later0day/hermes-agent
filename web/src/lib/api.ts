@@ -839,23 +839,6 @@ export const api = {
         body: JSON.stringify({ content }),
       },
     ),
-  getProfileMemory: (name: string, doc: "MEMORY.md" | "USER.md") =>
-    fetchJSON<{ content: string; exists: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(doc)}`,
-    ),
-  updateProfileMemory: (
-    name: string,
-    doc: "MEMORY.md" | "USER.md",
-    content: string,
-  ) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(doc)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      },
-    ),
 
   // Skills & Toolsets
   //
@@ -1231,8 +1214,6 @@ export const api = {
   // rewrite in withManagementProfile doesn't reach them — send it explicitly
   // or an approval lands in the wrong profile's whitelist.
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
-  // Approve by the pending list's `request_id` or by a one-time `code` the user
-  // relayed from their DM; the caller knows which it holds, so it names it.
   approvePairing: (platform: string, target: { request_id: string } | { code: string }) =>
     fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
       method: "POST",
@@ -2470,8 +2451,6 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
-  /** "bundled" | "hub" | "agent" (hermes_cli/web_routers/skills.py) */
-  provenance?: string;
 }
 
 export interface SkillContent {

@@ -1,8 +1,9 @@
 import type { ActionStatusResponse, SkillInfo } from '@/lib/api'
 
 /** Only hub-installed skills can be uninstalled (`hermes skills uninstall` refuses bundled and
- *  agent-created ones), so only they get a delete control. */
-export function canUninstallSkill(skill: Pick<SkillInfo, 'provenance'>): boolean {
+ *  agent-created ones), so only they get a delete control. ``provenance`` is "bundled" | "hub" |
+ *  "agent" in the dashboard's skill listing (hermes_cli/web_routers/skills.py). */
+export function canUninstallSkill(skill: Partial<SkillInfo> & { provenance?: string }): boolean {
   return skill.provenance === 'hub'
 }
 

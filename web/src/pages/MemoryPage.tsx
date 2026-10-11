@@ -6,13 +6,13 @@ import {
   useState,
 } from "react";
 import { Brain, Eye, Pencil, RotateCw, Save, User } from "lucide-react";
-import { api } from "@/lib/api";
+import { memoryApi, type MemoryDoc } from "@/lib/api-memory";
 import { Markdown } from "@/components/Markdown";
 import { loadErrorCopy } from "@/lib/load-error-copy";
 import { memoryPreviewMarkdown } from "@/lib/memory-markdown";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { useI18n } from "@/i18n";
+import { useI18n, type Translations } from "@/i18n";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -30,7 +30,6 @@ import {
 /*  Memory documents                                                   */
 /* ------------------------------------------------------------------ */
 
-type MemoryDoc = "MEMORY.md" | "USER.md";
 
 interface DocMeta {
   doc: MemoryDoc;
@@ -59,6 +58,23 @@ const DOCS: DocMeta[] = [
   },
 ];
 
+/** Localized copy for one document. ``memory`` is an optional i18n section, so a locale that omits
+ *  it falls back to the English literals (the per-doc ones baked into DocMeta). */
+function memoryDocCopy(mem: Translations["memory"], meta: DocMeta) {
+  const user = meta.doc === "USER.md";
+  const fill = (template: string) => template.replace("{doc}", meta.doc);
+  return {
+    description: mem ? (user ? mem.userDescription : mem.memoryDescription) : meta.descriptionFallback,
+    placeholder: mem ? (user ? mem.userPlaceholder : mem.memoryPlaceholder) : meta.placeholderFallback,
+    emptyLabel: mem?.empty ?? "(empty)",
+    unsavedLabel: mem?.unsavedChanges ?? "Unsaved changes",
+    previewLabel: mem?.preview ?? "Preview",
+    editLabel: mem?.edit ?? "Edit",
+    savedMsg: fill(mem?.saved ?? "{doc} saved"),
+    failedMsg: fill(mem?.failedToSave ?? "Failed to save {doc}"),
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Single memory-document editor card                                 */
 /* ------------------------------------------------------------------ */
@@ -80,35 +96,14 @@ function MemoryEditor({
   const [exists, setExists] = useState(false);
   const [preview, setPreview] = useState(false);
 
-  // Localized copy for this doc; `memory` is an optional i18n section, so full
-  // locales that omit it fall back to the English literals baked into DocMeta.
-  const mem = t.memory;
-  const isUserDoc = meta.doc === "USER.md";
-  const description = mem
-    ? isUserDoc
-      ? mem.userDescription
-      : mem.memoryDescription
-    : meta.descriptionFallback;
-  const placeholder = mem
-    ? isUserDoc
-      ? mem.userPlaceholder
-      : mem.memoryPlaceholder
-    : meta.placeholderFallback;
-  const emptyLabel = mem?.empty ?? "(empty)";
-  const unsavedLabel = mem?.unsavedChanges ?? "Unsaved changes";
-  const previewLabel = mem?.preview ?? "Preview";
-  const editLabel = mem?.edit ?? "Edit";
-  const savedMsg = (mem?.saved ?? "{doc} saved").replace("{doc}", meta.doc);
-  const failedMsg = (mem?.failedToSave ?? "Failed to save {doc}").replace(
-    "{doc}",
-    meta.doc,
-  );
+  const { description, placeholder, emptyLabel, unsavedLabel, previewLabel, editLabel, savedMsg, failedMsg } =
+    memoryDocCopy(t.memory, meta);
 
   const load = useCallback(() => {
     let cancelled = false;
     setLoading(true);
-    api
-      .getProfileMemory(profile || "default", meta.doc)
+    memoryApi
+      .get(profile || "default", meta.doc)
       .then((res) => {
         if (cancelled) return;
         setText(res.content);
@@ -130,7 +125,7 @@ function MemoryEditor({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateProfileMemory(profile || "default", meta.doc, text);
+      await memoryApi.update(profile || "default", meta.doc, text);
       setOriginal(text);
       setExists(true);
       showToast(savedMsg, "success");

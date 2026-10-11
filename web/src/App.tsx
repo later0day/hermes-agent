@@ -68,7 +68,6 @@ import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
-import { SessionSearchModal } from "@/components/SessionSearchModal";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -113,7 +112,7 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { sharedGatewayProfiles, sharedGatewayRestartDescription } from "@/lib/shared-gateway";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { GuardedSuspense } from "@/components/GuardedSuspense";
 
 function RouteFallback({ label = "Loading…" }: { label?: string }) {
   return (
@@ -519,20 +518,6 @@ export default function App() {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
-  // Global Cmd/Ctrl+K session-search palette. Toggled from anywhere in the
-  // shell; the modal handles its own Escape/arrow keys once open.
-  const [searchOpen, setSearchOpen] = useState(false);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setSearchOpen((prev) => !prev);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
-
   return (
     <ProfileProvider>
     <div
@@ -540,8 +525,6 @@ export default function App() {
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
     >
       <SelectionSwitcher />
-
-      <SessionSearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
 
       <div
         aria-hidden
@@ -803,27 +786,19 @@ export default function App() {
                 )}
               >
                 <ProfileKeyedRoutes>
-                  <ErrorBoundary
-                    resetKeys={[pathname]}
-                    title={t.common.errorBoundaryTitle}
-                    description={t.common.errorBoundaryDescription}
-                    retryLabel={t.common.retry}
-                    reloadLabel={t.common.refresh}
-                  >
-                    <Suspense fallback={<RouteFallback />}>
-                      <Routes>
-                        {routes.map(({ key, path, element }) => (
-                          <Route key={key} path={path} element={element} />
-                        ))}
-                        <Route
-                          path="*"
-                          element={
-                            <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                          }
-                        />
-                      </Routes>
-                    </Suspense>
-                  </ErrorBoundary>
+                  <GuardedSuspense fallback={<RouteFallback />}>
+                    <Routes>
+                      {routes.map(({ key, path, element }) => (
+                        <Route key={key} path={path} element={element} />
+                      ))}
+                      <Route
+                        path="*"
+                        element={
+                          <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                        }
+                      />
+                    </Routes>
+                  </GuardedSuspense>
                 </ProfileKeyedRoutes>
 
                 {embeddedChat &&

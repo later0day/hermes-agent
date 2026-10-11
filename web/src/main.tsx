@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import "./index.css";
 import App from "./App";
+import { SessionSearchPalette } from "./components/SessionSearchModal";
 import { SystemActionsProvider } from "./contexts/SystemActions";
 import { I18nProvider } from "./i18n";
 import { exposePluginSDK } from "./plugins";
@@ -18,6 +19,7 @@ createRoot(document.getElementById("root")!).render(
       <ThemeProvider>
         <SystemActionsProvider>
           <App />
+          <SessionSearchPalette />
         </SystemActionsProvider>
       </ThemeProvider>
     </I18nProvider>

@@ -31,7 +31,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { canUninstallSkill, waitForAction } from "@/lib/skill-uninstall";
+import { useSkillUninstall } from "@/components/SkillUninstall";
 import type {
   SkillInfo,
   ToolsetInfo,
@@ -45,8 +45,6 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
 import { LoadErrorNotice } from "@/components/LoadErrorNotice";
-import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -132,6 +130,7 @@ function toolsetIcon(
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
+// health: allow FUNC_LINES -- fork hooks only: the uninstall hook call, its dialog and two onDelete props (logic in components/SkillUninstall.tsx)
 export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
@@ -220,32 +219,7 @@ export default function SkillsPage() {
     }
   };
 
-  /* ---- Delete (uninstall) a skill ----
-   * Backend spawns `hermes skills uninstall <name> --yes` async (returns a
-   * pid). We optimistically drop the row on success, then reconcile with a
-   * fresh getSkills so a failed/partial uninstall re-appears. Scoped to the
-   * sidebar profile switcher like every other write on this page. */
-  const skillDelete = useConfirmDelete<string>({
-    onDelete: useCallback(
-      async (name: string) => {
-        try {
-          const res = await api.uninstallSkillFromHub(name, selectedProfile || undefined);
-          setSkills((prev) => prev.filter((s) => s.name !== name));
-          showToast(`Uninstalling ${name}…`, "success");
-          // Reconcile once the async CLI has exited (an in-use skill may survive and re-appear).
-          void waitForAction((n) => api.getActionStatus(n, 0), res.name)
-            .then(() => api.getSkills(selectedProfile || undefined))
-            .then(setSkills)
-            .catch(() => {});
-        } catch (e) {
-          showToast(`${t.status.error}: ${e}`, "error");
-          throw e;
-        }
-      },
-      [selectedProfile, showToast, t.status.error],
-    ),
-  });
-
+  const uninstall = useSkillUninstall(selectedProfile, setSkills, showToast);
   /* ---- Skill editor (create / edit SKILL.md) ---- */
   const openCreateEditor = useCallback(() => {
     setEditorSkill(null);
@@ -546,7 +520,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
-                        onDelete={canUninstallSkill(skill) ? () => skillDelete.requestDelete(skill.name) : undefined}
+                        onDelete={uninstall.onDeleteFor(skill)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -621,7 +595,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
-                        onDelete={canUninstallSkill(skill) ? () => skillDelete.requestDelete(skill.name) : undefined}
+                        onDelete={uninstall.onDeleteFor(skill)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -733,14 +707,7 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
-      <DeleteConfirmDialog
-        open={skillDelete.isOpen}
-        onCancel={skillDelete.cancel}
-        onConfirm={skillDelete.confirm}
-        title="Delete skill?"
-        description={`This uninstalls "${skillDelete.pendingId ?? ""}" (runs \`hermes skills uninstall\`). Built-in or in-use skills may reappear. This cannot be undone for hub- or user-installed skills.`}
-        loading={skillDelete.isDeleting}
-      />
+      {uninstall.dialog}
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>

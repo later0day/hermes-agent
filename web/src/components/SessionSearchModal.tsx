@@ -180,3 +180,21 @@ export function SessionSearchModal({ open, onClose }: Props) {
     </div>
   );
 }
+
+/** The palette with its own open state, toggled by Cmd/Ctrl+K from anywhere in the shell (the modal
+ *  handles Escape and arrow keys once open). Mounted once beside the app in ``main.tsx``. */
+export function SessionSearchPalette() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+  return <SessionSearchModal open={open} onClose={() => setOpen(false)} />;
+}
+
