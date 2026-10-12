@@ -536,7 +536,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
     def _message_matches_mention_patterns(self, text: str) -> bool:
         return bool(text and self._mention_patterns) and any(p.search(text) for p in self._mention_patterns)
 
-    def _should_process_message(self, message: "ChatbotMessage", text: str, is_group: bool, chat_id: str) -> bool:
+    def _should_process_message(self, message: ChatbotMessage, text: str, is_group: bool, chat_id: str) -> bool:
         """Group trigger rules (DMs always pass; ``allowed_users`` is enforced earlier): ``allowed_chats`` is a hard
         gate, then any of free_response_chats / require_mention off / @mentioned (SDK ``is_in_at_list``) / wake-word."""
         if not is_group:
@@ -584,7 +584,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         self._pending_reply_state.pop(chat_id, None)
         self._final_reaction_label.pop(chat_id, None)
 
-    async def _on_message(self, message: "ChatbotMessage") -> None:
+    async def _on_message(self, message: ChatbotMessage) -> None:
         """Process an incoming DingTalk chatbot message."""
         msg_id = getattr(message, "message_id", None) or uuid.uuid4().hex
         if self._dedup.is_duplicate(msg_id):
@@ -627,7 +627,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
 
     _extract_text = staticmethod(extract_text)
 
-    def _extract_media(self, message: "ChatbotMessage"):
+    def _extract_media(self, message: ChatbotMessage):
         return extract_media(message)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -1223,7 +1223,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
                 return Path(str(value)).name
         return None
 
-    def _message_mentions_bot(self, message: "ChatbotMessage") -> bool:
+    def _message_mentions_bot(self, message: ChatbotMessage) -> bool:
         """True if the bot was @-mentioned in a group message.
 
         dingtalk-stream sets ``is_in_at_list`` on the incoming ChatbotMessage
@@ -1363,7 +1363,7 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
         """No-op hook the SDK calls on every handler before opening the WebSocket (missing → AttributeError)."""
         return
 
-    async def process(self, message: "CallbackMessage"):
+    async def process(self, message: CallbackMessage):
         """Convert to ChatbotMessage, dispatch as a background task, ACK immediately (blocking would stall SDK heartbeats)."""
         try:
             data = json.loads(message.data) if isinstance(message.data, str) else message.data
@@ -1384,7 +1384,7 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
             return AckMessage.STATUS_SYSTEM_EXCEPTION, "error"
         return AckMessage.STATUS_OK, "OK"
 
-    async def _safe_on_message(self, chatbot_msg: "ChatbotMessage") -> None:
+    async def _safe_on_message(self, chatbot_msg: ChatbotMessage) -> None:
         try:
             await self._adapter._on_message(chatbot_msg)
         except Exception:
