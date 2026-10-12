@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 
 @pytest.fixture
 def adapter_mod():
@@ -52,9 +54,8 @@ async def test_watchdog_leaves_healthy_connection_alone(adapter_mod):
     websocket.close = AsyncMock()
     adapter = _fake_adapter(adapter_mod, websocket)
 
-    # Run watchdog briefly then stop
     task = asyncio.create_task(adapter._run_watchdog())
-    await asyncio.sleep(0.05)
+    await async_wait_until(lambda: websocket.ping.await_count >= 2, timeout=5)  # a full cycle passed
     adapter._running = False
     await asyncio.wait_for(task, timeout=1.0)
 
@@ -72,7 +73,7 @@ async def test_watchdog_forces_close_on_pong_timeout(adapter_mod):
     adapter = _fake_adapter(adapter_mod, websocket, ping_timeout=0.03)
 
     task = asyncio.create_task(adapter._run_watchdog())
-    await asyncio.sleep(0.1)  # long enough for one ping + timeout
+    await async_wait_until(lambda: websocket.close.await_count >= 1, timeout=5)
     adapter._running = False
     # cancel the never-resolving future so the awaiting task can unwind
     never_resolves.cancel()
@@ -85,9 +86,16 @@ async def test_watchdog_forces_close_on_pong_timeout(adapter_mod):
 async def test_watchdog_skips_probe_when_websocket_absent(adapter_mod):
     """Mid-reconnect ``self._stream_client.websocket`` is None; watchdog must not crash."""
     adapter = _fake_adapter(adapter_mod, websocket=None)
+    probes = []
 
+    class _NoClient:  # the watchdog checks the stream client once per cycle
+        def __bool__(self):
+            probes.append(1)
+            return False
+
+    adapter._stream_client = _NoClient()
     task = asyncio.create_task(adapter._run_watchdog())
-    await asyncio.sleep(0.05)
+    await async_wait_until(lambda: len(probes) >= 2, timeout=5)
     adapter._running = False
     await asyncio.wait_for(task, timeout=1.0)
     # No exception raised, task exited cleanly
@@ -109,7 +117,7 @@ async def test_watchdog_exits_on_cancellation_without_force_close(adapter_mod):
     adapter = _fake_adapter(adapter_mod, websocket, ping_timeout=10.0)
 
     task = asyncio.create_task(adapter._run_watchdog())
-    await asyncio.sleep(0.02)  # let the ping enter its wait_for
+    await async_wait_until(lambda: websocket.ping.await_count >= 1, timeout=5)  # inside its wait_for
     task.cancel()
     hung.cancel()
     await asyncio.wait_for(task, timeout=1.0)
@@ -143,7 +151,7 @@ async def test_disconnect_cancels_watchdog_before_websocket_close(adapter_mod):
 
     async def slow_watchdog():
         try:
-            await asyncio.sleep(60)
+            await asyncio.Event().wait()  # hangs until cancelled
         except asyncio.CancelledError:
             events.append("watchdog_cancelled")
             raise

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
-import time
 import types
 from types import SimpleNamespace
 
@@ -522,7 +521,7 @@ async def test_non_retryable_initial_send_failure_disables_card_updates():
         tool_call_id="call-1",
         index=0,
     )
-    await asyncio.sleep(0.05)
+    await wait_until(card._queue.empty)  # the completion went through the flush decision
     card.finish()
     await task
 
@@ -766,7 +765,6 @@ class TurnStatusAgent:
             tool_call_id="call-read",
             index=0,
         )
-        time.sleep(0.02)
         cb(
             "tool.completed",
             "read_file",
@@ -840,7 +838,6 @@ class InterimTurnStatusAgent:
         cb = self.interim_assistant_callback
         assert cb is not None
         cb("I'll inspect the current state first.")
-        time.sleep(0.02)
         cb("I found the relevant path and am checking the result.")
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
