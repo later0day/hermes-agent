@@ -251,7 +251,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
-                  ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)
+                  ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only)
     if builder is not None:
         env = builder(**kwargs)
     else:
