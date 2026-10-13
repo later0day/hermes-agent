@@ -44,6 +44,20 @@ new upstream, so the reasoning survives the `/tmp` worktree it was done in.
 - `/room`: documented in `reference/slash-commands.md`; English fallback added to the 15 non-en/zh locales
   (`TODO(i18n)`); demoted to `/hermes room` on Slack (50-slash cap); `CommandDef.subcommands` completed.
 
+## Non-Rooms fork features rebase-onto-main had missed (ported afterwards)
+
+A per-commit audit of all 83 fork commits found two features absent from `rebase-onto-main` (everything else
+was re-ported there, sometimes with stricter behaviour, e.g. `/agent create|delete|webhook` now require an
+explicit gateway admin):
+
+- **Weixin QR onboarding** (`4f70f430e0`): routes + models in the fork-owned
+  `hermes_cli/web_routers/weixin_onboarding.py`, following upstream's current Telegram/WhatsApp onboarding idioms;
+  `weixin_create_qr` reuses upstream `_fetch_qr`; `weixin_setup` (account linked: bool only) sits beside
+  `whatsapp_setup`. New tests prove the bot token never appears in any payload.
+- **Profiles page bound-sources summary** (`dfe7224f99`): `GET /api/profiles/bindings` (static `profile_routes` +
+  dynamic `/agent use` bindings). New real-HTTP test covers route shadowing, `:`-bearing chat ids and that
+  fallback webhook URLs are reported only as `has_fallback_webhook`.
+
 ## Deliberately not carried
 
 - `agent/anthropic_adapter.py` / `anthropic_endpoints.py` Claude-Code client-identity injection for loopback
