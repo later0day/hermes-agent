@@ -879,7 +879,7 @@ class GatewaySlashCommandsMixin(
                                    room_id=room_id, count=len(projected))]
                         for pt in projected:
                             dep = ",".join(pt.blocked_by) or "—"
-                            subj = pt.subject
+                            subj = " ".join(pt.subject.split())  # one chat line per task
                             if len(subj) > 60:
                                 subj = subj[:57] + "…"
                             lines.append(t(

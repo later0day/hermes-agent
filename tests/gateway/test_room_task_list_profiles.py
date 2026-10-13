@@ -58,7 +58,7 @@ async def test_task_list_fallback_ignores_deleted_profile_tombstones(tmp_path, m
                                       limit=hosted_rooms.MAX_LOG_LIMIT)["events"]
     decision = discussion.plan_next_task(room, events, local_profiles=("plan", "backend"))
     publication = discussion.plan_publication(
-        room, events, decision.task, status="settled", result={"text": "@backend build the API"},
+        room, events, decision.task, status="settled", result={"text": "@backend build\n\nthe API"},
         local_profiles=("plan", "backend"),
     )
     for event in publication.events:
@@ -71,4 +71,5 @@ async def test_task_list_fallback_ignores_deleted_profile_tombstones(tmp_path, m
     )
 
     assert "error" not in out.lower(), out
-    assert "@backend" in out
+    rows = [line for line in out.splitlines() if "@backend" in line]
+    assert rows and "build the API" in rows[0]  # a multi-line dispatch stays one task row
