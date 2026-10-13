@@ -127,8 +127,17 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
   const listGuard = useRef(createLatestRequestGuard());
   const roomGuard = useRef(createLatestRequestGuard());
   const mounted = useRef(true);
-  const onError = options.onError;
-  const requireSuccess = options.requireSuccess ?? requireSuccessfulAction;
+  // Callers pass these inline (a new function every render). Read them through refs so loadList/loadRoom keep a
+  // stable identity: depending on them directly re-ran the load effects on every render, and each load's
+  // setState re-rendered again -- an unbounded /api/rooms request loop (thousands per second).
+  const onErrorRef = useRef(options.onError);
+  const requireSuccessRef = useRef(options.requireSuccess ?? requireSuccessfulAction);
+  useEffect(() => {
+    onErrorRef.current = options.onError;
+    requireSuccessRef.current = options.requireSuccess ?? requireSuccessfulAction;
+  });
+  const onError = useCallback((error: unknown) => onErrorRef.current?.(error), []);
+  const requireSuccess = useCallback((response: RoomActionResponse) => requireSuccessRef.current(response), []);
 
   useEffect(() => () => { mounted.current = false; listGuard.current.next(); roomGuard.current.next(); }, []);
 
@@ -142,7 +151,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       setRooms(next);
       setSelectedRoomId((current) => selectAvailableRoom(current, next));
     } catch (error) {
-      if (mounted.current && listGuard.current.current(token)) { setListError(roomErrorMessage(error)); onError?.(error); }
+      if (mounted.current && listGuard.current.current(token)) { setListError(roomErrorMessage(error)); onError(error); }
     } finally {
       if (mounted.current && listGuard.current.current(token)) setLoadingList(false);
     }
@@ -173,7 +182,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       }));
       setSelectedTaskId((current) => selectAvailableTask(current, response));
     } catch (error) {
-      if (mounted.current && roomGuard.current.current(token)) { setWorkspaceError(roomErrorMessage(error)); onError?.(error); }
+      if (mounted.current && roomGuard.current.current(token)) { setWorkspaceError(roomErrorMessage(error)); onError(error); }
     } finally {
       if (mounted.current && roomGuard.current.current(token)) setLoadingWorkspace(false);
     }
@@ -204,7 +213,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       setAncillary((previous) => ({ ...previous, pendingActions: { ...previous.pendingActions, data: previous.pendingActions.data?.filter((item) => item.action_id !== actionId) ?? null } }));
       setWorkspace((previous) => previous ? { ...previous, pending_actions: previous.pending_actions.filter((item) => item.action_id !== actionId) } : null);
       return true;
-    } catch (error) { onError?.(error); return false; }
+    } catch (error) { onError(error); return false; }
     finally { if (mounted.current) setBusyActionId(null); }
   }, [selectedRoomId, busyActionId, requireSuccess, onError]);
 
