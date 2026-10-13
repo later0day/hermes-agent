@@ -776,11 +776,6 @@ def plan_next_task(
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt))
-        # A deferred coordinate may coexist with independently completed responders in a mesh round. Let those run,
-        # but do not compact the source discussion until the deferred coordinate is retried and replaced by its
-        # later terminal event, or the persisted retry action cannot reconstruct its source message.
-        if any(terminal.kind == "turn.deferred" for terminal in terminals.values()):
-            return decide("idle", "deferred_turn")
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
         if round_index == MAX_DISCUSSION_ROUNDS - 1:
