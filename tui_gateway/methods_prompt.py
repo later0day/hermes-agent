@@ -277,7 +277,16 @@ def _legacy_group_fence_error(rid, session, params):
     """Fence direct prompts into a hosted room from older Desktop builds (they know the
     ``Group: <room-id>`` title but not the authority marker; a direct prompt would start a
     second renderer driver)."""
-    title = str(session.get("title") or "")
+    title = str(session.get("pending_title") or session.get("title") or "")
+    if not title and _session_source(session) == "bot_room":
+        # A resumed room session's live record carries no title; only room sessions pay the row read, and an
+        # unreadable title stays "not a group" exactly like a missing one (this runs on every prompt).
+        from tui_gateway.server import _room_session_title
+
+        try:
+            title = _room_session_title(session)
+        except Exception:
+            logger.debug("group fence: session title unreadable", exc_info=True)
     room_id = title.removeprefix("Group: ").strip() if title.startswith("Group: ") else ""
     if not room_id:
         return None

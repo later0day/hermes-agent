@@ -94,3 +94,25 @@ def test_resumed_member_sessions_resolve_room_from_persisted_title(tmp_path: Pat
 
     assert srv._room_decider_toolset_filter(_resumed("backend", "s-be"), list(FULL_ENGINEER)) == FULL_ENGINEER
     assert srv._room_decider_toolset_filter(_resumed("lead", "s-lead"), list(FULL_ENGINEER)) == ORCHESTRATION_ONLY
+
+
+def test_legacy_group_fence_holds_for_resumed_room_sessions(tmp_path: Path, monkeypatch):
+    """A direct prompt into a hosted room's session must be fenced off even when the session was resumed and
+    its live record carries no title (the fence read only ``session["title"]``, which is never populated)."""
+    from hermes_state import SessionDB
+
+    _decider_room(tmp_path, monkeypatch, decider="lead", worker="backend")
+    home = tmp_path / "profiles" / "backend"
+    home.mkdir(parents=True)
+    db = SessionDB(home / "state.db")
+    db.create_session("s-room", "bot_room")
+    db.set_session_title("s-room", "Group: room-1")
+    db.create_session("s-chat", "desktop")
+    db.close()
+
+    def _fence(key: str):
+        return srv._legacy_group_fence_error(  # the production binding (methods are rebound onto server)
+            1, {"source": "bot_room", "session_key": key, "profile_home": str(home)}, {})
+
+    assert _fence("s-room") is not None and "error" in _fence("s-room")
+    assert _fence("s-chat") is None
