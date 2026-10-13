@@ -73,3 +73,24 @@ def test_live_reload_keeps_decider_restricted_and_worker_full(tmp_path: Path, mo
     assert resp["result"]["status"] == "reloaded"
     assert seen["lead"] == ORCHESTRATION_ONLY
     assert seen["backend"] == FULL_ENGINEER
+
+
+def test_resumed_member_sessions_resolve_room_from_persisted_title(tmp_path: Path, monkeypatch):
+    """After a backend restart the room driver RESUMES member sessions: the live record carries neither
+    ``pending_title`` nor ``title`` (only the DB row does). The worker must keep its tools and the decider
+    must stay restricted -- reading only the live record failed every resumed worker closed."""
+    from hermes_state import SessionDB
+
+    _decider_room(tmp_path, monkeypatch, decider="lead", worker="backend")
+
+    def _resumed(profile: str, key: str) -> dict:
+        home = tmp_path / "profiles" / profile
+        home.mkdir(parents=True)
+        db = SessionDB(home / "state.db")
+        db.create_session(key, "bot_room")
+        db.set_session_title(key, "Group: room-1")
+        db.close()
+        return {"source": "bot_room", "session_key": key, "profile_home": str(home)}
+
+    assert srv._room_decider_toolset_filter(_resumed("backend", "s-be"), list(FULL_ENGINEER)) == FULL_ENGINEER
+    assert srv._room_decider_toolset_filter(_resumed("lead", "s-lead"), list(FULL_ENGINEER)) == ORCHESTRATION_ONLY

@@ -2549,6 +2549,28 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
         raise
 
 
+def _room_session_title(session: dict) -> str:
+    """The ``Group: <room_id>`` title of the room session an agent is being built for.
+
+    ``session.create`` stashes it under ``pending_title`` (the DB row, and its persisted ``title``, is created
+    lazily on the first prompt); a resumed session's live record carries neither, so the persisted row is the
+    only source -- without it every member resumed after a restart failed closed and lost its worker tools."""
+    if title := session.get("pending_title") or session.get("title"):
+        return str(title)
+    if not (key := session.get("session_key")):
+        return ""
+    if not (profile_home := session.get("profile_home")):
+        db = _get_db()
+        return str(((db.get_session(key) if db is not None else None) or {}).get("title") or "")
+    from hermes_state_registry import acquire, release_or_close
+
+    db = acquire(Path(profile_home) / "state.db")
+    try:
+        return str((db.get_session(key) or {}).get("title") or "")
+    finally:
+        release_or_close(db)
+
+
 def _room_decider_toolset_filter(session: dict | None, base_toolsets: list[str] | None) -> list[str] | None:
     """Enforce the decider's orchestration-only tool whitelist at build time.
 
@@ -2574,9 +2596,11 @@ def _room_decider_toolset_filter(session: dict | None, base_toolsets: list[str] 
     def _fail_closed() -> list[str]:
         return orchestration_only_toolsets(base_toolsets)
 
-    # ``session.create`` stashes the room name under ``pending_title`` (the DB row, and its persisted ``title``,
-    # is created lazily on the first prompt), so read it first or the whitelist misses turn one.
-    title = str(session.get("pending_title") or session.get("title") or "")
+    try:
+        title = _room_session_title(session)
+    except Exception:
+        logger.warning("room toolset filter: session title unreadable; failing closed", exc_info=True)
+        return _fail_closed()
     if not title.startswith("Group: ") or not (room_id := title.removeprefix("Group: ").strip()):
         return _fail_closed()
     try:
