@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -22,7 +22,8 @@ from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
-from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+from tui_gateway.hosted_room_driver import (
+    ROOM_SESSION_SOURCE, HostedRoomBinding, HostedRoomRuntime, room_session_title)
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
@@ -118,8 +119,10 @@ class HostedRoomService:
                 self.peer_clients[key] = client
         self._action_relay_stop = threading.Event()
         self._action_relay_thread: threading.Thread | None = None
+        # Rooms this process served last cycle -> their local member profiles (see _served_bindings).
+        self._served_rooms: dict[str, tuple[str, ...]] = {}
         self.runtime = HostedRoomRuntime(
-            db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
+            db_path=self.db_path, rooms=self._served_bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
@@ -162,6 +165,57 @@ class HostedRoomService:
             HostedRoomBinding(str(room["room_id"]), *_authority(room))
             for room in hosted_rooms.list_rooms(self.db_path)
             if str(room["authority_gateway_id"]) == local_gateway_id)
+
+    def _served_bindings(self) -> tuple[HostedRoomBinding, ...]:
+        """The runtime's per-cycle room list; a room that drops out because it was DISBANDED has its
+        members' background processes reaped here. Every process serving rooms runs this, and each only
+        reaps its own registry, so a disband from any entry point (dashboard, /room in a chat) reaches the
+        process that actually spawned the job."""
+        bindings = self.bindings()
+        current = {binding.room_id for binding in bindings}
+        for room_id in set(self._served_rooms) - current:
+            profiles = self._served_rooms.pop(room_id)
+            try:
+                if hosted_rooms.room_state(
+                        self.db_path, room_id=room_id, include_disbanded=True).get("disbanded_at") is not None:
+                    self.reap_room_processes(room_id, profiles)
+            except Exception as exc:  # one room's cleanup must not stall scheduling for the rest
+                logger.warning("room %s: background process cleanup failed: %s", room_id, exc)
+        for room_id in current - set(self._served_rooms):
+            try:
+                members = self._room(room_id).get("members") or []
+            except hosted_rooms.HostedRoomError:
+                continue
+            self._served_rooms[room_id] = tuple(
+                str(m.get("profile") or "") for m in members
+                if isinstance(m, dict) and (m.get("target") or {}).get("kind", "local") == "local" and m.get("profile"))
+        return bindings
+
+    def reap_room_processes(self, room_id: str, profiles: Sequence[str]) -> int:
+        """Kill background processes this process spawned for a disbanded room's members.
+
+        A member's ``terminal(background=true)`` job is registered under its room session key and is not
+        tied to any turn, so stopping the room's turns left dev servers / watchers running forever. Output
+        is consumed so a completion notice cannot wake the dead room's session."""
+        from tools.process_registry import process_registry
+
+        keys = set()
+        for profile in profiles:
+            session = self.rpc.resolve_exact(
+                profile=profile, title=room_session_title(room_id), source=ROOM_SESSION_SOURCE)
+            if session and session.get("session_id"):
+                keys.add(str(session["session_id"]))
+        killed = 0
+        for key in keys:
+            for entry in process_registry.list_sessions(session_key=key):
+                if entry.get("status") != "running":
+                    continue
+                result = process_registry.kill_process(
+                    entry["session_id"], source="room.disband", consume_output=True)
+                killed += result.get("status") in {"killed", "already_exited"}
+        if killed:
+            logger.info("room %s disbanded: stopped %d member background process(es)", room_id, killed)
+        return killed
 
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)
