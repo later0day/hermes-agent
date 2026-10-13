@@ -631,6 +631,9 @@ def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
             ),
         )
         runner = GatewayRunner.__new__(GatewayRunner)
+        # The gateway's mirror watcher loads the in-memory inbound index at startup (and /room mirror refreshes it);
+        # an unbound chat is rejected from that index before any I/O, so mirror the watcher here.
+        runner._reload_room_inbound_sources()
         service.start()
         assert asyncio.run(
             runner._maybe_route_inbound_to_room(inbound, inbound.source)
