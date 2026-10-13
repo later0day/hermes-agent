@@ -411,6 +411,26 @@ def test_send_with_recipient_rejects_non_member_before_append(tmp_path: Path):
     )
     assert accepted["event_id"] == "known-recipient"
 
+def test_send_to_room_with_deleted_member_profile_fails_before_append(tmp_path: Path):
+    """A member whose profile was deleted leaves a roster that no longer validates. send() must refuse
+    BEFORE appending: failing after the commit told callers "error" for a message that was written, so
+    every retry stacked another message the room can never schedule."""
+    from gateway.hosted_room_discussion import DiscussionValidationError
+
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service.local_profiles = lambda: ("lead", "worker")
+    service.create_room(
+        room_id="orphan-room", name="Orphan room",
+        members=[{"member_id": "lead", "profile": "lead", "handle": "lead", "role": "decider"},
+                 {"member_id": "worker", "profile": "worker", "handle": "worker"}])
+    service.local_profiles = lambda: ("lead",)  # `worker` was deleted
+
+    with pytest.raises(DiscussionValidationError):
+        service.send(room_id="orphan-room", event_id="after-delete",
+                     payload={"text": "@worker hi", "thread_id": "thread"}, recipient="worker")
+    assert not any(event["event_id"] == "after-delete" for event in service._events("orphan-room"))
+
+
 def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path):
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)

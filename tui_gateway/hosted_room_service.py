@@ -834,10 +834,15 @@ class HostedRoomService:
     ) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
+        room = self._room(room_id)
+        # Validate the roster BEFORE appending: prepare_room() below re-validates it, and a roster that no
+        # longer resolves (a member's profile was deleted) would otherwise raise AFTER the message was
+        # committed — the caller sees a failure, retries, and stacks messages the room can never schedule.
+        discussion.validate_room(room, local_profiles=self.local_profiles())
         if recipient is not None:
             # Dashboard work requests name an explicit recipient: it must be on this room's frozen roster.
             requested = str(recipient).strip().lstrip("@").casefold()
-            handles = {str(member.get("handle") or "").casefold() for member in self._room(room_id).get("members") or []}
+            handles = {str(member.get("handle") or "").casefold() for member in room.get("members") or []}
             if not requested or requested not in handles:
                 raise hosted_rooms.HostedRoomError("recipient is not a member of this room")
         event = hosted_rooms.append_event(
