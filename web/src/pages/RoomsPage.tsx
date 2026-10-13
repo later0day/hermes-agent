@@ -76,7 +76,6 @@ export default function RoomsPage() {
         selectedRoomId={state.selectedRoomId}
         workspace={state.workspace}
         topology={state.ancillary.topology.data}
-        observer={state.ancillary.observer.data}
         peerGrants={state.ancillary.peerGrants.data}
         replicationHealth={state.ancillary.replication.data}
         policyTrace={state.ancillary.policy.data}
