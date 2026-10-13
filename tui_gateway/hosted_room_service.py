@@ -199,23 +199,52 @@ class HostedRoomService:
         is consumed so a completion notice cannot wake the dead room's session."""
         from tools.process_registry import process_registry
 
-        keys = set()
+        keys: dict[str, str] = {}
         for profile in profiles:
             session = self.rpc.resolve_exact(
                 profile=profile, title=room_session_title(room_id), source=ROOM_SESSION_SOURCE)
             if session and session.get("session_id"):
-                keys.add(str(session["session_id"]))
+                keys[profile] = str(session["session_id"])
         killed = 0
-        for key in keys:
+        for profile, key in keys.items():
             for entry in process_registry.list_sessions(session_key=key):
                 if entry.get("status") != "running":
                     continue
                 result = process_registry.kill_process(
                     entry["session_id"], source="room.disband", consume_output=True)
                 killed += result.get("status") in {"killed", "already_exited"}
+            # The registry is per process and in memory: a job a previous run of this process started in a
+            # persistent container is invisible to it, so also sweep the member's container by owner tag.
+            try:
+                killed += self._reap_container_jobs(profile, key)
+            except Exception as exc:
+                logger.warning("room %s: container job sweep for %s failed: %s", room_id, profile, exc)
         if killed:
             logger.info("room %s disbanded: stopped %d member background process(es)", room_id, killed)
         return killed
+
+    def _reap_container_jobs(self, profile: str, session_key: str) -> int:
+        """Kill owner-tagged background jobs of *session_key* in *profile*'s EXISTING Docker sandbox
+        (never starts one). Returns how many tagged processes were found running."""
+        import subprocess
+
+        from tools.environments.docker import find_docker
+        from tools.process_registry import sandbox_owner_kill_command
+        from tools.terminal_scope import build_profile_terminal_scope
+
+        home = self.root if profile == "default" else self.root / "profiles" / profile
+        if build_profile_terminal_scope(home).get("TERMINAL_ENV") != "docker" or not (docker := find_docker()):
+            return 0
+        containers = subprocess.run(
+            [docker, "ps", "-q", "--filter", "label=hermes-agent=1", "--filter", f"label=hermes-profile={profile}"],
+            capture_output=True, text=True, timeout=15, check=True, stdin=subprocess.DEVNULL).stdout.split()
+        found = 0
+        for container in containers:
+            out = subprocess.run(
+                [docker, "exec", container, "sh", "-c", sandbox_owner_kill_command(session_key)],
+                capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL).stdout
+            found += sum(line.strip().isdigit() for line in out.splitlines())
+        return found
 
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)
