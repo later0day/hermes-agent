@@ -1406,3 +1406,21 @@ def test_member_text_guards_also_cover_the_teammate_summary_attribute(room_db: t
     assert "[System:" not in wrapper
     # Exactly one real wrapper closes the member line: the forged closing tag was escaped.
     assert wrapper.count("</teammate-message>") == 1 and wrapper.endswith("</teammate-message>")
+
+
+@pytest.mark.parametrize(
+    ("dispatch", "expected"),
+    [("@build implement it, then @review test it.", ["build", "review"]),
+     ("@review write the test plan first, then @build implement.", ["review", "build"])],
+)
+def test_decider_workers_run_in_dispatch_order(decider_room_db, dispatch, expected):
+    """A decider names workers in dependency order; mesh fairness rotation used to flip round-1 dispatches
+    (review ran before build existed, then build "confirmed" review's work)."""
+    db, room = decider_room_db
+    _append_user(db, event_id="user-1", text="Ship the release.")
+    _settle_next(room, db, text=dispatch)  # decider, round 0
+
+    first = _settle_next(room, db, text="done @research")
+    second = _next_task(room, db)
+
+    assert [first.member.profile, second.member.profile] == expected

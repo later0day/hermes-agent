@@ -357,22 +357,35 @@ def _unaddressed_member_mentions(
     ignored so the topology stays a star. Mesh rosters (no decider) keep every citation.
     """
     decider_id = decider.member_id if (decider := _decider(room)) is not None else None
-    cited_at: dict[str, int] = {}
+    cited_at: dict[str, tuple[int, int]] = {}
     last_post_at: dict[str, int] = {}
     for event in messages:
         if event.kind != "message.member":
             continue
         speaker_id = str(event.payload["member_id"])
         last_post_at[speaker_id] = event.seq
-        for member in resolve_mentions((str(event.payload["text"]),), room.members, default_all=False):
+        for offset, member in _mentions_in_order(str(event.payload["text"]), room.members):
             if member.member_id == speaker_id:
                 continue
             if decider_id is not None and decider_id not in (speaker_id, member.member_id):
                 continue  # star topology: only edges involving the decider carry turns
-            cited_at[member.member_id] = event.seq
-    return tuple(
+            cited_at[member.member_id] = (event.seq, offset)
+    cited = [
         member for member in room.members
-        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id][0]]
+    if decider_id is not None:
+        # A decider's dispatch order is its plan ("@build implement, then @review test"): keep it.
+        cited.sort(key=lambda member: cited_at[member.member_id])
+    return tuple(cited)
+
+
+def _mentions_in_order(text: str, members: Sequence[DiscussionMember]) -> list[tuple[int, DiscussionMember]]:
+    """``(offset, member)`` for each roster member named in *text*, at its FIRST mention (``@all`` names everyone)."""
+    first: dict[str, tuple[int, DiscussionMember]] = {}
+    for match in _MENTION_RE.finditer(text):
+        for member in resolve_mentions((match.group(0),), members, default_all=False):
+            first.setdefault(member.member_id, (match.start(), member))
+    return sorted(first.values(), key=lambda item: item[0])
 
 
 def _require_gateway_actor(actor: Mapping[str, Any], room: DiscussionRoom, message: str) -> None:
@@ -760,7 +773,10 @@ def plan_next_task(
                 else (decider,) if decider is not None else resolve_mentions(text, room.members))
         else:
             responders = () if task_dag_anchor else _unaddressed_member_mentions(discussion_messages, room)
-        for member_index, member in enumerate(_rotate(responders, round_index)):
+        # Mesh rosters rotate who speaks first each round (fairness); a decider's workers run in the order
+        # it dispatched them, so a dependent step never runs before the step it depends on.
+        ordered = responders if decider is not None else _rotate(responders, round_index)
+        for member_index, member in enumerate(ordered):
             if (terminal := terminals.get((round_index, member.member_id))) is not None:
                 # A deferral is a recoverable execution boundary, not a silent member round: keep the source
                 # discussion pending so an exact retry can reconstruct and publish its next-generation result.
