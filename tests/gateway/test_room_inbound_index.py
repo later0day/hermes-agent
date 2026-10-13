@@ -62,3 +62,37 @@ def test_index_tracks_inbound_subscriptions_and_routes_bound_chats(db, monkeypat
     mir.remove_sub(db, room_id="room-1", platform="telegram", chat_id="123", thread_id="")
     bridge._reload_room_inbound_sources()
     assert asyncio.run(bridge._maybe_route_inbound_to_room(_event(), _source("123"))) is INBOUND_ROOM_NOT_ROUTED
+
+
+def test_routes_platform_ids_that_are_not_identifier_safe(db, monkeypatch):
+    """DingTalk chat/message ids carry ``+ / =`` (WeChat ids an ``@``); routing must not reject them,
+    and a redelivered message must keep the same room event id while a new message gets another."""
+    chat_id = "cidUKHyy+TSBvzQY6P34TpjPA=="
+    mir.create_sub(db, room_id="room-1", platform="dingtalk", chat_id=chat_id, thread_id="", inbound=True)
+    bridge = GatewayRoomMirrorMixin()
+    bridge._reload_room_inbound_sources()
+    hosted_rooms.create_room(db, room_id="room-1", name="R", authority_gateway_id="g", now=1, members=[
+        {"member_id": f"m-{p}", "profile": p, "handle": p, "target": {"kind": "local", "profile": p}}
+        for p in ("plan", "backend")])
+    sent = []
+
+    def _send(*, room_id, event_id, payload, actor_id):
+        # The real log append validates event_id and actor.id as identifiers.
+        sent.append({"event_id": event_id, "actor_id": actor_id})
+        return hosted_rooms.append_event(
+            db, room_id=room_id, event_id=event_id, kind="message.user",
+            actor={"kind": "user", "id": actor_id}, authority_gateway_id="g", authority_epoch=1,
+            payload=payload, now=1)
+
+    service = SimpleNamespace(send=_send)
+    monkeypatch.setattr("tui_gateway.methods_groups.get_hosted_room_service", lambda: service)
+    source = SimpleNamespace(platform=Platform.DINGTALK, chat_id=chat_id, thread_id="",
+                             user_id="$:LWCP_v1:$NoDPZEnaHdl5WfqKihxdt899LnbQ0x+0")
+
+    for message_id in ("msgQY+tEb7fn/oGUZQorA", "msgQY+tEb7fn/oGUZQorA", "msgOther+id=="):
+        event = SimpleNamespace(text="add mul", message_id=message_id)
+        assert asyncio.run(bridge._maybe_route_inbound_to_room(event, source)) is None
+
+    first, redelivered, other = (call["event_id"] for call in sent)
+    assert first == redelivered != other
+    assert len({call["actor_id"] for call in sent}) == 1  # one stable identity per IM user

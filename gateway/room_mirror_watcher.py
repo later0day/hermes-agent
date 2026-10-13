@@ -115,23 +115,29 @@ class GatewayRoomMirrorMixin:
         if not room_id or not text:
             return INBOUND_ROOM_NOT_ROUTED
 
-        # Per-user actor identity: the IM user id, verbatim, into the log's
-        # existing {kind:user, id} actor schema. Falls back to "desktop" (the
-        # historical default) when the platform gives us no stable user id.
+        import hashlib as _hashlib
+
+        from gateway.hosted_rooms import MAX_ACTOR_ID_CHARS
+        from gateway.hosted_rooms_common import IDENTIFIER_RE
+
+        # Per-user actor identity: the IM user id into the log's existing {kind:user, id} actor
+        # schema — verbatim when identifier-safe, else a stable per-platform digest (DingTalk ids
+        # look like "$:LWCP_v1:$…+0"). Falls back to "desktop" (the historical default) when the
+        # platform gives us no stable user id.
         actor_id = str(getattr(source, "user_id", "") or "").strip() or "desktop"
+        if len(actor_id) > MAX_ACTOR_ID_CHARS or not IDENTIFIER_RE.match(actor_id):
+            actor_id = f"{platform}:{_hashlib.sha256(actor_id.encode('utf-8')).hexdigest()[:32]}"
 
         # Idempotency key: bind the room's user-event namespace to the IM
         # message id so PTB/webhook redelivery of the same message is a no-op.
         # Fall back to a per-(source,text) key when the platform gives no id.
-        import hashlib as _hashlib
 
+        # Platform ids are not identifier-safe (DingTalk "cid…+…==", WeChat "…@im.wechat") and
+        # user_event_id() validates its input as an identifier, so the key is a digest of them.
         source_scope = f"{platform}:{chat_id}:{thread_id}"
         raw_msg_id = str(getattr(event, "message_id", "") or "").strip()
-        if raw_msg_id:
-            client_key = f"{source_scope}:{raw_msg_id}"
-        else:
-            digest = _hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
-            client_key = f"{source_scope}:t:{digest}"
+        scoped = f"{source_scope}\0{raw_msg_id}" if raw_msg_id else f"{source_scope}\0t\0{text}"
+        client_key = f"im:{_hashlib.sha256(scoped.encode('utf-8')).hexdigest()}"
         # Room discussion payloads require a stable identifier-safe thread id.
         # Platform thread/chat ids are not guaranteed to satisfy that schema, so
         # derive one from the bound source. Messages redelivered into the same
