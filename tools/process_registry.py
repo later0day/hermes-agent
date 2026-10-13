@@ -536,6 +536,39 @@ def _completion_output(session: "ProcessSession") -> dict:
     return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
 
 
+SANDBOX_OWNER_ENV = "HERMES_BG_OWNER"
+
+
+def sandbox_owner_kill_command(session_key: str) -> str:
+    """Shell that stops, inside a sandbox, every background job tagged with *session_key* (each job's
+    whole process group). For callers whose registry no longer knows the jobs, e.g. after a restart."""
+    import shlex
+
+    needle = shlex.quote(f"{SANDBOX_OWNER_ENV}={session_key}")
+    return ("own=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3); "
+            "for e in /proc/[0-9]*/environ; do p=${e#/proc/}; p=${p%/environ}; "
+            f"tr '\\0' '\\n' < \"$e\" 2>/dev/null | grep -qxF {needle} || continue; "
+            "pg=$(sed 's/.*) //' /proc/$p/stat 2>/dev/null | cut -d' ' -f3); "
+            'if [ -n "$pg" ] && [ "$pg" != 1 ] && [ "$pg" != "$own" ]; then kill -TERM -- "-$pg" 2>/dev/null; fi; '
+            '[ "$p" = "$$" ] || kill "$p" 2>/dev/null; echo "$p"; done; true')
+
+
+def _sandbox_job_kill_command(pid: int) -> str:
+    """Shell that stops a sandbox background job's whole process group, then the recorded PID.
+
+    ``spawn_via_env`` records ``$!`` of ``( nohup bash -lc CMD ...; ) &`` — the wrapper subshell. A
+    bare ``kill`` of it reparents ``bash -lc CMD`` and its children (a dev server, a watcher) to the
+    sandbox init, where they keep running. The job inherits the process group of the one ``execute``
+    that launched it, so that group holds exactly this job; it is skipped if it is the killing shell's
+    own group (a backend that runs every command in one persistent shell)."""
+    pgrp = f"$(sed 's/.*) //' /proc/{pid}/stat 2>/dev/null | cut -d' ' -f3)"
+    own = "$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3)"
+    return (f'pg={pgrp}; [ -n "$pg" ] || pg=$(ps -o pgid= -p {pid} 2>/dev/null | tr -d " "); '
+            f'own={own}; [ -n "$own" ] || own=$(ps -o pgid= -p $$ 2>/dev/null | tr -d " "); '
+            f'if [ -n "$pg" ] && [ "$pg" != "$own" ] && [ "$pg" != 1 ]; then kill -TERM -- "-$pg" 2>/dev/null; fi; '
+            f'kill {pid} 2>/dev/null; true')
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -1301,9 +1334,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
+        # The owner tag is inherited by every descendant, so a job can still be traced to its session
+        # once this registry is gone (a restarted host process) — see sandbox_owner_kill_command().
+        owner = f"{SANDBOX_OWNER_ENV}={q(session_key)} " if session_key else ""
         bg_command = (
             f"mkdir -p {q(temp_dir)} && "
-            f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
+            f"( {owner}nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
         try:
@@ -2280,7 +2316,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            session.env_ref.execute(_sandbox_job_kill_command(session.pid), timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an
