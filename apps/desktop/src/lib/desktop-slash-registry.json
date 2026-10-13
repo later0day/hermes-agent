@@ -91,6 +91,7 @@
   "/retry": null,
   "/review": null,
   "/rollback": null,
+  "/room": null,
   "/s": null,
   "/save": null,
   "/sb": "terminal",
