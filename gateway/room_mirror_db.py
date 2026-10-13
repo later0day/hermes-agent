@@ -242,6 +242,27 @@ def inbound_binding_for_source(
         conn.close()
 
 
+def inbound_sources(db_path: Path | str) -> frozenset[tuple[str, str, str]]:
+    """Every ``(platform, chat_id, thread_id)`` with an inbound-enabled subscription.
+
+    Feeds the gateway's in-memory inbound index so ``_handle_message`` can skip unbound chats (the
+    overwhelming majority) without any I/O before it claims the session. Never raises: an unreadable
+    table yields an empty set, i.e. normal dispatch.
+    """
+    try:
+        conn = _connect(db_path)
+    except Exception:
+        return frozenset()
+    try:
+        rows = conn.execute(
+            "SELECT platform, chat_id, thread_id FROM room_notify_subs WHERE inbound=1").fetchall()
+        return frozenset((str(r[0]), str(r[1]), str(r[2] or "")) for r in rows)
+    except Exception:
+        return frozenset()
+    finally:
+        conn.close()
+
+
 def remove_sub(
     db_path: Path | str,
     *,

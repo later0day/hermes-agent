@@ -41,6 +41,22 @@ INBOUND_ROOM_NOT_ROUTED = object()
 class GatewayRoomMirrorMixin:
     """Room<->chat bridge for GatewayRunner: outbound mirror loop + opt-in inbound routing (C2)."""
 
+    # In-memory index of inbound-enabled chat sources. The inbound hook runs on EVERY plain message before
+    # _handle_message claims the session, where upstream requires no awaits (a second message in that window
+    # would start a duplicate agent), so unbound chats must be rejected from memory, never from SQLite. Loaded
+    # before the mirror watcher's first sleep, refreshed every tick and right after /room mirror|unmirror;
+    # empty until then, which means normal dispatch.
+    _room_inbound_sources: frozenset[tuple[str, str, str]] = frozenset()
+
+    def _reload_room_inbound_sources(self) -> None:
+        """Synchronously rebuild the inbound index (call from a worker thread or a sync helper)."""
+        try:
+            from gateway import hosted_rooms as _rooms
+            from gateway import room_mirror_db as _mir
+            self._room_inbound_sources = _mir.inbound_sources(_rooms.default_db_path())
+        except Exception:
+            logger.debug("room inbound: index refresh failed", exc_info=True)
+
     async def _maybe_route_inbound_to_room(self, event: MessageEvent, source: Any):
         """Route an inbound chat message into a bound hosted room, if any.
 
@@ -76,6 +92,8 @@ class GatewayRoomMirrorMixin:
         thread_id = str(getattr(source, "thread_id", "") or "")
         if not platform or not chat_id:
             return INBOUND_ROOM_NOT_ROUTED
+        if (platform, chat_id, thread_id) not in self._room_inbound_sources:
+            return INBOUND_ROOM_NOT_ROUTED  # unbound chat: decided from memory, no await before the session claim
 
         db_path = default_db_path()
         try:
@@ -176,11 +194,14 @@ class GatewayRoomMirrorMixin:
         fail_counts: dict[tuple, int] = getattr(self, "_room_mirror_fail_counts", {})
         self._room_mirror_fail_counts = fail_counts
 
+        # Load the inbound index before the initial delay so routing works from the first message.
+        await asyncio.to_thread(self._reload_room_inbound_sources)
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
         while self._running:
             try:
+                await asyncio.to_thread(self._reload_room_inbound_sources)
                 def _collect() -> list[dict]:
                     claimed: list[dict] = []
                     try:

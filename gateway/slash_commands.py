@@ -744,6 +744,8 @@ class GatewaySlashCommandsMixin(
                         chat_id=chat_id,
                         thread_id=thread_id,
                     )
+                    if removed and hasattr(self, "_reload_room_inbound_sources"):
+                        self._reload_room_inbound_sources()
                     key = "unmirrored" if removed else "mirror_not_found"
                     return t(f"gateway.room.{key}", room_id=room_id,
                              platform=platform_str, chat_id=chat_id)
@@ -777,6 +779,8 @@ class GatewaySlashCommandsMixin(
                     member_filter=member_filter,
                     inbound=True if inbound else None,
                 )
+                if hasattr(self, "_reload_room_inbound_sources"):
+                    self._reload_room_inbound_sources()
                 if inbound:
                     key = "mirrored_inbound"
                 else:
