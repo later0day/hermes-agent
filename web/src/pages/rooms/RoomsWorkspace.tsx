@@ -21,7 +21,6 @@ import {
 } from "@nous-research/ui/ui/components/dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
 import type {
-  ObserverStatus,
   PeerGrant,
   PendingAction,
   PolicyTraceResponse,
@@ -56,7 +55,6 @@ export interface RoomsWorkspaceProps {
   selectedRoomId: string | null;
   workspace: RoomWorkspaceResponse | null;
   topology?: RoomTopologyResponse | null;
-  observer?: ObserverStatus | null;
   peerGrants?: readonly PeerGrant[] | null;
   replicationHealth?: ReplicationHealthResponse | null;
   policyTrace?: PolicyTraceResponse | null;
@@ -408,7 +406,7 @@ function Inspector({ p, room }: { p: RoomsWorkspaceProps; room: RoomSummary }) {
     <h2 className={`mt-1 text-xl font-bold ${wrapContentClass}`}>{event?.title ?? task?.subject ?? room.name}</h2>
     {event ? <><p className={`mt-3 text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{event.summary}</p>{event.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: event.task_id! })}>Open related task</button> : null}<EventDiagnostics event={event} /></> : null}
     {task ? <div className="mt-3 space-y-3"><Badge tone={tone(attempt?.status ?? task.status)}>{humanize(attempt?.status ?? task.status)}</Badge><div><small className="block text-text-tertiary">Owner</small><p>{task.owner ? `@${task.owner}` : "Unassigned"}{member ? <span className="text-text-secondary"> · {roleLabel(member.role)}</span> : null}</p></div>{task.description ? <p className={`text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{task.description}</p> : null}{task.pending_actions[0] ? <button type="button" className={compactPrimaryButtonClass} onClick={() => p.onOpenActionCenter(task.pending_actions[0])}>Review action</button> : null}{attempt ? <Diagnostics><div>Room context available</div><div>Conversation context available</div><div>Attempt reference available</div><div>Execution generation: {attempt.execution_generation}</div><div>Cancel generation: {attempt.cancel_generation}</div><div>Created: {stamp(attempt.created_at)}</div><div>Updated: {stamp(attempt.updated_at)}</div><div>Started: {stamp(attempt.started_at)}</div><div>Terminal: {stamp(attempt.terminal_at)}</div><div>Settlement: {attempt.settlement_status ?? "—"}</div><div className="font-sans text-warning">Payload and result are redacted.</div></Diagnostics> : null}</div> : null}
-    {!event && !task ? <div className="mt-4 space-y-3 text-sm"><div className="rounded-lg border border-border bg-background p-3"><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-4 w-4 text-primary" /> Team health</span><p className="mt-2 text-text-secondary">{p.replicationHealth?.healthy === false ? "Some teammates need attention." : "Team connections are operating normally."}</p></div><dl className="grid gap-2"><div><dt className="text-xs text-text-tertiary">Connected peers</dt><dd>{p.replicationHealth?.ready ?? 0} of {p.replicationHealth?.total_peers ?? p.peerGrants?.length ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">Observer</dt><dd>{humanize(p.observer?.state ?? "Unknown")}</dd></div><div><dt className="text-xs text-text-tertiary">Policy events</dt><dd>{p.policyTrace?.event_count ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">Team members</dt><dd>{p.topology?.members.length ?? room.members.length}</dd></div></dl><Diagnostics><div>Room context available</div><div>Revision: {room.revision}</div><div>Latest sequence: {room.latest_seq}</div></Diagnostics></div> : null}
+    {!event && !task ? <div className="mt-4 space-y-3 text-sm"><div className="rounded-lg border border-border bg-background p-3"><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-4 w-4 text-primary" /> Team health</span><p className="mt-2 text-text-secondary">{p.replicationHealth?.healthy === false ? "Some teammates need attention." : "Team connections are operating normally."}</p></div><dl className="grid gap-2"><div><dt className="text-xs text-text-tertiary">Connected peers</dt><dd>{p.replicationHealth?.ready ?? 0} of {p.replicationHealth?.total_peers ?? p.peerGrants?.length ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">Policy events</dt><dd>{p.policyTrace?.event_count ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">Team members</dt><dd>{p.topology?.members.length ?? room.members.length}</dd></div></dl><Diagnostics><div>Room context available</div><div>Revision: {room.revision}</div><div>Latest sequence: {room.latest_seq}</div></Diagnostics></div> : null}
   </aside>;
 }
 

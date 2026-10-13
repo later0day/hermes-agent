@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
-  type ObserverStatus,
   type PeerGrant,
   type PendingAction,
   type PolicyTraceResponse,
@@ -91,14 +90,13 @@ interface Ancillary<T> { data: T | null; loading: boolean; error: string | null 
 interface AncillaryState {
   topology: Ancillary<RoomTopologyResponse>;
   pendingActions: Ancillary<PendingAction[]>;
-  observer: Ancillary<ObserverStatus>;
   peerGrants: Ancillary<PeerGrant[]>;
   replication: Ancillary<ReplicationHealthResponse>;
   policy: Ancillary<PolicyTraceResponse>;
 }
 const emptyAncillary = <T,>(): Ancillary<T> => ({ data: null, loading: false, error: null });
 const initialAncillary = (): AncillaryState => ({
-  topology: emptyAncillary(), pendingActions: emptyAncillary(), observer: emptyAncillary(),
+  topology: emptyAncillary(), pendingActions: emptyAncillary(),
   peerGrants: emptyAncillary(), replication: emptyAncillary(), policy: emptyAncillary(),
 });
 
@@ -168,7 +166,6 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
     };
     void api.getRoomTopology(roomId).then((r) => commit("topology", r)).catch((e) => commit("topology", null, e));
     void api.getRoomPendingActions(roomId).then((r) => commit("pendingActions", r.actions)).catch((e) => commit("pendingActions", null, e));
-    void api.getObserverStatus(roomId).then((r) => commit("observer", r)).catch((e) => commit("observer", null, e));
     void api.getRoomPeerGrants(roomId).then((r) => commit("peerGrants", r.peer_grants)).catch((e) => commit("peerGrants", null, e));
     void api.getRoomReplicationHealth(roomId).then((r) => commit("replication", r)).catch((e) => commit("replication", null, e));
     void api.getRoomPolicyTrace(roomId).then((r) => commit("policy", r)).catch((e) => commit("policy", null, e));

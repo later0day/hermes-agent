@@ -1261,68 +1261,6 @@ class HostedRoomService:
         self.runtime.wakeup()
         return {"ok": True, "message": f"Action {decision}d"}
 
-    def mailbox(self, room_id: str, member_id: str) -> dict[str, Any]:
-        """Return mailbox messages for a member (replayed from event log)."""
-        messages: list[dict[str, Any]] = []
-        try:
-            events = hosted_rooms.read_events(
-                self.db_path, room_id=room_id, since_seq=0, limit=500
-            )
-            for ev in events.get("events", []):
-                kind = str(ev.get("kind") or "")
-                payload = ev.get("payload") or {}
-                # Protocol messages addressed to this member
-                if not kind.startswith(("coordinator.", "teammate.", "observer.", "heartbeat.", "shutdown.", "permission.", "plan.")):
-                    continue
-                target = str(payload.get("target_handle") or payload.get("to") or "")
-                if target and target != member_id and target != str(ev.get("actor", {}).get("id", "")):
-                    continue
-                text = str(payload.get("text") or payload.get("summary") or "")
-                messages.append({
-                    "message_id": str(ev.get("event_id") or ""),
-                    "member_id": member_id,
-                    "kind": kind,
-                    "summary": text[:200] if text else "",
-                    "from_handle": str(payload.get("from_handle") or ev.get("actor", {}).get("id", "")),
-                    "payload": payload,
-                    "read": False,
-                    "created_at": ev.get("created_at", 0),
-                })
-        except Exception:
-            pass
-        return {
-            "room_id": room_id,
-            "member_id": member_id,
-            "messages": messages,
-            "unread_count": len(messages),
-        }
-
-    def mark_mailbox_read(self, room_id: str, member_id: str) -> dict[str, Any]:
-        """Mark all messages in a member's mailbox as read (no-op in v1)."""
-        return {"ok": True, "message": "Mailbox marked as read"}
-
-    def observer_status(self, room_id: str) -> dict[str, Any]:
-        """Return observer state machine status for a room."""
-        state = self._derive_observer_state(room_id)
-        return {
-            "room_id": room_id,
-            "state": state or "armed",
-            "current_turn": 0,
-            "current_round": 0,
-            "rules_checked": 0,
-            "violations": 0,
-            "last_heartbeat_at": None,
-            "last_digest": None,
-        }
-
-    def pause_observer(self, room_id: str) -> dict[str, Any]:
-        """Pause the observer for a room."""
-        return {"ok": True, "message": "Observer paused"}
-
-    def resume_observer(self, room_id: str) -> dict[str, Any]:
-        """Resume the observer for a room."""
-        return {"ok": True, "message": "Observer resumed"}
-
     def peer_grants(self, room_id: str) -> dict[str, Any]:
         """Return peer route grants with status, catalog, and linkage info."""
         routes = self._route_statuses(room_id)

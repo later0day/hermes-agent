@@ -1368,29 +1368,6 @@ export const api = {
       `/api/rooms/${encodeURIComponent(roomId)}/pending-actions/${encodeURIComponent(actionId)}/deny`,
       { method: "POST" },
     ),
-  getMemberMailbox: (roomId: string, memberId: string) =>
-    fetchJSON<MailboxResponse>(
-      `/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(memberId)}/mailbox`,
-    ),
-  markMailboxRead: (roomId: string, memberId: string) =>
-    fetchJSON<RoomActionResponse>(
-      `/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(memberId)}/mailbox/read`,
-      { method: "POST" },
-    ),
-  getObserverStatus: (roomId: string) =>
-    fetchJSON<ObserverStatus>(
-      `/api/rooms/${encodeURIComponent(roomId)}/observer`,
-    ),
-  pauseObserver: (roomId: string) =>
-    fetchJSON<RoomActionResponse>(
-      `/api/rooms/${encodeURIComponent(roomId)}/observer/pause`,
-      { method: "POST" },
-    ),
-  resumeObserver: (roomId: string) =>
-    fetchJSON<RoomActionResponse>(
-      `/api/rooms/${encodeURIComponent(roomId)}/observer/resume`,
-      { method: "POST" },
-    ),
   getRoomPeerGrants: (roomId: string) =>
     fetchJSON<PeerGrantsResponse>(
       `/api/rooms/${encodeURIComponent(roomId)}/peer-grants`,
@@ -1823,35 +1800,6 @@ export interface PendingActionsResponse {
 export interface RoomActionResponse {
   ok: boolean;
   message?: string;
-}
-
-export interface MailboxMessage {
-  message_id: string;
-  member_id: string;
-  kind: string;
-  summary: string;
-  from_handle: string;
-  payload: Record<string, unknown>;
-  read: boolean;
-  created_at: number;
-}
-
-export interface MailboxResponse {
-  room_id: string;
-  member_id: string;
-  messages: MailboxMessage[];
-  unread_count: number;
-}
-
-export interface ObserverStatus {
-  room_id: string;
-  state: ObserverState;
-  current_turn: number;
-  current_round: number;
-  rules_checked: number;
-  violations: number;
-  last_heartbeat_at: number | null;
-  last_digest: string | null;
 }
 
 export interface RoomLogFilter {
