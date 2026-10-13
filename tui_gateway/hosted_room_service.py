@@ -65,6 +65,21 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
     return str(room["authority_gateway_id"]), int(room["authority_epoch"])
 
 
+def local_profiles_under(root: Path) -> tuple[str, ...]:
+    """Live profile names under the Hermes root *root* (always including ``default``)."""
+    from hermes_constants import named_profile_has_identity, named_profile_is_deleted
+
+    profiles, profiles_dir = {"default"}, root / "profiles"
+    if profiles_dir.is_dir():
+        # ``profiles/.deleted/`` is the tombstone dir `hermes profile delete` leaves behind, not a
+        # profile: feeding it to validate_roster failed plan_next_task on every cycle (#106847).
+        # Marker-less dirs (cron/log side-effect shells) are not profiles either.
+        profiles.update(
+            path.name for path in profiles_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+            and named_profile_has_identity(path) and not named_profile_is_deleted(path))
+    return tuple(sorted(profiles))
+
 class HostedRoomService:
     """Own the hosted Discussion policy and its transport-free worker."""
 
@@ -139,18 +154,7 @@ class HostedRoomService:
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
-        from hermes_constants import named_profile_has_identity, named_profile_is_deleted
-
-        profiles, profiles_dir = {"default"}, self.root / "profiles"
-        if profiles_dir.is_dir():
-            # ``profiles/.deleted/`` is the tombstone dir `hermes profile delete` leaves behind, not a
-            # profile: feeding it to validate_roster failed plan_next_task on every cycle (#106847).
-            # Marker-less dirs (cron/log side-effect shells) are not profiles either.
-            profiles.update(
-                path.name for path in profiles_dir.iterdir()
-                if path.is_dir() and not path.name.startswith(".")
-                and named_profile_has_identity(path) and not named_profile_is_deleted(path))
-        return tuple(sorted(profiles))
+        return local_profiles_under(self.root)
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()

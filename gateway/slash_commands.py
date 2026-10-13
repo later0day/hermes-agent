@@ -854,23 +854,14 @@ class GatewaySlashCommandsMixin(
                         if _svc is not None:
                             _profiles = _svc.local_profiles()
                         else:
-                            # No live service (e.g. a detached admin shell):
-                            # enumerate profiles from disk the same way the
-                            # service does, so the projection still validates.
+                            # No live service (e.g. a detached admin shell): enumerate
+                            # profiles from disk exactly as the service does.
                             from hermes_constants import get_hermes_home
+                            from tui_gateway.hosted_room_service import local_profiles_under
                             _home = get_hermes_home()
-                            _root = (
-                                _home.parent.parent
-                                if _home.parent.name == "profiles"
-                                else _home
+                            _profiles = local_profiles_under(
+                                _home.parent.parent if _home.parent.name == "profiles" else _home
                             )
-                            _pset = {"default"}
-                            _pdir = _root / "profiles"
-                            if _pdir.is_dir():
-                                _pset.update(
-                                    p.name for p in _pdir.iterdir() if p.is_dir()
-                                )
-                            _profiles = tuple(sorted(_pset))
                         try:
                             room = _room_state(db_path, room_id=room_id)
                             evpage = _read_events(
