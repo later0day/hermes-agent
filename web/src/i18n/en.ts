@@ -644,7 +644,6 @@ export const en: Translations = {
     noEventsMatchingFilter: "No events matching filter.",
 
     // ── Observer Monitor ──
-    observerMonitor: "Observer Monitor",
     state: "State",
     rulesChecked: "Rules checked",
     violations: "Violations",

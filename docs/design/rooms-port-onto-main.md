@@ -96,3 +96,32 @@ explicit gateway admin):
 - 6b96cd4318 research-team: [SECURITY] failed-turn log payload 'error' now stores the classified reason_code instead of raw provider error text (may carry prompts/URLs/credentials; rendered in dashboard views). Applied to upstream's table-driven _failed_effects. Upstream turn.failed tests + room suite (180) green; desktop group-turns reads driver inflight state, not this payload.
 - 8de10f7322 team creation: POST /api/rooms + POST /api/rooms/{id}/messages and RoomMemberInput/RoomCreateInput/RoomMessageInput ported into web_routers/rooms.py (fork-owned; upstream web_models untouched). service.send recipient check uses self._room() roster since _owned_authority returns only (gw,epoch). Real TestClient route tests pass.
 - [post-pick fix] removed fork's blanket deferred_turn hold (contradicted upstream settled-retry contract, which already recovers compacted sources); task-dag anchor deferral kept.
+
+## Post-deploy fixes from live end-to-end testing (2026-10-14)
+
+Found by driving real teams on the live gateway/dashboard (real models, real tools, a real DingTalk
+group). Each fix has a regression test proven red on the unfixed tree.
+
+- `cc94f43055` `/room task list` without a live service scanned `profiles/` raw and fed the `.deleted/`
+  tombstone (left by `/agent delete`) to roster validation → "invalid local profile". Now shares
+  `local_profiles_under()` with `HostedRoomService`.
+- `d4976fd9f2` inbound routing rejected every DingTalk/WeChat group message: the idempotency key and actor id
+  embedded raw platform ids (`cid…+…==`, `$:LWCP_v1:$…+0`, `…@im.wechat`) that fail the identifier check.
+  Key is now a digest; identifier-safe user ids stay verbatim, others map to a stable per-platform digest.
+- `fdd860d00a` after a backend restart every resumed room member failed closed to the decider's
+  orchestration-only tools (the resumed live record has no title). The filter reads the persisted title.
+  The same blind spot made the upstream legacy Group fence a no-op; it now resolves the title the same way
+  for `bot_room` sessions and stays fail-open for ordinary chats (it runs on every prompt).
+- `455bc4b74a` `send()` appended the user message before roster validation, so a room whose member profile
+  was deleted answered 400 for a message it had already committed. Validate first.
+- `28b842ecf2` decider rosters inherited mesh fairness rotation: "@be implement, then @qa test" ran qa first,
+  qa wrote the code itself and be "confirmed" it (reproduced three times live). Star rosters keep the
+  decider's mention order; the decider prompt states the order rule.
+- `4338652064` `/room task list` keeps a multi-line dispatch on one chat line.
+- `85af01babe` removed the C9 observer/mailbox endpoints: pause/resume/mark-read returned success without
+  doing anything, nothing called them, and the "Observer" row always read "armed".
+
+Known, deliberately not changed: a member's `terminal(background=true)` job outlives a disbanded room (the
+registry has no room→process ownership; it runs to completion and its notify is refused); upstream's
+dangerous-command rules do not cover `apt`/`pip install`, so `approvals.mode` would not have stopped the
+QA member installing packages — the effective control is `terminal.backend: docker` on member profiles.

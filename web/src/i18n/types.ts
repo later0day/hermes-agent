@@ -651,7 +651,6 @@ export interface Translations {
     filterMessage: string;
     filterTurn: string;
     noEventsMatchingFilter: string;
-    observerMonitor: string;
     state: string;
     rulesChecked: string;
     violations: string;

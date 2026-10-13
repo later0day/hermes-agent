@@ -528,7 +528,6 @@ export const zh: Translations = {
     noEventsMatchingFilter: "无匹配过滤条件的事件。",
 
     // ── 观察者监控 ──
-    observerMonitor: "观察者监控",
     state: "状态",
     rulesChecked: "已检查规则",
     violations: "违规",

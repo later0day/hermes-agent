@@ -203,9 +203,7 @@ session (requires room with active member turns).
 | Room linkage (peer route targets) | (uses peer-grants data) | `LinkageCard` | ✅ |
 | Team topology | `GET /api/rooms/{id}/topology` | `TeamTopologyCard` | ✅ |
 | Pending actions | `GET /api/rooms/{id}/pending-actions` | Pending actions panel (Approve/Deny) | ✅ |
-| Mailbox | `GET /api/rooms/{id}/members/{mid}/mailbox` | — | ✅ (API) |
-| Observer monitor | `GET /api/rooms/{id}/observer` | `LiveObserverCard` | ✅ |
-| Observer pause/resume | `POST /api/rooms/{id}/observer/{pause,resume}` | Buttons | ⚠️ Backend is stub |
+| ~~Mailbox / observer / pause-resume~~ | ~~`/mailbox`, `/mailbox/read`, `/observer`, `/observer/{pause,resume}`~~ | — | 🗑️ Removed 2026-10-14 (`85af01babe`): stubs with no caller; the Observer row always read "armed" |
 | Member detail + tool filtering | `GET /api/rooms/{id}/topology` | Member detail panel with radio-group tool filter | ✅ |
 
 **Real-browser Dashboard E2E results (2026-09-06, this session):**
@@ -215,7 +213,7 @@ session (requires room with active member turns).
 - Room `approval-manual-97b3ede2` proved cross-process Approve and Deny. A separate Dashboard persisted the decision; the Gateway process owning the exact session relayed it. Approve deleted the authorized marker, while Deny preserved its marker and produced no false success.
 - Room `approval-manual-8a8587ec` proved crash recovery: the stale approval was replaced by one exact generation-fenced Retry action; the generation-2 permission was approved and published one matching result.
 - Room `peer-e2e-232429e5` linked the live Dashboard Room to an isolated API-server Gateway on loopback. A real Qwen peer returned `PEER-E2E-232429E5`; the UI showed one Ready peer grant, one linkage, and healthy `1/1 peers ready`. Revocation changed health to Needs Reauthorization and blocked the queued peer turn until a new scoped grant was registered.
-- Known: `observer pause/resume` backend is a stub (returns ok but doesn't change state).
+- Removed 2026-10-14: the observer/mailbox endpoints were stubs (pause/resume returned ok without changing state; no UI called them). A real pause needs durable per-room state the scheduler honours — re-add only with a concrete consumer.
 
 ### 3.7 C2 — Chat-Group Bridge (SHIPPED, production-chain E2E)
 
@@ -338,8 +336,8 @@ chain evidence.
 **Known warnings (not regressions):**
 | Warning | Detail |
 |---|---|
-| `observer pause/resume` is stub | Backend returns `{"ok": true}` but doesn't change state (×4 rooms) |
-| Non-existent room observer returns 200 | Returns default zero-state instead of 404 |
+| `observer pause/resume` is stub | Backend returned `{"ok": true}` without changing state (×4 rooms) — resolved 2026-10-14: endpoints removed |
+| Non-existent room observer returns 200 | Returned a zero-state instead of 404 — resolved 2026-10-14: endpoint removed |
 
 ---
 
@@ -351,8 +349,6 @@ chain evidence.
 |---|---|---|---|
 | Structured Decider → persistent DAG protocol | P0 | Large | End-to-end planned work rather than manual DAG entry |
 | Durable mirror dead-letter/operator retry UI | P1 | Medium | Current implementation preserves/retries events but has no durable paused state |
-| Observer pause/resume implementation | P1 | Small | UI buttons are non-functional |
-| Non-existent room observer → 404 | P3 | Trivial | Error handling consistency |
 
 ### 5.2 Feature expansion
 
@@ -438,7 +434,7 @@ be described as the repository production-chain E2E.
 | `gateway/hosted_room_discussion.py` | Turn logic, member mentions, prompt building, anti-injection |
 | `gateway/hosted_room_execution_policy.py` | F1 orchestration-only tool whitelist |
 | `gateway/slash_commands.py` | `/room` CLI commands |
-| `tui_gateway/hosted_room_service.py` | Room lifecycle, observer, peer grants, replication, policy trace |
+| `tui_gateway/hosted_room_service.py` | Room lifecycle, peer grants, replication, policy trace |
 | `tui_gateway/server.py` | `_room_decider_toolset_filter` application |
 | `hermes_cli/web_server.py` | All `/api/rooms/*` endpoints (15 total) |
 | `web/src/pages/RoomsPage.tsx` | C9 inspector UI (9 cards) |
@@ -617,46 +613,7 @@ for r in rooms:
             check(f"[{rid}] action has action_id", bool(a.get("action_id")))
             check(f"[{rid}] action has kind", bool(a.get("kind")))
 
-# ── 5. Mailbox ──
-print("\n═══ 5. MAILBOX ═══")
-for r in rooms:
-    rid = r["room_id"]
-    for m in room_details.get(rid, {}).get("members", [])[:2]:
-        mid = m.get("member_id")
-        if not mid: continue
-        status, mailbox = api("GET", f"/api/rooms/{rid}/members/{mid}/mailbox")
-        check(f"[{rid}/{mid}] mailbox → 200", status == 200)
-        if status == 200:
-            msgs = mailbox.get("messages", [])
-            check(f"[{rid}/{mid}] messages is list", isinstance(msgs, list), f"n={len(msgs)}")
-        status, _ = api("POST", f"/api/rooms/{rid}/members/{mid}/mailbox/read")
-        check(f"[{rid}/{mid}] mark read → 200", status == 200)
-    status, _ = api("GET", f"/api/rooms/{rid}/members/NONEXISTENT/mailbox")
-    check(f"[{rid}] non-existent member mailbox", status in (200, 404), f"status={status}")
-
-# ── 6. Observer ──
-print("\n═══ 6. OBSERVER ═══")
-for r in rooms:
-    rid = r["room_id"]
-    status, obs = api("GET", f"/api/rooms/{rid}/observer")
-    check(f"[{rid}] observer → 200", status == 200)
-    if status == 200:
-        check(f"[{rid}] observer.state", obs.get("state") in ("armed", "paused", "stopped", "delivering"), obs.get("state"))
-        check(f"[{rid}] observer.current_turn >= 0", obs.get("current_turn", -1) >= 0)
-        check(f"[{rid}] observer.current_round >= 0", obs.get("current_round", -1) >= 0)
-        check(f"[{rid}] observer.rules_checked >= 0", obs.get("rules_checked", -1) >= 0)
-        check(f"[{rid}] observer.violations >= 0", obs.get("violations", -1) >= 0)
-
-        status_p, _ = api("POST", f"/api/rooms/{rid}/observer/pause")
-        check(f"[{rid}] pause → 200", status_p == 200)
-
-        status_r, _ = api("POST", f"/api/rooms/{rid}/observer/resume")
-        check(f"[{rid}] resume → 200", status_r == 200)
-
-        # Known: pause/resume are stubs (backend returns ok but doesn't change state)
-        status_v, obs_v = api("GET", f"/api/rooms/{rid}/observer")
-        if status_v == 200 and obs_v.get("state") not in ("paused",):
-            warn(f"[{rid}] observer pause/resume is STUB — state stays '{obs_v.get('state')}'")
+# (5. Mailbox / 6. Observer removed with their endpoints on 2026-10-14.)
 
 # ── 7. Peer Grants ──
 print("\n═══ 7. PEER GRANTS ═══")
@@ -727,9 +684,6 @@ status, _ = api("GET", "/api/rooms/NONEXISTENT_ROOM_99999/log")
 check("Non-existent room log → 404", status == 404)
 status, _ = api("GET", "/api/rooms/NONEXISTENT_ROOM_99999/topology")
 check("Non-existent room topology → 400/404", status in (400, 404))
-status, _ = api("GET", "/api/rooms/NONEXISTENT_ROOM_99999/observer")
-if status == 200:
-    warn("Non-existent room observer returns 200 (default state) instead of 404")
 
 # ── 11. Cross-endpoint Consistency ──
 print("\n═══ 11. CROSS-ENDPOINT CONSISTENCY ═══")
@@ -755,7 +709,7 @@ if os.path.exists(bundle):
     with open(bundle, "rb") as f:
         content = f.read().decode("utf-8", errors="ignore")
     for key in ["peerGrants", "replicationHealth", "policyTrace", "noLinkage",
-                "observerMonitor", "teamTopology", "eventLog", "authority"]:
+                "teamTopology", "eventLog", "authority"]:
         check(f"Bundle contains '{key}'", key in content)
 else:
     check("RoomsPage bundle", False, "not found")
