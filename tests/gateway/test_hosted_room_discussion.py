@@ -1000,6 +1000,7 @@ def test_decider_answers_opening_round_alone(decider_room_db):
     assert "You are the decider" in first.payload["prompt"]
     assert "never call delegate_task" in first.payload["prompt"]
     assert "never answer (pass) on the opening turn" in first.payload["prompt"]
+    assert "in the order you first mention them" in first.payload["prompt"]
 
 
 def test_internal_task_dag_anchor_targets_worker_without_decider_round(
