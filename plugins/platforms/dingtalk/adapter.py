@@ -1435,32 +1435,65 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
             logger.exception("[%s] Error processing incoming message", self._adapter.name)
 
 
+_OPENAPI_BASE = "https://api.dingtalk.com"
+
+
+async def _openapi_group_send(client, extra: dict, chat_id: str, message: str) -> Optional[dict]:
+    """Robot group send through the OpenAPI with the app credentials (no webhook needed): the same
+    ``groupMessages/send`` the live adapter uses, minus the SDK. ``None`` when the app isn't configured."""
+    client_id, client_secret = _credentials(extra)
+    if not (client_id and client_secret):
+        return None
+    token_resp = await client.post(f"{_OPENAPI_BASE}/v1.0/oauth2/accessToken",
+                                   json={"appKey": client_id, "appSecret": client_secret})
+    token = (token_resp.json() or {}).get("accessToken") if token_resp.status_code == 200 else None
+    if not token:
+        return send_error(f"DingTalk access token request failed (HTTP {token_resp.status_code})")
+    resp = await client.post(
+        f"{_OPENAPI_BASE}/v1.0/robot/groupMessages/send", headers={"x-acs-dingtalk-access-token": token},
+        json={"msgKey": "sampleMarkdown", "openConversationId": chat_id, "robotCode": extra.get("robot_code") or client_id,
+              "msgParam": json.dumps({"title": "Hermes", "text": message}, ensure_ascii=False)})
+    data = resp.json() if resp.content else {}
+    if resp.status_code != 200 or not data.get("processQueryKey"):
+        return send_error(f"DingTalk group send failed: {data.get('message') or data.get('code') or resp.status_code}")
+    return {"success": True, "platform": "dingtalk", "chat_id": chat_id, "message_id": data["processQueryKey"]}
+
+
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
-    """Out-of-process delivery (standalone_sender_fn) via the static robot webhook (DINGTALK_WEBHOOK_URL / extra
-    ``webhook_url``) — per-session webhooks aren't available to cron jobs."""
+    """Out-of-process delivery (standalone_sender_fn): the static robot webhook (DINGTALK_WEBHOOK_URL / extra
+    ``webhook_url``) when configured, else an OpenAPI group send with the app's own credentials — so cron
+    workers, the dashboard and a gateway whose adapter lost its SDK can still reach a group chat. Text only."""
     try:
         import httpx
     except ImportError:
         return send_error("httpx not installed")
+    extra = getattr(pconfig, "extra", {}) or {}
     # Scoped: the webhook URL carries the robot's access_token and IS the delivery target — a raw
     # environ read would post a secondary profile's cron output to the default profile's robot.
-    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or _get_scoped_secret("DINGTALK_WEBHOOK_URL", "")
-    if not webhook_url:
-        return send_error("DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config.")
+    webhook_url = extra.get("webhook_url") or _get_scoped_secret("DINGTALK_WEBHOOK_URL", "")
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(webhook_url, json={"msgtype": "text", "text": {"content": message}})
-            resp.raise_for_status()
-            data = resp.json()
-        if data.get("errcode", 0) != 0:
-            return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
-        return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
+            if not webhook_url:
+                result = await _openapi_group_send(client, extra, chat_id, message)
+                if result is None:
+                    return send_error("DingTalk not configured. Set DINGTALK_CLIENT_ID/DINGTALK_CLIENT_SECRET "
+                                      "(or DINGTALK_WEBHOOK_URL / webhook_url in the dingtalk platform config).")
+            else:
+                resp = await client.post(webhook_url, json={"msgtype": "text", "text": {"content": message}})
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("errcode", 0) != 0:
+                    return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
+                result = {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)
             from tools.send_message_tool import _error as _redact_error
             return _redact_error(f"DingTalk send failed: {e}")
         except Exception:
             return send_error(f"DingTalk send failed: {e}")
+    if media_files and result.get("success"):
+        result["warning"] = "MEDIA attachments were omitted: out-of-process DingTalk delivery is text only"
+    return result
 
 
 def interactive_setup() -> None:

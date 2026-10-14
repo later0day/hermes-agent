@@ -677,13 +677,13 @@ _CHUNKED_ROUTES = {
 # warning). Signature: (pconfig, chat_id, chunk, thread_id) -> result.
 _TEXT_SENDERS = {
     **{name: partial(_registry_standalone_send, name)
-       for name in ("whatsapp", "email", "sms", "dingtalk", "feishu", "wecom")},
+       for name in ("whatsapp", "email", "sms", "feishu", "wecom")},
     "signal": lambda pc, cid, chunk, tid: _send_signal(pc.extra, cid, chunk),
     "bluebubbles": lambda pc, cid, chunk, tid: _send_bluebubbles(pc.extra, cid, chunk),
     "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
     "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
 
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack, qqbot and dingtalk"
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
@@ -733,9 +733,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
+    # Generic path: text only. Buzz and DingTalk deliver media natively via _send_via_adapter (the
+    # live adapter's media APIs), so no warning; DingTalk's out-of-process sender warns itself.
     warning = None
-    if media_files and platform_name != "buzz":
+    if media_files and platform_name not in {"buzz", "dingtalk"}:
         if not message.strip():
             return {"error": (f"send_message MEDIA delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}; "
                               f"target {platform_name} had only media attachments")}
