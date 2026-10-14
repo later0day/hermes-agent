@@ -1,8 +1,8 @@
-"""Subagent progress shows on the turn status card only.
+"""Subagent progress surfaces: in-card when the turn has a status card, else 🔀 progress bubbles.
 
-The card port also pushed subagent tool/lifecycle events into the plain progress queue, so every
-platform with tool progress on started getting subagent bubbles it never had; and the card
-prefixed 🔀 onto lines delegate_tool_progress had already prefixed.
+The fork rendered a delegated child's tool calls and lifecycle text as 🔀 bubbles on platforms without
+a card (origin/main gateway/run.py progress_callback); the 2026-10-08 port wrongly dropped them, so a
+long delegation was silent there. The card must not double delegate_tool_progress's 🔀 prefix.
 """
 import queue
 from unittest.mock import MagicMock
@@ -34,9 +34,26 @@ def _turn(card):
     return TurnRunner(_Runner(), ctx), ctx
 
 
-def test_without_a_card_subagent_events_do_not_become_progress_bubbles():
+def _drain(q):
+    out = []
+    while not q.empty():
+        out.append(q.get_nowait())
+    return out
+
+
+def test_without_a_card_subagent_progress_becomes_bubbles():
     turn, ctx = _turn(None)
+    turn.progress_callback("subagent.start", preview="scan the repo")
+    turn.progress_callback("subagent.tool", tool_name="terminal", preview="ls")
     turn.progress_callback("subagent.progress", preview="🔀 [1] read_file")
+    turn.progress_callback("subagent.tool.completed", tool_name="terminal")
+    assert _drain(ctx.progress_queue) == ["🔀 scan the repo", "🔀 terminal — ls", "🔀 [1] read_file"]
+
+
+def test_without_a_card_tool_progress_off_keeps_subagents_quiet():
+    turn, ctx = _turn(None)
+    ctx.tool_progress_enabled = False
+    turn.progress_callback("subagent.start", preview="scan the repo")
     turn.progress_callback("subagent.tool", tool_name="terminal", preview="ls")
     assert ctx.progress_queue.empty()
 

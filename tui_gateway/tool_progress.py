@@ -497,7 +497,8 @@ def _on_tool_progress(
         return
     # Subagent lifecycle is application state (Desktop status stack, TUI spawn tree), not
     # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
-    if event_type.startswith("subagent."):
+    # subagent.tool.completed only closes rows on the gateway status card; it is not a contract event.
+    if event_type.startswith("subagent.") and event_type != "subagent.tool.completed":
         return _progress_subagent(sid, name, preview, _kwargs, event_type)
     # No blanket tool_progress gate here: reasoning.available and moa.* are reasoning
     # content that follow display.show_reasoning in their own handlers.

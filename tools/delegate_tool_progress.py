@@ -126,8 +126,13 @@ _EVENT_HANDLERS: dict[Any, Optional[str]] = {
     "subagent.text": "_on_text",
     DelegateEvent.TASK_THINKING: "_on_thinking",
     DelegateEvent.TASK_PROGRESS: "_on_progress",
-    DelegateEvent.TASK_TOOL_COMPLETED: None,
+    DelegateEvent.TASK_TOOL_COMPLETED: "_on_tool_completed",
 }
+
+def _call_identity(kwargs: dict) -> dict:
+    """The child's tool_call_id, so the parent pairs a tool's start and completion rows exactly."""
+    return {"tool_call_id": kwargs["tool_call_id"]} if kwargs.get("tool_call_id") else {}
+
 
 def _normalize_event(event_type: Any) -> Any:
     """Lifecycle string / DelegateEvent / legacy string / ``delegate.*`` string
@@ -404,10 +409,18 @@ class _ChildProgressRelay:
             short = _short(preview, 35) if preview else ""
             self._tree_line(f'{line}  "{short}"' if short else line)
         if self.parent_cb:
-            self._relay("subagent.tool", tool_name, preview, args)
+            self._relay("subagent.tool", tool_name, preview, args, **_call_identity(kwargs))
             self.batch.append(tool_name or "")
             if len(self.batch) >= self._BATCH_SIZE:
                 self._flush()
+
+    def _on_tool_completed(self, tool_name, preview, args, kwargs):
+        # The parent's status card opened a row on subagent.tool; without this event it spun until the card closed.
+        if self.parent_cb and tool_name:
+            done = {k: kwargs[k] for k in ("duration", "is_error") if k in kwargs}
+            if kwargs.get("is_error"):  # the card's failure row summarises the error text
+                done["result"] = kwargs.get("result")
+            self._relay("subagent.tool.completed", tool_name, None, None, **_call_identity(kwargs), **done)
 
     def __call__(self, event_type, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         key = _normalize_event(event_type)

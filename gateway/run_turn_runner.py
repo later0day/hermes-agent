@@ -37,6 +37,9 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# Delegated-child events rendered as 🔀 progress bubbles when the turn has no status card.
+_SUBAGENT_BUBBLE_EVENTS = frozenset({"subagent.start", "subagent.tool", "subagent.progress", "subagent.thinking"})
+
 
 # Consecutive turns a session's persisted transcript may lag its live cached history before
 # _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
@@ -148,6 +151,9 @@ class TurnRunner:
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return
+        if event_type in _SUBAGENT_BUBBLE_EVENTS:
+            self._progress_subagent_bubble(event_type, tool_name, preview)
+            return
         # "_thinking" is assistant scratch text between tool calls, never ordinary tool progress:
         # only relayed when the platform explicitly opted into thinking_progress.
         if event_type == "_thinking" or tool_name == "_thinking":
@@ -182,6 +188,22 @@ class TurnRunner:
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
             self._progress_emit(msg)
+
+    def _progress_subagent_bubble(self, event_type: str, tool_name, preview) -> None:
+        """No status card: a delegated child's progress renders as 🔀 bubbles, as the fork did, so a long
+        delegation isn't silent (with a card, route_progress_event shows it in-card instead)."""
+        ctx = self._ctx
+        if not ctx.tool_progress_enabled or self._agent_interrupted():
+            return
+        if event_type == "subagent.tool":
+            msg = f"🔀 {tool_name or 'subagent'}" + (f" — {preview}" if preview else "")
+        elif event_type == "subagent.thinking" and not ctx._thinking_enabled:
+            return
+        else:  # delegate_tool_progress already prefixes its batch lines with 🔀
+            text = preview or tool_name or ""
+            msg = text if text.startswith("🔀") else f"🔀 {text}" if text else ""
+        if msg:
+            ctx.progress_queue.put(msg)
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
