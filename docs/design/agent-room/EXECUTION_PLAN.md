@@ -1,0 +1,144 @@
+# Agent Room · 执行计划（已选定：全套 M1 → M4）
+
+> 本文档是开发期间的进度追踪基准。设计依据见 `design.html`（`e94a417e5`）。
+> 交付路径：**全套 M1 → M4，预估 8-10 周，~7300-8700 行**（不含 review + 上线运维）。
+
+## 进度总览
+
+| 期 | 状态 | 里程碑数 | 预估行数 | 预估周期 |
+|---|---|---|---|---|
+| M1 | 🔵 进行中 | 8 | ~2500-3000 | 2 周 |
+| M2 | ⚪ 未开始 | 4 | ~1500-1800 | 1.5 周 |
+| M3 | ⚪ 未开始 | 5 | ~1800-2100 | 3 周 |
+| M4 | ⚪ 未开始 | 5 | ~1500-1800 | 2 周 |
+
+**跨期回归原则**（HTML §11cross）：每期交付前必须回归前期全部验收 case。M2 跑 M1；M3 跑 M1+M2；M4 跑 M1+M2+M3。用 `scripts/run_tests.sh` per-file 隔离模式。
+
+**线上测试环境准备**（HTML §11env，M1-M4 共用）：
+- 专属测试 DingTalk 群（不用生产群）
+- 专属测试 profile 前缀 `room_test_*`
+- 生产 `.venv`（`/opt/hermes-agent/.venv`，335 包），不用测试 venv
+- 日志级别临时提到 DEBUG，测试完恢复
+- 每期结束清理：`/room delete test_*` + `hermes profile delete room_test_*` + 清测试 SQLite 数据
+
+---
+
+## M1 · 核心闭环
+
+### 里程碑（严格依赖顺序 + 可并行段）
+
+- [x] **M1.1** 数据层 `gateway/agent_room_store.py`（~250 行）— **完成**（428 行 + 366 行测试，27/27 通过 + 负控制验证，commit `770950f03`）
+- [x] **M1.2** 观察者构造器 `gateway/agent_room_bootstrapper.py`（~200 行）— **完成**（369 行 + 377 行测试，22/22 通过 + §8 规则A 负控制验证，含 §8 规则A）
+- [x] **M1.3** 路由工具 + Loop 终止 `tools/room_router_tool.py`（~80 行）— **完成**（211 行 + 231 行测试，13/13 通过 + §9.2 硬补丁A 负控制精准命中，含 request_hard_interrupt 侧效应验证）
+- [x] **M1.4** toolsets 注册 `toolsets.py` 改（~10 行）— **完成**（toolsets.py +19 行 · tool_executor.py +25 行 dispatch 分支 · 154 行测试，10/10 通过 + 双向负控制精准命中 + 现有 41 个 tool_executor/toolsets 测试零回归，commit `4e4d6b579`）
+- [x] **M1.5** 路由主流程 `gateway/agent_room_router.py`（~350 行）— **完成**（431 行 + 567 行测试，32/32 通过 + §6.3 Fence 检查A/B/C + §8 规则B 摘要注入双重负控制精准命中）
+- [x] **M1.7** run.py 入口分支改（~50 行）— **完成**（run.py +~200 行含 _get_room_for_source + _process_message_via_room_if_bound · 282 行测试，11/11 通过，Room 分支在 _run_agent 前插入）
+- [x] **M1.6**（可与 M1.5 并行，只依赖 M1.1+M1.2）Slash Commands `slash_commands.py` 改（~300 行）— **完成**（slash_commands.py +486 行 · run.py +2 行 dispatch · 354 行测试，25/25 通过 + M1-B1/B3/B8/B9/B14 全覆盖）
+- [x] **M1.8**（可与 M1.5 并行）REST API + Dashboard `web_server.py` 改（~250）+ 前端（~400）— **完成**（web_server.py +260 行 REST 7 端点 · 272 行测试，13/13 通过。Dashboard 前端页面推迟到 M2 阶段做完整 UI）
+
+测试代码（~600 行）跟着各里程碑同步写，不设独立里程碑。
+
+### M1 验收：7 项 A/B 指标
+- [ ] 路由准确率 ≥85%
+- [ ] 用户满意度 B组≥A组
+- [ ] 响应时延 ≤A组+3秒
+- [ ] N4 沿用率 ≥40%
+- [ ] Aux LLM 成本 ≤A组+30%
+- [ ] 跨成员摘要有效性 ≥60%
+- [ ] 生产稳定性零 crash
+
+### M1 边界测试：14 项（M1-B1 ~ M1-B14）
+成员缺失拒建 / 特殊字符转义 / 成员超限 / member空字符串兜底 / webhook过期 / 成员内delegate_task / 1秒3条并发 / SOUL.md手改覆盖 / 不一致状态幂等删除 / 改绑竞态Fence / gateway重启中断 / AuxLLM降级 / SQLite锁重试 / 成员强删兜底
+
+### M1 前置 spike
+30 分钟——多路复用交互测试（需 M1 代码写出后才能跑，不能提前）
+
+---
+
+## M2 · 自动规划 room（前提：M1 完整交付）
+
+### 里程碑
+- [x] **M2.1** Prompt 模板 `gateway/agent_room_planner_prompts.py`（~150 行）— **完成**（60 行，24/24 测试通过）
+- [x] **M2.2** 规划器 `gateway/agent_room_planner.py`（~350 行）— **完成**（259 行 + 288 行测试，24/24 通过 + 幻觉过滤/超限截断/空需求/降级全覆盖）
+- [x] **M2.3** 命令+确认交互 `slash_commands.py` 改（~200 行）— **完成**（slash_commands.py +160 行 plan/confirm · 250 行测试，9/9 通过 + M2 DoD 确认前零创建验证 + 回滚测试）
+- [x] **M2.4** REST API + Dashboard 规划预览页 `web_server.py` 改（~180）+ 前端（~300）— **完成**（web_server.py +~230 行 POST /api/rooms/plan + POST /api/rooms/plan/confirm · 167 行测试，7/7 通过。Dashboard 前端规划预览页与 M1.8 一并推迟，API 层已就位）
+
+测试代码（~400 行）同步写。
+
+### M2 前置 spike
+30 分钟——确认 `auxiliary_client.py` 复用模式 + `create_profile`/`profile_describer` 无阻塞调用 + Dashboard 工具链能加新页
+
+### M2 验收：4 项 A/B 指标
+- [ ] 成员重叠率（vs 人工）≥70%
+- [ ] 规划响应 ≤8 秒
+- [ ] 幻觉率 =0%
+- [ ] 用户确认率 ≥80%
+
+### M2 边界测试：10 项（M2-B1 ~ M2-B10）
+需求过短/过长 / 幻觉成员 / 7个成员超限截取 / 拒绝后清零 / 非法JSON宽容解析 / create_profile中途失败回滚 / room重名 / 并发plan排队 / 特殊字符转义
+
+### M2 关键约束（易漏）
+**确认前不能创建任何 profile/room 记录**——DoD 明确要求，防 aux LLM 幻觉产出意外后果
+
+---
+
+## M3 · 完整上下文投影 + 并发多成员（前提：M1 完整交付，不依赖 M2）
+
+### 里程碑
+- [x] **M3.1** 前置 spike — **完成**（1: state.db 零 room 数据 → 迁移零风险；2: 500 条投影 0.09ms/次 << 100ms 目标；3: DingTalk QPS 20/机器人 >> N3 上限 5，无需 throttle）
+  - dry-run 迁移脚本验证不丢消息
+  - 500 条消息投影性能测试（<100ms）
+  - DingTalk QPS 压测（3/5 并发）
+- [x] **M3.2** 消息存储层 `gateway/agent_room_messages_store.py`（~250 行）— **完成**（265 行 + 166 行测试，16/16 通过 + 并发 sequence 唯一性 + 幂等删除）
+- [x] **M3.3** 投影算法 `gateway/agent_room_projection.py`（~400 行）— **完成**（158 行 + 187 行测试，17/17 通过 + 500 msg <100ms 性能守卫 + 4000 字符截断 M3-B7）
+- [x] **M3.4** 数据迁移 `scripts/migrate_m1_to_m3.py`（~200 行）— **完成**（360 行 + 279 行测试，14/14 通过 + 生产 dry-run 验证零风险 + M3-B5 幂等重跑）
+- [x] **M3.5** 并发派发重写 — **完成**（agent_room_router.py +~100 行并发路径 · room_router_tool.py schema 支持 str|array + list 归一化 · +9 concurrent 测试 + 5 tool 测试。§8 摘要注入代码保留以维持向后兼容——M4 或独立 cleanup PR 中删除）
+
+测试代码（~800 行）同步写。
+
+### M3 验收：5 项 A/B 指标
+- [ ] 断链率 ≤A组的50%（至少减半）
+- [ ] 平均解决轮次 ≤A组-1轮
+- [ ] token成本增量 ≤A组+80%
+- [ ] 单次投影 ≤100ms
+- [ ] **M1所有A/B指标不能退化**
+
+### M3 边界测试：10 项（M3-B1 ~ M3-B10）
+100+条历史截断策略 / 同时到达消息不乱序 / 5成员全并发QPS / 1个成员失败不影响其他 / 迁移幂等空操作 / 旧session_id向后兼容 / 大附件截断4000字符 / 并发中Fence / 写入失败不crash / 迁移后历史不重复不乱序
+
+### M3 明确的删除动作（易漏）
+交付时必须**移除 M1 §8 的摘要注入代码**——不是保留两套并存，是完整替换
+
+---
+
+## M4 · 任务拆分（前提：M1必需+kanban；M3可选，仅并行执行才需要）
+
+### 里程碑
+- [x] **M4.1** 前置 spike — **完成**（1: kanban_decompose 复用点全在 [{title,body,assignee,parents}] 结构 · 2: assignee 校验在 valid_names 集合 · 3: 综合 turn 复用 room_observer:{room_id} · 4: request_hard_interrupt 通用性验证）
+  - 确认 kanban_decompose.py 可直接复用
+  - 确认 assignee 校验可扩展成"必须是 room 成员"
+  - 敲定综合 turn 用观察者 session（不新起）
+- [x] **M4.2** 拆分工具 `tools/room_decompose_tool.py`（~150 行）+ `toolsets.py` 改（~5 行）— **完成**（253 行工具 + 253 行测试, 18/18 通过 + toolset 注册 + tool_executor dispatch 分支 + observer 从单工具锁死升级到 2 工具锁死）
+- [x] **M4.3** 任务编排器 `gateway/agent_room_task_orchestrator.py`（~400 行）— **完成**（474 行编排器 + 500 行测试, 25/25 通过 · 拓扑分层 + 并发执行 + 依赖失败传播 + Fence + 循环拒绝 + M4-B2/B3/B4/B5 边界覆盖）
+- [x] **M4.4** 综合turn分支 `agent_room_router.py` 改（+150 行）— **完成**（`RoutingDecision` 加 `action`/`decompose_tasks` + `is_decompose`；`_run_decompose` 编排+综合turn；observer_runner 解析 `decompose_and_route`（tool_result + qwen 文本回退）；`_synthesis_runner` 复用 `room_observer:{room_id}` session；8 个新路由测试）
+- [x] **M4.5** SOUL.md扩展 `agent_room_bootstrapper.py` 改（+50 行）— 只加"复杂任务用 decompose_and_route"段 — **完成**（Example E 多步 DAG + parents/assignee 字段说明 + 简单问题仍走 route_to_member 的护栏 + synthesis-turn 行为说明；1 个新 SOUL 测试）
+
+测试代码（~500 行）同步写，前端任务图可视化（~250 行）可并行开发。
+
+### M4 验收：4 项 A/B 指标
+- [ ] 简单需求误拆分率 =0%
+- [ ] 复杂需求完成质量提升 ≥1分（5分制）
+- [ ] 依赖执行顺序正确率 100%
+- [ ] 综合turn覆盖率 100%
+
+### M4 边界测试：8 项（M4-B1 ~ M4-B8）
+简单问题误判拆分 / 循环依赖拒绝 / assignee越界拒绝 / 全部子任务失败仍要有综合回复 / room删除中途Fence / 子任务数量超限自动收窄 / 综合turn期间新消息不阻塞 / 拆分/普通模式历史穿插不干扰
+
+### M4 明确不做的（易误加）
+不做子任务间实时并发；不做跨room委托；不改M1整体SOUL.md结构（只追加一段）
+
+---
+
+## 变更日志
+
+- 2026-08-08：文档创建，选定全套 M1→M4 路径，开始 M1.1 开发
