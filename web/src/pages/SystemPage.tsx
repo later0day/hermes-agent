@@ -212,6 +212,11 @@ const GATEWAY_STARTED: Record<"start" | "stop" | "restart", keyof SystemStrings>
   restart: "gatewayRestartStarted",
 };
 
+/** The update check's message; the backend's English "up to date" line shown in the page language. */
+function updateMessage(message: string, s: SystemStrings): string {
+  return message === "You're on the latest version." ? s.updateUpToDate : message;
+}
+
 function debugShareToast(res: { urls: Record<string, unknown>; redacted?: boolean }, s: SystemStrings): string {
   const n = Object.keys(res.urls).length;
   const uploaded = (n === 1 ? s.debugShareUploadedOne : s.debugShareUploadedMany).replace("{n}", String(n));
@@ -1095,7 +1100,7 @@ export default function SystemPage() {
                   )}
                 {updateInfo?.message && !updateInfo.update_available && (
                   <span className="text-xs text-muted-foreground">
-                    {updateInfo.message}
+                    {updateMessage(updateInfo.message, s)}
                   </span>
                 )}
               </div>

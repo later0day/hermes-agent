@@ -1,5 +1,6 @@
 import type { StatusResponse } from "@/lib/api";
 import { ApiError } from "@/lib/api-error";
+import { prefersZh } from "@/lib/doc-locale";
 
 /** Profiles a gateway restart would blip when the managed profile is carried by the shared
  *  multiplexer (default first). `null` for a standalone gateway or an older backend without
@@ -17,33 +18,45 @@ export function sharedGatewayProfiles(
 }
 
 export function sharedGatewayRestartDescription(profiles: string[]): string {
-  return `All bots on this device reconnect: ${profiles.join(", ")}`;
+  return prefersZh()
+    ? `本设备上的所有机器人都会重连：${profiles.join("、")}`
+    : `All bots on this device reconnect: ${profiles.join(", ")}`;
 }
 
 export function sharedGatewayRestartedMessage(count: number): string {
-  return `Shared gateway restarted (${count} ${count === 1 ? "bot" : "bots"})`;
+  return prefersZh() ? `共享网关已重启（${count} 个机器人）` : `Shared gateway restarted (${count} ${count === 1 ? "bot" : "bots"})`;
 }
 
-/** Raw `gateway_state` values (gateway/status.py) → what they mean for the user. */
-const GATEWAY_STATE_COPY: Record<string, string> = {
-  running: "Running — messaging channels are online",
-  starting: "Starting up",
-  degraded: "Running with some channels offline — see Logs",
-  stopped: "Stopped — messaging channels are offline",
-  startup_failed: "Failed to start — see Logs",
+/** Raw `gateway_state` values (gateway/status.py) → what they mean for the user, per dashboard language.
+ *  `exited`: a `degraded` record of a dead process is a watchdog exit, not a live gateway with channels down. */
+const GATEWAY_STATE_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    running: "Running — messaging channels are online",
+    starting: "Starting up",
+    degraded: "Running with some channels offline — see Logs",
+    stopped: "Stopped — messaging channels are offline",
+    startup_failed: "Failed to start — see Logs",
+    exited: "Exited: a watchdog stopped a wedged gateway — see Logs",
+  },
+  zh: {
+    running: "运行中 —— 消息频道在线",
+    starting: "正在启动",
+    degraded: "运行中，部分频道离线 —— 请查看日志",
+    stopped: "已停止 —— 消息频道离线",
+    startup_failed: "启动失败 —— 请查看日志",
+    exited: "已退出：看门狗停止了卡住的网关 —— 请查看日志",
+  },
 };
-
-/** A `degraded` record of a dead process is a watchdog exit, not a live gateway with channels down. */
-const GATEWAY_EXITED_DEGRADED_COPY = "Exited: a watchdog stopped a wedged gateway — see Logs";
 
 /** Plain description of the gateway's state; null/unknown falls back to running/stopped. */
 export function gatewayStateDescription(
   state: string | null | undefined,
   running: boolean | undefined,
 ): string {
-  if (state === "degraded" && running === false) return GATEWAY_EXITED_DEGRADED_COPY;
-  if (state && GATEWAY_STATE_COPY[state]) return GATEWAY_STATE_COPY[state];
-  return running ? GATEWAY_STATE_COPY.running : GATEWAY_STATE_COPY.stopped;
+  const copy = GATEWAY_STATE_COPY[prefersZh() ? "zh" : "en"];
+  if (state === "degraded" && running === false) return copy.exited;
+  if (state && state !== "exited" && copy[state]) return copy[state];
+  return running ? copy.running : copy.stopped;
 }
 
 /** True when the state points at Logs as the next step. */
