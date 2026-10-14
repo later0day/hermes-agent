@@ -661,7 +661,8 @@ def _warn_sdk_missing(servers: dict) -> None:
     if not _sdk_missing_warned:
         _sdk_missing_warned = True
         logger.warning("MCP server(s) %s configured, but the 'mcp' Python SDK is not installed in this runtime "
-                       "(%s); install the 'mcp' extra to enable them", ", ".join(sorted(servers)), sys.prefix)
+                       "(%s); install the 'mcp' extra to enable them", ", ".join(sorted(servers)),
+                       next((p for p in sys.path if p.endswith("site-packages")), sys.prefix))
 
 
 def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
