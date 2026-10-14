@@ -208,6 +208,7 @@ gateway:
     failed: "{count}개 실패"
   agent:
     admin_only: "⛔ /agent {action}에는 명시적으로 설정된 게이트웨이 관리자가 필요합니다(DM은 allow_admin_from, 그룹은 group_allow_admin_from)."
+    deleted_unbound: "에이전트 프로필 `{profile}`이(가) 삭제되었습니다. 이 채팅의 연결이 해제되었습니다."
   goal:
     unavailable: "이 세션에서는 목표 기능을 사용할 수 없습니다."
     no_goal_set: "설정된 목표가 없습니다."

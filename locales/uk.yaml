@@ -208,6 +208,7 @@ gateway:
     failed: "з помилкою: {count}"
   agent:
     admin_only: "⛔ Для /agent {action} потрібен явно налаштований адміністратор шлюзу (allow_admin_from для особистих повідомлень, group_allow_admin_from для груп)."
+    deleted_unbound: "Профіль агента `{profile}` видалено. Прив'язку цього чату знято."
   goal:
     unavailable: "Цілі недоступні в цій сесії."
     no_goal_set: "Ціль не встановлено."

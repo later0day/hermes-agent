@@ -208,6 +208,7 @@ gateway:
     failed: "{count} 失敗"
   agent:
     admin_only: "⛔ /agent {action} 需要明確設定的閘道管理員（私訊用 allow_admin_from，群組用 group_allow_admin_from）。"
+    deleted_unbound: "Agent Profile `{profile}` 已被刪除，此對話已解除綁定。"
   goal:
     unavailable: "此工作階段不支援目標功能。"
     no_goal_set: "未設定目標。"

@@ -208,6 +208,7 @@ gateway:
     failed: "{count} 失败"
   agent:
     admin_only: "⛔ /agent {action} 需要显式配置的网关管理员（私聊用 allow_admin_from，群组用 group_allow_admin_from）。"
+    deleted_unbound: "Agent Profile `{profile}` 已被删除，本会话已解除绑定。"
   goal:
     unavailable: "此会话不支持目标功能。"
     no_goal_set: "未设置目标。"

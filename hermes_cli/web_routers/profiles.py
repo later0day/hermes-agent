@@ -1136,7 +1136,11 @@ async def delete_profile_endpoint(name: str):
     and the retry command: the profile directory is already gone, and folding that state into
     the generic 500 made a dashboard client read a completed delete as a failure (its retry
     then 404'd)."""
+    from gateway.source_agent_binding import bound_chats_for_profile, notify_unbound_chats
     from hermes_cli import profiles as profiles_mod
+    # Read before the delete settles the bindings away: those chats are told they were unbound, as
+    # ``/agent delete`` does in-chat (a dashboard delete otherwise drops them back to default silently).
+    bound_chats = await run_in_threadpool(bound_chats_for_profile, name)
     try:
         with _profile_errors("DELETE /api/profiles/%s failed", name):
             # Polls a running gateway's PID for up to 10 s, then rmtree()s the directory; on the
@@ -1151,7 +1155,7 @@ async def delete_profile_endpoint(name: str):
                               detail=str(exc.detail))
         raise
     _audit_profile_action("delete", name)
-    return {"ok": True, "path": str(path)}
+    return {"ok": True, "path": str(path), "notified_chats": await notify_unbound_chats(name, bound_chats)}
 
 
 @router.get("/api/profiles/{name}/soul")

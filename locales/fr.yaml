@@ -234,6 +234,7 @@ gateway:
     failed: "{count} en échec"
   agent:
     admin_only: "⛔ /agent {action} nécessite un administrateur de la passerelle configuré explicitement (allow_admin_from pour les messages privés, group_allow_admin_from pour les groupes)."
+    deleted_unbound: "Le profil d'agent `{profile}` a été supprimé. Ce chat a été dissocié."
   goal:
     unavailable: "Les objectifs ne sont pas disponibles dans cette session."
     no_goal_set: "Aucun objectif défini."

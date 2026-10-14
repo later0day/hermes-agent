@@ -208,6 +208,7 @@ gateway:
     failed: "{count} non riusciti"
   agent:
     admin_only: "⛔ /agent {action} richiede un amministratore del gateway configurato esplicitamente (allow_admin_from per i messaggi diretti, group_allow_admin_from per i gruppi)."
+    deleted_unbound: "Il profilo agente `{profile}` è stato eliminato. Questa chat è stata scollegata."
   goal:
     unavailable: "Gli obiettivi non sono disponibili in questa sessione."
     no_goal_set: "Nessun obiettivo impostato."

@@ -510,7 +510,7 @@ class GatewayAgentCommandsMixin:
                 if adapter is not None:
                     await adapter.send(
                         target_chat_id,
-                        f"Agent profile `{target_name}` was deleted. This chat has been unbound.",
+                        t("gateway.agent.deleted_unbound", profile=target_name),
                         metadata=metadata_to_send,
                     )
             except Exception:

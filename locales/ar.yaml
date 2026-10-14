@@ -208,6 +208,7 @@ gateway:
     failed: "{count} فشلت"
   agent:
     admin_only: "⛔ يتطلب ‎/agent {action}‎ مسؤول بوابة مُعدًّا صراحةً (allow_admin_from للرسائل المباشرة، و group_allow_admin_from للمجموعات)."
+    deleted_unbound: "تم حذف ملف تعريف الوكيل `{profile}`. تم إلغاء ربط هذه المحادثة."
   goal:
     unavailable: "الأهداف غير متاحة في هذه الجلسة."
     no_goal_set: "لم يُحدَّد هدف."

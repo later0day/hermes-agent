@@ -208,6 +208,7 @@ gateway:
     failed: "{count} 件失敗"
   agent:
     admin_only: "⛔ /agent {action} には明示的に設定されたゲートウェイ管理者が必要です（DM は allow_admin_from、グループは group_allow_admin_from）。"
+    deleted_unbound: "エージェントプロファイル `{profile}` は削除されました。このチャットのバインドは解除されました。"
   goal:
     unavailable: "このセッションでは目標機能を利用できません。"
     no_goal_set: "目標が設定されていません。"

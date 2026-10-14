@@ -208,6 +208,7 @@ gateway:
     failed: "{count} theip"
   agent:
     admin_only: "⛔ Teastaíonn riarthóir geata atá cumraithe go sainráite le haghaidh /agent {action} (allow_admin_from do theachtaireachtaí díreacha, group_allow_admin_from do ghrúpaí)."
+    deleted_unbound: "Scriosadh an phróifíl ghníomhaire `{profile}`. Díceanglaíodh an comhrá seo."
   goal:
     unavailable: "Níl spriocanna ar fáil sa seisiún seo."
     no_goal_set: "Níl aon sprioc socraithe."

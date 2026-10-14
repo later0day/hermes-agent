@@ -208,6 +208,7 @@ gateway:
     failed: "{count} fehlgeschlagen"
   agent:
     admin_only: "⛔ /agent {action} erfordert einen explizit konfigurierten Gateway-Admin (allow_admin_from für DMs, group_allow_admin_from für Gruppen)."
+    deleted_unbound: "Agentenprofil `{profile}` wurde gelöscht. Die Bindung dieses Chats wurde aufgehoben."
   goal:
     unavailable: "Ziele sind in dieser Sitzung nicht verfügbar."
     no_goal_set: "Kein Ziel gesetzt."

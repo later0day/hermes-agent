@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from hermes_constants import get_default_hermes_root
+
+logger = logging.getLogger(__name__)
 
 
 def source_agent_bindings_db_path() -> Path:
@@ -307,6 +310,56 @@ def settle_profile_bindings(old_profile: str, new_profile: str | None = None) ->
         return store.delete_bindings_for_profile(old_profile)
     finally:
         store.close()
+
+
+def bound_chats_for_profile(profile_name: str) -> list[dict[str, Any]]:
+    """The distinct chats (``fallback_target`` dicts) bound to *profile_name*, read before a delete
+    settles them away so the caller can tell each one it was unbound."""
+    db_path = source_agent_bindings_db_path()
+    if not db_path.exists():
+        return []
+    store = SourceAgentBindingStore(db_path=db_path)
+    try:
+        targets: dict[tuple, dict[str, Any]] = {}
+        for binding in store.list_bindings(profile_name=profile_name):
+            target = binding.fallback_target or {}
+            if target.get("platform") and target.get("chat_id"):
+                targets.setdefault((target["platform"], target["chat_id"]), target)
+        return list(targets.values())
+    finally:
+        store.close()
+
+
+async def notify_unbound_chats(profile_name: str, targets: list[dict[str, Any]]) -> int:
+    """Out-of-process ``/agent delete`` notice for a profile deleted outside the gateway (dashboard):
+    each bound chat hears it was unbound, through its platform's standalone sender with the primary
+    bot's config (bindings are made on the primary bot). Best-effort; returns the number delivered."""
+    from agent.i18n import t
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platform_registry import platform_registry
+
+    if not targets:
+        return 0
+    platforms = load_gateway_config().platforms
+    text = t("gateway.agent.deleted_unbound", profile=profile_name)
+    delivered = 0
+    for target in targets:
+        try:
+            entry = platform_registry.get(target["platform"])
+            sender = getattr(entry, "standalone_sender_fn", None)
+            pconfig = platforms.get(Platform(target["platform"]))
+            if sender is None or pconfig is None:
+                continue
+            result = await sender(pconfig, str(target["chat_id"]), text)
+            if isinstance(result, dict) and result.get("success"):
+                delivered += 1
+            else:
+                logger.warning("Profile %s deleted: could not notify bound chat %s: %s", profile_name,
+                               target["chat_id"], (result or {}).get("error") if isinstance(result, dict) else result)
+        except Exception:  # health: allow BLE001 -- a notice must never fail the delete that already happened
+            logger.warning("Profile %s deleted: notifying bound chat %s failed", profile_name,
+                           target.get("chat_id"), exc_info=True)
+    return delivered
 
 
 def report_profile_binding_settlement(old_profile: str, new_profile: str | None) -> None:

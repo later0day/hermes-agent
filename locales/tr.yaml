@@ -208,6 +208,7 @@ gateway:
     failed: "{count} başarısız"
   agent:
     admin_only: "⛔ /agent {action} için açıkça yapılandırılmış bir gateway yöneticisi gerekir (DM'ler için allow_admin_from, gruplar için group_allow_admin_from)."
+    deleted_unbound: "`{profile}` ajan profili silindi. Bu sohbetin bağlantısı kaldırıldı."
   goal:
     unavailable: "Bu oturumda hedefler kullanılamıyor."
     no_goal_set: "Hedef ayarlanmadı."

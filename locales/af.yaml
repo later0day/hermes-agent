@@ -208,6 +208,7 @@ gateway:
     failed: "{count} misluk"
   agent:
     admin_only: "⛔ /agent {action} vereis 'n uitdruklik gekonfigureerde gateway-admin (allow_admin_from vir DM's, group_allow_admin_from vir groepe)."
+    deleted_unbound: "Agentprofiel `{profile}` is uitgevee. Hierdie klets is ontbind."
   goal:
     unavailable: "Doelwitte is nie beskikbaar in hierdie sessie nie."
     no_goal_set: "Geen doelwit gestel nie."
