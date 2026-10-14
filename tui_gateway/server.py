@@ -175,9 +175,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
-# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.* setup profile =
-# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat =
-# session creation + a prompt.submit.
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.start = session
+# creation + a prompt.submit; onboarding.state = a bounded wait on the boot-time due answer.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -193,8 +192,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
-    "onboarding.ensure_setup_profile", "onboarding.ensure_setup_session", "onboarding.reset_setup_profile",
-    "session.start_chat",
+    "onboarding.start", "onboarding.state",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -2061,10 +2059,6 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             from agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
-                from hermes_cli.config import load_config
-                from hermes_cli.tools_config import _get_platform_tools
-                from toolsets import TOOLSET_SESSION_PLATFORMS
-                selection += sorted(_get_platform_tools(load_config(), "cli") & TOOLSET_SESSION_PLATFORMS.keys())
                 return sorted(_with_session_toolsets(selection, session_platform))
     try:
         from toolsets import validate_toolset
@@ -2151,7 +2145,7 @@ def _tool_progress_enabled(sid: str) -> bool:
 # set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({
     "clarify", "manage_connections", "setup_mcp",
-    "image_generate", "manage_catalog", "delegate_task", "setup_choose", "start_chat",
+    "image_generate", "manage_catalog", "delegate_task", "setup_beat", "set_theme",
     # File edits are the turn's deliverable — the diff card the user reviews.
     "edit_file", "patch", "write_file",
 })
@@ -2755,7 +2749,8 @@ def _make_agent(
     # Decider members run orchestration-only: intersect the profile's toolset with the coordinator allow-set
     # BEFORE the agent snapshots its tools (hard build-time enforcement, the analogue of CC's
     # applyCoordinatorToolFilter).
-    room_enabled_toolsets = _room_decider_toolset_filter(session, _load_enabled_toolsets(platform))
+    room_enabled_toolsets = _room_decider_toolset_filter(
+        session, _onboarding_toolsets(_load_enabled_toolsets(platform), session_db, session_id or key))
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
@@ -3637,7 +3632,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
-    "init", "compress", "compact", "initiate-setup", "initiate_setup",
+    "init", "compress", "compact",
 })
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
@@ -3738,20 +3733,19 @@ from . import (
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
-    session_transports as _session_transports,
+    session_transports as _session_transports, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
-    methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
+    methods_tools as _methods_tools, methods_tools_plugin_servers as _methods_tools_plugin_servers,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
-    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n,
-    methods_shared_metrics as _methods_shared_metrics, methods_start_chat as _methods_start_chat,
-    methods_plugin_catalog as _methods_plugin_catalog)
+    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n, methods_machine as _methods_machine,
+    methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3759,10 +3753,10 @@ for _m in (
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
-    _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
+    _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
-    _methods_i18n, _methods_shared_metrics, _methods_start_chat, _methods_plugin_catalog):
+    _methods_i18n, _methods_machine, _methods_shared_metrics, _methods_plugin_catalog):
     _m.register(sys.modules[__name__])
 del _m
