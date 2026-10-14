@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link2, X } from "lucide-react";
+import { X } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import type { ProfileBindingSummary } from "@/lib/api";
@@ -64,15 +64,17 @@ export function ProfileBindingEditor({ profile, summary, onChanged, onError }: P
             </div>
           ))}
           <div className="flex items-center gap-1.5">
+            <div className="min-w-0 flex-1">
             <Select value={picked} onValueChange={setPicked} aria-label={s.pickChat}>
               <SelectOption value="">{chats === null ? t.common.loading : s.pickChat}</SelectOption>
               {choices.map((c) => (
                 <SelectOption key={chatValue(c)} value={chatValue(c)}>
-                  {`${c.platform} · ${c.name} (${c.chat_type === "dm" ? s.dm : s.group})`}
+                  {`${c.name} · ${c.chat_type === "dm" ? s.dm : s.group} · ${c.platform}`}
                 </SelectOption>
               ))}
             </Select>
-            <Button size="xs" disabled={!chosen || busy} prefix={<Link2 className="h-3 w-3" />}
+            </div>
+            <Button size="xs" className="shrink-0 whitespace-nowrap" disabled={!chosen || busy}
               onClick={() => chosen && run(() => profileBindingsApi.bind(profile, chosen))}>
               {s.bind}
             </Button>
