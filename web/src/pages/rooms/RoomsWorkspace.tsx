@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Markdown } from "@/components/Markdown";
 import {
   AlertTriangle,
   ChevronLeft,
@@ -326,7 +327,7 @@ function Conversation({ p }: { p: RoomsWorkspaceProps }) {
           </header>
           {userBrief ? <details className="group">
             <summary className={`cursor-pointer list-none [&::-webkit-details-marker]:hidden ${wrapContentClass}`}><span className={`block whitespace-pre-wrap leading-relaxed group-open:hidden line-clamp-6 ${wrapContentClass}`}>{item.text}</span><span className="mt-2 inline-block text-sm font-medium text-primary group-open:hidden">Read full brief</span><span className={`hidden whitespace-pre-wrap leading-relaxed group-open:block ${wrapContentClass}`}>{item.text}</span><span className="mt-2 hidden text-sm font-medium text-primary group-open:inline-block">Show less</span></summary>
-          </details> : <p className={`whitespace-pre-wrap leading-relaxed ${wrapContentClass}`}>{item.text}</p>}
+          </details> : <div className={`leading-relaxed ${wrapContentClass}`}><Markdown content={item.text} /></div>}
           {item.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: item.task_id! })}>View related task</button> : null}
         </article>;
       })}
@@ -334,7 +335,7 @@ function Conversation({ p }: { p: RoomsWorkspaceProps }) {
     </section>
     {finalReport ? <article aria-label="Final leader report" className={`rounded-xl border border-primary/40 bg-primary/10 p-4 shadow-sm ${wrapContentClass}`}>
       <header className="mb-3 flex items-center justify-between gap-3"><span className="flex items-center gap-2"><ShieldCheck className="h-5 w-5 shrink-0 text-primary" /><b>Final report</b></span><time className="shrink-0 text-xs text-text-tertiary">{stamp(finalReport.created_at)}</time></header>
-      <p className={`whitespace-pre-wrap leading-relaxed ${wrapContentClass}`}>{finalReport.text.replace(/^LEADER_REPORT\s*:?\s*/i, "")}</p>
+      <div className={`leading-relaxed ${wrapContentClass}`}><Markdown content={finalReport.text.replace(/^LEADER_REPORT\s*:?\s*/i, "")} /></div>
       {finalReport.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: finalReport.task_id! })}>View related task</button> : null}
     </article> : null}
   </div>;

@@ -304,9 +304,11 @@ describe("RoomsWorkspace summary header", () => {
     const thread = container.querySelector('[aria-label="Conversation thread"]')!;
     assertWrap(thread.querySelector("details summary"));
     assertWrap(thread.querySelector("details summary span:first-child"));
-    assertWrap([...thread.querySelectorAll("p")].find((node) => node.textContent === long));
+    // Member messages and the final report render as Markdown: the wrapping classes sit on the content
+    // container (overflow-wrap inherits into the Markdown paragraphs).
+    assertWrap([...thread.querySelectorAll("p")].find((node) => node.textContent === long)?.closest("article > div"));
     assertWrap(container.querySelector('[aria-label="Final leader report"]'));
-    assertWrap(container.querySelector('[aria-label="Final leader report"] p'));
+    assertWrap(container.querySelector('[aria-label="Final leader report"] > div'));
 
     await act(async () => root?.unmount());
     root = undefined;
@@ -352,5 +354,20 @@ describe("RoomsWorkspace summary header", () => {
       expect(button.className).toContain("whitespace-nowrap");
       expect(button.className).toMatch(/w-auto|sm:w-auto/);
     }
+  });
+  it("renders member messages and the final report as Markdown, not raw markup", async () => {
+    const value = props([summary("room-md", 1, 1)]);
+    value.tab = "conversation";
+    value.workspace!.conversation = [
+      message({ event_id: "member", actor_kind: "member", text: "Findings:\n\n- **API** is ready\n- `pytest` passes" }),
+      message({ event_id: "final", actor_kind: "member", text: "LEADER_REPORT: ## Done\n\n1. Shipped" }),
+    ];
+    const container = await renderWorkspace(value);
+    const thread = container.querySelector('[aria-label="Conversation thread"]');
+    expect(thread?.querySelector("li strong")?.textContent).toBe("API");
+    expect(thread?.querySelector("code")?.textContent).toBe("pytest");
+    expect(thread?.textContent).not.toContain("**API**");
+    const report = container.querySelector('[aria-label="Final leader report"]');
+    expect(report?.querySelector("h2")?.textContent).toBe("Done");
   });
 });

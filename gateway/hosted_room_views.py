@@ -291,6 +291,25 @@ def room_summary(
     return result
 
 
+def _recent_log(db_path, room_id: str) -> dict:
+    """The newest ``MAX_LOG_LIMIT`` events of a room. A single read from seq 0 returns the OLDEST page
+    (ascending, also byte-capped), so a room past one page showed its start and never its latest
+    messages or final report; page forward from the tail window and keep the newest events."""
+    limit = hosted_rooms.MAX_LOG_LIMIT
+    page = hosted_rooms.read_events(db_path, room_id=room_id, since_seq=0, limit=limit, include_disbanded=True)
+    if not page.get("has_more"):
+        return page
+    events, since = [], max(0, int(page["latest_seq"]) - limit)
+    while True:
+        page = hosted_rooms.read_events(db_path, room_id=room_id, since_seq=since, limit=limit,
+                                        include_disbanded=True)
+        events.extend(page["events"])
+        if not page.get("has_more") or not page["events"]:
+            break
+        since = page["cursor"]
+    return {**page, "events": events[-limit:]}
+
+
 def build_room_workspace(db_path: Path | str, *, room_id: str) -> dict[str, Any]:
     """Load existing stores into a bounded, disposable Room read model."""
     room = hosted_rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
@@ -356,10 +375,7 @@ def build_room_workspace(db_path: Path | str, *, room_id: str) -> dict[str, Any]
                 "redacted": True,
             }
         )
-    log = hosted_rooms.read_events(
-        db_path, room_id=room_id, since_seq=0, limit=hosted_rooms.MAX_LOG_LIMIT,
-        include_disbanded=True,
-    )
+    log = _recent_log(db_path, room_id)
     tasks = project_manual_tasks(manual, actions=persisted_actions, driver_tasks=attempts)
     manual_threads = {
         str(task.get("dispatch_thread_id") or "")
