@@ -624,6 +624,23 @@ def _member_role_hint(member: DiscussionMember) -> str:
     return text if len(text) <= MAX_ROLE_HINT_CHARS else text[: MAX_ROLE_HINT_CHARS - 1] + "…"
 
 
+def _shared_room_dir(member: DiscussionMember, room_id: str) -> str:
+    """Where a member saves files for teammates: ``<terminal.cwd>/<room_id>/`` when the member's profile pins an
+    absolute terminal cwd (the shared mount sandboxed members start in), else relative to its working directory.
+    Absolute on purpose: live (rooms demo-competitor-6/7) a sandbox session started in the private home, so
+    ``./<room_id>/`` landed where no teammate could read it."""
+    if (member.target or {}).get("kind", "local") != "local":
+        return f"./{room_id}/"
+    import yaml
+    from hermes_cli.profiles import get_profile_dir
+    try:
+        config = yaml.safe_load((get_profile_dir(member.profile) / "config.yaml").read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        return f"./{room_id}/"
+    cwd = str(((config or {}).get("terminal") or {}).get("cwd") or "") if isinstance(config, dict) else ""
+    return f"{cwd.rstrip('/')}/{room_id}/" if cwd.startswith("/") else f"./{room_id}/"
+
+
 def _team_roster(room: DiscussionRoom, decider: DiscussionMember) -> list[str]:
     """The decider's view of who does what, so it can dispatch by expertise instead of by handle alone
     (the fork's agent-room routed on member descriptions; Hosted Rooms only listed handles)."""
@@ -708,8 +725,8 @@ def _build_prompt(
             '- End your reply with a "Sources:" list of the URLs or files you actually read (even when the requested'
             ' output is a table or CSV); mark anything else "(from memory, unverified)".',
             "- Prefer the vendor's or project's own pages; label third-party, forum or blog sources as such.",
-            f"- Save files teammates need under ./{room.room_id}/ (relative to your working directory) and give"
-            " their paths in your reply.",
+            f"- Save files teammates need under {_shared_room_dir(member, room.room_id)} (use this exact path) and"
+            " give their paths in your reply.",
             f"- {report_to}",
             "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))

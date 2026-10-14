@@ -71,3 +71,24 @@ def test_the_language_rule_names_the_script_or_falls_back(tmp_path):
             payload={"text": "compare these tools", "thread_id": "t"})
     prompt = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task.payload["prompt"]
     assert "Write in the language the user wrote in" in prompt and "Write in Chinese" not in prompt
+
+
+def test_workers_get_the_absolute_shared_room_folder_from_their_terminal_cwd(tmp_path, monkeypatch):
+    # Live (rooms demo-competitor-6/7): a sandbox session started in the private home, so "./<room>/" was invisible
+    # to teammates; the profile's terminal.cwd is the shared mount every sandboxed member starts in.
+    from hermes_cli import profiles
+
+    homes = {name: tmp_path / name for name in ("lead", "api")}
+    for home in homes.values():
+        home.mkdir()
+    (homes["api"] / "config.yaml").write_text("terminal:\n  backend: docker\n  cwd: /srv/rooms/\n", encoding="utf-8")
+    monkeypatch.setattr(profiles, "get_profile_dir", lambda name: homes[name])
+    db, room = _room(tmp_path)
+    _append(db, event_id="u1", kind="message.user", actor={"kind": "user", "id": "u"},
+            payload={"text": "go", "thread_id": "t"})
+    task = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task
+    for event in discussion.plan_publication(room, _events(db), task, status="settled",
+                                             result={"text": "@api work"}, local_profiles=LOCAL).events:
+        hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
+    prompt = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task.payload["prompt"]
+    assert f"under /srv/rooms/{ROOM_ID}/ (use this exact path)" in prompt
