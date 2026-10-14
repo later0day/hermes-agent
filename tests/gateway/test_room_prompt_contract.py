@@ -38,7 +38,8 @@ def test_decider_and_worker_prompts_carry_the_contract(tmp_path):
             payload={"text": "分析竞品", "thread_id": "t"})
     decider_prompt = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task.payload["prompt"]
     assert 'starting with "LEADER_REPORT:"' in decider_prompt
-    assert "never append" in decider_prompt and "language the user wrote in" in decider_prompt
+    assert "never append" in decider_prompt and "Write in Chinese" in decider_prompt
+    assert "mark those points as unverified" in decider_prompt
 
     task = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task
     for event in discussion.plan_publication(room, _events(db), task, status="settled",
@@ -47,7 +48,8 @@ def test_decider_and_worker_prompts_carry_the_contract(tmp_path):
     worker = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task
     assert worker.member.profile == "api"
     prompt = worker.payload["prompt"]
-    assert "sources you actually looked up" in prompt
+    assert '"Sources:" list' in prompt and "Write in Chinese" in prompt
+    assert "about 10 searches" in prompt
     assert f"./{ROOM_ID}/" in prompt
 
 
@@ -60,3 +62,11 @@ def test_a_stray_trailing_pass_is_stripped_from_a_real_reply(tmp_path):
                                               result={"text": "LEADER_REPORT: done\n\n(pass)"}, local_profiles=LOCAL)
     (message,) = [e for e in publication.events if e.kind == "message.member"]
     assert message.payload["text"] == "LEADER_REPORT: done"
+
+
+def test_the_language_rule_names_the_script_or_falls_back(tmp_path):
+    db, room = _room(tmp_path)
+    _append(db, event_id="u1", kind="message.user", actor={"kind": "user", "id": "u"},
+            payload={"text": "compare these tools", "thread_id": "t"})
+    prompt = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task.payload["prompt"]
+    assert "Write in the language the user wrote in" in prompt and "Write in Chinese" not in prompt
