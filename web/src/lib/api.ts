@@ -727,10 +727,6 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   triggerCronJob: (id: string, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
-  getCronJobRuns: (id: string, profile = "default", limit = 20) =>
-    fetchJSON<{ runs: CronJobRun[]; limit: number }>(
-      `/api/cron/jobs/${encodeURIComponent(id)}/runs?profile=${encodeURIComponent(profile)}&limit=${limit}`,
-    ),
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
@@ -2843,20 +2839,6 @@ export interface CronJobMutation {
   context_from?: string[] | null;
   enabled_toolsets?: string[] | null;
   workdir?: string | null;
-}
-
-/** One fire of a cron job: an agent session row, or a script-only output doc (fields optional). */
-export interface CronJobRun {
-  id: string;
-  started_at?: number | null;
-  ended_at?: number | null;
-  end_reason?: string | null;
-  model?: string | null;
-  tool_call_count?: number | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  is_active?: boolean;
-  title?: string | null;
 }
 
 export interface CronJob {

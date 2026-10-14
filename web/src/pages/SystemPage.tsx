@@ -206,6 +206,18 @@ const HOOK_EVENTS_FALLBACK = [
   "on_session_end",
 ];
 
+const GATEWAY_STARTED: Record<"start" | "stop" | "restart", keyof SystemStrings> = {
+  start: "gatewayStartStarted",
+  stop: "gatewayStopStarted",
+  restart: "gatewayRestartStarted",
+};
+
+function debugShareToast(res: { urls: Record<string, unknown>; redacted?: boolean }, s: SystemStrings): string {
+  const n = Object.keys(res.urls).length;
+  const uploaded = (n === 1 ? s.debugShareUploadedOne : s.debugShareUploadedMany).replace("{n}", String(n));
+  return uploaded + (res.redacted ? s.debugShareRedactedSuffix : "");
+}
+
 const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], keyof SystemStrings> = {
   ready: "memStatusReady",
   needs_config: "memStatusNeedsConfig",
@@ -222,6 +234,59 @@ const MEMORY_STATUS_TONE: Record<
   unavailable: "destructive",
   missing: "destructive",
 };
+
+/** The Nous Portal card: login state, inference provider and the Tool Gateway feature routes. */
+function PortalSection({ portal, s }: { portal: PortalStatus | null; s: SystemStrings }) {
+  return (
+    <section className="flex flex-col gap-3">
+      <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+        <Globe className="h-4 w-4" /> Nous Portal
+      </H2>
+      <Card>
+        <CardContent className="flex flex-col gap-3 py-4">
+          <div className="flex items-center gap-3">
+            <Badge tone={portal?.logged_in ? "success" : "secondary"}>
+              {portal?.logged_in ? s.portalLoggedIn : s.portalNotLoggedIn}
+            </Badge>
+            {portal?.provider && (
+              <span className="text-sm text-muted-foreground">
+                {s.portalInferenceProvider.replace("{provider}", portal.provider)}
+              </span>
+            )}
+            <a
+              href={portal?.subscription_url || "https://portal.nousresearch.com/manage-subscription"}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-auto text-xs text-primary underline"
+            >
+              {s.manageSubscription}
+            </a>
+          </div>
+          {portal?.features && portal.features.length > 0 && (
+            <div className="flex flex-col gap-1 border-t border-border pt-3">
+              <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                {s.toolGatewayRouting}
+              </span>
+              {portal.features.map((f) => (
+                <div key={f.label} className="flex items-center justify-between text-sm">
+                  <span>{f.label}</span>
+                  <span className="text-muted-foreground">{f.state}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {!portal?.logged_in && (
+            <p className="text-xs text-muted-foreground">
+              {s.portalLoginBefore}
+              <span className="font-mono">hermes portal</span>
+              {s.portalLoginAfter}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
 
 export default function SystemPage() {
   const { toast, showToast } = useToast();
@@ -344,12 +409,7 @@ export default function SystemPage() {
         await api.restartGateway();
         setActiveAction("gateway-restart");
       }
-      const startedMessage = {
-        start: s.gatewayStartStarted,
-        stop: s.gatewayStopStarted,
-        restart: s.gatewayRestartStarted,
-      }[verb];
-      showToast(startedMessage, "success");
+      showToast(s[GATEWAY_STARTED[verb]], "success");
       setTimeout(loadAll, 3000);
       return true;
     } catch (e) {
@@ -421,10 +481,8 @@ export default function SystemPage() {
           const res = await api.resetMemory(
             target as "all" | "memory" | "user",
           );
-          showToast(
-            s.memoryResetDone.replace("{files}", res.deleted.join(", ") || s.memoryResetNothing),
-            "success",
-          );
+          const files = res.deleted.join(", ") || s.memoryResetNothing;
+          showToast(s.memoryResetDone.replace("{files}", files), "success");
           loadAll();
         } catch (e) {
           showToast(s.memoryResetFailed.replace("{error}", errorMessage(e)), "error");
@@ -592,13 +650,7 @@ export default function SystemPage() {
     try {
       const res = await api.runDebugShare({ redact: shareRedact });
       setShareResult(res);
-      const n = Object.keys(res.urls).length;
-      showToast(
-        `${(n === 1 ? s.debugShareUploadedOne : s.debugShareUploadedMany).replace("{n}", String(n))}${
-          res.redacted ? s.debugShareRedactedSuffix : ""
-        }`,
-        "success",
-      );
+      showToast(debugShareToast(res, s), "success");
     } catch (e) {
       showToast(s.debugShareFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
@@ -1052,54 +1104,8 @@ export default function SystemPage() {
         </Card>
       </section>
 
-      {/* ── Portal ────────────────────────────────────────────────── */}
-      <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Globe className="h-4 w-4" /> Nous Portal
-        </H2>
-        <Card>
-          <CardContent className="flex flex-col gap-3 py-4">
-            <div className="flex items-center gap-3">
-              <Badge tone={portal?.logged_in ? "success" : "secondary"}>
-                {portal?.logged_in ? s.portalLoggedIn : s.portalNotLoggedIn}
-              </Badge>
-              {portal?.provider && (
-                <span className="text-sm text-muted-foreground">
-                  {s.portalInferenceProvider.replace("{provider}", portal.provider)}
-                </span>
-              )}
-              <a
-                href={portal?.subscription_url || "https://portal.nousresearch.com/manage-subscription"}
-                target="_blank"
-                rel="noreferrer"
-                className="ml-auto text-xs text-primary underline"
-              >
-                {s.manageSubscription}
-              </a>
-            </div>
-            {portal?.features && portal.features.length > 0 && (
-              <div className="flex flex-col gap-1 border-t border-border pt-3">
-                <span className="text-xs uppercase tracking-wider text-muted-foreground">
-                  {s.toolGatewayRouting}
-                </span>
-                {portal.features.map((f) => (
-                  <div key={f.label} className="flex items-center justify-between text-sm">
-                    <span>{f.label}</span>
-                    <span className="text-muted-foreground">{f.state}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {!portal?.logged_in && (
-              <p className="text-xs text-muted-foreground">
-                {s.portalLoginBefore}
-                <span className="font-mono">hermes portal</span>
-                {s.portalLoginAfter}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </section>
+      {/* ── Portal ──────────────────────────────────────────────── */}
+      <PortalSection portal={portal} s={s} />
 
       {/* ── Curator ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-import gateway.platforms.weixin as weixin
+from gateway.platforms import weixin
 from hermes_cli.web_routers import weixin_onboarding as wx
 
 TOKEN = "BOT-TOKEN-SHOULD-NEVER-LEAK"

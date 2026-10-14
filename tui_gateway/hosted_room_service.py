@@ -245,7 +245,7 @@ class HostedRoomService:
         for container in containers:
             out = subprocess.run(
                 [docker, "exec", container, "sh", "-c", sandbox_owner_kill_command(session_key)],
-                capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL).stdout
+                capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL, check=False).stdout
             found += sum(line.strip().isdigit() for line in out.splitlines())
         return found
 

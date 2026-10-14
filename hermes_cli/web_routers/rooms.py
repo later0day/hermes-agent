@@ -31,7 +31,7 @@ class RoomMemberInput(BaseModel):
 class RoomCreateInput(BaseModel):
     room_id: str
     name: str
-    members: List[RoomMemberInput]
+    members: list[RoomMemberInput]
 
 
 class RoomMessageInput(BaseModel):

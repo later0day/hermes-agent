@@ -3,7 +3,7 @@
 Branch `integration/rooms-on-main` = `integration/rebase-onto-main` (upstream 2026-10-12 + re-ported fork features)
 plus the 48 Rooms / agent-team commits from `integration/port-fork-features`, cherry-picked in order with `-x`,
 followed by post-port fixes. This file records every place where the port had to *adapt* a fork commit to the
-new upstream, so the reasoning survives the `/tmp` worktree it was done in.
+new upstream, so the reasoning survives the scratch worktree it was done in.
 
 ## Structural moves (upstream refactors)
 

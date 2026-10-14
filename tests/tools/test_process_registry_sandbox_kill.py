@@ -26,13 +26,13 @@ class _ExecPerCommandEnv:
         # hold a pipe open until it exits (real backends read their own framed output instead).
         with tempfile.TemporaryFile("w+") as out:
             proc = subprocess.run(["bash", "-c", command], stdout=out, stderr=subprocess.STDOUT,
-                                  timeout=timeout or 30, start_new_session=True)
+                                  timeout=timeout or 30, start_new_session=True, check=False)
             out.seek(0)
             return {"output": out.read(), "returncode": proc.returncode}
 
 
 def _alive(marker: str) -> bool:
-    return subprocess.run(["pgrep", "-f", marker], capture_output=True).returncode == 0
+    return subprocess.run(["pgrep", "-f", marker], capture_output=True, check=False).returncode == 0
 
 
 @pytest.mark.platforms("linux")
@@ -56,7 +56,7 @@ def test_killing_a_sandbox_job_stops_its_whole_tree(monkeypatch):
             time.sleep(0.1)
         assert not _alive(marker), "the command outlived the kill (only the wrapper subshell died)"
     finally:
-        subprocess.run(["pkill", "-f", f"^{marker}$"], capture_output=True)
+        subprocess.run(["pkill", "-f", f"^{marker}$"], capture_output=True, check=False)
 
 
 @pytest.mark.platforms("linux")
@@ -88,4 +88,4 @@ def test_owner_tag_reaches_jobs_a_restarted_registry_forgot(monkeypatch):
         assert _alive(theirs)
     finally:
         for marker in (mine, theirs):
-            subprocess.run(["pkill", "-f", f"^{marker}$"], capture_output=True)
+            subprocess.run(["pkill", "-f", f"^{marker}$"], capture_output=True, check=False)

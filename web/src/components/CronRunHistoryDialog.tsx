@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { X } from "lucide-react";
+import { History, X } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { api, type CronJobRun } from "@/lib/api";
+import { cronRunsApi, type CronJobRun } from "@/lib/api-cron-runs";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useI18n } from "@/i18n";
 import { localeSection } from "@/i18n/section";
@@ -31,8 +31,8 @@ export function CronRunHistoryDialog({ jobId, jobTitle, profile, onClose }: Cron
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .getCronJobRuns(jobId, profile)
+    cronRunsApi
+      .list(jobId, profile)
       .then((res) => !cancelled && setState({ runs: res.runs, error: null, loaded: true }))
       .catch((e: unknown) => !cancelled && setState({ runs: [], error: String(e instanceof Error ? e.message : e), loaded: true }));
     return () => {
@@ -109,5 +109,20 @@ export function CronRunHistoryDialog({ jobId, jobTitle, profile, onClose }: Cron
         </div>
       </div>
     </div>
+  );
+}
+
+/** The per-job "Run history" icon button and the dialog it opens (state kept here, not in CronPage). */
+export function CronRunHistoryButton({ jobId, jobTitle, profile }: Omit<CronRunHistoryDialogProps, "onClose">) {
+  const { t } = useI18n();
+  const label = localeSection(t, "cronRunHistory").openHistory;
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button ghost size="icon" title={label} aria-label={label} onClick={() => setOpen(true)}>
+        <History />
+      </Button>
+      {open && <CronRunHistoryDialog jobId={jobId} jobTitle={jobTitle} profile={profile} onClose={() => setOpen(false)} />}
+    </>
   );
 }

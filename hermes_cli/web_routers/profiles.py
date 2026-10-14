@@ -843,7 +843,7 @@ async def list_profiles_endpoint():
     return await _read_profiles()
 
 
-def _decode_source_binding_key(key: str) -> Dict[str, Any]:
+def _decode_source_binding_key(key: str) -> dict[str, Any]:
     """Best-effort decode of a ``source:<platform>:<scope>:<chat_id>`` key.
 
     Binding keys are built by ``build_source_binding_key`` from the session
@@ -854,7 +854,7 @@ def _decode_source_binding_key(key: str) -> Dict[str, Any]:
     raw key is always preserved by the caller for exactness.
     """
     raw = str(key or "")
-    body = raw[len("source:"):] if raw.startswith("source:") else raw
+    body = raw.removeprefix("source:")
     parts = body.split(":", 2)
     platform = parts[0] if parts else ""
     scope = parts[1] if len(parts) > 1 else ""
@@ -885,10 +885,10 @@ async def get_profiles_bindings():
     not mutate anything and never returns fallback webhook secrets (only a
     boolean ``has_fallback_webhook`` flag).
     """
-    def _collect() -> Dict[str, Any]:
-        by_profile: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    def _collect() -> dict[str, Any]:
+        by_profile: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
-        def _bucket(name: str) -> Dict[str, Any]:
+        def _bucket(name: str) -> dict[str, Any]:
             slot = by_profile.get(name)
             if slot is None:
                 slot = {"profile": name, "static": [], "dynamic": []}

@@ -10,7 +10,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 from gateway.platforms.base import SendResult
-from tests.gateway.test_dingtalk import _fake_dingtalk_optional_sdks, _make_gating_adapter  # noqa: F401
+from tests.gateway.test_dingtalk import _fake_dingtalk_optional_sdks, _make_gating_adapter
 
 
 def _adapter(monkeypatch, *, card_ok=True, native_ok=True):

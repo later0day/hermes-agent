@@ -17,7 +17,7 @@ import pytest
 
 from gateway.platforms.event import MessageType
 from gateway.run_inbound import GatewayInboundMixin
-from tests.gateway.test_dingtalk import _FakeChatbotMessage, _fake_dingtalk_optional_sdks, _make_gating_adapter  # noqa: F401
+from tests.gateway.test_dingtalk import _FakeChatbotMessage, _fake_dingtalk_optional_sdks, _make_gating_adapter
 
 _CONTENT = {"img": ("image/png", b"\x89PNG\r\n\x1a\nfake"), "voice": ("audio/ogg", b"OggS-fake"),
             "doc": ("application/pdf", b"%PDF-1.4 fake")}

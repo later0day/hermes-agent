@@ -577,7 +577,7 @@ async def _fetch_qr(session: aiohttp.ClientSession, bot_type: str) -> tuple[str,
     return str(qr_resp.get("qrcode") or ""), str(qr_resp.get("qrcode_img_content") or "")
 
 
-async def weixin_create_qr(*, bot_type: str = "3") -> Dict[str, str]:
+async def weixin_create_qr(*, bot_type: str = "3") -> dict[str, str]:
     """Fetch a fresh iLink login QR (stateless; for non-interactive callers such as the dashboard onboarding).
 
     Returns ``{"qrcode": <hex token>, "qrcode_url": <scannable liteapp URL>, "scan_data": <url or token>,
@@ -599,7 +599,7 @@ async def weixin_poll_qr(
     qrcode: str,
     *,
     base_url: str = ILINK_BASE_URL,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Poll a single iLink QR status tick (stateless; no printing/looping).
 
     Returns the raw status dict, always carrying a normalized ``status`` in

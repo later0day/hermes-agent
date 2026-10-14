@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.gateway.test_agent_command_basic import _event, _runner, _source, env  # noqa: F401  (fixture)
+from tests.gateway.test_agent_command_basic import _event, _runner, _source, env
 
 
 @pytest.mark.asyncio

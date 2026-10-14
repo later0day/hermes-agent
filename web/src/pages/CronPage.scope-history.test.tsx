@@ -13,6 +13,14 @@ const job = vi.hoisted(() => ({
   schedule_display: "every 60m", enabled: true, state: "scheduled", deliver: "origin", profile: "xcx",
 }));
 
+vi.mock("@/lib/api-cron-runs", () => ({
+  cronRunsApi: {
+    list: async (id: string, profile: string) => {
+      calls.getCronJobRuns.push([id, profile]);
+      return { runs: [{ id: "cron_job-1_1", started_at: 1000, ended_at: 1094, end_reason: "cron_complete", model: "kimi-k3", tool_call_count: 2, input_tokens: 10, output_tokens: 5 }], limit: 20 };
+    },
+  },
+}));
 vi.mock("@/lib/api", () => {
   const specific: Record<string, (...args: unknown[]) => Promise<unknown>> = {
     getCronJobs: async (profile) => {

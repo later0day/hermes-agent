@@ -3,7 +3,7 @@ import {
   type CronTriggerController,
   createCronTriggerController,
 } from "@hermes/shared";
-import { Clock, History, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
+import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -52,8 +52,8 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { useProfileScope } from "@/contexts/useProfileScope";
-import { CronRunHistoryDialog } from "@/components/CronRunHistoryDialog";
+import { useScopedProfileFilter } from "@/hooks/useScopedProfileFilter";
+import { CronRunHistoryButton } from "@/components/CronRunHistoryDialog";
 import { localeSection } from "@/i18n/section";
 import { PluginSlot } from "@/plugins";
 import { LoadErrorNotice } from "@/components/LoadErrorNotice";
@@ -562,22 +562,11 @@ export default function CronPage() {
     };
   }, []);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
-  // The list follows the dashboard's global profile switcher (as the fork's cron page did); "all" when
-  // no profile is scoped. The local filter can still widen it until the global scope changes again.
-  const { profile: scopedProfile } = useProfileScope();
-  const [selectedProfile, setSelectedProfile] = useState(scopedProfile || "all");
-  const [followedScope, setFollowedScope] = useState(scopedProfile);
-  if (followedScope !== scopedProfile) {
-    setFollowedScope(scopedProfile);
-    setSelectedProfile(scopedProfile || "all");
-  }
-  const [historyJob, setHistoryJob] = useState<{ id: string; title: string; profile: string } | null>(null);
+  const [selectedProfile, setSelectedProfile] = useScopedProfileFilter(); // follows the global switcher
   const [view, setView] = useState<"jobs" | "blueprints">("jobs");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t, locale } = useI18n();
-  const runHistoryLabel = localeSection(t, "cronRunHistory").openHistory;
-  const cs = localeSection(t, "cronPageX");
   const { setEnd } = usePageHeader();
 
   // Translation surface for the human-readable schedule describer.
@@ -992,7 +981,7 @@ export default function CronPage() {
 
             <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">{cs.profile}</Label>
+                <Label htmlFor="cron-profile">{localeSection(t, "cronPageX").profile}</Label>
                 <Select
                   id="cron-profile"
                   value={createProfile}
@@ -1110,13 +1099,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">{cs.profile}</Label>
+            <Label htmlFor="cron-profile-filter">{localeSection(t, "cronPageX").profile}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">{cs.allProfiles}</SelectOption>
+              <SelectOption value="all">{localeSection(t, "cronPageX").allProfiles}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}
@@ -1239,7 +1228,7 @@ export default function CronPage() {
                   )}
                   {job.last_fire_error?.detail && (
                     <p className="text-xs text-destructive mt-1">
-                      {cs.missedFire.replace("{at}", formatTime(job.last_fire_error.at ?? null))}{" "}
+                      {localeSection(t, "cronPageX").missedFire.replace("{at}", formatTime(job.last_fire_error.at ?? null))}{" "}
                       {job.last_fire_error.detail}
                     </p>
                   )}
@@ -1277,21 +1266,13 @@ export default function CronPage() {
                     {triggeringJobKeys.has(jobKey) ? <Spinner /> : <Zap />}
                   </Button>
 
-                  <Button
-                    ghost
-                    size="icon"
-                    title={runHistoryLabel}
-                    aria-label={runHistoryLabel}
-                    onClick={() => setHistoryJob({ id: job.id, title: getJobTitle(job), profile: getJobProfile(job) })}
-                  >
-                    <History />
-                  </Button>
+                  <CronRunHistoryButton jobId={job.id} jobTitle={getJobTitle(job)} profile={getJobProfile(job)} />
 
                   <Button
                     ghost
                     size="icon"
-                    title={cs.editJob}
-                    aria-label={cs.editJob}
+                    title={localeSection(t, "cronPageX").editJob}
+                    aria-label={localeSection(t, "cronPageX").editJob}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />
@@ -1313,15 +1294,6 @@ export default function CronPage() {
           );
         })}
       </div>
-      )}
-
-      {historyJob && (
-        <CronRunHistoryDialog
-          jobId={historyJob.id}
-          jobTitle={historyJob.title}
-          profile={historyJob.profile}
-          onClose={() => setHistoryJob(null)}
-        />
       )}
 
       <PluginSlot name="cron:bottom" />
