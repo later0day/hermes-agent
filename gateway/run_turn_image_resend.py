@@ -48,7 +48,10 @@ def find_latest_attached_image_path(messages: list) -> Optional[str]:
     """Newest-first: the path of the most recent attached image that still exists, or None."""
     for msg in reversed(messages):
         content = msg.get("content") or ""
-        for m in reversed(list(_IMAGE_ATTACHED_RE.finditer(content))):
+        if isinstance(content, list):  # multimodal rows decode to [{"type": "text", "text": ...}, {image part}, ...]
+            content = "\n".join(str(part.get("text") or "") for part in content
+                                 if isinstance(part, dict) and part.get("type") == "text")
+        for m in reversed(list(_IMAGE_ATTACHED_RE.finditer(str(content)))):
             path = m.group(1).strip()
             if os.path.isfile(path):
                 return path

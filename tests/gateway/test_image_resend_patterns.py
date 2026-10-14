@@ -206,3 +206,16 @@ async def test_resend_shortcut_redelivers_the_image_from_the_real_session_transc
     assert await maybe_resend_recent_image(runner, event, source, "s1") is None
     assert sent == [("c1", str(image))]
     assert db.get_messages("s1")[-1]["content"] == f"[resent image attachment: {image}]"
+
+
+def test_latest_image_lookup_reads_multimodal_list_content(tmp_path):
+    """Session rows decode multimodal content to a list of parts; the lookup must read their text
+    instead of handing the list to the regex (TypeError broke the resend turn)."""
+    from gateway.run_turn_image_resend import find_latest_attached_image_path
+
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"png")
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": f"look\n[Image attached at: {image}]"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]
+    assert find_latest_attached_image_path(messages) == str(image)
