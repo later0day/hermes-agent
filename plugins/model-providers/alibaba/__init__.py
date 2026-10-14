@@ -18,6 +18,14 @@ class DashScopeProfile(ProviderProfile):
     def build_api_kwargs_extras(self, *, model: str | None = None, **context: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         return dashscope_preserve_thinking_extras(model), {}
 
+    def default_vision_model(self) -> str | None:
+        """Vision backend inherited by text-only DashScope chat models (``qwen-plus``) when
+        ``auxiliary.vision`` is left on auto. ``kimi-k3`` read every cell of a dense table screenshot
+        correctly where ``qwen3-vl-plus`` / the omni models misread them, and ``qwen-vl-max`` is no
+        longer served to every account. Token Plan tiers expose their own catalog, so they keep the
+        generic fallback."""
+        return "kimi-k3" if self.name in {"alibaba", "alibaba-cn"} else None
+
 
 alibaba = DashScopeProfile(
     name="alibaba", aliases=("dashscope", "alibaba-cloud", "qwen-dashscope", "aliyun"), env_vars=("DASHSCOPE_API_KEY",),
