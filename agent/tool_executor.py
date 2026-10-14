@@ -685,6 +685,22 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
         return None, ref.args
 
 
+_DELETED_PROFILE_BLOCK = "This profile has been deleted; its tools are disabled. Finish without calling tools."
+
+
+def _deleted_profile_block() -> str | None:
+    """Refuse every tool for a profile deleted while its agent still runs (a room round, the post-turn review):
+    live 2026-10-15 a deleted profile's review called skills_list, whose ``mkdir(parents=True)`` rebuilt the
+    removed home. One check here covers every tool, agent-loop ones included."""
+    from hermes_constants import assert_named_profile_home_live, get_hermes_home
+
+    try:
+        assert_named_profile_home_live(get_hermes_home())
+    except FileNotFoundError:
+        return _DELETED_PROFILE_BLOCK
+    return None
+
+
 def _dispatch_authorized_once(
     agent,
     state: _ManagedToolResult,
@@ -709,6 +725,8 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
+    if block_message is None and (block_message := _deleted_profile_block()) is not None:
+        block_error_type = "profile_deleted"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)
