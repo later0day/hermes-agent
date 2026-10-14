@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.platforms.base import (
+    MessageType,
     SendResult,
     _ssrf_redirect_guard,
     cache_audio_from_bytes,
@@ -27,7 +28,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
 )
 from plugins.platforms.dingtalk.adapter_cards import DEFAULT_AI_CARD_TEMPLATE_ID
-from plugins.platforms.dingtalk.inbound import collect_download_codes, _rich_list
+from plugins.platforms.dingtalk.inbound import _ext_content
 
 if TYPE_CHECKING:
     from dingtalk_stream import ChatbotMessage
@@ -45,6 +46,12 @@ _DINGTALK_NATIVE_VIDEO_EXTS = {"mp4"}
 def _dt():
     from plugins.platforms.dingtalk import adapter
     return adapter
+
+
+# DingTalk rich-text / runtime item type -> media cache kind. ``inbound.DINGTALK_TYPE_MAPPING`` only knows
+# picture/voice, which mapped uploaded audio, video and images to an octet-stream "file".
+_MEDIA_KIND = {"audio": "audio", "document": "file", "file": "file", "image": "image", "picture": "image",
+               "video": "video", "voice": "audio"}
 
 
 class DingTalkMediaMixin:
@@ -524,19 +531,54 @@ class DingTalkMediaMixin:
         self._set_cached_media_ref(obj, key, path, media_type, filename)
 
     async def _resolve_media_codes(self, message: "ChatbotMessage") -> None:
-        """Resolve download codes in the message to real URLs (in place, in parallel)."""
-        token = await self._get_access_token()
-        if not token:
-            return
+        """Download every media reference of *message* into the profile's media caches, in place.
+
+        The code/URL field becomes the LOCAL path and the item carries its real MIME
+        (``_hermes_media_type``): vision only takes ``image/*`` local files and STT only local audio, so a
+        resolved remote URL left images unseen ("the user sent a document") and voice notes untranscribed.
+        Failures attach ``_hermes_media_error`` so the turn tells the user instead of going silent."""
         robot_code = getattr(message, "robot_code", None) or self._client_id
-        pairs = [(getattr(obj, key, None) if hasattr(obj, key) else obj.get(key), obj, key) for obj, key in collect_download_codes(message)]
-        tasks = [self._fetch_download_url(code, robot_code, token, obj, key) for code, obj, key in pairs if code]
+        targets: list[tuple[Any, str, str, Optional[str], bool]] = []  # (obj, key, kind, filename, is_code)
+        image_content = getattr(message, "image_content", None)
+        if image_content:
+            ref, key, is_code = self._first_media_ref(image_content)
+            if ref and key:
+                targets.append((image_content, key, "image", None, is_code))
+        for item in self._iter_rich_text_items(message):
+            ref, key, is_code = self._first_media_ref(item)
+            if ref and key:
+                targets.append((item, key, _MEDIA_KIND.get(self._rich_item_type(item), "file"),
+                                self._rich_item_filename(item), is_code))
+        msg_type = getattr(message, "message_type", "") or ""
+        if msg_type in ("file", "image"):
+            content = _ext_content(message)
+            if content and content.get("downloadCode"):
+                filename = content.get("fileName") or None
+                image_like = msg_type == "image" or (mimetypes.guess_type(filename or "")[0] or "").startswith("image/")
+                targets.append((content, "downloadCode", "image" if image_like else "file", filename, True))
+        token: Optional[str] = None
+        tasks = []
+        for obj, key, kind, filename, is_code in targets:
+            ref = self._media_get(obj, key)
+            if not ref:
+                continue
+            if not is_code:
+                tasks.append(self._cache_resolved_media_url(str(ref), obj, key, mapped=kind, filename=filename))
+                continue
+            if token is None:
+                token = await self._get_access_token() or ""
+            if not token:
+                self._set_media_error(obj, "DingTalk media download failed: access token unavailable.")
+                continue
+            tasks.append(self._fetch_download_url(str(ref), robot_code, token, obj, key, mapped=kind, filename=filename))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _fetch_download_url(self, code: str, robot_code: str, token: str, obj, key: str) -> None:
-        """Fetch the download URL for one code via the robot SDK and write it back to ``obj[key]``."""
+    async def _fetch_download_url(self, code: str, robot_code: str, token: str, obj, key: str,
+                                  mapped: str = "file", filename: Optional[str] = None) -> None:
+        """Resolve one download code via the robot SDK, then cache the file (see ``_resolve_media_codes``)."""
         if not self._robot_sdk:
+            self._set_media_error(obj, "DingTalk media download failed: robot SDK is unavailable.")
             return logger.warning("[%s] Robot SDK not initialized, cannot resolve media code", self.name)
         try:
             response = await self._sdk_call(self._robot_sdk.robot_message_file_download_with_options_async,
@@ -544,14 +586,78 @@ class DingTalkMediaMixin:
                                             _dt().dingtalk_robot_models.RobotMessageFileDownloadHeaders, token)
             body = response.body if response else None
             url = getattr(body, "download_url", None) if body else None
-            if not body:
-                logger.warning("[%s] Failed to download media: empty response for code %s", self.name, code)
-            elif url and hasattr(obj, key):
-                setattr(obj, key, url)
-            elif url and isinstance(obj, dict):
-                obj[key] = url
+            if not url:
+                self._set_media_error(obj, "DingTalk media download failed: empty download URL response.")
+                return logger.warning("[%s] Failed to download media: empty response for code %s", self.name, code)
+            await self._cache_resolved_media_url(str(url), obj, key, mapped=mapped, filename=filename)
         except Exception as e:
+            self._set_media_error(obj, f"DingTalk media download failed before cache: {e}")
             logger.error("[%s] Error resolving media code %s: %s", self.name, code, e, exc_info=True)
+
+    @staticmethod
+    def _iter_rich_text_items(message: "ChatbotMessage") -> list[Any]:
+        """Rich-text items across the current SDK object and the legacy dict shapes."""
+        for rich_text in (getattr(message, "rich_text_content", None), getattr(message, "rich_text", None)):
+            if not rich_text:
+                continue
+            if isinstance(rich_text, dict):
+                rich_list = (rich_text.get("richTextList") or rich_text.get("rich_text_list")
+                             or rich_text.get("richText") or rich_text.get("items") or [])
+            else:
+                rich_list = getattr(rich_text, "rich_text_list", None) or rich_text
+            if isinstance(rich_list, list):
+                return rich_list
+        return []
+
+    @classmethod
+    def _extract_cached_media(cls, message: "ChatbotMessage") -> tuple[MessageType, list[str], list[str]]:
+        """``(MessageType, [local paths], [MIME types])`` from the items ``_resolve_media_codes`` cached.
+
+        Items whose download failed contribute no path, but still set the message type so the turn is
+        classified as the attachment the user sent (the error text is appended by ``_on_message``)."""
+        msg_type, urls, types = MessageType.TEXT, [], []
+
+        def add(item: Any, kind: str, filename: Optional[str], native_voice: bool = False) -> None:
+            nonlocal msg_type
+            failed = cls._media_error_for_item(item)
+            ref, _key, _is_code = cls._first_media_ref(item)
+            if not failed and not ref:
+                return
+            mime = cls._media_type_for_item(item, kind, filename)
+            if not failed:
+                urls.append(ref)
+                types.append(mime)
+            if msg_type == MessageType.TEXT:
+                if kind == "image" or mime.startswith("image/"):
+                    msg_type = MessageType.PHOTO
+                elif kind == "audio":
+                    # A rich-text "voice" item is a native voice note -> STT; uploaded audio stays AUDIO.
+                    msg_type = MessageType.VOICE if native_voice else MessageType.AUDIO
+                elif kind == "video":
+                    msg_type = MessageType.VIDEO
+                else:
+                    msg_type = MessageType.DOCUMENT
+
+        image_content = getattr(message, "image_content", None)
+        if image_content:
+            add(image_content, "image", None)
+        for item in cls._iter_rich_text_items(message):
+            item_type = cls._rich_item_type(item)
+            add(item, _MEDIA_KIND.get(item_type, "file"), cls._rich_item_filename(item), native_voice=item_type == "voice")
+        msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str in ("file", "image"):
+            content = _ext_content(message)
+            if content and (content.get("downloadCode") or cls._media_error_for_item(content)):
+                filename = content.get("fileName") or None
+                image_like = msg_type_str == "image" or (mimetypes.guess_type(filename or "")[0] or "").startswith("image/")
+                add(content, "image" if image_like else "file", filename)
+        elif msg_type_str == "picture" and msg_type == MessageType.TEXT:
+            msg_type = MessageType.PHOTO
+        elif msg_type_str == "audio" and msg_type == MessageType.TEXT:
+            # Native voice message: DingTalk already put the recognition text in the text, and adding a
+            # path would make transcription enrichment overwrite it.
+            msg_type = MessageType.VOICE
+        return msg_type, urls, types
 
     @staticmethod
     def _duration_ms_from_metadata(metadata: dict[str, Any]) -> Optional[int]:
@@ -826,8 +932,12 @@ class DingTalkMediaMixin:
             error = self._media_error_for_item(image_content)
             if error:
                 errors.append(error)
-        for item in _rich_list(message) or ():
+        for item in self._iter_rich_text_items(message):
             error = self._media_error_for_item(item)
+            if error:
+                errors.append(error)
+        if (getattr(message, "message_type", "") or "") in ("file", "image"):
+            error = self._media_error_for_item(_ext_content(message) or {})
             if error:
                 errors.append(error)
         return errors

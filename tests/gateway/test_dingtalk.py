@@ -386,8 +386,9 @@ class TestExtractMedia:
         )
         assert msg_type == MessageType.PHOTO
         assert urls == ["dl_img_noext"]
-        # Without fileName, mime defaults to octet-stream but msg_type_str=="image" still wins
-        assert mtypes == ["application/octet-stream"]
+        # Without fileName an image message still gets an image/* MIME: the gateway routes vision by
+        # per-attachment MIME first, so octet-stream would keep the picture away from the model.
+        assert mtypes == ["image/jpeg"]
 
 # ---------------------------------------------------------------------------
 # Per-attachment media-error surfacing

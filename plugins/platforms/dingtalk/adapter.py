@@ -63,7 +63,7 @@ from gateway.platforms._shared import (
 from plugins.platforms.dingtalk.adapter_cards import DEFAULT_AI_CARD_TEMPLATE_ID, DingTalkCardsMixin
 from plugins.platforms.dingtalk.adapter_media import DingTalkMediaMixin
 from plugins.platforms.dingtalk.adapter_reactions import DingTalkReactionsMixin
-from plugins.platforms.dingtalk.inbound import extract_media, extract_text
+from plugins.platforms.dingtalk.inbound import extract_text
 
 
 logger = logging.getLogger(__name__)
@@ -628,7 +628,7 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
     _extract_text = staticmethod(extract_text)
 
     def _extract_media(self, message: ChatbotMessage):
-        return extract_media(message)
+        return self._extract_cached_media(message)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a markdown reply via DingTalk session webhook, AI Card, or robot-native proactive fallback."""
