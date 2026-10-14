@@ -103,6 +103,8 @@ const initialAncillary = (): AncillaryState => ({
 export interface UseRoomsWorkspaceOptions {
   requireSuccess?: (response: RoomActionResponse) => void;
   onError?: (error: unknown) => void;
+  /** Turns a load failure into the listError/workspaceError text; lets the page localize it. */
+  describeError?: (error: unknown) => string;
 }
 
 export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
@@ -130,9 +132,11 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
   // setState re-rendered again -- an unbounded /api/rooms request loop (thousands per second).
   const onErrorRef = useRef(options.onError);
   const requireSuccessRef = useRef(options.requireSuccess ?? requireSuccessfulAction);
+  const describeErrorRef = useRef(options.describeError ?? roomErrorMessage);
   useEffect(() => {
     onErrorRef.current = options.onError;
     requireSuccessRef.current = options.requireSuccess ?? requireSuccessfulAction;
+    describeErrorRef.current = options.describeError ?? roomErrorMessage;
   });
   const onError = useCallback((error: unknown) => onErrorRef.current?.(error), []);
   const requireSuccess = useCallback((response: RoomActionResponse) => requireSuccessRef.current(response), []);
@@ -149,7 +153,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       setRooms(next);
       setSelectedRoomId((current) => selectAvailableRoom(current, next));
     } catch (error) {
-      if (mounted.current && listGuard.current.current(token)) { setListError(roomErrorMessage(error)); onError(error); }
+      if (mounted.current && listGuard.current.current(token)) { setListError(describeErrorRef.current(error)); onError(error); }
     } finally {
       if (mounted.current && listGuard.current.current(token)) setLoadingList(false);
     }
@@ -179,7 +183,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       }));
       setSelectedTaskId((current) => selectAvailableTask(current, response));
     } catch (error) {
-      if (mounted.current && roomGuard.current.current(token)) { setWorkspaceError(roomErrorMessage(error)); onError(error); }
+      if (mounted.current && roomGuard.current.current(token)) { setWorkspaceError(describeErrorRef.current(error)); onError(error); }
     } finally {
       if (mounted.current && roomGuard.current.current(token)) setLoadingWorkspace(false);
     }
