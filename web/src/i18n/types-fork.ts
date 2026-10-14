@@ -579,6 +579,17 @@ export interface ForkSections {
     modelBadge: string;
     toolsetsBadge: string;
     deliveryError: string;
+    tabJobs: string;
+    tabBlueprints: string;
+    stateEnabled: string;
+    stateScheduled: string;
+    statePaused: string;
+    stateError: string;
+    stateCompleted: string;
+    stateDisabled: string;
+    stateRunning: string;
+    repeatForever: string;
+    repeatTimes: string;
   };
   modelsPage?: {
     cacheRead: string;

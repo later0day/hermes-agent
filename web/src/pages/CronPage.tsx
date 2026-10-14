@@ -49,6 +49,7 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n";
 import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useScopedProfileFilter } from "@/hooks/useScopedProfileFilter";
@@ -492,11 +493,24 @@ function getJobState(job: CronJob): string {
   return asText(job.state) || (job.enabled === false ? "disabled" : "scheduled");
 }
 
-function getRepeatDisplay(job: CronJob): string {
+type CronPageStrings = NonNullable<Translations["cronPageX"]>;
+
+function getRepeatDisplay(job: CronJob, cs: CronPageStrings): string {
   const repeat = job.repeat;
-  if (!repeat || repeat.times == null) return "forever";
+  if (!repeat || repeat.times == null) return cs.repeatForever;
   const completed = repeat.completed ?? 0;
-  return completed > 0 ? `${completed}/${repeat.times}` : `${repeat.times} times`;
+  return completed > 0 ? `${completed}/${repeat.times}` : cs.repeatTimes.replace("{n}", String(repeat.times));
+}
+
+const STATE_LABEL_KEY: Record<string, keyof CronPageStrings> = {
+  enabled: "stateEnabled", scheduled: "stateScheduled", paused: "statePaused", error: "stateError",
+  completed: "stateCompleted", disabled: "stateDisabled", running: "stateRunning",
+};
+
+/** A job state badge in the page language; an unknown backend state shows as-is. */
+function cronStateLabel(state: string, cs: CronPageStrings): string {
+  const key = STATE_LABEL_KEY[state];
+  return key ? cs[key] : state;
 }
 
 function getJobMode(job: CronJob): string {
@@ -922,8 +936,8 @@ export default function CronPage() {
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
-          { value: "jobs", label: "Jobs" },
-          { value: "blueprints", label: "Blueprints" },
+          { value: "jobs", label: localeSection(t, "cronPageX").tabJobs },
+          { value: "blueprints", label: localeSection(t, "cronPageX").tabBlueprints },
         ]}
       />
 
@@ -1161,7 +1175,7 @@ export default function CronPage() {
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
-                      {state}
+                      {cronStateLabel(state, cs)}
                     </Badge>
                     {lastResult && lastResult.status !== "ok" && (
                       <Badge
@@ -1206,7 +1220,7 @@ export default function CronPage() {
                     <span className="font-mono-ui">
                       {getJobScheduleDisplay(job, scheduleDescribeStrings)}
                     </span>
-                    <span>{cs.repeat}: {getRepeatDisplay(job)}</span>
+                    <span>{cs.repeat}: {getRepeatDisplay(job, cs)}</span>
                     <CronJobDeliveryInfo job={job} />
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
