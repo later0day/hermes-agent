@@ -4740,7 +4740,9 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             continue
         with _profile_runtime_scope(profile_home or get_hermes_home()):
             if profile_name is not None and not profile_adapters and adapters:
-                routes = sched_preflight._primary_profile_routes_for_current_home()
+                # The same routes the in-process ticker lends by: static profile_routes AND /agent use
+                # bindings. Static-only here failed every queued send of a binding-routed satellite.
+                routes = sched_preflight._satellite_routes_for_current_home(profile_name)
                 if routes:
                     profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)

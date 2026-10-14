@@ -243,12 +243,28 @@ class GatewayAuthorizationMixin:
         if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
             return False
         routes = getattr(config, "profile_routes", None) or []
-        if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
+        if not (any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes)
+                or self._profile_has_agent_binding(profile_name)):
             return False
         from gateway.run import _multiplex_profile_homes
         try:
             return profile_name in {name for name, _home in _multiplex_profile_homes(config)}
         except Exception:
+            return False
+
+    def _profile_has_agent_binding(self, profile_name: str) -> bool:
+        """True when an ``/agent use`` binding routes some chat of the primary's bot to *profile_name* —
+        the dynamic twin of a ``profile_routes`` entry (cron's ``_satellite_routes_for_current_home``
+        counts both). Lookup failures fail closed."""
+        try:
+            store = getattr(self, "_source_agent_binding_store", None)
+            if store is None:
+                from gateway.source_agent_binding import SourceAgentBindingStore
+
+                store = self._source_agent_binding_store = SourceAgentBindingStore()
+            return bool(store.list_bindings(profile_name=profile_name))
+        except Exception:
+            logger.debug("shared-bot satellite: binding lookup failed for %s", profile_name, exc_info=True)
             return False
 
     def _intake_adapter_for(self, source: Optional[SessionSource]):
