@@ -1,8 +1,9 @@
 """AgentProxy terminal backend: commands run in a Docker container on a remote AgentProxy agent.
 
-Selected with ``terminal.backend: agentproxy`` (``TERMINAL_ENV=agentproxy``). Settings are the
-``TERMINAL_AP_*`` variables, read through the per-turn terminal scope so a multiplexed gateway
-never hands one profile's agent/container to another.
+Selected with ``terminal.backend: agentproxy`` (``TERMINAL_ENV=agentproxy``). Each setting comes from the
+active profile's ``terminal.ap_*`` key in config.yaml, else its ``TERMINAL_AP_*`` variable (read through
+the per-turn terminal scope so a multiplexed gateway never hands one profile's agent/container to
+another), else the default.
 """
 
 from __future__ import annotations
@@ -28,9 +29,17 @@ _SETTINGS = (
 
 
 def agentproxy_settings() -> dict[str, str]:
+    from hermes_cli.config import load_config_readonly
     from tools.terminal_scope import terminal_env
 
-    return {key: terminal_env(var, default) for key, var, default in _SETTINGS}
+    # ``terminal.ap_agent`` etc. are plugin keys, so core's TERMINAL_CONFIG_ENV_MAP never bridges them to
+    # the environment: read them from the (profile-scoped) config here or a YAML edit silently does nothing.
+    terminal_cfg = (load_config_readonly() or {}).get("terminal") or {}
+    settings = {}
+    for key, var, default in _SETTINGS:
+        configured = terminal_cfg.get(var.removeprefix("TERMINAL_").lower())
+        settings[key] = str(configured) if configured not in (None, "") else terminal_env(var, default)
+    return settings
 
 
 class AgentProxyTerminalProvider(TerminalEnvironmentProvider):
