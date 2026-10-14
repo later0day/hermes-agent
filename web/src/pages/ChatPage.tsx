@@ -34,7 +34,8 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
-import { localeSection } from "@/i18n/section";
+import { useChatPageCopy } from "./chat-page-copy";
+import { ResumeLoadingOverlay } from "./chat-page-overlays";
 import { api } from "@/lib/api";
 import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces";
 import { latchChatActivation } from "@/lib/chat-activation";
@@ -301,32 +302,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     title: string | null;
   }>({ scope: "", title: null });
   const { t } = useI18n();
-  const s = useMemo(() => localeSection(t, "chatPageX"), [t]);
-  // The PTY effects below outlive renders; they read the current copy through this ref so a
-  // locale switch never re-runs (and reconnects) the terminal.
-  const sRef = useRef(s);
-  useEffect(() => {
-    sRef.current = s;
-  }, [s]);
-  // Connection copy lives in lib/pty-*.ts as English constants (state stores them verbatim);
-  // the page renders the active locale's wording for each known constant.
-  const ptyCopy = useMemo(
-    () =>
-      new Map<string, string>([
-        [PTY_TOKEN_MISSING_BANNER.text, s.tokenMissing],
-        [ptyRejectionBanner(4401)?.text ?? "", s.rejectedExpired],
-        [ptyRejectionBanner(4403)?.text ?? "", s.rejectedHostMismatch],
-        [ptyRejectionBanner(4404)?.text ?? "", s.rejectedNoPty],
-        [ptyRejectionBanner(4408)?.text ?? "", s.rejectedNonLoopback],
-        [PTY_RECONNECTING_BANNER, s.reconnectingBanner],
-        [PTY_GAVE_UP_BANNER.text, s.gaveUp],
-        [PTY_SESSION_ENDED_MESSAGE, s.sessionEnded],
-        [PTY_START_FAILED_MESSAGE, s.startFailed],
-        [PTY_RESUME_LOADING_MESSAGE, s.resumeLoading],
-      ]),
-    [s],
-  );
-  const ptyText = (text: string) => ptyCopy.get(text) ?? text;
+  const { s, sRef, ptyText } = useChatPageCopy(t);
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
@@ -1965,18 +1941,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          {showResumeLoadingOverlay && (
-            <div
-              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
-              role="status"
-              aria-live="polite"
-              aria-label={ptyText(PTY_RESUME_LOADING_MESSAGE)}
-            >
-              <div className="max-w-[min(28rem,calc(100vw-3rem))] border border-current/30 bg-black/80 px-4 py-3 text-center text-xs tracking-wide text-white/85 shadow-lg">
-                {ptyText(PTY_RESUME_LOADING_MESSAGE)}
-              </div>
-            </div>
-          )}
+          {showResumeLoadingOverlay && <ResumeLoadingOverlay text={ptyText(PTY_RESUME_LOADING_MESSAGE)} />}
 
           {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
               Offer an in-place restart so the user never has to refresh the

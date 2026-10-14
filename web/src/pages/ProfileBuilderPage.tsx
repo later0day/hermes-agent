@@ -1,3 +1,4 @@
+import type { Translations } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
@@ -63,11 +64,48 @@ interface ModelChoice {
  * every seeded skill the user did NOT keep is disabled. The "Start from full
  * bundle" toggle keeps everything (sends no keep list).
  */
+function useProfileBuilderText() {
+  const { t } = useI18n();
+  return useMemo(() => localeSection(t, "profileBuilderPage"), [t]);
+}
+
+/** The numbered step bar; later steps stay locked until the profile name is valid. */
+function Stepper({ step, stepIndex, nameValid, onStep, s }: {
+  step: StepId;
+  stepIndex: number;
+  nameValid: boolean;
+  onStep: (id: StepId) => void;
+  s: NonNullable<Translations["profileBuilderPage"]>;
+}) {
+  return (
+      <div className="flex items-center gap-2 text-sm">
+        {STEPS.map((st, i) => (
+          <button
+            key={st.id}
+            // Identity must be valid before jumping ahead.
+            disabled={i > 0 && !nameValid}
+            onClick={() => onStep(st.id)}
+            className={cn(
+              "rounded-full px-3 py-1 transition-colors",
+              st.id === step
+                ? "bg-primary text-primary-foreground"
+                : i <= stepIndex
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground",
+              i > 0 && !nameValid && "cursor-not-allowed opacity-50",
+            )}
+          >
+            {i + 1}. {s[st.labelKey]}
+          </button>
+        ))}
+      </div>
+  );
+}
+
 export default function ProfileBuilderPage() {
   const navigate = useNavigate();
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
-  const s = useMemo(() => localeSection(t, "profileBuilderPage"), [t]);
+  const s = useProfileBuilderText();
 
   const [step, setStep] = useState<StepId>("identity");
 
@@ -293,33 +331,10 @@ export default function ProfileBuilderPage() {
     <div className="mx-auto w-full max-w-3xl space-y-6 p-4">
       <div className="flex items-center justify-between">
         <H2>{s.title}</H2>
-        <Button ghost onClick={() => navigate("/profiles")}>
-          {s.cancel}
-        </Button>
+        <Button ghost onClick={() => navigate("/profiles")}>{s.cancel}</Button>
       </div>
 
-      {/* Stepper */}
-      <div className="flex items-center gap-2 text-sm">
-        {STEPS.map((st, i) => (
-          <button
-            key={st.id}
-            // Identity must be valid before jumping ahead.
-            disabled={i > 0 && !nameValid}
-            onClick={() => setStep(st.id)}
-            className={cn(
-              "rounded-full px-3 py-1 transition-colors",
-              st.id === step
-                ? "bg-primary text-primary-foreground"
-                : i <= stepIndex
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground",
-              i > 0 && !nameValid && "cursor-not-allowed opacity-50",
-            )}
-          >
-            {i + 1}. {s[st.labelKey]}
-          </button>
-        ))}
-      </div>
+      <Stepper step={step} stepIndex={stepIndex} nameValid={nameValid} onStep={setStep} s={s} />
 
       <Card>
         <CardContent className="space-y-4 p-5">
