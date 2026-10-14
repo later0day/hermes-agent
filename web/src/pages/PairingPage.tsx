@@ -14,6 +14,8 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 
 function getUserKey(user: PairingUser): string {
   return `${user.platform}:${user.user_id}`;
@@ -30,6 +32,8 @@ function getUserLabel(user: PairingUser): string {
 }
 
 export default function PairingPage() {
+  const { t } = useI18n();
+  const s = localeSection(t, "pairingPage");
   const [pending, setPending] = useState<PairingUser[]>([]);
   const [approved, setApproved] = useState<PairingUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,8 +55,10 @@ export default function PairingPage() {
         setPending(res.pending);
         setApproved(res.approved);
       })
-      .catch(() => showToast("Failed to load pairing requests", "error"))
+      .catch(() => showToast(s.loadFailed, "error"))
       .finally(() => setLoading(false));
+    // `s` only words the error toast; refetching on a locale switch is not wanted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showToast]);
 
   useEffect(() => {
@@ -66,13 +72,13 @@ export default function PairingPage() {
     // request_id. One of the two must be present.
     const target = code ? { code } : user.request_id ? { request_id: user.request_id } : null;
     if (!target) {
-      showToast("Enter a pairing code or missing request", "error");
+      showToast(s.missingCode, "error");
       return;
     }
     setApproving(key);
     try {
       await api.approvePairing(user.platform, target);
-      showToast(`Approved: "${getUserLabel(user)}"`, "success");
+      showToast(s.approved.replace("{name}", getUserLabel(user)), "success");
       setManualCodes((prev) => {
         const next = { ...prev };
         delete next[key];
@@ -80,21 +86,21 @@ export default function PairingPage() {
       });
       loadPairing();
     } catch (e) {
-      showToast(`Could not approve the pairing request: ${errorMessage(e)}`, "error");
+      showToast(s.approveFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setApproving(null);
     }
   };
 
   const handleClearPending = async () => {
-    if (!window.confirm("Clear all pending pairing requests?")) return;
+    if (!window.confirm(s.clearConfirm)) return;
     setClearing(true);
     try {
       const res = await api.clearPendingPairing();
-      showToast(`Cleared ${res.cleared} pending request(s)`, "success");
+      showToast(s.cleared.replace("{n}", String(res.cleared)), "success");
       loadPairing();
     } catch (e) {
-      showToast(`Could not clear pending requests: ${errorMessage(e)}`, "error");
+      showToast(s.clearFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setClearing(false);
     }
@@ -108,16 +114,17 @@ export default function PairingPage() {
         try {
           await api.revokePairing(platform, user_id);
           showToast(
-            `Revoked: "${user ? getUserLabel(user) : user_id}"`,
+            s.revoked.replace("{name}", user ? getUserLabel(user) : user_id),
             "success",
           );
           loadPairing();
         } catch (e) {
-          showToast(`Could not revoke access: ${errorMessage(e)}`, "error");
+          showToast(s.revokeFailed.replace("{error}", errorMessage(e)), "error");
           throw e;
         }
       },
-      [approved, loadPairing, showToast],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [approved, loadPairing, showToast, t],
     ),
   });
 
@@ -131,14 +138,14 @@ export default function PairingPage() {
         disabled={clearing}
         prefix={clearing ? <Spinner /> : <Trash2 className="h-4 w-4" />}
       >
-        Clear pending
+        {s.clearPending}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setEnd, clearing]);
+  }, [setEnd, clearing, t]);
 
   if (loading) {
     return (
@@ -160,13 +167,13 @@ export default function PairingPage() {
         open={userRevoke.isOpen}
         onCancel={userRevoke.cancel}
         onConfirm={userRevoke.confirm}
-        title="Revoke access"
+        title={s.revokeTitle}
         description={
           pendingRevokeUser
-            ? `"${getUserLabel(pendingRevokeUser)}" will lose access. This cannot be undone.`
-            : "This user will lose access. This cannot be undone."
+            ? s.revokeDescUser.replace("{name}", getUserLabel(pendingRevokeUser))
+            : s.revokeDescGeneric
         }
-        confirmLabel="Revoke"
+        confirmLabel={s.revoke}
         loading={userRevoke.isDeleting}
       />
 
@@ -177,13 +184,13 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Users className="h-4 w-4" />
-          Pending requests ({pending.length})
+          {s.pendingRequests.replace("{n}", String(pending.length))}
         </H2>
 
         {pending.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No pending pairing requests
+              {s.noPending}
             </CardContent>
           </Card>
         )}
@@ -203,7 +210,7 @@ export default function PairingPage() {
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span className="truncate">{user.user_id}</span>
                     {typeof user.age_minutes === "number" && (
-                      <span>{user.age_minutes}m ago</span>
+                      <span>{s.minutesAgo.replace("{n}", String(user.age_minutes))}</span>
                     )}
                   </div>
                 </div>
@@ -220,7 +227,7 @@ export default function PairingPage() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleApprove(user);
                     }}
-                    placeholder="Code (optional)"
+                    placeholder={s.codePlaceholder}
                     className="h-8 w-32 text-xs uppercase"
                   />
                   <Button
@@ -239,7 +246,7 @@ export default function PairingPage() {
                       )
                     }
                   >
-                    Approve
+                    {s.approve}
                   </Button>
                 </div>
               </CardContent>
@@ -255,13 +262,13 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <ShieldCheck className="h-4 w-4" />
-          Approved users ({approved.length})
+          {s.approvedUsers.replace("{n}", String(approved.length))}
         </H2>
 
         {approved.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No approved users
+              {s.noApproved}
             </CardContent>
           </Card>
         )}
@@ -289,8 +296,8 @@ export default function PairingPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Revoke"
-                    aria-label="Revoke"
+                    title={s.revoke}
+                    aria-label={s.revoke}
                     className="text-destructive"
                     onClick={() => userRevoke.requestDelete(key)}
                   >
