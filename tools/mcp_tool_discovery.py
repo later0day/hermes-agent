@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -621,7 +622,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[list[str]] = None) -> list[st
     # SDK import deferred to here so a config without servers — or a -t filter that keeps
     # none — never pays it.
     if not _core._ensure_mcp_sdk():
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
+        _warn_sdk_missing(servers)
         return []
     cookie = _acquire_discovery_lock_with_retry()
     try:
@@ -647,6 +648,20 @@ def discover_mcp_tools(allowed_mcp_names: Optional[list[str]] = None) -> list[st
     finally:
         if cookie not in (None, _core._LOCK_UNAVAILABLE):
             cookie.release()
+
+
+_sdk_missing_warned = False
+
+
+def _warn_sdk_missing(servers: dict) -> None:
+    """Once per process, at WARNING: configured servers cannot start without the SDK. This was a DEBUG line,
+    so a runtime environment synced without the ``mcp`` extra silently had no MCP at all (live 2026-10-15:
+    every profile's servers, for a day, while the reconcile logged "added" each tick)."""
+    global _sdk_missing_warned
+    if not _sdk_missing_warned:
+        _sdk_missing_warned = True
+        logger.warning("MCP server(s) %s configured, but the 'mcp' Python SDK is not installed in this runtime "
+                       "(%s); install the 'mcp' extra to enable them", ", ".join(sorted(servers)), sys.prefix)
 
 
 def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
@@ -675,9 +690,12 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
         _lifecycle.shutdown_mcp_servers(scope=scope, names=set(stale))
     for key in lazy:
         _forget_lazy_server(key)
-    added = _awaiting_connect(wanted, scope)
+    sdk = bool(wanted) and _core._ensure_mcp_sdk()
+    added = _awaiting_connect(wanted, scope) if sdk else []  # without the SDK nothing can connect
     if added:
         discover_mcp_tools()
+    elif wanted and not sdk:
+        _warn_sdk_missing(servers)
     return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
             "pending": sorted(connecting - wanted)}
 
