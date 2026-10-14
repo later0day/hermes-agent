@@ -275,6 +275,10 @@ gateway:
       head: "{board_tag}{assignee_tag}Kanban {task_id}"
 
   room:
+    plan_usage: "Usage: /room plan <what the team should do> — proposes a team from your profiles; /room confirm creates it."
+    plan_failed: "Could not plan a team: {error}"
+    plan_proposal: "Proposed team “{name}”\n• Decider: @{decider}\n• Teammates: {members}\n• Why: {reason}\nReply /room confirm within 30 minutes to create it, or /room plan … to try again."
+    confirm_none: "No pending team proposal from you in this chat (it expires after 30 minutes). Start with /room plan <request>."
     error_prefix:          "⚠ room error: {error}"
     worker_unavailable:    "⚠ Group Chat worker is unavailable. Restart the Hermes gateway and try again."
     usage:                 "Usage: /room <list|show|create|add|remove|disband|mirror|unmirror|task>\n  /room list [--all]\n  /room show <room_id>\n  /room create <room_id> <name> <profile1> <profile2> [profile3…] [--decider=<profile>] (2-6 members)\n  /room add <room_id> <profile> [profile…]\n  /room remove <room_id> <handle-or-profile> [handle-or-profile…]\n  /room mirror <room_id> [platform:chat_id] [--decider-only] [--inbound]\n  /room unmirror <room_id> [platform:chat_id]\n  /room task <list|add|dep|claim|assign|done|release> …\n  /room disband <room_id>"

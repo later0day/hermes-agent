@@ -30,6 +30,7 @@ from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from gateway.slash_commands_login import GatewayLoginCommandsMixin
+from gateway.slash_commands_room_plan import GatewayRoomPlanCommandsMixin
 from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
@@ -175,7 +176,7 @@ class GatewaySlashCommandsMixin(
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
     GatewayStatusCommandsMixin,
-    GatewayGoalCommandsMixin, GatewayAgentCommandsMixin):
+    GatewayGoalCommandsMixin, GatewayAgentCommandsMixin, GatewayRoomPlanCommandsMixin):
     """In-session slash-command handlers for GatewayRunner (plus the helpers the sibling mixins share)."""
 
     async_session_store: AsyncSessionStore
@@ -400,6 +401,7 @@ class GatewaySlashCommandsMixin(
           /room list [--all]
           /room show <room_id>
           /room create <room_id> <name> <profile1> <profile2> [profile3…]
+          /room plan <request…>   then   /room confirm
           /room add <room_id> <profile> [profile…]
           /room remove <room_id> <handle-or-profile> [handle-or-profile…]
           /room disband <room_id>
@@ -438,6 +440,8 @@ class GatewaySlashCommandsMixin(
             _src.platform.value if _src and _src.platform else ""
         )
         here_chat_id = str(_src.chat_id) if _src and _src.chat_id else ""
+        if action in ("plan", "confirm"):  # LLM call + room creation; no thread hop needed
+            return await self._handle_room_plan(action, args, _src)
         here_thread_id = str(_src.thread_id) if _src and _src.thread_id else ""
 
         def _fmt_ts(value) -> str:
@@ -542,48 +546,7 @@ class GatewaySlashCommandsMixin(
                         "gateway.room.decider_not_a_member",
                         profile=decider_profile,
                     )
-                service = get_hosted_room_service()
-                if service is None:
-                    return t("gateway.room.worker_unavailable")
-                # Map bare profile names to local members. Both handle and
-                # member_id are derived deterministically from the profile so
-                # that re-running the same /room create is idempotent (a random
-                # member_id would make the roster differ and the backend would
-                # reject it as a conflicting room_id).
-                seen_handles: dict[str, int] = {}
-                members = []
-                for prof in profiles:
-                    handle = prof
-                    if handle in seen_handles:
-                        seen_handles[handle] += 1
-                        handle = f"{handle}{seen_handles[handle]}"
-                    else:
-                        seen_handles[handle] = 1
-                    member = {
-                        "member_id": handle,
-                        "profile": prof,
-                        "handle": handle,
-                        "target": {"kind": "local", "profile": prof},
-                    }
-                    # Only the first member matching --decider is promoted, so a
-                    # duplicated profile keeps the roster's one-decider rule.
-                    if (
-                        decider_profile
-                        and prof == decider_profile
-                        and not any(m.get("role") == "decider" for m in members)
-                    ):
-                        member["role"] = "decider"
-                    members.append(member)
-                try:
-                    room = service.create_room(room_id=room_id, name=name, members=members)
-                except Exception as exc:
-                    return t("gateway.room.error_prefix", error=exc)
-                if room.get("idempotent"):
-                    return t("gateway.room.created_idempotent", room_id=room.get("room_id"))
-                return t("gateway.room.created",
-                         room_id=room.get("room_id"),
-                         name=room.get("name"),
-                         members=len(room.get("members") or []))
+                return self._room_create_from_profiles(room_id, name, profiles, decider_profile)
 
             if action in ("add", "remove"):
                 if len(args) < 2:

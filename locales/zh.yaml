@@ -272,6 +272,10 @@ gateway:
       head: "{board_tag}{assignee_tag}看板 {task_id}"
 
   room:
+    plan_usage: "用法：/room plan <团队要做的事> —— 根据你的 Profile 推荐一个团队；/room confirm 创建它。"
+    plan_failed: "无法规划团队：{error}"
+    plan_proposal: "推荐团队「{name}」\n• 负责人：@{decider}\n• 成员：{members}\n• 理由：{reason}\n30 分钟内回复 /room confirm 即可创建，或用 /room plan … 重新规划。"
+    confirm_none: "你在本会话中没有待确认的团队方案（方案 30 分钟后失效）。请先用 /room plan <需求>。"
     error_prefix:          "⚠ 房间错误：{error}"
     worker_unavailable:    "⚠ 群聊 worker 不可用。请重启 Hermes 网关后重试。"
     usage:                 "用法：/room <list|show|create|add|remove|disband|mirror|unmirror|task>\n  /room list [--all]\n  /room show <房间ID>\n  /room create <房间ID> <名称> <profile1> <profile2> [profile3…] [--decider=<profile>]（2-6 个成员）\n  /room add <房间ID> <profile> [profile…]\n  /room remove <房间ID> <handle或profile> [handle或profile…]\n  /room mirror <房间ID> [platform:chat_id] [--decider-only] [--inbound]\n  /room unmirror <房间ID> [platform:chat_id]\n  /room task <list|add|dep|claim|assign|done|release> …\n  /room disband <房间ID>"
