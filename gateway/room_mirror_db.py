@@ -232,6 +232,8 @@ def inbound_binding_for_source(
         row = conn.execute(
             """SELECT * FROM room_notify_subs
                WHERE platform=? AND chat_id=? AND thread_id=? AND inbound=1
+               AND EXISTS (SELECT 1 FROM hosted_rooms h
+                           WHERE h.room_id = room_notify_subs.room_id AND h.disbanded_at IS NULL)
                LIMIT 1""",
             (platform, chat_id, thread_id or ""),
         ).fetchone()
@@ -254,11 +256,25 @@ def inbound_sources(db_path: Path | str) -> frozenset[tuple[str, str, str]]:
     except Exception:
         return frozenset()
     try:
+        # Only LIVE rooms capture a chat: a disbanded room's leftover binding must hand the chat back to
+        # its normal agent instead of answering every message with "couldn't deliver to room".
         rows = conn.execute(
-            "SELECT platform, chat_id, thread_id FROM room_notify_subs WHERE inbound=1").fetchall()
+            """SELECT platform, chat_id, thread_id FROM room_notify_subs WHERE inbound=1
+               AND EXISTS (SELECT 1 FROM hosted_rooms h
+                           WHERE h.room_id = room_notify_subs.room_id AND h.disbanded_at IS NULL)""").fetchall()
         return frozenset((str(r[0]), str(r[1]), str(r[2] or "")) for r in rows)
     except Exception:
         return frozenset()
+    finally:
+        conn.close()
+
+
+def remove_subs_for_room(db_path: Path | str, *, room_id: str) -> int:
+    """Delete every mirror subscription of *room_id* (outbound and inbound); returns rows removed."""
+    conn = _connect(db_path)
+    try:
+        with _write_txn(conn):
+            return conn.execute("DELETE FROM room_notify_subs WHERE room_id=?", (room_id,)).rowcount
     finally:
         conn.close()
 

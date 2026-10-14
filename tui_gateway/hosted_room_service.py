@@ -179,6 +179,9 @@ class HostedRoomService:
                 if hosted_rooms.room_state(
                         self.db_path, room_id=room_id, include_disbanded=True).get("disbanded_at") is not None:
                     self.reap_room_processes(room_id, profiles)
+                    from gateway import room_mirror_db
+
+                    room_mirror_db.remove_subs_for_room(self.db_path, room_id=room_id)
             except Exception as exc:  # one room's cleanup must not stall scheduling for the rest
                 logger.warning("room %s: background process cleanup failed: %s", room_id, exc)
         for room_id in current - set(self._served_rooms):
@@ -972,9 +975,15 @@ class HostedRoomService:
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
         choice: str, request_id: str | None = None) -> Mapping[str, Any]:
-        """Resolve one exact local or peer approval and wake room observation."""
+        """Resolve one exact local or peer approval and wake room observation.
+
+        Both the gateway and the dashboard run room turns; the approval may belong to a turn the OTHER
+        process holds. Re-read the durable actions and, when this process does not own the member's
+        session, queue the decision for the owner (as ``handle_action`` does) instead of reporting
+        "no longer pending"."""
         key = (room_id, member_id)
         route, client = self.peer_routes.get(key), self.peer_clients.get(key)
+        self._refresh_pending_actions()
         with self._policy_lock:
             action = self._pending_actions.get(key)
         requested_approval_id = str(request_id or "")
@@ -989,6 +998,14 @@ class HostedRoomService:
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
         approve = _hook(client, "approve_receipt")
+        owns_session = getattr(self.rpc, "owns_session", None)
+        if route is None and callable(owns_session) and not owns_session(str(action.get("session_id") or "")):
+            outcome = hosted_room_actions.request_action_decision(
+                self.db_path, room_id=room_id, member_id=member_id,
+                action_id=str(action.get("action_id") or requested_approval_id),
+                decision={"choice": choice, "task_id": task_id, "execution_generation": execution_generation,
+                          "request_id": requested_approval_id})
+            return {"queued": True, "outcome": outcome}
         if route is not None and approve is not None:
             result = approve(
                 task_id=task_id, execution_generation=execution_generation,

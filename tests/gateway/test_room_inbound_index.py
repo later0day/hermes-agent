@@ -42,7 +42,14 @@ def test_unbound_chat_is_rejected_from_memory_without_touching_sqlite(db, monkey
     assert lookups == [], "unbound chat must not reach the SQLite binding lookup"
 
 
+def _room(db, room_id="room-1"):
+    return hosted_rooms.create_room(db, room_id=room_id, name="R", authority_gateway_id="g", now=1, members=[
+        {"member_id": f"m-{p}", "profile": p, "handle": p, "target": {"kind": "local", "profile": p}}
+        for p in ("plan", "backend")])
+
+
 def test_index_tracks_inbound_subscriptions_and_routes_bound_chats(db, monkeypatch):
+    _room(db)
     mir.create_sub(db, room_id="room-1", platform="telegram", chat_id="123", thread_id="", inbound=True)
     mir.create_sub(db, room_id="room-1", platform="telegram", chat_id="999", thread_id="")  # mirror only
     bridge = GatewayRoomMirrorMixin()
@@ -68,12 +75,10 @@ def test_routes_platform_ids_that_are_not_identifier_safe(db, monkeypatch):
     """DingTalk chat/message ids carry ``+ / =`` (WeChat ids an ``@``); routing must not reject them,
     and a redelivered message must keep the same room event id while a new message gets another."""
     chat_id = "cidUKHyy+TSBvzQY6P34TpjPA=="
+    _room(db)
     mir.create_sub(db, room_id="room-1", platform="dingtalk", chat_id=chat_id, thread_id="", inbound=True)
     bridge = GatewayRoomMirrorMixin()
     bridge._reload_room_inbound_sources()
-    hosted_rooms.create_room(db, room_id="room-1", name="R", authority_gateway_id="g", now=1, members=[
-        {"member_id": f"m-{p}", "profile": p, "handle": p, "target": {"kind": "local", "profile": p}}
-        for p in ("plan", "backend")])
     sent = []
 
     def _send(*, room_id, event_id, payload, actor_id):
@@ -96,3 +101,21 @@ def test_routes_platform_ids_that_are_not_identifier_safe(db, monkeypatch):
     first, redelivered, other = (call["event_id"] for call in sent)
     assert first == redelivered != other
     assert len({call["actor_id"] for call in sent}) == 1  # one stable identity per IM user
+
+
+def test_disbanding_a_room_hands_its_inbound_chat_back_to_the_agent(db):
+    """A disbanded room must stop capturing its full-duplex chat at once (any disband entry point, any
+    process): routing to it only answers "couldn't deliver" and walls the chat off from its agent."""
+    room = _room(db)
+    mir.create_sub(db, room_id="room-1", platform="telegram", chat_id="123", thread_id="", inbound=True)
+    bridge = GatewayRoomMirrorMixin()
+    bridge._reload_room_inbound_sources()
+    assert bridge._room_inbound_sources == frozenset({("telegram", "123", "")})
+
+    hosted_rooms.disband_room(db, room_id="room-1", expected_gateway_id=room["authority_gateway_id"],
+                              expected_epoch=1)
+    bridge._reload_room_inbound_sources()
+
+    assert bridge._room_inbound_sources == frozenset()
+    assert mir.inbound_binding_for_source(db, platform="telegram", chat_id="123") is None
+    assert asyncio.run(bridge._maybe_route_inbound_to_room(_event(), _source("123"))) is INBOUND_ROOM_NOT_ROUTED
