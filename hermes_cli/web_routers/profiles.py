@@ -46,7 +46,7 @@ from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
     ProfileSoulUpdate, ProfileMemoryUpdate, ProfileDescriptionUpdate, ProfileModelUpdate,
-    ProfileDescribeAuto, SessionPrScanBody)
+    ProfileDescribeAuto, SessionPrScanBody, ProfileChatBinding)
 from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
 
 # Same logger the handlers used before extraction (identical logger object).
@@ -946,6 +946,48 @@ async def get_profiles_bindings():
         return {"bindings": list(by_profile.values())}
 
     return await run_in_threadpool(_collect)
+
+
+@router.get("/api/profiles/binding-chats")
+async def list_binding_chats():
+    """Chats the gateway has seen (its channel directory), for binding one to a profile from the dashboard."""
+    from gateway.channel_directory import load_directory
+
+    def _collect() -> dict[str, Any]:
+        platforms = (load_directory() or {}).get("platforms") or {}
+        return {"chats": [{"platform": name, "chat_id": c.get("id"), "name": c.get("name") or c.get("id"),
+                           "chat_type": c.get("type") or "group"}
+                          for name, chats in platforms.items() for c in chats if c.get("id")]}
+    return await run_in_threadpool(_collect)
+
+
+@router.post("/api/profiles/{name}/bindings")
+async def bind_chat_endpoint(name: str, body: ProfileChatBinding):
+    """Bind a whole chat to this profile (what ``/agent use`` does in a group), from the dashboard."""
+    from gateway.source_agent_binding import bind_chat_to_profile
+
+    _resolve_profile_dir(name)
+    if body.chat_type not in {"dm", "group", "channel", "thread"} or not body.chat_id.strip():
+        raise HTTPException(status_code=400, detail="chat_id and a dm/group/channel/thread chat_type are required")
+    try:
+        key = await run_in_threadpool(lambda: bind_chat_to_profile(
+            name, platform=body.platform, chat_id=body.chat_id.strip(), chat_type=body.chat_type,
+            chat_name=body.chat_name))
+    except ValueError as exc:  # unknown platform
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit_profile_action("bind", name, detail=f"{body.platform}:{body.chat_name or body.chat_id}")
+    return {"ok": True, "source_binding_key": key}
+
+
+@router.delete("/api/profiles/bindings")
+async def unbind_endpoint(key: str = Query(...)):
+    """Remove one ``/agent use`` binding row; the chat falls back to profile routes / the default profile."""
+    from gateway.source_agent_binding import unbind_source
+
+    if not await run_in_threadpool(unbind_source, key):
+        raise HTTPException(status_code=404, detail="binding not found")
+    _audit_profile_action("unbind", key)
+    return {"ok": True}
 
 
 @router.post("/api/profiles")

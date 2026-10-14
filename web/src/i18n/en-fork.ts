@@ -1310,4 +1310,15 @@ export const enFork: ForkSections = {
     serviceUnavailable: "Couldn’t load teams. The Dashboard service did not respond.",
     actionFailed: "Room action failed",
   },
+  profileBindingEditor: {
+    manage: "Manage bindings",
+    close: "Done",
+    noBindings: "No chats bound with /agent use.",
+    unbind: "Unbind this chat",
+    pickChat: "Choose a chat…",
+    bind: "Bind",
+    dm: "DM",
+    group: "group",
+    hint: "Every message in the chat is then answered by this profile — same as /agent use in that chat.",
+  },
 };

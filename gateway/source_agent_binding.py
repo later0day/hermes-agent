@@ -312,6 +312,35 @@ def settle_profile_bindings(old_profile: str, new_profile: str | None = None) ->
         store.close()
 
 
+def bind_chat_to_profile(profile_name: str, *, platform: str, chat_id: str, chat_type: str,
+                         chat_name: str = "", actor_user_name: str = "dashboard") -> str:
+    """Bind a whole chat to *profile_name* from outside the chat (dashboard): the chat-level key that
+    ``/agent use`` also writes for a group, so every member routes to the profile. Returns the key. The
+    gateway reads the store per message, so the binding applies to the next message without a restart."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_source_binding_key
+
+    source = SessionSource(platform=Platform(platform), chat_id=str(chat_id), chat_type=chat_type,
+                           chat_name=chat_name or None)
+    key = build_source_binding_key(source, group_sessions_per_user=False)
+    store = SourceAgentBindingStore()
+    try:
+        store.set_binding(key, profile_name, agent_id=profile_name, fallback_target=source.to_dict(),
+                          actor_user_name=actor_user_name)
+    finally:
+        store.close()
+    return key
+
+
+def unbind_source(source_binding_key: str) -> bool:
+    """Remove one binding row (dashboard unbind); the chat falls back to profile routes / the default."""
+    store = SourceAgentBindingStore()
+    try:
+        return store.delete_binding(source_binding_key)
+    finally:
+        store.close()
+
+
 def bound_chats_for_profile(profile_name: str) -> list[dict[str, Any]]:
     """The distinct chats (``fallback_target`` dicts) bound to *profile_name*, read before a delete
     settles them away so the caller can tell each one it was unbound."""

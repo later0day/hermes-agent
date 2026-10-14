@@ -1471,4 +1471,15 @@ export const zhFork: TranslationOverrides = {
     serviceUnavailable: "无法加载团队。仪表盘服务未响应。",
     actionFailed: "房间操作失败",
   },
+  profileBindingEditor: {
+    manage: "管理绑定",
+    close: "完成",
+    noBindings: "暂无通过 /agent use 绑定的会话。",
+    unbind: "解除此会话的绑定",
+    pickChat: "选择一个会话…",
+    bind: "绑定",
+    dm: "私聊",
+    group: "群聊",
+    hint: "绑定后，该会话里的所有消息都由这个 Profile 回复，等同于在会话里执行 /agent use。",
+  },
 };

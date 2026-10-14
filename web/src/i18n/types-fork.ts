@@ -1315,4 +1315,15 @@ export interface ForkSections {
     serviceUnavailable: string;
     actionFailed: string;
   };
+  profileBindingEditor?: {
+    manage: string;
+    close: string;
+    noBindings: string;
+    unbind: string;
+    pickChat: string;
+    bind: string;
+    dm: string;
+    group: string;
+    hint: string;
+  };
 }

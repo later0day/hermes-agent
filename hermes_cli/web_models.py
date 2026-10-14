@@ -475,6 +475,12 @@ class ProfileActiveUpdate(BaseModel):
 class ProfileDescriptionUpdate(BaseModel):
     description: str = ""
 
+class ProfileChatBinding(BaseModel):
+    platform: str
+    chat_id: str
+    chat_type: str = "group"
+    chat_name: str = ""
+
 class ProfileModelUpdate(BaseModel):
     provider: str
     model: str

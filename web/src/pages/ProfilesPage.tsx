@@ -27,6 +27,7 @@ import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo, ProfileBindingSummary } from "@/lib/api";
+import { ProfileBindingEditor } from "@/components/ProfileBindingEditor";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -1333,6 +1334,8 @@ export default function ProfilesPage() {
                           boundMore: L.boundMore,
                         }}
                       />
+                      <ProfileBindingEditor profile={p.name} summary={bindings[p.name]} onChanged={load}
+                        onError={(m) => showToast(`${t.status.error}: ${m}`, "error")} />
 
                       <div className="mt-auto flex flex-col gap-0.5 pt-1 text-xs text-muted-foreground">
                         {p.model && (
