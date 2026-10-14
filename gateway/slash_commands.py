@@ -770,6 +770,12 @@ class GatewaySlashCommandsMixin(
                 if decider is not None and not all_members:
                     member_filter = str(decider.get("member_id") or "")
                     decider_only = True
+                # Deliver back through the bot that RECEIVED this command: None is the primary bot (also
+                # what credentialless / `/agent use`-bound profiles ride); a secondary profile's own bot
+                # must not be replaced by the primary, which may not even be in that chat.
+                mirror_here = (platform_str, chat_id) == (here_platform, here_chat_id)
+                owner = (self._transport_owner(_src)
+                         if mirror_here and callable(getattr(_src, "_transport_adapter_ref", None)) else None)
                 _mir.create_sub(
                     db_path,
                     room_id=room_id,
@@ -777,6 +783,7 @@ class GatewaySlashCommandsMixin(
                     chat_id=chat_id,
                     thread_id=thread_id,
                     member_filter=member_filter,
+                    notifier_profile=owner[1] if isinstance(owner, tuple) else None,
                     inbound=True if inbound else None,
                 )
                 if hasattr(self, "_reload_room_inbound_sources"):
