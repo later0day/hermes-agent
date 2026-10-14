@@ -54,6 +54,28 @@ class GatewayAgentCommandsMixin:
         except OSError:
             logger.warning("Could not append to the /agent audit log %s", self._agent_audit_path, exc_info=True)
 
+    def _active_agent_turns_for_source_binding(self, chat_level_key: str) -> list[str]:
+        """Active turn keys whose source identity a binding at *chat_level_key* covers.
+
+        A group ``/agent use`` re-routes every participant, so the issuing user's own session is not
+        enough: strip the profile namespace from each running ``agent:<profile>:<identity>`` key and
+        compare the shared source identity."""
+        identity = str(chat_level_key or "").removeprefix("source:")
+        if not identity:
+            return []
+        matches = []
+        for session_key in list(getattr(self, "_running_agents", {}) or {}):
+            parts = str(session_key).split(":", 2)
+            if len(parts) == 3 and parts[0] == "agent" and (
+                    parts[2] == identity or parts[2].startswith(f"{identity}:")):
+                matches.append(str(session_key))
+        return matches
+
+    def _active_agent_turns_for_profile(self, profile_name: str) -> list[str]:
+        """Active gateway turn keys in *profile_name*'s namespace."""
+        prefix = f"agent:{profile_name}:"
+        return [str(k) for k in list(getattr(self, "_running_agents", {}) or {}) if str(k).startswith(prefix)]
+
     async def _handle_agent_command(self, event) -> str:
         """Handle /agent — bind THIS chat/source to an agent profile.
 
@@ -117,6 +139,10 @@ class GatewayAgentCommandsMixin:
         # configured admin, never "everyone" under the default ungated slash policy.
         if action not in ("status", "list") and not self._resume_caller_is_admin(source):
             return t("gateway.agent.admin_only", action=action)
+        if action in ("use", "clear") and self._active_agent_turns_for_source_binding(chat_level_key):
+            # Re-routing mid-turn splits that turn's follow-ups and interrupts across two profiles.
+            return ("Agent is running in this chat — wait for the current response or `/stop` first "
+                    "before changing its profile binding.")
         if action in ("use", "clear"):
             owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
             bot_profile = owner[1] if isinstance(owner, tuple) else None
@@ -375,9 +401,20 @@ class GatewayAgentCommandsMixin:
 
         if not args:
             return "Usage: /agent delete <profile> [confirm-code]"
-        target_name = args[0]
+        from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
+
+        try:
+            target_name = normalize_profile_name(args[0])
+            validate_profile_name(target_name)
+        except (TypeError, ValueError) as exc:
+            return f"Invalid profile: {exc}"
         if target_name == "default":
             return "Refusing to delete `default`."
+        if len(args) < 2 and not profile_exists(target_name):  # confirming keeps its own "no pending" answer
+            return f"Profile `{target_name}` does not exist."
+        if active := self._active_agent_turns_for_profile(target_name):
+            return (f"Cannot delete profile `{target_name}` while {len(active)} gateway turn(s) are active. "
+                    "Wait for them to finish before retrying.")
         if not hasattr(self, "_agent_delete_confirmations"):
             self._agent_delete_confirmations = {}
         code = args[1] if len(args) > 1 else None
@@ -431,6 +468,11 @@ class GatewayAgentCommandsMixin:
         if _profiles_being_deleted is not None:
             _profiles_being_deleted.add(target_name)
         try:
+            # Ingress for the profile is blocked from here on, so this re-check closes the
+            # check-then-delete race against a turn admitted while the code was being confirmed.
+            if active := self._active_agent_turns_for_profile(target_name):
+                return (f"Cannot delete profile `{target_name}` while {len(active)} gateway turn(s) are "
+                        "active. Wait for them to finish before retrying.")
             await self._run_in_executor_with_context(delete_profile, target_name, True)
         except Exception as exc:
             logger.exception("/agent delete %s failed", target_name)
