@@ -533,12 +533,9 @@ export const zh: Translations = {
     violations: "违规",
     heartbeat: "心跳",
     lastDigest: "最近摘要",
-    pauseObserver: "暂停",
-    resumeObserver: "恢复",
     secondsAgo: "{n}秒前",
     never: "从未",
     noObserver: "该房间未配置观察者。",
-    observerError: "加载观察者失败。",
 
     // ── 协议消息类型标签 ──
     kindTaskAssign: "分配",

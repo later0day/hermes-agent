@@ -649,12 +649,9 @@ export const en: Translations = {
     violations: "Violations",
     heartbeat: "Heartbeat",
     lastDigest: "Last digest",
-    pauseObserver: "Pause",
-    resumeObserver: "Resume",
     secondsAgo: "{n}s ago",
     never: "never",
     noObserver: "No observer configured for this room.",
-    observerError: "Error loading observer.",
 
     // ── Protocol message kind labels ──
     kindTaskAssign: "assign",

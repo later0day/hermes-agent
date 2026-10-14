@@ -656,12 +656,9 @@ export interface Translations {
     violations: string;
     heartbeat: string;
     lastDigest: string;
-    pauseObserver: string;
-    resumeObserver: string;
     secondsAgo: string;
     never: string;
     noObserver: string;
-    observerError: string;
     kindTaskAssign: string;
     kindTaskCancel: string;
     kindPlanSubmit: string;
