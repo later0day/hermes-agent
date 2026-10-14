@@ -1616,4 +1616,40 @@ export interface Translations {
     deleteFolderDesc: string;
     deleteFileDesc: string;
   };
+  // Cron job run-history dialog (components/CronRunHistoryDialog.tsx). Optional: falls back to English.
+  cronRunHistory?: {
+    title: string;
+    openHistory: string;
+    empty: string;
+    loadFailed: string;
+    startedAt: string;
+    duration: string;
+    outcome: string;
+    model: string;
+    toolCalls: string;
+    tokens: string;
+    running: string;
+    completed: string;
+    unknownOutcome: string;
+  };
+  // Cron page strings missing from the cron namespace (pages/CronPage.tsx). Optional: falls back to English.
+  cronPageX?: {
+    advancedFields: string;
+    provider: string;
+    defaultOption: string;
+    model: string;
+    baseUrlOverride: string;
+    script: string;
+    workdir: string;
+    contextFrom: string;
+    contextFromPlaceholder: string;
+    enabledToolsets: string;
+    noToolsets: string;
+    skillsOptional: string;
+    noSkills: string;
+    profile: string;
+    allProfiles: string;
+    editJob: string;
+    missedFire: string;
+  };
 }
