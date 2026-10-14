@@ -51,3 +51,15 @@ def test_binding_only_satellite_borrows_primary_and_others_stay_closed(runner):
     assert r._adapters_for_profile("bound").get(Platform.DINGTALK) is runner.primary
     assert r._adapters_for_profile("unrouted") == {}  # no route, no binding: fail closed
     assert r._adapters_for_profile("own_bot").get(Platform.DINGTALK) is runner.own  # own bot wins
+
+
+def test_kanban_notifier_honours_bindings_with_inbound_precedence(runner):
+    """A kanban notify subscription for a bound chat delivers through the primary for the bound profile
+    only — the static-route-only gate dropped every such ping silently."""
+    from gateway.kanban_watchers_notifier import _adapter_for_subscription
+
+    r = runner.runner
+    sub = {"chat_id": "cidGROUP==", "chat_type": "group"}
+    assert _adapter_for_subscription(r, Platform.DINGTALK, sub, "bound") is runner.primary
+    # The chat is bound to `bound`; a subscription stamped with another credentialless profile stays closed.
+    assert _adapter_for_subscription(r, Platform.DINGTALK, sub, "unrouted") is None

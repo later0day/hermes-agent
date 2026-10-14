@@ -267,6 +267,29 @@ class GatewayAuthorizationMixin:
             logger.debug("shared-bot satellite: binding lookup failed for %s", profile_name, exc_info=True)
             return False
 
+    def _agent_binding_profile_for_chat(self, platform: str, chat_id: str) -> Optional[str]:
+        """The profile an ``/agent use`` binding routes *platform*/*chat_id* to, else ``None``. A chat-level
+        row wins over per-participant rows, matching inbound resolution order. Lookup failures -> ``None``."""
+        if not chat_id:
+            return None
+        try:
+            store = getattr(self, "_source_agent_binding_store", None)
+            if store is None:
+                from gateway.source_agent_binding import SourceAgentBindingStore
+
+                store = self._source_agent_binding_store = SourceAgentBindingStore()
+            found = None
+            for binding in store.list_bindings():
+                parts = (binding.source_binding_key or "").split(":")
+                if len(parts) >= 4 and parts[0] == "source" and parts[1] == platform and parts[3] == str(chat_id):
+                    if len(parts) == 4:
+                        return binding.profile_name
+                    found = found or binding.profile_name
+            return found
+        except Exception:
+            logger.debug("binding lookup failed for %s:%s", platform, chat_id, exc_info=True)
+            return None
+
     def _intake_adapter_for(self, source: Optional[SessionSource]):
         """The adapter that RECEIVED *source*'s event — the only one whose intake policy (ignored
         channels, relay fronting, re-dispatch of a still-live event) may act on it.

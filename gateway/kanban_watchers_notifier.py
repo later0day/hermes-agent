@@ -186,6 +186,15 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     thread_like = bool(thread) or (sub.get("chat_type") or metadata.get("chat_type")) in {
         "thread", "forum", "forum_post", "forum-post", "topic",
     }
+    # An ``/agent use`` binding outranks static routes for this chat, exactly as on inbound: the bound
+    # profile rides the primary's bot here, any other profile does not.
+    bound = runner._agent_binding_profile_for_chat(getattr(platform, "value", str(platform)).lower(), chat) \
+        if hasattr(runner, "_agent_binding_profile_for_chat") else None
+    if bound is not None:
+        if bound != profile:
+            return None
+        from gateway.run import _multiplex_profile_homes
+        return primary if profile in {name for name, _home in _multiplex_profile_homes(config)} else None
     # Preserve canonical route order, including equal-specificity ties. An older
     # row missing an anchor must not skip a potentially winning route. Reuse the
     # route's matcher (including platform-specific identity aliases), not a second
