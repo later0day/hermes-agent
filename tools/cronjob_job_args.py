@@ -460,12 +460,16 @@ def _apply_continuity(
 
 def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
     """Error string if any non-"self" ref names a missing job ("self" resolves to the job's
-    own id at run time, so it can't be checked — the job doesn't exist yet at create)."""
+    own id at run time, so it can't be checked — the job doesn't exist yet at create). A job
+    the calling chat may not touch reads as missing: context_from injects that job's last
+    output into this one, so a chat that learned another group's job id could pull its reports."""
     from cron.jobs import get_job as _get_job
+    from tools.cronjob_tools import _caller_may_touch_job
     for ref_id in refs:
         if isinstance(ref_id, str) and ref_id.strip().lower() == "self":
             continue
-        if not _get_job(ref_id):
+        job = _get_job(ref_id)
+        if not job or not _caller_may_touch_job(job):
             return (
                 f"context_from job '{ref_id}' not found. "
                 "Use cronjob(action='list') to see available jobs.")
