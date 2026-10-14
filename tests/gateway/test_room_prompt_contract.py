@@ -40,6 +40,7 @@ def test_decider_and_worker_prompts_carry_the_contract(tmp_path):
     assert 'starting with "LEADER_REPORT:"' in decider_prompt
     assert "never append" in decider_prompt and "Write in Chinese" in decider_prompt
     assert "mark those points as unverified" in decider_prompt
+    assert "each table cell included" in decider_prompt and "Add nothing from your own knowledge" in decider_prompt
 
     task = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task
     for event in discussion.plan_publication(room, _events(db), task, status="settled",
@@ -49,7 +50,7 @@ def test_decider_and_worker_prompts_carry_the_contract(tmp_path):
     assert worker.member.profile == "api"
     prompt = worker.payload["prompt"]
     assert '"Sources:" list' in prompt and "Write in Chinese" in prompt
-    assert "about 10 searches" in prompt
+    assert "about 10 searches" in prompt and "label third-party, forum or blog sources" in prompt
     assert f"./{ROOM_ID}/" in prompt
 
 

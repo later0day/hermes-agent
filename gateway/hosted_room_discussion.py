@@ -678,6 +678,10 @@ def _build_prompt(
             "- Before the final report, check each teammate's reply: if one failed or gave no sources, @mention it"
             " once more with a narrower task, or mark those points as unverified in the report. Never claim a fact was"
             " verified unless a teammate cited its source.",
+            "- In the final report, every fact (each table cell included) carries the number of a source a teammate"
+            " cited; copy names and figures exactly as the teammate gave them, never move a figure to another"
+            ' product, and write "unverified" (in the user\'s language) where no teammate gave a source. Add nothing'
+            " from your own knowledge.",
             "- When the work is done, reply with one message that synthesizes the results for the user, starting"
             ' with "LEADER_REPORT:" (the dashboard shows it as the final report); reply with exactly "(pass)" if'
             " nothing is left, and never append \"(pass)\" to a real reply.",
@@ -699,6 +703,7 @@ def _build_prompt(
             " what you have and name the gaps instead of retrying.",
             '- End your reply with a "Sources:" list of the URLs or files you actually read (even when the requested'
             ' output is a table or CSV); mark anything else "(from memory, unverified)".',
+            "- Prefer the vendor's or project's own pages; label third-party, forum or blog sources as such.",
             f"- Save files teammates need under ./{room.room_id}/ (relative to your working directory) and give"
             " their paths in your reply.",
             f"- {report_to}",
