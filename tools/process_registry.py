@@ -576,8 +576,7 @@ class ProcessSession:
     command: str
     task_id: str = ""                           # Task/sandbox isolation key (CONTAINER key,
                                                 # may be collapsed by _resolve_container_task_id)
-    owner_task_id: str = ""                     # RAW spawning task id ("sa-..."); ownership
-                                                # checks must use this, not task_id
+    owner_task_id: str = ""                     # RAW spawning task id ("sa-..."): ownership checks use this, not task_id
     session_key: str = ""                       # Gateway session key (reset protection)
     pid: Optional[int] = None
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -598,6 +597,7 @@ class ProcessSession:
     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
                                                 # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
+    checkpoint_owner: str = ""                  # processes.json of the spawning profile (multiplex: only it persists this)
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     # Watcher/notification routing (persisted for crash recovery)
@@ -1199,10 +1199,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         session._reader_thread = reader
         with self._lock:
             self._prune_if_needed()
-            # Completion takes this lock too. Starting here also leaves no
-            # ghost entry if the interpreter cannot start another thread.
+            # Completion takes this lock too; starting here leaves no ghost entry if no thread can start.
             reader.start()
             self._running[session.id] = session
+            self._claim_checkpoint_owner(session)
         self._write_checkpoint()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:

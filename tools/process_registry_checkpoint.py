@@ -17,15 +17,27 @@ class ProcessCheckpointMixin:
 
     # ----- Checkpoint (crash recovery) -----
 
+    @staticmethod
+    def _claim_checkpoint_owner(session) -> None:
+        """Bind *session* to the checkpoint file of the scope that spawned (or recovered) it. A multiplexed
+        process serves every profile from one registry; without an owner each profile's processes.json
+        carried every other profile's command lines, cwds and session keys (seen live 2026-10-15)."""
+        from tools.process_registry import _checkpoint_path
+
+        if not session.checkpoint_owner:
+            session.checkpoint_owner = str(_checkpoint_path())
+
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
         try:
+            path = _checkpoint_path()
             with self._lock:
                 entries = []
                 for s in self._running.values():
-                    if s.exited:
+                    self._claim_checkpoint_owner(s)  # sessions registered before owners existed
+                    if s.exited or s.checkpoint_owner != str(path):
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
@@ -43,7 +55,7 @@ class ProcessCheckpointMixin:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
             from utils import atomic_json_write
-            atomic_json_write(_checkpoint_path(), entries)
+            atomic_json_write(path, entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
@@ -68,8 +80,8 @@ class ProcessCheckpointMixin:
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
                 continue
-            # The registry is process-global, so every profile's checkpoint carries every live
-            # process; a multiplexer recovering several homes must adopt each session once.
+            # Each profile's file lists only its own processes now, but files written before owners
+            # existed carry every profile's: a multiplexer recovering several homes adopts each once.
             with self._lock:
                 already_tracked = entry.get("session_id") in self._running
             if already_tracked:
@@ -108,6 +120,7 @@ class ProcessCheckpointMixin:
                 started_at=entry.get("started_at", time.time()))
             # detached: can't read output, but can report status + kill
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
+            self._claim_checkpoint_owner(session)  # recovery runs under the scope whose file listed it
             with self._lock:
                 self._running[session.id] = session
             recovered += 1
