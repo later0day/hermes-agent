@@ -631,11 +631,12 @@ def _shared_room_dir(member: DiscussionMember, room_id: str) -> str:
     ``./<room_id>/`` landed where no teammate could read it."""
     if (member.target or {}).get("kind", "local") != "local":
         return f"./{room_id}/"
-    import yaml
+    from hermes_yaml import YAMLError
     from hermes_cli.profiles import get_profile_dir
+    from utils import load_yaml_file_readonly
     try:
-        config = yaml.safe_load((get_profile_dir(member.profile) / "config.yaml").read_text(encoding="utf-8"))
-    except (OSError, ValueError, yaml.YAMLError):
+        config = load_yaml_file_readonly(get_profile_dir(member.profile) / "config.yaml")
+    except (OSError, ValueError, YAMLError):
         return f"./{room_id}/"
     cwd = str(((config or {}).get("terminal") or {}).get("cwd") or "") if isinstance(config, dict) else ""
     return f"{cwd.rstrip('/')}/{room_id}/" if cwd.startswith("/") else f"./{room_id}/"
