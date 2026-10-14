@@ -313,7 +313,9 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
     from utils import base_url_hostname
     aux = read_user_config_raw(config_path).get("auxiliary")
     routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
-              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
+              # "main" is the runtime alias for "this profile's main provider" (auxiliary_client
+              # ``_normalize_aux_provider``) - inheritance like "auto", not a provider name to resolve.
+              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto", "main")}
     ok = []
     for task, block in sorted(routed.items()):
         provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))
