@@ -8,6 +8,7 @@ import concurrent.futures
 import json
 import logging
 import re
+import sys
 import time
 import uuid
 from datetime import datetime, timezone, UTC
@@ -36,17 +37,38 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
-try:
-    from alibabacloud_dingtalk.card_1_0 import client as dingtalk_card_client, models as dingtalk_card_models
-    from alibabacloud_dingtalk.robot_1_0 import client as dingtalk_robot_client, models as dingtalk_robot_models
-    from alibabacloud_tea_openapi import models as open_api_models
-    from alibabacloud_tea_util import models as tea_util_models
+CARD_SDK_AVAILABLE = False
+dingtalk_card_client = dingtalk_card_models = dingtalk_robot_client = dingtalk_robot_models = None
+open_api_models = tea_util_models = None
+_CARD_SDK_IMPORT_ERROR: Optional[BaseException] = None
 
-    CARD_SDK_AVAILABLE = True
-except Exception:
-    CARD_SDK_AVAILABLE = False
-    dingtalk_card_client = dingtalk_card_models = dingtalk_robot_client = dingtalk_robot_models = None
-    open_api_models = tea_util_models = None
+
+def _load_card_sdk() -> bool:
+    """Import the OpenAPI card/robot SDK and rebind the module globals; True once available.
+
+    Retried from ``connect()``: a transient import failure at module load (seen 2026-10-14 when many
+    profiles initialised at once) otherwise left the adapter without cards, robot-native sends and
+    media download until the next process restart, while Stream inbound kept working."""
+    global CARD_SDK_AVAILABLE, dingtalk_card_client, dingtalk_card_models, dingtalk_robot_client
+    global dingtalk_robot_models, open_api_models, tea_util_models, _CARD_SDK_IMPORT_ERROR
+    if CARD_SDK_AVAILABLE:
+        return True
+    try:
+        from alibabacloud_dingtalk.card_1_0 import client as _card_client, models as _card_models
+        from alibabacloud_dingtalk.robot_1_0 import client as _robot_client, models as _robot_models
+        from alibabacloud_tea_openapi import models as _openapi_models
+        from alibabacloud_tea_util import models as _util_models
+    except Exception as exc:  # health: allow BLE001 -- optional SDK: transitive cryptography version skew raises
+        _CARD_SDK_IMPORT_ERROR = exc  # AttributeError, not ImportError; connect() logs it and degrades
+        return False
+    dingtalk_card_client, dingtalk_card_models = _card_client, _card_models
+    dingtalk_robot_client, dingtalk_robot_models = _robot_client, _robot_models
+    open_api_models, tea_util_models = _openapi_models, _util_models
+    CARD_SDK_AVAILABLE, _CARD_SDK_IMPORT_ERROR = True, None
+    return True
+
+
+_load_card_sdk()
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
@@ -300,6 +322,15 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
             from gateway.platforms._http_client_limits import platform_httpx_limits  # tighter keepalive: idle CLOSE_WAIT drains promptly
             self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
             self._stream_client = dingtalk_stream.DingTalkStreamClient(dingtalk_stream.Credential(self._client_id, self._client_secret))
+            # The plugin loader imports this file as ``hermes_plugins.platforms__dingtalk.adapter`` while the
+            # card/media/reaction siblings read SDK models through ``plugins.platforms.dingtalk.adapter``
+            # (``_dt()``): two module objects, so the retry must rebind both.
+            from plugins.platforms.dingtalk import adapter as _sibling_view
+            if _sibling_view is not sys.modules[__name__]:
+                _sibling_view._load_card_sdk()
+            if not _load_card_sdk():
+                logger.warning("[%s] OpenAPI SDK unavailable (%s): no AI cards, robot-native sends or media download",
+                               self.name, _CARD_SDK_IMPORT_ERROR)
             if CARD_SDK_AVAILABLE:
                 sdk_config = open_api_models.Config()
                 sdk_config.protocol, sdk_config.region_id = "https", "central"
