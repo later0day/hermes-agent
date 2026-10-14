@@ -11,6 +11,7 @@ const calls = vi.hoisted(() => ({ getCronJobs: [] as string[], getCronJobRuns: [
 const job = vi.hoisted(() => ({
   id: "job-1", name: "Daily report", prompt: "x", schedule: { kind: "interval", minutes: 60, display: "every 60m" },
   schedule_display: "every 60m", enabled: true, state: "scheduled", deliver: "origin", profile: "xcx",
+  origin: { platform: "dingtalk", chat_id: "cidA==", chat_name: "北京告警群" },
 }));
 
 vi.mock("@/lib/api-cron-runs", () => ({
@@ -109,5 +110,7 @@ describe("CronPage", () => {
     expect(dialog?.textContent).toContain("已完成");
     expect(dialog?.textContent).toContain("1m 34s");
     expect(dialog?.textContent).toContain("kimi-k3");
+    // The card names where the report goes (fork parity: owner/destination on the cron page).
+    expect(document.body.textContent).toContain("推送到: dingtalk · 北京告警群");
   });
 });

@@ -12,7 +12,6 @@ import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type {
   CronJob,
-  CronDeliveryTarget,
   ModelOptionsResult,
   ProfileInfo,
   SkillInfo,
@@ -54,6 +53,8 @@ import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useScopedProfileFilter } from "@/hooks/useScopedProfileFilter";
 import { CronRunHistoryButton } from "@/components/CronRunHistoryDialog";
+import { CronJobDeliveryInfo } from "@/components/CronJobDeliveryInfo";
+import type { CronDeliveryTarget } from "@/lib/api-cron-runs";
 import { localeSection } from "@/i18n/section";
 import { PluginSlot } from "@/plugins";
 import { LoadErrorNotice } from "@/components/LoadErrorNotice";
@@ -1149,6 +1150,7 @@ export default function CronPage() {
             ? job.enabled_toolsets.filter(Boolean)
             : [];
           const lastResult = cronLastResult(job);
+          const cs = localeSection(t, "cronPageX");
 
           return (
             <Card key={jobKey}>
@@ -1186,12 +1188,12 @@ export default function CronPage() {
                     )}
                     {modelDisplay && (
                       <Badge tone="outline" title={modelDisplay}>
-                        model
+                        {cs.modelBadge}
                       </Badge>
                     )}
                     {toolsets.length > 0 && (
                       <Badge tone="outline" title={toolsets.join(", ")}>
-                        {toolsets.length} toolsets
+                        {cs.toolsetsBadge.replace("{n}", String(toolsets.length))}
                       </Badge>
                     )}
                   </div>
@@ -1204,7 +1206,8 @@ export default function CronPage() {
                     <span className="font-mono-ui">
                       {getJobScheduleDisplay(job, scheduleDescribeStrings)}
                     </span>
-                    <span>repeat: {getRepeatDisplay(job)}</span>
+                    <span>{cs.repeat}: {getRepeatDisplay(job)}</span>
+                    <CronJobDeliveryInfo job={job} />
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>
@@ -1223,7 +1226,7 @@ export default function CronPage() {
                   </div>
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">
-                      delivery: {job.last_delivery_error}
+                      {cs.deliveryError}: {job.last_delivery_error}
                     </p>
                   )}
                   {job.last_fire_error?.detail && (

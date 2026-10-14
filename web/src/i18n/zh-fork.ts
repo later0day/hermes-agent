@@ -729,6 +729,13 @@ export const zhFork: TranslationOverrides = {
     allProfiles: "全部 Profile",
     editJob: "编辑任务",
     missedFire: "错过计划运行（{at}）：",
+    deliversTo: "推送到",
+    localOnly: "仅本地",
+    createdIn: "来自",
+    repeat: "重复",
+    modelBadge: "模型",
+    toolsetsBadge: "{n} 个工具集",
+    deliveryError: "推送",
   },
   modelsPage: {
     cacheRead: "缓存读取",

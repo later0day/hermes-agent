@@ -1,3 +1,4 @@
+import type { CronDeliveryTarget } from "./api-cron-runs";
 import {
   buildHermesWebSocketUrl,
   type ModelOptionProvider,
@@ -2857,6 +2858,8 @@ export interface CronJob {
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  /** The chat the job was created in (and delivers to for ``deliver: origin``). */
+  origin?: { platform?: string | null; chat_id?: string | null; chat_name?: string | null } | null;
   model?: string | null;
   provider?: string | null;
   base_url?: string | null;
@@ -2872,13 +2875,6 @@ export interface CronJob {
   last_error?: string | null;
   last_delivery_error?: string | null;
   last_fire_error?: { at?: string | null; detail?: string | null } | null;
-}
-
-export interface CronDeliveryTarget {
-  id: string;
-  name: string;
-  home_target_set: boolean;
-  home_env_var: string | null;
 }
 
 export interface SkillInfo {

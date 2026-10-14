@@ -196,3 +196,32 @@ export function cronAgoLabel(seconds: number): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
+
+/** Human-readable destination of a job's report: ``platform · chat name`` per target (the creating chat for
+ *  ``deliver: origin``), or ``null`` when it is kept local. Chat ids matching the origin show its name. */
+export function cronDeliveryTarget(job: Pick<CronJob, "deliver" | "origin">): string | null {
+  const deliver = asString(job.deliver).trim() || "origin";
+  const origin = job.origin ?? null;
+  const chatName = (chatId: string) =>
+    origin?.chat_id === chatId && origin.chat_name ? origin.chat_name : chatId;
+  if (deliver === "local") return null;
+  if (deliver === "origin") {
+    return origin?.platform ? `${origin.platform} · ${chatName(asString(origin.chat_id))}` : null;
+  }
+  return deliver
+    .split(",")
+    .map((target) => {
+      const [platform, ...rest] = target.trim().split(":");
+      return rest.length ? `${platform} · ${chatName(rest.join(":"))}` : platform;
+    })
+    .join(", ");
+}
+
+/** The creating chat's display name, when it differs from where the job delivers (``null`` otherwise). */
+export function cronOriginLabel(job: Pick<CronJob, "deliver" | "origin">): string | null {
+  const deliver = asString(job.deliver).trim() || "origin";
+  const origin = job.origin;
+  if (deliver === "origin" || !origin?.platform) return null;
+  return `${origin.platform} · ${origin.chat_name || asString(origin.chat_id)}`;
+}
+

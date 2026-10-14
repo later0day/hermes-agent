@@ -568,6 +568,13 @@ export const enFork: ForkSections = {
     allProfiles: "All profiles",
     editJob: "Edit job",
     missedFire: "missed scheduled fire ({at}):",
+    deliversTo: "Delivers to",
+    localOnly: "Local only",
+    createdIn: "From",
+    repeat: "repeat",
+    modelBadge: "model",
+    toolsetsBadge: "{n} toolsets",
+    deliveryError: "delivery",
   },
   modelsPage: {
     cacheRead: "Cache Read",

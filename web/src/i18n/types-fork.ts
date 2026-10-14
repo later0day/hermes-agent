@@ -572,6 +572,13 @@ export interface ForkSections {
     allProfiles: string;
     editJob: string;
     missedFire: string;
+    deliversTo: string;
+    localOnly: string;
+    createdIn: string;
+    repeat: string;
+    modelBadge: string;
+    toolsetsBadge: string;
+    deliveryError: string;
   };
   modelsPage?: {
     cacheRead: string;

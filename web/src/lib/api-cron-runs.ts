@@ -1,5 +1,13 @@
 import { fetchJSON } from "@/lib/api";
 
+/** A platform a cron job can deliver to (GET /api/cron/delivery-targets). */
+export interface CronDeliveryTarget {
+  id: string;
+  name: string;
+  home_target_set: boolean;
+  home_env_var: string | null;
+}
+
 /** One fire of a cron job: an agent session row, or a script-only output doc (fields optional). */
 export interface CronJobRun {
   id: string;
