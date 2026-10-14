@@ -18,6 +18,7 @@
 //   - `label` overrides the auto-humanized label; `description` overrides the
 //     schema.description. Either may be omitted independently.
 import type { Locale } from "./types";
+import { ZH_CONFIG_SEGMENTS, zhForkFieldLabel } from "./config-labels-zh-fork";
 
 export interface ConfigFieldLabel {
   label?: string;
@@ -146,6 +147,19 @@ const CONFIG_FIELD_LABELS: ConfigLabelOverlay = {
 export function getConfigFieldLabel(
   locale: Locale,
   schemaKey: string,
+  schemaDescription?: string,
 ): ConfigFieldLabel | undefined {
-  return CONFIG_FIELD_LABELS[locale]?.[schemaKey];
+  const curated = CONFIG_FIELD_LABELS[locale]?.[schemaKey];
+  if (locale !== "zh") return curated;
+  // Fork: zh falls back to the fork-maintained overlay (config-labels-zh-fork.ts).
+  const fork = zhForkFieldLabel(schemaKey, schemaDescription);
+  return {
+    label: curated?.label ?? fork.label,
+    description: curated?.description ?? fork.description,
+  };
+}
+
+/** Localized name for a config section / nested block / category key, or `undefined` (fork, zh only). */
+export function getConfigSectionLabel(locale: Locale, key: string): string | undefined {
+  return locale === "zh" ? ZH_CONFIG_SEGMENTS[key] : undefined;
 }

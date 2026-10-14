@@ -204,7 +204,11 @@ export function AutoField({
   onChange,
 }: AutoFieldProps) {
   const { locale } = useI18n();
-  const override = getConfigFieldLabel(locale, schemaKey);
+  const override = getConfigFieldLabel(
+    locale,
+    schemaKey,
+    schema.description === undefined ? undefined : String(schema.description),
+  );
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const label =
     override?.label ??
