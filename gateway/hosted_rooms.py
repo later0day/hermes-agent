@@ -559,7 +559,7 @@ def _prepare_event(
 # chat-mirror subscriptions, pending actions) are created lazily by their owning modules, hence the table_exists
 # check below; dependencies precede their task rows in case a future schema adds foreign keys.
 _DEPENDENT_TABLES = (
-    "room_task_deps", "room_task_dag", "room_notify_subs", "hosted_room_pending_actions",
+    "room_task_deps", "room_task_dag", "room_notify_subs", "hosted_room_pending_actions", "hosted_room_action_decisions",
     "hosted_room_policy_transcript_state", "hosted_room_policy_transcript", "hosted_room_policy_publications",
     "hosted_room_policy_watermarks", "hosted_room_policy_events", "hosted_room_policy_threads",
     "hosted_room_policy_cursors", "hosted_room_driver_tasks", "hosted_room_driver_leases", "hosted_room_remote_runs",
