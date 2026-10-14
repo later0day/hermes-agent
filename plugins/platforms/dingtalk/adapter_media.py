@@ -61,7 +61,9 @@ class DingTalkMediaMixin:
         return await self.send(chat_id=chat_id, content=f"{caption}\n\n{image_block}" if caption else image_block, reply_to=reply_to, metadata=metadata)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata=None, **kwargs) -> SendResult:
-        """Upload a local image and send it via DingTalk's card_1_0 image delivery path."""
+        """Upload a local image and deliver it: card_1_0 in DMs (the only chat type that path serves),
+        else - or when the card fails - the caption plus a native ``sampleImageMsg``, and finally the
+        image as a file, so a card outage never drops the image."""
         if image_path.startswith(("http://", "https://")):
             return await self.send_image(chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata)
         path = Path(image_path)
@@ -70,23 +72,46 @@ class DingTalkMediaMixin:
         upload = await self._upload_robot_media(str(path), media_type="image")
         if not upload.success:
             return upload
-        return await self._send_robot_card_1_0_image(
-            chat_id, upload.message_id, caption=caption, metadata=metadata,
-        )
+        current_message = self._message_contexts.get(chat_id)
+        conversation_type = ((metadata or {}).get("dingtalk_conversation_type") or (metadata or {}).get("conversation_type")
+                             or getattr(current_message, "conversation_type", None))
+        if str(conversation_type) == "1":
+            card = await self._send_robot_card_1_0_image(chat_id, upload.message_id, caption=caption, metadata=metadata)
+            if card.success:
+                return card
+            logger.warning("[%s] DingTalk card_1_0 image send failed; falling back to native image message: %s",
+                           self.name, card.error)
+        if caption:
+            await self.send(chat_id=chat_id, content=caption, reply_to=reply_to, metadata=metadata)
+        native = await self._send_robot_native_message(
+            chat_id=chat_id, msg_key="sampleImageMsg", msg_param={"photoURL": upload.message_id}, metadata=metadata)
+        if native.success:
+            return native
+        logger.warning("[%s] DingTalk native image send failed; retrying image as file: %s", self.name, native.error)
+        return await self.send_document(chat_id, str(path), file_name=path.name or "image", reply_to=reply_to, metadata=metadata)
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
-        """Upload a local file and send it as a DingTalk sampleFile robot message."""
+        """Upload a local file and send it as a DingTalk ``sampleFile`` robot message (caption first);
+        a remote URL is sent as a markdown link, since the robot API only takes uploaded media."""
+        metadata = metadata or {}
+        if file_path.startswith(("http://", "https://")):
+            label = file_name or os.path.basename(file_path.split("?", 1)[0]) or "file"
+            link = f"[{label}]({file_path})"
+            return await self.send(chat_id=chat_id, content=f"{caption}\n\n{link}" if caption else link,
+                                   reply_to=reply_to, metadata=metadata)
         path = Path(file_path)
         if not await asyncio.to_thread(path.is_file):
             return SendResult(success=False, error=f"Local file not found: {file_path}")
-        metadata = metadata or {}
         upload = await self._upload_robot_media(str(path), media_type="file")
         if not upload.success:
             return upload
+        if caption:
+            await self.send(chat_id=chat_id, content=caption, reply_to=reply_to, metadata=metadata)
         return await self._send_robot_native_message(
             chat_id=chat_id,
             msg_key="sampleFile",
-            msg_param={"mediaId": upload.message_id, "fileName": file_name or path.name},
+            msg_param={"mediaId": upload.message_id, "fileName": file_name or path.name,
+                       "fileType": path.suffix.lstrip(".").lower() or "file"},
             metadata=metadata,
         )
 
