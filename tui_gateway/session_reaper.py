@@ -56,6 +56,18 @@ def _flush_session_messages(session: dict | None) -> bool:
         return False
 
 
+def _session_profile_deleted(session: dict) -> bool:
+    """The session's named profile was deleted under it. Every writer now refuses that home, so an incremental
+    flush only retries a doomed write each interval for the life of the process (live 2026-10-15); such a
+    session is reaped as soon as it is idle instead."""
+    home = session.get("profile_home") if isinstance(session, dict) else None
+    if not home:
+        return False
+    from hermes_constants import named_profile_home, named_profile_is_deleted
+    named = named_profile_home(home)
+    return named is not None and (named_profile_is_deleted(named) or not named.exists())
+
+
 def _reaper_session_snapshot() -> list:
     with _sessions_lock:
         return list(_sessions.values())
@@ -71,7 +83,7 @@ def _flush_dirty_sessions(now: float | None = None) -> int:
     now = time.monotonic() if now is None else now
     flushed = 0
     for session in _reaper_session_snapshot():
-        if not isinstance(session, dict) or session.get("running"):
+        if not isinstance(session, dict) or session.get("running") or _session_profile_deleted(session):
             continue
         last = float(session.get("_last_incremental_flush") or 0.0)
         if last and (now - last) < _INCREMENTAL_FLUSH_INTERVAL_S:
@@ -264,10 +276,15 @@ def _reap_idle_sessions() -> None:
         logger.debug("periodic incremental session flush failed", exc_info=True)
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
+        orphans = [sid for sid, s in _sessions.items()
+                   if sid not in victims and not s.get("running") and _session_profile_deleted(s)]
     for sid in victims:
         _close_session_by_id(
             sid, end_reason="idle_timeout",
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
+    for sid in orphans:
+        _close_session_by_id(sid, end_reason="profile_deleted",
+                             predicate=lambda session: not session.get("running") and _session_profile_deleted(session))
     _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
     _reclaim_orphaned_leases()
