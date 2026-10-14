@@ -44,6 +44,7 @@ import {
 } from "@nous-research/ui/ui/components/select";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
@@ -372,6 +373,7 @@ export default function ProfilesPage() {
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render
   // the English literal until translated.
+  const s = useMemo(() => localeSection(t, "profilesPageX"), [t]);
   const L = useMemo(() => {
     const p = t.profiles;
     return {
@@ -411,17 +413,15 @@ export default function ProfilesPage() {
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
       actions: p.actions ?? "Actions",
-      manageSkills: p.manageSkills ?? "Manage skills & tools",
-      activeSetHint:
-        p.activeSetHint ??
-        "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
-      boundSources: p.boundSources ?? "Bound sources",
-      boundStatic: p.boundStatic ?? "route",
-      boundDynamic: p.boundDynamic ?? "runtime",
-      boundNone: p.boundNone ?? "No bound sources",
-      boundMore: p.boundMore ?? "+{n} more",
+      manageSkills: p.manageSkills ?? s.manageSkills,
+      activeSetHint: p.activeSetHint ?? s.activeSetHint,
+      boundSources: p.boundSources ?? s.boundSources,
+      boundStatic: p.boundStatic ?? s.boundStatic,
+      boundDynamic: p.boundDynamic ?? s.boundDynamic,
+      boundNone: p.boundNone ?? s.boundNone,
+      boundMore: p.boundMore ?? s.boundMore,
     };
-  }, [t.profiles]);
+  }, [t.profiles, s]);
 
   // Create modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -571,10 +571,7 @@ export default function ProfilesPage() {
       });
       showToast(`${t.profiles.created}: ${name}`, "success");
       if (picked && res.model_set === false) {
-        showToast(
-          `Profile created, but the model could not be saved — set it from the profile editor.`,
-          "error",
-        );
+        showToast(s.modelNotSaved, "error");
       }
       setNewName("");
       setNewDescription("");
@@ -877,7 +874,7 @@ export default function ProfilesPage() {
           outlined
           onClick={() => navigate("/profiles/new")}
         >
-          Build
+          {s.build}
         </Button>
         <Button
           className="uppercase"
@@ -891,7 +888,7 @@ export default function ProfilesPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading, navigate]);
+  }, [setEnd, t.common.create, loading, navigate, s.build]);
 
   const cloning = cloneFrom !== null;
 
@@ -945,7 +942,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1381,7 +1378,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={closeEditor}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>

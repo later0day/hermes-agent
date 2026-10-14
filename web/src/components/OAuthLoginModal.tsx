@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, X, Check, Copy } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -7,6 +7,7 @@ import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 
@@ -39,6 +40,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const pollTimer = useRef<number | null>(null);
   const copyResetTimer = useRef<number | null>(null);
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "envPageX"), [t]);
 
   // Initiate flow on mount
   useEffect(() => {
@@ -59,7 +61,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       .catch((e) => {
         if (!isMounted.current) return;
         setPhase("error");
-        setErrorMsg(`Failed to start login: ${errorMessage(e)}`);
+        setErrorMsg(s.startLoginFailed.replace("{error}", errorMessage(e)));
       });
     return () => {
       isMounted.current = false;
@@ -131,25 +133,27 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
           setPhase("approved");
           if (pollTimer.current !== null)
             window.clearInterval(pollTimer.current);
-          onSuccess(`${provider.name} connected`);
+          onSuccess(s.providerConnected.replace("{name}", provider.name));
           window.setTimeout(() => isMounted.current && onClose(), 1500);
         } else if (resp.status !== "pending") {
           setPhase("error");
-          setErrorMsg(resp.error_message || `Login ${resp.status}`);
+          setErrorMsg(
+            resp.error_message || s.loginStatus.replace("{status}", resp.status),
+          );
           if (pollTimer.current !== null)
             window.clearInterval(pollTimer.current);
         }
       } catch (e) {
         if (!isMounted.current) return;
         setPhase("error");
-        setErrorMsg(`Polling failed: ${errorMessage(e)}`);
+        setErrorMsg(s.pollingFailed.replace("{error}", errorMessage(e)));
         if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
       }
     }, 2000);
     return () => {
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
     };
-  }, [start, phase, provider.id, provider.name, onSuccess, onClose]);
+  }, [start, phase, provider.id, provider.name, onSuccess, onClose, s]);
 
   const handleSubmitPkceCode = async () => {
     if (!start || start.flow !== "pkce") return;
@@ -165,16 +169,16 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       if (!isMounted.current) return;
       if (resp.ok && resp.status === "approved") {
         setPhase("approved");
-        onSuccess(`${provider.name} connected`);
+        onSuccess(s.providerConnected.replace("{name}", provider.name));
         window.setTimeout(() => isMounted.current && onClose(), 1500);
       } else {
         setPhase("error");
-        setErrorMsg(resp.message || "Token exchange failed");
+        setErrorMsg(resp.message || s.tokenExchangeFailed);
       }
     } catch (e) {
       if (!isMounted.current) return;
       setPhase("error");
-      setErrorMsg(`Submit failed: ${errorMessage(e)}`);
+      setErrorMsg(s.submitFailed.replace("{error}", errorMessage(e)));
     }
   };
 
@@ -412,7 +416,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                       .catch((e) => {
                         if (!isMounted.current) return;
                         setPhase("error");
-                        setErrorMsg(`${t.common.retry} failed: ${errorMessage(e)}`);
+                        setErrorMsg(s.retryFailed.replace("{error}", errorMessage(e)));
                       });
                   }}
                 >
