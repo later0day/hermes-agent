@@ -932,7 +932,10 @@ class TurnRunner:
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+        # A turn status card already renders the live preview from these deltas (it is a delta sink
+        # below); a second streamed message would put the same answer in two cards (fork 0fd90da47b).
+        want_stream_deltas = (not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+                              and ctx.turn_status_card_holder[0] is None)
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:
