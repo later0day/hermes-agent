@@ -527,7 +527,41 @@ def _file_to_data_url(path: Path) -> Optional[str]:
             return None
         logger.info("image_routing: transcoded %s (%s) -> image/png for provider compatibility", path.name, mime)
         raw, mime = transcoded, "image/png"
+    elif (cap := _native_image_cap()) and (len(raw) + 2) // 3 * 4 > cap:
+        if resized := _shrink_native_image(path, mime, cap, len(raw)):
+            return resized
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _native_image_cap() -> int:
+    """``agent.native_image_max_base64_bytes`` of the active profile; 0 (off) when unset or invalid. An opt-in
+    config.yaml key (not in the defaults): set it to downscale big native attachments before the send
+    instead of after a provider rejects — e.g. 4000000 for IM deployments with phone screenshots."""
+    from hermes_cli.config import load_config_readonly
+
+    agent_cfg = (load_config_readonly() or {}).get("agent") or {}
+    try:
+        value = int(agent_cfg.get("native_image_max_base64_bytes") or 0) if isinstance(agent_cfg, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+    return max(value, 0)
+
+
+def _shrink_native_image(path: Path, mime: str, cap: int, raw_len: int) -> Optional[str]:
+    """Downscale an oversized native attachment toward *cap* (JPEG ladder keeps dense screenshots
+    legible); None when the resize didn't help, so the caller keeps the original."""
+    from tools.vision_tools import _resize_image_for_vision
+
+    try:
+        resized = _resize_image_for_vision(path, mime_type=mime, max_base64_bytes=cap, force_jpeg=True)
+    except (OSError, ValueError) as exc:
+        logger.warning("image_routing: proactive resize of %s failed (%s); sending the original", path, exc)
+        return None
+    if not resized or len(resized) >= raw_len * 4 // 3:
+        return None
+    logger.info("image_routing: proactively resized %s from %.1f MB to %.1f MB (native_image_max_base64_bytes)",
+                path.name, raw_len * 4 / 3 / 1048576, len(resized) / 1048576)
+    return resized
 
 
 def build_native_content_parts(
