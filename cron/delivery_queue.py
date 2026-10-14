@@ -34,6 +34,16 @@ _ACTIVE_DELIVERIES: set[str] = set()
 _TERMINAL = ("delivered", "failed", "unknown", "suppressed")
 MAX_TERMINAL_DELIVERIES = 1000
 DEFAULT_DELIVERY_WAIT_TIMEOUT_SECONDS = 300.0
+# Retry policy for a send that provably never reached the platform (see _retry_safe): attempts beyond the
+# first, each deferred RETRY_DELAY_SECONDS * attempt, all inside the worker's default wait budget.
+MAX_DELIVERY_RETRIES = 2
+RETRY_DELAY_SECONDS = 45.0
+# Failure text that means the adapter refused before any transport call: nothing was sent, so a retry
+# cannot duplicate. 2026-10-14: a gateway whose DingTalk SDK import failed lost a whole hour's reports.
+_PRE_SEND_FAILURES = (
+    "sdk is unavailable", "not configured", "no live adapter", "not connected", "adapter unavailable",
+    "gateway loop is not running", "gateway loop unavailable",
+)
 
 
 def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
@@ -233,7 +243,9 @@ def claim_next() -> Optional[dict]:
         # created_at carries a DST-varying offset: order by instant, not text.
         row = conn.execute(
             "SELECT execution_id FROM deliveries WHERE status='pending' "
-            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1"
+            "AND COALESCE(json_extract(job_json, '$._delivery_retry_at'), 0) <= ? "
+            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1",
+            (time.time(),),
         ).fetchone()
         if row is None:
             return None
@@ -276,6 +288,38 @@ def _finish(execution_id: str, *, error: Optional[str], suppressed: bool = False
             ),
         )
         _prune_terminal_unlocked(conn)
+    return cur.rowcount == 1
+
+
+def _retry_safe(job: dict, error: str) -> bool:
+    """A failed send that may be retried without risking a duplicate: one delivery target (a partial
+    multi-target success would be re-sent) and an error from before any transport call."""
+    if int(job.get("_delivery_attempts") or 0) >= MAX_DELIVERY_RETRIES:
+        return False
+    deliver = job.get("deliver")
+    targets = deliver if isinstance(deliver, list) else str(deliver or "origin").split(",")
+    if len([t for t in targets if str(t).strip()]) > 1:
+        return False
+    text = str(error).lower()
+    return any(marker in text for marker in _PRE_SEND_FAILURES)
+
+
+def _requeue_for_retry(execution_id: str, job: dict, error: str) -> bool:
+    """Put a claimed row back to ``pending`` with a deferred retry time; the job JSON carries the count."""
+    attempts = int(job.get("_delivery_attempts") or 0) + 1
+    retry_job = {**job, "_delivery_attempts": attempts, "_delivery_retry_at": time.time() + RETRY_DELAY_SECONDS * attempts}
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE deliveries SET status='pending', job_json=?, error=?, owner_process_id=NULL,
+               owner_pid=NULL, owner_started_at=NULL
+               WHERE execution_id=? AND status='delivering' AND owner_process_id=? AND owner_pid=?""",
+            (json.dumps(retry_job, ensure_ascii=False, sort_keys=True),
+             redact_sensitive_text(str(error), force=True, redact_url_credentials=True),
+             execution_id, _PROCESS_ID, os.getpid()),
+        )
+    if cur.rowcount == 1:
+        logger.warning("Cron delivery %s failed before sending (%s); retry %d/%d in %.0fs",
+                       execution_id, error, attempts, MAX_DELIVERY_RETRIES, RETRY_DELAY_SECONDS * attempts)
     return cur.rowcount == 1
 
 
@@ -334,8 +378,9 @@ def drain(
                 )
             except BaseException as exc:
                 error = f"{type(exc).__name__}: {exc}"
-            _finish(row["execution_id"], error=error,
-                    suppressed=bool(row["job"].get("_notification_all_targets_suppressed")))
+            if not (error and _retry_safe(row["job"], error) and _requeue_for_retry(row["execution_id"], row["job"], error)):
+                _finish(row["execution_id"], error=error,
+                        suppressed=bool(row["job"].get("_notification_all_targets_suppressed")))
         finally:
             with _lock:
                 _ACTIVE_DELIVERIES.discard(row["execution_id"])
