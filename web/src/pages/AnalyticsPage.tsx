@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -23,6 +31,7 @@ import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 
@@ -33,6 +42,14 @@ const PERIODS = [
 ] as const;
 
 const CHART_HEIGHT_PX = 160;
+
+/** Render a translated sentence whose `{slot}` placeholders are JSX, in whatever order the locale puts them. */
+function fillSlots(text: string, slots: Record<string, ReactNode>): ReactNode[] {
+  return text.split(/(\{\w+\})/).map((part, i) => {
+    const slot = /^\{(\w+)\}$/.exec(part)?.[1];
+    return slot && slot in slots ? <Fragment key={i}>{slots[slot]}</Fragment> : part;
+  });
+}
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -415,6 +432,7 @@ export default function AnalyticsPage() {
   // they diverge from provider billing in ways that mislead users.
   const [showTokens, setShowTokens] = useState<boolean | null>(null);
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "analyticsPageX"), [t]);
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
@@ -454,7 +472,7 @@ export default function AnalyticsPage() {
               outlined={days !== p.days}
               onClick={() => setDays(p.days)}
             >
-              {p.label}
+              {s.periodDays.replace("{days}", String(p.days))}
             </Button>
           ))}
           <Button
@@ -476,7 +494,7 @@ export default function AnalyticsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
+  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens, s]);
 
   useEffect(() => {
     load();
@@ -491,32 +509,27 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
               <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
-                Token analytics hidden
+                {s.hiddenTitle}
               </h2>
               <p>
-                The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
+                {fillSlots(s.hiddenEstimate, {
+                  usage: <span className="font-mono">usage</span>,
+                })}
               </p>
+              <p>{s.hiddenAuxTraffic}</p>
               <p>
-                On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
-                M2.7) the local total can be 10x–100x lower than what your
-                provider bills. Hiding these numbers is safer than letting
-                them look authoritative.
-              </p>
-              <p>
-                Check your provider dashboard (OpenRouter, Anthropic, etc.)
-                for actual usage and billing. To re-enable the local debug
-                estimate anyway, set{" "}
-                <span className="font-mono">
-                  dashboard.show_token_analytics: true
-                </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
+                {fillSlots(s.hiddenReEnable, {
+                  setting: (
+                    <span className="font-mono">
+                      dashboard.show_token_analytics: true
+                    </span>
+                  ),
+                  config: (
+                    <a href="/config" className="underline">
+                      {s.configLink}
+                    </a>
+                  ),
+                })}
               </p>
             </div>
           </CardContent>

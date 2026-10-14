@@ -34,6 +34,7 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { api } from "@/lib/api";
 import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces";
 import { latchChatActivation } from "@/lib/chat-activation";
@@ -300,6 +301,32 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     title: string | null;
   }>({ scope: "", title: null });
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "chatPageX"), [t]);
+  // The PTY effects below outlive renders; they read the current copy through this ref so a
+  // locale switch never re-runs (and reconnects) the terminal.
+  const sRef = useRef(s);
+  useEffect(() => {
+    sRef.current = s;
+  }, [s]);
+  // Connection copy lives in lib/pty-*.ts as English constants (state stores them verbatim);
+  // the page renders the active locale's wording for each known constant.
+  const ptyCopy = useMemo(
+    () =>
+      new Map<string, string>([
+        [PTY_TOKEN_MISSING_BANNER.text, s.tokenMissing],
+        [ptyRejectionBanner(4401)?.text ?? "", s.rejectedExpired],
+        [ptyRejectionBanner(4403)?.text ?? "", s.rejectedHostMismatch],
+        [ptyRejectionBanner(4404)?.text ?? "", s.rejectedNoPty],
+        [ptyRejectionBanner(4408)?.text ?? "", s.rejectedNonLoopback],
+        [PTY_RECONNECTING_BANNER, s.reconnectingBanner],
+        [PTY_GAVE_UP_BANNER.text, s.gaveUp],
+        [PTY_SESSION_ENDED_MESSAGE, s.sessionEnded],
+        [PTY_START_FAILED_MESSAGE, s.startFailed],
+        [PTY_RESUME_LOADING_MESSAGE, s.resumeLoading],
+      ]),
+    [s],
+  );
+  const ptyText = (text: string) => ptyCopy.get(text) ?? text;
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
@@ -612,16 +639,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const reportImageUploadError = (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.warn("[dashboard chat] image upload failed:", message);
-      setBanner(`Image upload failed: ${message}`);
+      setBanner(sRef.current.imageUploadFailed.replace("{error}", message));
     };
     const driveImageAttach = async (paths: string[]) => {
       for (const path of paths) {
         if (imageUploadDisposed) return;
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) {
-          setBanner(
-            "Image uploaded, but chat is not connected — try again.",
-          );
+          setBanner(sRef.current.imageNotConnected);
           return;
         }
         ws.send(`/image ${path}`);
@@ -1877,10 +1902,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           role="alert"
           className="flex flex-wrap items-center gap-2 border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide"
         >
-          <span className="min-w-0 flex-1">{visibleBanner}</span>
+          <span className="min-w-0 flex-1">{ptyText(visibleBanner)}</span>
           {banner && bannerAction === "reload" && (
             <Button size="sm" outlined onClick={() => window.location.reload()}>
-              Reload page
+              {s.reloadPage}
             </Button>
           )}
         </div>
@@ -1901,7 +1926,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <div
             ref={hostRef}
             role="region"
-            aria-label="Chat terminal"
+            aria-label={s.terminalAria}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
@@ -1910,10 +1935,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
-                    ? "Chat is reconnecting."
+                    ? s.reconnecting
                     : reconnectGaveUp
-                      ? PTY_GAVE_UP_BANNER.text
-                      : "Chat disconnected."}
+                      ? ptyText(PTY_GAVE_UP_BANNER.text)
+                      : s.disconnected}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -1921,18 +1946,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                     outlined
                     onClick={reconnectPty}
                     prefix={<RotateCcw className="h-4 w-4" />}
-                    aria-label="Reconnect chat"
+                    aria-label={s.reconnectAria}
                   >
-                    Reconnect now
+                    {s.reconnectNow}
                   </Button>
                   {ptyState === "closed" && reconnectGaveUp && (
                     <Button
                       size="sm"
                       ghost
                       onClick={() => navigate("/system")}
-                      aria-label="Check server status"
+                      aria-label={s.checkServer}
                     >
-                      Check server status
+                      {s.checkServer}
                     </Button>
                   )}
                 </div>
@@ -1945,10 +1970,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
               role="status"
               aria-live="polite"
-              aria-label={PTY_RESUME_LOADING_MESSAGE}
+              aria-label={ptyText(PTY_RESUME_LOADING_MESSAGE)}
             >
               <div className="max-w-[min(28rem,calc(100vw-3rem))] border border-current/30 bg-black/80 px-4 py-3 text-center text-xs tracking-wide text-white/85 shadow-lg">
-                {PTY_RESUME_LOADING_MESSAGE}
+                {ptyText(PTY_RESUME_LOADING_MESSAGE)}
               </div>
             </div>
           )}
@@ -1960,24 +1985,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="max-w-[min(32rem,calc(100vw-3rem))] text-center text-sm tracking-wide text-white/80">
                 {endedReason === "start-failed"
-                  ? PTY_START_FAILED_MESSAGE
-                  : PTY_SESSION_ENDED_MESSAGE}
+                  ? ptyText(PTY_START_FAILED_MESSAGE)
+                  : ptyText(PTY_SESSION_ENDED_MESSAGE)}
               </div>
               <div className="flex flex-wrap justify-center gap-2">
                 <Button
                   onClick={startFreshPty}
                   prefix={<RotateCcw className="h-4 w-4" />}
-                  aria-label="Start a new chat session"
+                  aria-label={s.startNewAria}
                 >
-                  Start new session
+                  {s.startNew}
                 </Button>
                 {endedReason === "exited" && (
                   <Button
                     outlined
                     onClick={() => navigate("/logs")}
-                    aria-label="Open logs"
+                    aria-label={s.openLogs}
                   >
-                    Open logs
+                    {s.openLogs}
                   </Button>
                 )}
               </div>
@@ -1988,14 +2013,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             onClick={handleCopyLast}
             copied={copyState === "copied"}
             color={terminalFg}
+            title={s.copyLastTitle}
+            ariaLabel={s.copyLastAria}
+            label={s.copyLast}
+            copiedLabel={s.copied}
           />
 
           {chatPanelCollapsed && (
             <Button
               ghost
               onClick={toggleChatPanel}
-              title="Show side panel (model + sessions)"
-              aria-label="Show chat side panel"
+              title={s.showPanelTitle}
+              aria-label={s.showPanelAria}
               className={cn(
                 "absolute z-10",
                 "normal-case tracking-normal font-normal",
@@ -2010,7 +2039,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <span className="inline-flex items-center gap-1">
                 <PanelRight className="h-3 w-3 shrink-0" />
                 <span className="hidden min-[400px]:inline tracking-wide">
-                  panel
+                  {s.panel}
                 </span>
               </span>
             </Button>
@@ -2029,8 +2058,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 ghost
                 size="icon"
                 onClick={toggleChatPanel}
-                aria-label="Collapse chat side panel"
-                title="Collapse side panel"
+                aria-label={s.collapsePanelAria}
+                title={s.collapsePanelTitle}
                 className="text-text-secondary hover:text-midground"
               >
                 <X />

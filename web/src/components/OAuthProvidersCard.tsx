@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   ShieldCheck,
   ShieldOff,
@@ -21,6 +21,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { errorMessage } from "@/lib/api-error";
 
 interface Props {
@@ -58,16 +59,25 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [disconnectTarget, setDisconnectTarget] =
     useState<OAuthProvider | null>(null);
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "envPageX"), [t]);
 
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const sRef = useRef(s);
+  useEffect(() => {
+    sRef.current = s;
+  }, [s]);
 
   const refresh = useCallback(() => {
     setLoading(true);
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${errorMessage(e)}`))
+      .catch((e) =>
+        onErrorRef.current?.(
+          sRef.current.loadProvidersFailed.replace("{error}", errorMessage(e)),
+        ),
+      )
       .finally(() => setLoading(false));
   }, []);
 
@@ -80,10 +90,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     setDisconnectTarget(null);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
+      onSuccess?.(s.providerDisconnected.replace("{name}", provider.name));
       refresh();
     } catch (e) {
-      onError?.(`${t.oauth.disconnect} failed: ${errorMessage(e)}`);
+      onError?.(s.disconnectFailed.replace("{error}", errorMessage(e)));
     } finally {
       setBusyId(null);
     }
@@ -221,7 +231,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex"
-                      title={`Open ${p.name} docs`}
+                      title={s.openDocs.replace("{name}", p.name)}
                     >
                       <Button ghost size="icon">
                         <ExternalLink />
@@ -279,7 +289,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
           if (disconnectTarget) void handleDisconnect(disconnectTarget);
         }}
         title={`${t.oauth.disconnect} ${disconnectTarget?.name ?? ""}?`}
-        description={`This will remove the stored OAuth tokens for ${disconnectTarget?.name ?? "this provider"}. You will need to re-authenticate to use it again.`}
+        description={s.disconnectDescription.replace(
+          "{name}",
+          disconnectTarget?.name ?? s.thisProvider,
+        )}
         destructive
         confirmLabel={t.oauth.disconnect}
       />
