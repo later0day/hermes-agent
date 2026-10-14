@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { mergeTranslations } from "@hermes/shared/i18n";
 
-export const zh: Translations = {
+import { defineLocale } from "./define-locale";
+import type { Translations } from "./types";
+import { zhFork } from "./zh-fork";
+
+const zhUpstream: Translations = {
   common: {
     save: "保存",
     saving: "保存中...",
@@ -933,3 +937,7 @@ export const zh: Translations = {
     logAt: "）",
   },
 };
+
+// English fills any key zh.ts lacks (a missing optional key otherwise rendered blank), then the fork's
+// translations (zh-fork.ts) apply on top.
+export const zh: Translations = mergeTranslations<Translations>(defineLocale(zhUpstream), zhFork);

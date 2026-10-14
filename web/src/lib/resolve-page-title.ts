@@ -11,15 +11,23 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/plugins": "plugins",
   "/profiles": "profiles",
   "/memory": "memory",
+  "/rooms": "rooms",
+  "/files": "files",
+  "/mcp": "mcp",
+  "/channels": "channels",
+  "/webhooks": "webhooks",
+  "/pairing": "pairing",
+  "/system": "system",
   "/config": "config",
   "/env": "keys",
   "/docs": "documentation",
 };
 
-// Built-in routes without an i18n nav key. Keep these in sync with the
-// sidebar labels in App.tsx — the naive capitalize fallback below mangles
-// initialisms ("/mcp" → "Mcp") and can't match multi-word labels.
+// English literals for routes whose nav key is optional (a locale may omit it). Keep these in sync with the
+// sidebar labels in App.tsx — the naive capitalize fallback below mangles initialisms ("/mcp" → "Mcp").
 const BUILTIN_LITERAL: Record<string, string> = {
+  "/memory": "Memory",
+  "/rooms": "Rooms",
   "/files": "Files",
   "/mcp": "MCP",
   "/channels": "Channels",
@@ -31,7 +39,7 @@ const BUILTIN_LITERAL: Record<string, string> = {
 export function resolvePageTitle(
   pathname: string,
   t: Translations,
-  pluginTabs: { path: string; label: string }[],
+  pluginTabs: { path: string; label: string; name?: string }[],
 ): string {
   const normalized = pathname.replace(/\/$/, "") || "/";
   if (normalized === "/") {
@@ -39,11 +47,11 @@ export function resolvePageTitle(
   }
   const plugin = pluginTabs.find((p) => p.path === normalized);
   if (plugin) {
-    return plugin.label;
+    return (plugin.name && t.app.pluginTabLabels?.[plugin.name]) || plugin.label;
   }
   const key = BUILTIN[normalized];
   if (key) {
-    return t.app.nav[key] ?? BUILTIN_LITERAL[normalized] ?? "Memory";
+    return t.app.nav[key] ?? BUILTIN_LITERAL[normalized];
   }
   const literal = BUILTIN_LITERAL[normalized];
   if (literal) {

@@ -112,7 +112,15 @@ export interface Translations {
       memory?: string;
       /** Optional — falls back to English literal until translated. */
       rooms?: string;
+      files?: string;
+      mcp?: string;
+      channels?: string;
+      webhooks?: string;
+      pairing?: string;
+      system?: string;
     };
+    /** Optional sidebar labels for plugin tabs, keyed by plugin manifest name. */
+    pluginTabLabels?: Record<string, string>;
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
     navigation: string;

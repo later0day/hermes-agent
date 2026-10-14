@@ -200,7 +200,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -217,16 +217,16 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
+  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
+  { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
+  { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
+  { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/memory", labelKey: "memory", label: "Memory", icon: Brain },
   { path: "/rooms", labelKey: "rooms", label: "Rooms", icon: Home },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
   {
     path: "/docs",
     labelKey: "documentation",
@@ -279,6 +279,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
+      pluginName: manifest.name,
       icon: resolveIcon(manifest.icon),
     };
 
@@ -493,6 +494,7 @@ export default function App() {
         .map((m) => ({
           path: m.tab.override ?? m.tab.path,
           label: m.label,
+          name: m.name,
         })),
     [manifests],
   );
@@ -874,7 +876,7 @@ function SidebarNavLink({
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
+    : (item.pluginName && t.app.pluginTabLabels?.[item.pluginName]) || label;
   const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
     setHovered(true);
     setTooltipAnchor(event.currentTarget);
@@ -1369,6 +1371,8 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+  /** Plugin tabs: manifest name, the key for the locale's optional ``app.pluginTabLabels``. */
+  pluginName?: string;
 }
 
 interface SidebarIconWithTooltipProps {
