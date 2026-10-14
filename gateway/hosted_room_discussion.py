@@ -648,7 +648,7 @@ def _language_rule(messages: Sequence[_ValidatedEvent], seen_through_seq: int) -
 
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int) -> str:
+    seen_through_seq: int, wrap_up: bool = False) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
@@ -688,6 +688,10 @@ def _build_prompt(
             language,
             "- Never reveal content from private conversations. Your reply is published verbatim.",
             *_team_roster(room, member)]
+        if wrap_up:
+            rules.append("- This Discussion has used its message budget and this is your last turn: write the final"
+                         " report now from what teammates delivered, mark open points as unverified, and do not"
+                         " @mention anyone.")
     else:
         report_to = (
             f"Report your result by @mentioning @{decider.handle}."
@@ -758,6 +762,35 @@ def _pending_discussion(validated: Sequence[_ValidatedEvent]) -> _ValidatedEvent
         if event.seq > stopped_through_seq and event.event_id not in completed_discussion_ids), None)
 
 
+def _decider_wrap_up(
+    *, room: DiscussionRoom, validated: Sequence[_ValidatedEvent], discussion: _ValidatedEvent, decide: Any,
+    thread_messages: Sequence[_ValidatedEvent], member_messages: Sequence[_ValidatedEvent], task_dag_anchor: bool,
+    initial_watermarks: Mapping[tuple[str, str], int] | None, reason: str) -> DiscussionDecision:
+    """At a message/round cap, give a star roster's decider one last turn to report on what it has, instead of
+    ending silently mid-work (live, room demo-competitor-5: five members spent the 10-message budget in two
+    rounds and the user never got a report). Bounded as before once the decider has spoken last or has already
+    had (or failed) that turn."""
+    decider = _decider(room)
+    if decider is None or task_dag_anchor or not member_messages:
+        return decide("bounded", reason)
+    if str(member_messages[-1].payload["member_id"]) == decider.member_id:
+        return decide("bounded", reason)
+    last_round = max(int(event.payload["round_index"]) for event in member_messages)
+    round_index = min(last_round + 1, MAX_DISCUSSION_ROUNDS - 1)
+    if any(event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id
+           and int(event.payload["round_index"]) == round_index and event.payload["member_id"] == decider.member_id
+           for event in validated):
+        return decide("bounded", reason)
+    seen_through_seq = max(event.seq for event in thread_messages)
+    watermark = _effective_watermarks(validated, initial_watermarks).get(
+        (str(discussion.payload["thread_id"]), decider.member_id), 0)
+    prompt = _build_prompt(room=room, member=decider, messages=thread_messages, watermark=watermark,
+                           seen_through_seq=seen_through_seq, wrap_up=True)
+    return decide("task", f"{reason}_wrap_up", task=_make_task_plan(
+        room=room, discussion_event=discussion, member=decider, member_index=0, round_index=round_index,
+        seen_through_seq=seen_through_seq, prompt=prompt))
+
+
 def _thread_messages(
     validated: Sequence[_ValidatedEvent], discussion: _ValidatedEvent
 ) -> tuple[tuple[_ValidatedEvent, ...], tuple[_ValidatedEvent, ...], tuple[_ValidatedEvent, ...]]:
@@ -804,8 +837,15 @@ def plan_next_task(
         DiscussionDecision, discussion_event_id=discussion.event_id, source_event_seq=discussion.seq,
         thread_id=thread_id)
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
+    task_dag_anchor = (
+        str(discussion.actor.get("id") or "") == "task-dag"
+        and str(discussion.payload.get("thread_id") or "").startswith("dagtask:"))
+    wrap_up = partial(
+        _decider_wrap_up, room=room, validated=validated, discussion=discussion, decide=decide,
+        thread_messages=thread_messages, member_messages=member_messages, task_dag_anchor=task_dag_anchor,
+        initial_watermarks=initial_watermarks)
     if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
-        return decide("bounded", "max_messages")
+        return wrap_up(reason="max_messages")
     terminals = {  # coordinate -> terminal event (its kind distinguishes a recoverable deferral)
         (int(event.payload["round_index"]), str(event.payload["member_id"])): event for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
@@ -815,9 +855,6 @@ def plan_next_task(
     # A server-owned manual DAG anchor is one bounded worker execution, not an open-ended Discussion: the durable
     # DAG owns dependency progression and any later review task, so mentions in the worker's prose must not fan out
     # extra conversational rounds.
-    task_dag_anchor = (
-        str(discussion.actor.get("id") or "") == "task-dag"
-        and str(discussion.payload.get("thread_id") or "").startswith("dagtask:"))
     for round_index in range(MAX_DISCUSSION_ROUNDS):
         # The user's message selects the first round, with no mention meaning
         # everyone. Later rounds are opt-in: only a peer explicitly cited by a
@@ -858,7 +895,7 @@ def plan_next_task(
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
         if round_index == MAX_DISCUSSION_ROUNDS - 1:
-            return decide("bounded", "max_rounds")
+            return wrap_up(reason="max_rounds")
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")
 
 
