@@ -167,6 +167,9 @@ def _home_thread_from_source(source) -> Optional[str]:
     return None if synthetic else str(thread_id)
 
 
+_KANBAN_SUBSCRIBE_ON = {"create": r"Created\s+(t_[0-9a-f]+)\b", "swarm": r"Synthesizer:\s+(t_[0-9a-f]+)\b"}
+
+
 class GatewaySlashCommandsMixin(
     GatewayLoginCommandsMixin,
     GatewayModelCommandsMixin,
@@ -364,17 +367,19 @@ class GatewaySlashCommandsMixin(
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 
-        # Auto-subscribe on create, parsing the task id from the CLI's standard success line
-        # ("Created t_abcd  (ready, ...)"). With --json there is no such line, so a scripting user
-        # gets no subscription and can call /kanban notify-subscribe explicitly.
-        m = re.search(r"Created\s+(t_[0-9a-f]+)\b", output) if action == "create" and output else None
+        # Auto-subscribe on create (task id from "Created t_abcd  (ready, ...)") and on swarm (its
+        # synthesizer, the card that finishes with the swarm's answer — "Synthesizer: t_abcd"; the fork
+        # subscribed the chat too). With --json there is no such line, so a scripting user gets no
+        # subscription and can call /kanban notify-subscribe explicitly.
+        pattern = _KANBAN_SUBSCRIBE_ON.get(action or "")
+        m = re.search(pattern, output) if pattern and output else None
         if m:
             task_id = m.group(1)
             try:
                 if await self._kanban_auto_subscribe(event, task_id, requested_board):
                     output = output.rstrip() + "\n" + t("gateway.kanban.subscribed_suffix", task_id=task_id)
             except Exception as exc:
-                logger.warning("kanban create auto-subscribe failed: %s", exc)
+                logger.warning("kanban %s auto-subscribe failed: %s", action, exc)
 
         # Gateway messages have practical length caps; truncate long listings.
         if len(output) > 3800:
