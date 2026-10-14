@@ -99,8 +99,13 @@ def _origin_from_env(
     return {
         "platform": origin_platform, "chat_id": origin_chat_id,
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None, "thread_id": thread_id,
+        # dm vs group: adapters whose send API differs by conversation kind (DingTalk) read it at fire
+        # time, when the in-memory message context from creation is long gone (restart).
+        "chat_type": get_session_env("HERMES_SESSION_CHAT_TYPE") or None,
         # Lets a delivery mirror resolve the participant's session in per-user-isolated groups.
         "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+        # Platform-alternate sender id (DingTalk staffId — the only id its 1:1 robot send accepts).
+        "user_id_alt": get_session_env("HERMES_SESSION_USER_ID_ALT") or None,
         # Workspace/server scope (Slack team, Discord guild...): Slack session keys embed it,
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,

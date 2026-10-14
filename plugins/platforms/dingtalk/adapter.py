@@ -186,6 +186,15 @@ def _csv_set(raw: Any) -> set[str]:
     return {str(part).strip() for part in parts if str(part).strip()}
 
 
+def _origin_conversation(metadata: dict) -> tuple[Optional[str], Optional[str]]:
+    """``(conversation_type, sender_staff_id)`` from a cron job's persisted origin (generic ``chat_type`` and
+    ``user_id_alt`` = staffId). After a restart no inbound message is cached, and guessing "group" sends a DM
+    through the group-only API."""
+    chat_type = str(metadata.get("chat_type") or "").lower()
+    conversation_type = {"dm": "1", "group": "2"}.get(chat_type)
+    return conversation_type, (metadata.get("user_id_alt") or None) if conversation_type == "1" else None
+
+
 def dingtalk_deps_present() -> bool:
     """PASSIVE registry ``check_fn`` — must never install; credentials are gated separately.
 
@@ -922,15 +931,16 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
             return SendResult(success=False, error="Empty content; nothing to send")
 
         # Transport 1: AI Card. Reuse a live inbound context if we still
-        # have one; otherwise synthesize a group-targeted message from chat_id.
+        # have one; otherwise synthesize one from chat_id (and the cron origin's dm/group kind).
         card_result: Optional[SendResult] = None
         if self._card_template_id and self._card_sdk:
             current_message = self._message_contexts.get(chat_id)
             if current_message is None:
+                origin_conversation_type, origin_staff_id = _origin_conversation(metadata or {})
                 current_message = SimpleNamespace(
                     conversation_id=chat_id,
-                    conversation_type="2",
-                    sender_staff_id="",
+                    conversation_type=origin_conversation_type or "2",
+                    sender_staff_id=origin_staff_id or "",
                     robot_code=self._robot_code,
                 )
             card_result = await self._create_and_stream_card(
@@ -1000,15 +1010,18 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
         if not token:
             return SendResult(success=False, error="DingTalk access token unavailable")
 
+        origin_conversation_type, origin_staff_id = _origin_conversation(metadata)
         conversation_type = (
             metadata.get("dingtalk_conversation_type")
             or metadata.get("conversation_type")
             or getattr(current_message, "conversation_type", None)
+            or origin_conversation_type
         )
         sender_staff_id = (
             metadata.get("dingtalk_sender_staff_id")
             or metadata.get("sender_staff_id")
             or getattr(current_message, "sender_staff_id", None)
+            or origin_staff_id
         )
         msg_param_json = json.dumps(msg_param, ensure_ascii=False)
         runtime = tea_util_models.RuntimeOptions()
