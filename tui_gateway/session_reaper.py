@@ -283,8 +283,9 @@ def _reap_idle_sessions() -> None:
             sid, end_reason="idle_timeout",
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
     for sid in orphans:
-        _close_session_by_id(sid, end_reason="profile_deleted",
-                             predicate=lambda session: not session.get("running") and _session_profile_deleted(session))
+        if _close_session_by_id(sid, end_reason="profile_deleted",
+                                predicate=lambda session: not session.get("running") and _session_profile_deleted(session)):
+            logger.info("Reaped session %s: its profile was deleted", sid)
     _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
     _reclaim_orphaned_leases()
