@@ -49,6 +49,7 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
+import { getConfigFieldLabel, getConfigSectionLabel } from "@/i18n/config-labels";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
@@ -123,7 +124,7 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { setEnd } = usePageHeader();
 
   useLayoutEffect(() => {
@@ -159,6 +160,8 @@ export default function ConfigPage() {
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
     if (t.config.categories[key]) return t.config.categories[key];
+    const localized = getConfigSectionLabel(locale, cat);
+    if (localized) return localized;
     // Categories added after the localized set (gateway, kanban, wake_word,
     // tool_loop_guardrails, …) have no translation yet — humanize the raw key
     // (underscores → spaced Title Case) so they read as "Wake Word" rather than
@@ -259,9 +262,16 @@ export default function ConfigPage() {
     return Object.entries(schema).filter(([key, s]) => {
       const label = key.split(".").pop() ?? key;
       const humanLabel = label.replace(/_/g, " ");
+      const localized = getConfigFieldLabel(
+        locale,
+        key,
+        s.description === undefined ? undefined : String(s.description),
+      );
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
+        !!localized?.label?.toLowerCase().includes(lowerSearch) ||
+        !!localized?.description?.toLowerCase().includes(lowerSearch) ||
         String(s.category ?? "")
           .toLowerCase()
           .includes(lowerSearch) ||
@@ -270,7 +280,7 @@ export default function ConfigPage() {
           .includes(lowerSearch)
       );
     });
-  }, [isSearching, lowerSearch, schema]);
+  }, [isSearching, locale, lowerSearch, schema]);
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
@@ -417,7 +427,8 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {getConfigSectionLabel(locale, section) ??
+                  section.replace(/_/g, " ")}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>
