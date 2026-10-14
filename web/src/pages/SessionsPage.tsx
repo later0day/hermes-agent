@@ -80,11 +80,20 @@ import {
 import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
+
+type SessionsText = NonNullable<Translations["sessionsPageX"]>;
+
+function useSessionsText(): SessionsText {
+  const { t } = useI18n();
+  return useMemo(() => localeSection(t, "sessionsPageX"), [t]);
+}
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -122,6 +131,7 @@ function ToolCallBlock({
 }) {
   const [open, setOpen] = useState(false);
   const { t } = useI18n();
+  const s = useSessionsText();
 
   let args = toolCall.function.arguments;
   try {
@@ -134,7 +144,9 @@ function ToolCallBlock({
     <div className="mt-2 border border-warning/20 bg-warning/5">
       <ListItem
         onClick={() => setOpen(!open)}
-        aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
+        aria-label={s.toolCallAria
+          .replace("{action}", open ? t.common.collapse : t.common.expand)
+          .replace("{name}", toolCall.function.name)}
         aria-expanded={open}
         className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >
@@ -219,6 +231,7 @@ function MessageBubble({
   highlight?: string;
 }) {
   const { t } = useI18n();
+  const s = useSessionsText();
 
   const ROLE_STYLES: Record<
     string,
@@ -250,7 +263,7 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: "Context handoff",
+      label: s.contextHandoff,
     },
   };
 
@@ -406,6 +419,7 @@ function SessionRow({
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
   const { t } = useI18n();
+  const s = useSessionsText();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -450,7 +464,7 @@ function SessionRow({
     <>
       <Badge tone="outline" className="text-xs">
         <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
-        {session.source ? sourceLabel(session.source) : "local"}
+        {session.source ? sourceLabel(session.source, s) : s.local}
       </Badge>
 
       {resumeInChatEnabled && (
@@ -473,8 +487,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
+        aria-label={s.renameSession}
+        title={s.renameSession}
         onClick={(e) => {
           e.stopPropagation();
           setRenameValue(
@@ -492,8 +506,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
+        aria-label={s.exportSession}
+        title={s.exportSessionJson}
         onClick={(e) => {
           e.stopPropagation();
           onExport(session.id);
@@ -575,7 +589,7 @@ function SessionRow({
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}
-                      placeholder="Session title"
+                      placeholder={s.sessionTitle}
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
@@ -583,8 +597,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
+                      aria-label={s.saveTitle}
+                      title={s.saveTitle}
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
@@ -598,8 +612,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
+                      aria-label={s.cancelRename}
+                      title={s.cancelRename}
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >
@@ -796,6 +810,7 @@ export default function SessionsPage() {
   const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const s = useSessionsText();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
@@ -881,29 +896,29 @@ export default function SessionsPage() {
   );
 
   const defaultSourceFilterLabel = useMemo(() => {
-    if (sessionCategory === "chats") return "Any chat source";
-    if (sessionCategory === "automation") return "Any automation source";
+    if (sessionCategory === "chats") return s.anyChatSource;
+    if (sessionCategory === "automation") return s.anyAutomationSource;
     return t.sessions.anySource;
-  }, [sessionCategory, t.sessions.anySource]);
+  }, [sessionCategory, t.sessions.anySource, s]);
 
   const sourceMenuTitle = useMemo(() => {
-    if (sessionCategory === "chats") return "Chat sources";
-    if (sessionCategory === "automation") return "Automation sources";
+    if (sessionCategory === "chats") return s.chatSources;
+    if (sessionCategory === "automation") return s.automationSources;
     return t.sessions.sourceFilter;
-  }, [sessionCategory, t.sessions.sourceFilter]);
+  }, [sessionCategory, t.sessions.sourceFilter, s]);
 
   const sourceFilterLabel = useMemo(() => {
     if (selectedSources === null) {
       return defaultSourceFilterLabel;
     }
     if (selectedSources.length === 0) {
-      return "No sources";
+      return s.noSources;
     }
     if (selectedSources.length === 1) {
-      return sourceLabel(selectedSources[0]);
+      return sourceLabel(selectedSources[0], s);
     }
-    return `${selectedSources.length} sources`;
-  }, [defaultSourceFilterLabel, selectedSources]);
+    return s.sourcesCount.replace("{count}", String(selectedSources.length));
+  }, [defaultSourceFilterLabel, selectedSources, s]);
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -940,13 +955,13 @@ export default function SessionsPage() {
         onClick={() => setPruneOpen(true)}
         prefix={<Archive />}
       >
-        Prune old sessions
+        {s.pruneOld}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd]);
+  }, [setEnd, s]);
 
   useEffect(() => {
     if (!sourceMenuOpen) return;
@@ -1003,13 +1018,13 @@ export default function SessionsPage() {
         const text = await file.text();
         const importedSessions = parseImportSessions(text);
         const result = await api.importSessions(importedSessions);
-        showToast(`Import complete: ${importSummary(result)}`, "success");
+        showToast(s.importComplete.replace("{summary}", importSummary(result, s)), "success");
         clearSelection();
         loadSessions(page, true);
         loadStats();
         refreshEmptyCount();
       } catch (error) {
-        showToast(`Import failed: ${errorMessage(error)}`, "error");
+        showToast(s.importFailed.replace("{error}", errorMessage(error)), "error");
       } finally {
         setImportingSessions(false);
         if (importInputRef.current) importInputRef.current.value = "";
@@ -1021,6 +1036,7 @@ export default function SessionsPage() {
       loadStats,
       page,
       refreshEmptyCount,
+      s,
       showToast,
     ],
   );
@@ -1414,13 +1430,13 @@ export default function SessionsPage() {
         setOverviewSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
-        showToast("Session renamed", "success");
+        showToast(s.renamed, "success");
         loadStats();
       } catch {
-        showToast("Failed to rename session", "error");
+        showToast(s.renameFailed, "error");
       }
     },
-    [rowProfile, showToast, loadStats],
+    [rowProfile, showToast, loadStats, s],
   );
 
   const handleExport = useCallback(
@@ -1445,32 +1461,32 @@ export default function SessionsPage() {
         a.click();
         URL.revokeObjectURL(url);
       } catch {
-        showToast("Failed to export session", "error");
+        showToast(s.exportFailed, "error");
       }
     },
-    [rowProfile, showToast],
+    [rowProfile, showToast, s],
   );
 
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
-      showToast("Enter a valid number of days", "error");
+      showToast(s.invalidDays, "error");
       return;
     }
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
-      showToast(formatSessionPruneResult(resp), "success");
+      showToast(formatSessionPruneResult(resp, s), "success");
       setPruneOpen(false);
       loadSessions(0);
       setPage(0);
       loadStats();
     } catch {
-      showToast("Failed to prune sessions", "error");
+      showToast(s.pruneFailed, "error");
     } finally {
       setPruning(false);
     }
-  }, [pruneDays, showToast, loadSessions, loadStats]);
+  }, [pruneDays, showToast, loadSessions, loadStats, s]);
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -1591,18 +1607,15 @@ export default function SessionsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Prune old sessions</DialogTitle>
-            <DialogDescription>
-              Permanently remove archived sessions whose last activity is older
-              than the given number of days. Active sessions are never pruned.
-            </DialogDescription>
+            <DialogTitle>{s.pruneOld}</DialogTitle>
+            <DialogDescription>{s.pruneDescription}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor="prune-days"
               className="text-xs font-medium text-muted-foreground"
             >
-              Older than (days)
+              {s.olderThanDays}
             </label>
             <Input
               id="prune-days"
@@ -1631,7 +1644,7 @@ export default function SessionsPage() {
               className="gap-1.5"
             >
               {pruning && <Spinner className="text-sm" />}
-              Prune
+              {s.prune}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1643,32 +1656,32 @@ export default function SessionsPage() {
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="text-xs text-muted-foreground">{s.statTotal}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-xs text-muted-foreground">{s.statActiveInStore}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="text-xs text-muted-foreground">{s.statArchived}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="text-xs text-muted-foreground">{s.statMessages}</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex flex-col">
               <span className="text-lg font-semibold tabular-nums leading-none">
                 {Object.keys(stats.by_source).length}
               </span>
-              <span className="text-xs text-muted-foreground">Sources</span>
+              <span className="text-xs text-muted-foreground">{s.statSources}</span>
             </div>
           )}
         </div>
@@ -1835,7 +1848,7 @@ export default function SessionsPage() {
                                 event.stopPropagation();
                                 toggleSourceFilter(source);
                               }}
-                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source, s)}`}
                             />
                             <button
                               type="button"
@@ -1844,7 +1857,7 @@ export default function SessionsPage() {
                             >
                               <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
                               <span className="min-w-0 flex-1 truncate">
-                                {sourceLabel(source)}
+                                {sourceLabel(source, s)}
                               </span>
                               <span className="shrink-0 tabular-nums text-muted-foreground">
                                 {count}
@@ -1923,12 +1936,12 @@ export default function SessionsPage() {
                 className="shrink-0"
                 disabled={importingSessions}
                 onClick={() => importInputRef.current?.click()}
-                aria-label="Import exported sessions"
-                title="Import exported session JSON or JSONL"
+                aria-label={s.importAria}
+                title={s.importTitle}
                 prefix={importingSessions ? <Spinner /> : <Upload />}
               >
                 <span className="font-mondwest normal-case text-xs">
-                  Import sessions
+                  {s.importSessions}
                 </span>
               </Button>
             )}
@@ -2080,37 +2093,37 @@ export default function SessionsPage() {
               </CardHeader>
 
               <CardContent className="grid min-w-0 gap-3">
-                {recentSessions.map((s) => (
+                {recentSessions.map((rs) => (
                   <div
-                    key={s.id}
+                    key={rs.id}
                     className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
                       <span
-                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
+                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${rs.title ? "font-medium" : "text-muted-foreground italic"}`}
                       >
-                        {s.title ??
-                          (s.preview
-                            ? s.preview.slice(0, 60)
+                        {rs.title ??
+                          (rs.preview
+                            ? rs.preview.slice(0, 60)
                             : t.common.untitled)}
                       </span>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        {s.model && (
+                        {rs.model && (
                           <>
                             <span className="font-mono-ui">
-                              {s.model.split("/").pop()}
+                              {rs.model.split("/").pop()}
                             </span>{" "}
                             ·{" "}
                           </>
                         )}
-                        {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
+                        {rs.message_count} {t.common.msgs} ·{" "}
+                        {timeAgo(rs.last_active)}
                       </span>
 
-                      {s.preview && s.title && (
+                      {rs.preview && rs.title && (
                         <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
-                          {s.preview}
+                          {rs.preview}
                         </p>
                       )}
                     </div>
@@ -2120,7 +2133,7 @@ export default function SessionsPage() {
                       className="shrink-0 self-start text-xs sm:self-center"
                     >
                       <Database className="mr-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
+                      {rs.source ? sourceLabel(rs.source, s) : s.local}
                     </Badge>
                   </div>
                 ))}

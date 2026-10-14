@@ -1,4 +1,12 @@
 import type { SessionImportResponse } from "@/lib/api";
+import { en } from "@/i18n/en";
+import { localeSection } from "@/i18n/section";
+
+interface ImportSummaryLabels {
+  importedCount: string;
+  skippedCount: string;
+  detachedCount: string;
+}
 
 export type ImportableSession = Record<string, unknown>;
 
@@ -36,11 +44,14 @@ export function parseImportSessions(text: string): ImportableSession[] {
   }
 }
 
-export function importSummary(result: SessionImportResponse): string {
-  const parts = [`${result.imported} imported`];
-  if (result.skipped > 0) parts.push(`${result.skipped} skipped`);
+export function importSummary(
+  result: SessionImportResponse,
+  labels: ImportSummaryLabels = localeSection(en, "sessionsPageX"),
+): string {
+  const parts = [labels.importedCount.replace("{count}", String(result.imported))];
+  if (result.skipped > 0) parts.push(labels.skippedCount.replace("{count}", String(result.skipped)));
   if (result.detached > 0) {
-    parts.push(`${result.detached} detached from missing parents`);
+    parts.push(labels.detachedCount.replace("{count}", String(result.detached)));
   }
   return parts.join("; ");
 }

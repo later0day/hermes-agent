@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { Markdown } from "@/components/Markdown";
 import {
   parseReasoningMarkup,
@@ -34,6 +36,8 @@ function ReasoningSegment({
   segment: ReasoningMarkupSegment;
   highlightTerms?: string[];
 }) {
+  const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "sessionsPageX"), [t]);
   if (segment.type === "prose") {
     return (
       <Markdown
@@ -43,7 +47,7 @@ function ReasoningSegment({
     );
   }
 
-  const label = segment.type === "action" ? "Action" : "Result";
+  const label = segment.type === "action" ? s.reasoningAction : s.reasoningResult;
 
   return (
     <div className="border border-border bg-secondary/40">

@@ -1,8 +1,9 @@
-import { useCallback, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { api, type SkillInfo } from "@/lib/api";
 import { canUninstallSkill, waitForAction } from "@/lib/skill-uninstall";
 
@@ -16,6 +17,7 @@ export function useSkillUninstall(
   showToast: (msg: string, kind: "success" | "error") => void,
 ) {
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "skillsPageX"), [t]);
   const profile = scope || undefined;
   const skillDelete = useConfirmDelete<string>({
     onDelete: useCallback(
@@ -23,7 +25,7 @@ export function useSkillUninstall(
         try {
           const res = await api.uninstallSkillFromHub(name, profile);
           setSkills((prev) => prev.filter((s) => s.name !== name));
-          showToast(`Uninstalling ${name}…`, "success");
+          showToast(s.uninstallingToast.replace("{name}", name), "success");
           void waitForAction((n) => api.getActionStatus(n, 0), res.name)
             .then(() => api.getSkills(profile))
             .then(setSkills)
@@ -33,7 +35,7 @@ export function useSkillUninstall(
           throw e;
         }
       },
-      [profile, setSkills, showToast, t.status.error],
+      [profile, setSkills, showToast, t.status.error, s],
     ),
   });
   return {
@@ -44,8 +46,8 @@ export function useSkillUninstall(
         open={skillDelete.isOpen}
         onCancel={skillDelete.cancel}
         onConfirm={skillDelete.confirm}
-        title="Delete skill?"
-        description={`This uninstalls "${skillDelete.pendingId ?? ""}" (runs \`hermes skills uninstall\`). Hub-installed skills only; this cannot be undone, and a skill still in use may reappear.`}
+        title={s.deleteConfirmTitle}
+        description={s.deleteConfirmDesc.replace("{name}", skillDelete.pendingId ?? "")}
         loading={skillDelete.isDeleting}
       />
     ),

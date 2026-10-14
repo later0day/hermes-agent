@@ -8,6 +8,8 @@ import {
   Play,
   Terminal,
 } from "lucide-react";
+import { en } from "@/i18n/en";
+import { localeSection } from "@/i18n/section";
 
 export const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -61,10 +63,23 @@ export function sourceBelongsToCategory(
   return !isAutomationSource(source);
 }
 
-export function sourceLabel(source: string): string {
+interface SourceLabels {
+  sourceApiServer: string;
+  sourceCron: string;
+  sourceTool: string;
+  sourceVulcanDelegate: string;
+}
+
+const ENGLISH_SOURCE_LABELS: SourceLabels = localeSection(en, "sessionsPageX");
+
+/** Display name for a session source; `labels` localizes the non-brand names (English by default). */
+export function sourceLabel(
+  source: string,
+  labels: SourceLabels = ENGLISH_SOURCE_LABELS,
+): string {
   switch (source) {
     case "api_server":
-      return "API server";
+      return labels.sourceApiServer;
     case "acp":
       return "ACP";
     case "cli":
@@ -84,13 +99,13 @@ export function sourceLabel(source: string): string {
     case "sms":
       return "SMS";
     case "cron":
-      return "Cron";
+      return labels.sourceCron;
     case "tool":
-      return "Tool";
+      return labels.sourceTool;
     case "hermes_flow":
       return "Hermes Flow";
     case "vulcan_delegate":
-      return "Vulcan delegate";
+      return labels.sourceVulcanDelegate;
     case "webhook":
       return "Webhook";
     default:
