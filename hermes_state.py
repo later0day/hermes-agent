@@ -433,8 +433,8 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
     sid = str(session_id or "").strip()
     if not sid or not messages:
         return None
-    sessions_dir = get_hermes_home() / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    sessions_dir = mkdir_under_hermes_home(get_hermes_home() / "sessions")  # never rebuild a deleted profile
     path = sessions_dir / f"{sid}.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:

@@ -206,7 +206,8 @@ class _FileLock:
         self._fh = None
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(self.path.parent)  # a deleted profile's lingering session must not rebuild it
         self._fh = open(self.path, "a+b")
         try:
             _flock(self._fh, lock=True)

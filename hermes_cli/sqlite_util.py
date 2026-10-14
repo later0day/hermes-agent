@@ -40,7 +40,8 @@ def open_db(
     from hermes_state_wal import apply_wal_with_fallback
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)  # refuses a deleted profile's home (projects.db rebuilt one live)
     # Resolved at call time: fd-leak tests patch ``sqlite3.connect`` through the caller's module.
     conn = sqlite3.connect(path, timeout=busy_timeout_ms / 1000, check_same_thread=check_same_thread)
     try:
