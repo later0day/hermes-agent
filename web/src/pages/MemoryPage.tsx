@@ -147,6 +147,24 @@ function useMemoryDoc(profile: string, doc: MemoryDoc, onLoadError: () => void) 
   return { text, original, loading, exists, limit, draftRestored, reload, edit, markSaved };
 }
 
+function EditorActions({ dirty, saving, onDiscard, onSave, labels }: {
+  dirty: boolean;
+  saving: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+  labels: { unsaved: string; discard: string; save: string };
+}) {
+  return (
+    <div className="flex items-center justify-end gap-2">
+      {dirty && <span className="text-xs text-warning">{labels.unsaved}</span>}
+      {dirty && <Button ghost size="sm" prefix={<Undo2 />} onClick={onDiscard} disabled={saving}>{labels.discard}</Button>}
+      <Button size="sm" className="uppercase" prefix={<Save />} onClick={onSave} disabled={saving || !dirty}>
+        {labels.save}
+      </Button>
+    </div>
+  );
+}
+
 function MemoryEditor({
   meta,
   profile,
@@ -254,17 +272,10 @@ function MemoryEditor({
               {view !== "preview" && editor}
               {view !== "edit" && preview}
             </div>
-            {(view !== "preview" || dirty) && <div className="flex items-center justify-end gap-2">
-              {dirty && <span className="text-xs text-warning">{copy.unsavedLabel}</span>}
-              {dirty && (
-                <Button ghost size="sm" prefix={<Undo2 />} onClick={() => state.edit(state.original)} disabled={saving}>
-                  {ui.discard}
-                </Button>
-              )}
-              <Button size="sm" className="uppercase" prefix={<Save />} onClick={handleSave} disabled={saving || !dirty}>
-                {saving ? t.common.saving : t.common.save}
-              </Button>
-            </div>}
+            {(view !== "preview" || dirty) && (
+              <EditorActions dirty={dirty} saving={saving} onDiscard={() => state.edit(state.original)} onSave={handleSave}
+                labels={{ unsaved: copy.unsavedLabel, discard: ui.discard, save: saving ? t.common.saving : t.common.save }} />
+            )}
           </>
         )}
       </CardContent>
