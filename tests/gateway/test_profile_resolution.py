@@ -18,7 +18,7 @@ from gateway.platforms.event import MessageEvent
 def mock_runner():
     """Create a minimal mock GatewayRunner with the methods we need."""
     runner = MagicMock(spec=GatewayRunner)
-    runner.config = MagicMock(profile_routes=[])
+    runner.config = MagicMock(profile_routes=[], _runtime_profile_homes=None)
     # Bind the actual methods to the mock
     # No /agent binding here: it outranks profile_routes, and these tests pin the routes path.
     runner._bound_profile_for_source = lambda source, adapter_profile, config: None

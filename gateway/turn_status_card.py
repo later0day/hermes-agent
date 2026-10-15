@@ -909,6 +909,13 @@ def _card_tool_event(turn: Any, card: TurnStatusCardCoordinator, event_type: str
         card.on_tool_progress(event_type, tool_name, preview, args, **kwargs)
 
 
+def turn_card(ctx: Any) -> Any:
+    """The turn's status card, or None. These hooks sit in upstream's turn path, which also builds lean
+    contexts without the fork's holder (local-viewer turns, their tests): no holder means no card."""
+    holder = getattr(ctx, "turn_status_card_holder", None)
+    return holder[0] if holder else None
+
+
 def route_progress_event(turn: Any, event_type: str, tool_name: Optional[str], preview: Optional[str],
                          args: Any, kwargs: dict) -> bool:
     """``TurnRunner.progress_callback`` hook. Fires stage reactions, then — when the turn has a status
@@ -918,7 +925,7 @@ def route_progress_event(turn: Any, event_type: str, tool_name: Optional[str], p
     if not ctx._run_still_current():
         return False
     _notify_tool_stage(turn, event_type, tool_name, preview)
-    card = ctx.turn_status_card_holder[0]
+    card = turn_card(ctx)
     if card is None:
         return False
     if event_type in _SUBAGENT_TOOL_EVENTS:
@@ -938,7 +945,7 @@ def route_progress_event(turn: Any, event_type: str, tool_name: Optional[str], p
 
 def card_takes_interim(ctx: Any, text: str, already_streamed: bool) -> bool:
     """Interim assistant commentary renders in the turn's status card, not as separate status text."""
-    card = ctx.turn_status_card_holder[0]
+    card = turn_card(ctx)
     if card is None:
         return False
     if already_streamed:
