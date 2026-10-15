@@ -248,6 +248,25 @@ def _satellite_routes_for_current_home(profile_name: Optional[str] = None) -> li
     satellite's ``SharedRouteAdapters`` from exactly this list."""
     return _primary_profile_routes_for_current_home() + _primary_binding_routes_for_current_home(profile_name)
 
+_NON_MESSAGING_PLATFORMS = frozenset({"local", "api_server", "webhook", "relay"})
+
+
+def satellite_delivery_adapters(profile_name, own, primary):
+    """Delivery map for a served secondary profile: its own adapters, or — when it runs no messaging
+    adapter of its own (credentialless satellite) — a ``SharedRouteAdapters`` view that lends the
+    primary's adapter for exactly-routed targets and keeps its own non-messaging adapters.
+
+    "No messaging adapter", not "empty map": a satellite's map also holds the LOCAL session adapter
+    once it runs a local session (gateway/session_local_recovery.py), and every cron run is one. Keyed
+    on emptiness, live 2026-10-15 xcx stopped borrowing the default DingTalk bot and its pushes failed
+    "platform 'dingtalk' not configured/enabled"."""
+    own = own or {}
+    if not primary or any(str(getattr(p, "value", p)).lower() not in _NON_MESSAGING_PLATFORMS for p in own):
+        return own
+    routes = _satellite_routes_for_current_home(profile_name)
+    return SharedRouteAdapters(primary, routes, own=own) if own else SharedRouteAdapters(primary, routes)
+
+
 class SharedRouteAdapters:
     """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
     resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
@@ -257,14 +276,18 @@ class SharedRouteAdapters:
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, own=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        # The satellite's own non-messaging adapters (a LOCAL session adapter): served as-is.
+        self._own = dict(own or {})
 
     def __bool__(self) -> bool:
-        return bool(self._primary) and bool(self._routes)
+        return bool(self._own) or (bool(self._primary) and bool(self._routes))
 
     def get(self, platform, target=None, default=None):
+        if platform in self._own:
+            return self._own[platform]
         if not target:
             return default
         adapter = self._primary.get(platform)
