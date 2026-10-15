@@ -22,3 +22,17 @@ export function codePointLength(text: string): number {
 export function memoryCharCount(raw: string): number {
   return codePointLength(splitMemoryEntries(raw).join(ENTRY_DELIMITER))
 }
+
+/** Character offset in ``raw`` where each entry of ``splitMemoryEntries(raw)`` begins (after its
+ *  leading whitespace), so an editor can locate entries in its own text. */
+export function memoryEntryOffsets(raw: string): number[] {
+  const text = raw.replace(/\r\n?/g, '\n')
+  const offsets: number[] = []
+  let start = 0
+  for (const chunk of text.split(ENTRY_DELIMITER)) {
+    const lead = chunk.length - chunk.trimStart().length
+    if (chunk.trim()) offsets.push(start + lead)
+    start += chunk.length + ENTRY_DELIMITER.length
+  }
+  return offsets
+}

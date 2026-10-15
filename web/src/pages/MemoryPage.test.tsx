@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 async function renderMemory(view: "edit" | "preview" | "split") {
-  localStorage.setItem("hermes-memory-view", view);
+  localStorage.setItem("hermes-memory-view.v2", view);
   const [{ default: MemoryPage }, { I18nProvider }, { ProfileContext }, { PageHeaderProvider }] = await Promise.all([
     import("./MemoryPage"), import("@/i18n"), import("@/contexts/profile-context"), import("@/contexts/PageHeaderProvider"),
   ]);

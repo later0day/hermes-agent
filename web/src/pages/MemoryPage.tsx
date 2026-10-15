@@ -3,6 +3,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { Brain, RotateCw, Save, Undo2, User } from "lucide-react";
@@ -14,6 +15,7 @@ import { MemoryEntryList } from "@/components/memory/MemoryEntryList";
 import { MemoryUsageBar } from "@/components/memory/MemoryUsageBar";
 import { MemoryViewToggle, type MemoryView } from "@/components/memory/MemoryViewToggle";
 import { MemoryDocTabs } from "@/components/memory/MemoryDocTabs";
+import { useSplitScrollSync } from "@/hooks/useSplitScrollSync";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n, type Translations } from "@/i18n";
@@ -81,7 +83,8 @@ function memoryDocCopy(mem: Translations["memory"], meta: DocMeta) {
   };
 }
 
-const VIEW_KEY = "hermes-memory-view";
+// v2: split became the default for everyone (2026-10-15); a choice made after that is remembered.
+const VIEW_KEY = "hermes-memory-view.v2";
 const DOC_KEY = "hermes-memory-doc";
 
 interface DocStatus {
@@ -92,7 +95,7 @@ interface DocStatus {
 function initialView(): MemoryView {
   const stored = localStorage.getItem(VIEW_KEY);
   if (stored === "edit" || stored === "preview" || stored === "split") return stored;
-  return window.matchMedia?.("(min-width: 1024px)").matches ? "split" : "preview";
+  return "split";
 }
 
 /* ------------------------------------------------------------------ */
@@ -217,17 +220,22 @@ function MemoryEditor({
     }
   };
 
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  useSplitScrollSync(editorRef, previewRef, text, view === "split" && active && !loading);
+
   const editor = (
     <div className="space-y-1">
       <Label htmlFor={`memory-editor-${meta.doc}`} className="sr-only">{meta.title}</Label>
       <textarea
         id={`memory-editor-${meta.doc}`}
         className={cn(
-          "flex w-full resize-y border border-input bg-transparent px-3 py-2 text-sm font-mono leading-relaxed shadow-sm",
+          "flex w-full border border-input bg-transparent px-3 py-2 text-sm font-mono leading-relaxed shadow-sm",
           "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-          view === "split" ? "min-h-[460px]" : "min-h-[320px]",
+          view === "split" ? "h-[65vh] min-h-[360px] resize-none" : "min-h-[320px] resize-y",
         )}
         placeholder={copy.placeholder}
+        ref={editorRef}
         value={text}
         onChange={(e) => state.edit(e.target.value)}
         spellCheck={false}
@@ -235,7 +243,7 @@ function MemoryEditor({
     </div>
   );
   const preview = (
-    <div className={cn(view === "split" && "max-h-[460px] overflow-y-auto pr-1")}>
+    <div ref={previewRef} className={cn(view === "split" && "h-[65vh] min-h-[360px] overflow-y-auto pr-1")}>
       <MemoryEntryList entries={entries} emptyLabel={copy.emptyLabel} charsLabel={ui.entryChars} />
     </div>
   );

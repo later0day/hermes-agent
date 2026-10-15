@@ -11,3 +11,13 @@ describe('memory entries and usage', () => {
     expect(memoryCharCount('')).toBe(0)
   })
 })
+
+describe('memoryEntryOffsets', () => {
+  it('points at the first character of every non-empty entry', async () => {
+    const { memoryEntryOffsets, splitMemoryEntries } = await import('./memory-markdown')
+    const raw = '  first entry \n§\n\n§\nsecond § entry\n§\n  third'
+    const offsets = memoryEntryOffsets(raw)
+    expect(offsets.map((o) => raw.slice(o, o + 5))).toEqual(['first', 'secon', 'third'])
+    expect(offsets).toHaveLength(splitMemoryEntries(raw).length)
+  })
+})

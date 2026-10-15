@@ -32,7 +32,6 @@ export function MemoryViewToggle({ value, onChange, disabled, copy }: MemoryView
             "flex items-center gap-1 px-2 py-1 text-xs transition-colors disabled:opacity-50",
             "[&:not(:first-child)]:border-l [&:not(:first-child)]:border-border",
             value === view ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
-            view === "split" && "hidden lg:flex",
           )}
         >
           <Icon className="h-3 w-3" />

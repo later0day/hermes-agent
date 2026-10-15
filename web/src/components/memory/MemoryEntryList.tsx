@@ -16,7 +16,7 @@ export function MemoryEntryList({ entries, emptyLabel, charsLabel }: MemoryEntry
   return (
     <ol className="space-y-2">
       {entries.map((entry, i) => (
-        <li key={i} className="border border-border bg-background/40">
+        <li key={i} data-memory-entry className="border border-border bg-background/40">
           <div className="flex items-center justify-between border-b border-border/60 px-3 py-1 text-[11px] text-muted-foreground">
             <span className="font-mono">#{i + 1}</span>
             <span className="tabular-nums">{charsLabel.replace("{n}", String(codePointLength(entry)))}</span>
