@@ -248,9 +248,6 @@ def _satellite_routes_for_current_home(profile_name: Optional[str] = None) -> li
     satellite's ``SharedRouteAdapters`` from exactly this list."""
     return _primary_profile_routes_for_current_home() + _primary_binding_routes_for_current_home(profile_name)
 
-_NON_MESSAGING_PLATFORMS = frozenset({"local", "api_server", "webhook", "relay"})
-
-
 def satellite_delivery_adapters(profile_name, own, primary):
     """Delivery map for a served secondary profile: its own adapters, or — when it runs no messaging
     adapter of its own (credentialless satellite) — a ``SharedRouteAdapters`` view that lends the
@@ -260,8 +257,10 @@ def satellite_delivery_adapters(profile_name, own, primary):
     once it runs a local session (gateway/session_local_recovery.py), and every cron run is one. Keyed
     on emptiness, live 2026-10-15 xcx stopped borrowing the default DingTalk bot and its pushes failed
     "platform 'dingtalk' not configured/enabled"."""
+    from gateway.config import has_messaging_adapter
+
     own = own or {}
-    if not primary or any(str(getattr(p, "value", p)).lower() not in _NON_MESSAGING_PLATFORMS for p in own):
+    if not primary or has_messaging_adapter(own):
         return own
     routes = _satellite_routes_for_current_home(profile_name)
     return SharedRouteAdapters(primary, routes, own=own) if own else SharedRouteAdapters(primary, routes)

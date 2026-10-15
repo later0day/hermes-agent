@@ -301,6 +301,16 @@ class Platform(Enum):
 # Built-in values snapshotted before any dynamic _missing_ lookup.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
+# Adapters that carry no messaging credential of their own (a LOCAL session adapter, the API server,
+# webhooks, a relay front): holding only these keeps a served profile a credentialless satellite.
+NON_MESSAGING_PLATFORMS = frozenset({"local", "api_server", "webhook", "relay"})
+
+
+def has_messaging_adapter(adapters) -> bool:
+    """True when *adapters* holds a messaging-platform adapter of its own. "Empty map" is the wrong
+    test: a satellite's map also carries its LOCAL session adapter once it runs a local session."""
+    return any(str(getattr(p, "value", p)).lower() not in NON_MESSAGING_PLATFORMS for p in (adapters or {}))
+
 # Platforms that bind a host TCP port. In a multiplexer only the default profile binds: a SECONDARY
 # profile's port-binder is built in shared-listener mode and served at /p/<profile>/<path> on the
 # default's listener (gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.

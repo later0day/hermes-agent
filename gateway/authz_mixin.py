@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
-from gateway.config import Platform
+from gateway.config import Platform, has_messaging_adapter
 from gateway.pairing import _PLATFORM_ALLOWLIST_ENV
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import (
@@ -219,9 +219,10 @@ class GatewayAuthorizationMixin:
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
             adapters = profile_adapters[profile_name]
-            if adapters or not self._is_shared_bot_satellite(profile_name):
+            if has_messaging_adapter(adapters) or not self._is_shared_bot_satellite(profile_name):
                 return adapters
-            return self._primary_adapters()
+            # A satellite rides the primary's bots; its own LOCAL session adapter stays its own.
+            return {**self._primary_adapters(), **adapters}
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:
