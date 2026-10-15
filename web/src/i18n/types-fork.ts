@@ -1337,4 +1337,19 @@ export interface ForkSections {
     group: string;
     hint: string;
   };
+  /** Memory page: usage meter, entry cards, edit/preview/split view, drafts. */
+  memoryUi?: {
+    viewEdit: string;
+    viewPreview: string;
+    viewSplit: string;
+    viewLabel: string;
+    usage: string; // "{used} / {limit} chars"
+    usageNear: string;
+    usageOver: string;
+    entries: string; // "{n} entries"
+    entryChars: string; // "{n} chars"
+    draftRestored: string;
+    discard: string;
+    refresh: string;
+  };
 }

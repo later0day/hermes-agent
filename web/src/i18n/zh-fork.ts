@@ -1493,4 +1493,18 @@ export const zhFork: TranslationOverrides = {
     group: "群聊",
     hint: "绑定后，该会话里的所有消息都由这个 Profile 回复，等同于在会话里执行 /agent use。",
   },
+  memoryUi: {
+    viewEdit: "编辑",
+    viewPreview: "预览",
+    viewSplit: "分栏",
+    viewLabel: "视图",
+    usage: "{used} / {limit} 字符",
+    usageNear: "接近上限：agent 可能无法再写入新记忆",
+    usageOver: "已超出上限：精简之前 agent 无法再写入新记忆",
+    entries: "{n} 条",
+    entryChars: "{n} 字",
+    draftRestored: "已恢复未保存的草稿",
+    discard: "放弃修改",
+    refresh: "从磁盘重新加载",
+  },
 };

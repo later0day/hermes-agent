@@ -1332,4 +1332,18 @@ export const enFork: ForkSections = {
     group: "group",
     hint: "Every message in the chat is then answered by this profile — same as /agent use in that chat.",
   },
+  memoryUi: {
+    viewEdit: "Edit",
+    viewPreview: "Preview",
+    viewSplit: "Split",
+    viewLabel: "View",
+    usage: "{used} / {limit} chars",
+    usageNear: "Nearly full: the agent may fail to save new entries",
+    usageOver: "Over the limit: the agent cannot save new entries until this is trimmed",
+    entries: "Entries: {n}",
+    entryChars: "{n} chars",
+    draftRestored: "Restored your unsaved draft",
+    discard: "Discard changes",
+    refresh: "Reload from disk",
+  },
 };

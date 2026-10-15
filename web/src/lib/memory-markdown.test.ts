@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { memoryPreviewMarkdown } from './memory-markdown'
+import { memoryCharCount, splitMemoryEntries } from './memory-markdown'
 
-describe('memoryPreviewMarkdown', () => {
-  it('turns entry separators into rules and leaves other § alone', () => {
-    const preview = memoryPreviewMarkdown('first entry\n§\nsecond § entry')
-    expect(preview).not.toMatch(/^§$/m)
-    expect(preview).toContain('---')
-    expect(preview).toContain('second § entry')
+describe('memory entries and usage', () => {
+  it('splits like MemoryStore._parse_entries and counts like the tool (code points, delimiter included)', () => {
+    const raw = '  first entry \n§\n\n§\nsecond § entry 👍\n'
+    expect(splitMemoryEntries(raw)).toEqual(['first entry', 'second § entry 👍'])
+    // "first entry" (11) + "\n§\n" (3) + "second § entry 👍" (16 code points; the emoji is one)
+    expect(memoryCharCount(raw)).toBe(30)
+    expect(memoryCharCount('')).toBe(0)
   })
 })

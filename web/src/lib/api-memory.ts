@@ -8,7 +8,7 @@ const memoryUrl = (profile: string, doc: MemoryDoc) =>
 /** A profile's curated memory files, for the dashboard Memory page. */
 export const memoryApi = {
   get: (profile: string, doc: MemoryDoc) =>
-    fetchJSON<{ content: string; exists: boolean }>(memoryUrl(profile, doc)),
+    fetchJSON<{ content: string; exists: boolean; chars?: number; char_limit?: number }>(memoryUrl(profile, doc)),
   update: (profile: string, doc: MemoryDoc, content: string) =>
     fetchJSON<{ ok: boolean }>(memoryUrl(profile, doc), {
       method: "PUT",

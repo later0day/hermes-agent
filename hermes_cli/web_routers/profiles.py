@@ -1244,6 +1244,19 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
 _PROFILE_MEMORY_FILES = {"MEMORY.md", "USER.md"}
 
 
+def _memory_usage(profile_dir: Path, doc: str, content: str) -> dict[str, int]:
+    """``chars`` exactly as the memory tool counts them (entries re-joined by its delimiter) and the
+    profile's ``char_limit``, so the editor can show how close a store is to refusing new entries."""
+    from hermes_cli.config import load_config
+    from tools.memory_tool_store import ENTRY_DELIMITER, MemoryStore
+
+    with _hermes_home_scope(profile_dir):
+        mem_cfg = load_config().get("memory") or {}
+    key, default = ("user_char_limit", 1375) if doc == "USER.md" else ("memory_char_limit", 2200)
+    return {"chars": len(ENTRY_DELIMITER.join(MemoryStore._parse_entries(content))),
+            "char_limit": int(mem_cfg.get(key, default))}
+
+
 @router.get("/api/profiles/{name}/memory/{doc}")
 async def get_profile_memory(name: str, doc: str):
     """Read a profile's ``memories/<doc>`` (MEMORY.md or USER.md).
@@ -1254,7 +1267,8 @@ async def get_profile_memory(name: str, doc: str):
     """
     if doc not in _PROFILE_MEMORY_FILES:
         raise HTTPException(status_code=404, detail="Unknown memory document")
-    mem_path = _resolve_profile_dir(name) / "memories" / doc
+    profile_dir = _resolve_profile_dir(name)
+    mem_path = profile_dir / "memories" / doc
     if mem_path.exists():
         try:
             content = mem_path.read_text(encoding="utf-8-sig")
@@ -1264,10 +1278,12 @@ async def get_profile_memory(name: str, doc: str):
                 "exists": True,
                 "content": content,
                 "bytes": mem_path.stat().st_size,
+                **_memory_usage(profile_dir, doc, content),
             }
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Could not read {doc}: {e}")
-    return {"name": doc, "path": str(mem_path), "exists": False, "content": "", "bytes": 0}
+    return {"name": doc, "path": str(mem_path), "exists": False, "content": "", "bytes": 0,
+            **_memory_usage(profile_dir, doc, "")}
 
 
 @router.put("/api/profiles/{name}/memory/{doc}")
