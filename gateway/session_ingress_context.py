@@ -68,6 +68,42 @@ def native_callback(runner, event, transport_home, profile=None):
         _callback.reset(token)
 
 
+def _agent_binding_profile(runner, source, profile):
+    """The profile a fork ``/agent use`` binding routes *source* to (it outranks ``profile_routes``),
+    through the same ``_bound_profile_for_source`` that stamped ``source.profile`` at ingress. Without
+    it every message in a bound chat failed here: stamped for the bound profile, re-derived from
+    static routes as the primary -> ``profile_mismatch`` (live 2026-10-15)."""
+    resolve = getattr(runner, '_bound_profile_for_source', None)
+    if resolve is None:
+        return None
+    from gateway.profile_routing import ProfileRouteRejected
+    try:
+        return resolve(source, profile, runner.config)
+    except ProfileRouteRejected as exc:
+        raise RuntimeStoreError('profile_mismatch') from exc
+
+
+def _routed_runtime_profile(runner, source, profile, homes, owner_name):
+    """The profile this event runs under: an ``/agent use`` binding, else the most specific route, else an
+    explicit ``/p/<profile>/`` producer, else the receiving bot's owner."""
+    if bound := _agent_binding_profile(runner, source, profile):
+        return bound
+    matches = [route for route in runner.config.profile_routes if route.matches(
+        source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
+        thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
+    if matches:
+        rank = max(route.specificity for route in matches)
+        best = [route for route in matches if route.specificity == rank]
+        if len(best) != 1:
+            raise RuntimeStoreError('admission_conflict')
+        return best[0].profile
+    if source.profile and source.profile in homes and source.platform.value in ('webhook', 'api_server', 'msgraph_webhook'):
+        # ``/p/<profile>/`` producers address a served profile explicitly on the HOST's
+        # listener; that URL prefix is the route (webhook.py / api_server.py stamp it).
+        return source.profile
+    return owner_name
+
+
 def _binding(runner, source, profile):
     registries = [(None, runner.adapters), *getattr(runner, '_profile_adapters', {}).items()]
     from gateway.config import Platform
@@ -108,21 +144,7 @@ def _binding(runner, source, profile):
             raise RuntimeStoreError('profile_mismatch')
         # Same matcher as ingress stamping: a route applies only to its ``bot_profile``'s bot
         # (#104933), so the receiving adapter's owner is part of the match.
-        matches = [route for route in runner.config.profile_routes if route.matches(
-            source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
-            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
-        if matches:
-            rank = max(route.specificity for route in matches)
-            best = [route for route in matches if route.specificity == rank]
-            if len(best) != 1:
-                raise RuntimeStoreError('admission_conflict')
-            runtime_profile = best[0].profile
-        elif source.profile and source.profile in homes and source.platform.value in ('webhook', 'api_server', 'msgraph_webhook'):
-            # ``/p/<profile>/`` producers address a served profile explicitly on the HOST's
-            # listener; that URL prefix is the route (webhook.py / api_server.py stamp it).
-            runtime_profile = source.profile
-        else:
-            runtime_profile = owner_name
+        runtime_profile = _routed_runtime_profile(runner, source, profile, homes, owner_name)
         if (source.profile or primary) != runtime_profile or runtime_profile not in homes:
             raise RuntimeStoreError('profile_mismatch')
         runtime_home = homes[runtime_profile]
