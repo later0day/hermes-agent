@@ -13,6 +13,7 @@ import { readMemoryDraft, writeMemoryDraft } from "@/lib/memory-draft";
 import { MemoryEntryList } from "@/components/memory/MemoryEntryList";
 import { MemoryUsageBar } from "@/components/memory/MemoryUsageBar";
 import { MemoryViewToggle, type MemoryView } from "@/components/memory/MemoryViewToggle";
+import { MemoryDocTabs } from "@/components/memory/MemoryDocTabs";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n, type Translations } from "@/i18n";
@@ -81,6 +82,12 @@ function memoryDocCopy(mem: Translations["memory"], meta: DocMeta) {
 }
 
 const VIEW_KEY = "hermes-memory-view";
+const DOC_KEY = "hermes-memory-doc";
+
+interface DocStatus {
+  ratio: number | null;
+  dirty: boolean;
+}
 
 function initialView(): MemoryView {
   const stored = localStorage.getItem(VIEW_KEY);
@@ -144,11 +151,15 @@ function MemoryEditor({
   meta,
   profile,
   view,
+  active,
+  onStatus,
   showToast,
 }: {
   meta: DocMeta;
   profile: string;
   view: MemoryView;
+  active: boolean;
+  onStatus: (doc: MemoryDoc, status: DocStatus) => void;
   showToast: (msg: string, kind: "success" | "error") => void;
 }) {
   const { t } = useI18n();
@@ -161,7 +172,12 @@ function MemoryEditor({
   const { text, loading } = state;
   const dirty = text !== state.original;
   const entries = useMemo(() => splitMemoryEntries(text), [text]);
-  const Icon = meta.icon;
+  const used = useMemo(() => memoryCharCount(text), [text]);
+  const limit = state.limit ?? meta.defaultLimit;
+
+  useEffect(() => {
+    onStatus(meta.doc, { ratio: loading ? null : used / limit, dirty });
+  }, [onStatus, meta.doc, loading, used, limit, dirty]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -207,18 +223,17 @@ function MemoryEditor({
   );
 
   return (
-    <Card className="rounded-none">
+    <Card className={cn("rounded-none", !active && "hidden")} role="tabpanel" id={`memory-panel-${meta.doc}`}
+      aria-labelledby={`memory-tab-${meta.doc}`}>
       <CardHeader className="space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <Icon className="h-4 w-4 text-muted-foreground" />
-              {meta.title}
-              {!loading && !state.exists && (
-                <span className="text-xs font-normal text-muted-foreground">{copy.emptyLabel}</span>
-              )}
-            </CardTitle>
-            <CardDescription className="text-xs">{copy.description}</CardDescription>
+            {/* The tab above names the document; keep the title for screen readers only. */}
+            <CardTitle className="sr-only">{meta.title}</CardTitle>
+            <CardDescription className="flex items-center gap-2 text-xs">
+              {copy.description}
+              {!loading && !state.exists && <span className="text-muted-foreground">{copy.emptyLabel}</span>}
+            </CardDescription>
           </div>
           <Button ghost size="xs" className="shrink-0 text-muted-foreground hover:text-foreground"
             onClick={state.reload} disabled={loading || saving} title={ui.refresh} aria-label={ui.refresh}>
@@ -226,8 +241,7 @@ function MemoryEditor({
           </Button>
         </div>
         {!loading && (
-          <MemoryUsageBar used={memoryCharCount(text)} limit={state.limit ?? meta.defaultLimit}
-            entries={entries.length} copy={ui} />
+          <MemoryUsageBar used={used} limit={limit} entries={entries.length} copy={ui} />
         )}
       </CardHeader>
       <CardContent className="space-y-3">
@@ -269,6 +283,18 @@ export default function MemoryPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { profile: selectedProfile } = useProfileScope();
   const [view, setView] = useState<MemoryView>(initialView);
+  const [activeDoc, setActiveDoc] = useState<string>(() => {
+    const stored = localStorage.getItem(DOC_KEY);
+    return DOCS.some((meta) => meta.doc === stored) ? stored! : DOCS[0].doc;
+  });
+  const [status, setStatus] = useState<Record<string, DocStatus>>({});
+  const onStatus = useCallback((doc: MemoryDoc, next: DocStatus) => {
+    setStatus((prev) => (prev[doc]?.ratio === next.ratio && prev[doc]?.dirty === next.dirty ? prev : { ...prev, [doc]: next }));
+  }, []);
+  const selectDoc = useCallback((doc: string) => {
+    setActiveDoc(doc);
+    localStorage.setItem(DOC_KEY, doc);
+  }, []);
 
   const scopeLabel = selectedProfile || "default";
 
@@ -283,15 +309,25 @@ export default function MemoryPage() {
         {scopeLabel}
       </span>,
     );
-    setEnd(<MemoryViewToggle value={view} onChange={chooseView} copy={ui} />);
     return () => {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [scopeLabel, setAfterTitle, setEnd, view, chooseView, ui]);
+  }, [scopeLabel, setAfterTitle, setEnd]);
 
   return (
-    <div className={cn("mx-auto w-full space-y-4 p-4", view === "split" ? "max-w-6xl" : "max-w-4xl")}>
+    <div className={cn("mx-auto w-full space-y-3 p-4", view === "split" ? "max-w-6xl" : "max-w-4xl")}>
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <MemoryDocTabs
+          tabs={DOCS.map((meta) => ({ id: meta.doc, title: meta.title, icon: meta.icon,
+            ratio: status[meta.doc]?.ratio ?? null, dirty: status[meta.doc]?.dirty ?? false }))}
+          active={activeDoc}
+          onSelect={selectDoc}
+          label={ui.docsLabel}
+          unsavedLabel={t.memory?.unsavedChanges ?? "Unsaved changes"}
+        />
+        <div className="pb-1"><MemoryViewToggle value={view} onChange={chooseView} copy={ui} /></div>
+      </div>
       {DOCS.map((meta) => (
         <MemoryEditor
           // Remount per profile so state resets; an unsaved edit comes back from its session draft.
@@ -299,6 +335,8 @@ export default function MemoryPage() {
           meta={meta}
           profile={scopeLabel}
           view={view}
+          active={activeDoc === meta.doc}
+          onStatus={onStatus}
           showToast={showToast}
         />
       ))}

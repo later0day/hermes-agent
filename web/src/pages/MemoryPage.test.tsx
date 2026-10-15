@@ -80,4 +80,30 @@ describe("MemoryPage", () => {
     expect(page.querySelector<HTMLTextAreaElement>("#memory-editor-MEMORY\\.md")!.value).toBe("draft text");
     expect(page.textContent).toContain("Restored your unsaved draft");
   });
+
+  it("switches documents with tabs that show usage and unsaved edits, keeping the other document's edit", async () => {
+    const page = await renderMemory("edit");
+    const tabs = [...page.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["MEMORY.md115%", "USER.md0%"]);
+    const panel = (doc: string) => page.querySelector(`#memory-panel-${doc.replace(".", "\\.")}`)!;
+    expect(panel("MEMORY.md").className).not.toContain("hidden");
+    expect(panel("USER.md").className).toContain("hidden");
+
+    const area = page.querySelector<HTMLTextAreaElement>("#memory-editor-MEMORY\\.md")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(area, "edited");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(tabs[0].querySelector('[aria-label="Unsaved changes"]')).not.toBeNull();
+
+    await act(async () => tabs[1].click());
+    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+    expect(panel("USER.md").className).not.toContain("hidden");
+    expect(panel("MEMORY.md").className).toContain("hidden");
+    expect(localStorage.getItem("hermes-memory-doc")).toBe("USER.md");
+
+    await act(async () => tabs[0].click());
+    expect(page.querySelector<HTMLTextAreaElement>("#memory-editor-MEMORY\\.md")!.value).toBe("edited");
+  });
 });

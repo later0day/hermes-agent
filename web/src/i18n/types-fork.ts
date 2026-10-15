@@ -1351,5 +1351,6 @@ export interface ForkSections {
     draftRestored: string;
     discard: string;
     refresh: string;
+    docsLabel: string;
   };
 }

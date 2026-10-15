@@ -1345,5 +1345,6 @@ export const enFork: ForkSections = {
     draftRestored: "Restored your unsaved draft",
     discard: "Discard changes",
     refresh: "Reload from disk",
+    docsLabel: "Memory documents",
   },
 };

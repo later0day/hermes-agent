@@ -1506,5 +1506,6 @@ export const zhFork: TranslationOverrides = {
     draftRestored: "已恢复未保存的草稿",
     discard: "放弃修改",
     refresh: "从磁盘重新加载",
+    docsLabel: "记忆文档",
   },
 };
