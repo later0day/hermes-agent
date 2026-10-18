@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from gateway.platforms.base import (
     MessageType,
     SendResult,
-    _ssrf_redirect_guard,
+    ssrf_redirect_guard,
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_bytes,
@@ -500,7 +500,7 @@ class DingTalkMediaMixin:
         async with _dt().httpx.AsyncClient(
             timeout=30.0,
             follow_redirects=True,
-            event_hooks={"response": [_ssrf_redirect_guard]},
+            event_hooks={"response": [ssrf_redirect_guard]},
             trust_env=False,
         ) as client:
             response = await client.get(
