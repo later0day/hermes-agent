@@ -741,7 +741,7 @@ class HostedRoomService:
             tasks = _dag.list_claimable(self.db_path, room_id=room_id)
             members = discussion.validate_roster(
                 room.get("members") or [],
-                local_profiles=self.local_profiles(),
+                local_profiles=self.room_profiles(room),
             )
         except Exception:
             return
@@ -961,7 +961,7 @@ class HostedRoomService:
         # Validate the roster BEFORE appending: prepare_room() below re-validates it, and a roster that no
         # longer resolves (a member's profile was deleted) would otherwise raise AFTER the message was
         # committed — the caller sees a failure, retries, and stacks messages the room can never schedule.
-        discussion.validate_room(room, local_profiles=self.local_profiles())
+        discussion.validate_room(room, local_profiles=self.room_profiles(room))  # saved room: seated members stay valid
         if recipient is not None:
             # Dashboard work requests name an explicit recipient: it must be on this room's frozen roster.
             requested = str(recipient).strip().lstrip("@").casefold()
