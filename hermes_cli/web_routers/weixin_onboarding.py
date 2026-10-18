@@ -2,7 +2,7 @@
 
 Dashboard equivalent of ``hermes gateway setup``'s interactive Weixin QR login, shaped like the upstream
 WhatsApp/Telegram onboarding in ``web_routers/messaging.py``. The CLI flow
-(``gateway.platforms.weixin.qr_login``) prints an ASCII QR and blocks in a poll loop, which cannot drive a
+(``plugins.platforms.weixin.adapter.qr_login``) prints an ASCII QR and blocks in a poll loop, which cannot drive a
 browser, so the same iLink protocol is decomposed into a stateless create/poll pair (``weixin_create_qr`` /
 ``weixin_poll_qr``) plus a background poller that advances a server-side session record.
 
@@ -106,7 +106,7 @@ def _run_weixin_qr_poll(pairing_id: str) -> None:
     it refreshes the QR up to ``_WEIXIN_QR_MAX_REFRESH`` times (like the CLI), following any
     ``scaned_but_redirect`` host change so later polls hit the right shard.
     """
-    from gateway.platforms.weixin import weixin_create_qr, weixin_poll_qr
+    from plugins.platforms.weixin.adapter import weixin_create_qr, weixin_poll_qr
 
     while True:
         with _weixin_onboarding_lock:
@@ -185,7 +185,7 @@ async def start_weixin_onboarding(body: WeixinOnboardingStart):
     if conflict := _multiplex_port_binding_conflict("weixin", body.profile):
         raise HTTPException(status_code=409, detail=conflict)
     try:
-        from gateway.platforms.weixin import check_weixin_requirements, weixin_create_qr
+        from plugins.platforms.weixin.adapter import check_weixin_requirements, weixin_create_qr
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Weixin adapter import failed: {exc}") from exc
     if not check_weixin_requirements():
@@ -238,7 +238,7 @@ async def apply_weixin_onboarding(pairing_id: str, body: WeixinOnboardingApply, 
     effective_profile = body.profile or profile or record_profile
 
     def _apply():
-        from gateway.platforms.weixin import save_weixin_account
+        from plugins.platforms.weixin.adapter import save_weixin_account
         from hermes_constants import get_hermes_home
 
         with _profile_scope(effective_profile):

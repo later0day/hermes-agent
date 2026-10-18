@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import "./index.css";
 import App from "./App";
+import { ProfileProvider } from "./contexts/ProfileProvider";
 import { SessionSearchPalette } from "./components/SessionSearchModal";
 import { SystemActionsProvider } from "./contexts/SystemActions";
 import { I18nProvider } from "./i18n";
@@ -18,8 +19,11 @@ createRoot(document.getElementById("root")!).render(
     <I18nProvider>
       <ThemeProvider>
         <SystemActionsProvider>
-          <App />
-          <SessionSearchPalette />
+          {/* Above App, so its plugin loader follows the selected profile. */}
+          <ProfileProvider>
+            <App />
+            <SessionSearchPalette />
+          </ProfileProvider>
         </SystemActionsProvider>
       </ThemeProvider>
     </I18nProvider>

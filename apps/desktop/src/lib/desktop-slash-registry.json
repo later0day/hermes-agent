@@ -3,6 +3,7 @@
   "/agents": null,
   "/approvals": null,
   "/approve": null,
+  "/autoprune": null,
   "/battery": null,
   "/bg": null,
   "/blueprint": null,
