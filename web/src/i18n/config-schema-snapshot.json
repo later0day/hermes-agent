@@ -771,7 +771,6 @@
   "terminal.oneshot_completion_wait_seconds": "terminal",
   "terminal.persistent_shell": "terminal",
   "terminal.shell_init_files": "terminal",
-  "terminal.singularity_image": "terminal",
   "terminal.sync_back_max_bytes": "terminal",
   "terminal.temp_dir": "terminal",
   "terminal.timeout": "terminal",
