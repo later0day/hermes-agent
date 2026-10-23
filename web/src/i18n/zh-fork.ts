@@ -41,7 +41,6 @@ export const zhFork: TranslationOverrides = {
     sharedMetricsBody: "共享指标只是有上限的计数器，绝不包含提示词、文件、路径或错误文本。数据只在本机收集；是否发送给 Nous 是另一个独立选择。",
     sharedMetricsReaskBody: "再问一次：早期版本可能在你看到这个问题之前就保存了“不用了”。",
     sharedMetricsShare: "发送给 Nous",
-    sharedMetricsLocal: "仅本地",
     sharedMetricsOff: "不用了",
     sharedMetricsDetails: "详情",
     sharedMetricsSaveFailed: "无法保存你的选择",
