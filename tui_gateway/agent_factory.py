@@ -701,6 +701,7 @@ def _make_agent(
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
+    from agent.onboarding_session import onboarding_toolsets
     from run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
@@ -723,7 +724,8 @@ def _make_agent(
     # BEFORE the agent snapshots its tools (hard build-time enforcement, the analogue of CC's
     # applyCoordinatorToolFilter).
     room_enabled_toolsets = _room_decider_toolset_filter(
-        session, _onboarding_toolsets(_load_enabled_toolsets(platform), session_db, session_id or key))
+        session, onboarding_toolsets(_load_enabled_toolsets(platform),
+                                     session_db if session_db is not None else _get_db(), session_id or key))
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),

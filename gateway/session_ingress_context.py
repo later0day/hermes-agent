@@ -96,10 +96,16 @@ def _agent_binding_profile(runner, source, profile):
 
 
 def _routed_runtime_profile(runner, source, profile, homes, owner_name):
-    """The profile this event runs under: an ``/agent use`` binding, else the most specific route, else an
-    explicit ``/p/<profile>/`` producer, else the receiving bot's owner."""
+    """The profile this event runs under: an ``/agent use`` binding, else an explicit ``/p/<profile>/``
+    producer (the URL prefix wins over ``profile_routes``, upstream af338b875f), else the most specific
+    route (``user_id`` included), else the receiving bot's owner. ``homes`` membership is checked by the
+    caller."""
     if bound := _agent_binding_profile(runner, source, profile):
         return bound
+    if source.profile and source.platform.value in _PREFIX_PRODUCERS:
+        # ``/p/<profile>/`` producers address a profile explicitly on the HOST's listener (webhook.py /
+        # api_server.py stamp it; a bare producer source carries the routed name itself).
+        return source.profile
     matches = [route for route in runner.config.profile_routes if route.matches(
         source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
         thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile,
@@ -110,10 +116,6 @@ def _routed_runtime_profile(runner, source, profile, homes, owner_name):
         if len(best) != 1:
             raise RuntimeStoreError('admission_conflict')
         return best[0].profile
-    if source.profile and source.profile in homes and source.platform.value in ('webhook', 'api_server', 'msgraph_webhook'):
-        # ``/p/<profile>/`` producers address a served profile explicitly on the HOST's
-        # listener; that URL prefix is the route (webhook.py / api_server.py stamp it).
-        return source.profile
     return owner_name
 
 
@@ -125,6 +127,9 @@ def carry_callback(event, rewritten):
         bound = bound_var.get()
         if bound is not None and bound[1] is event and rewritten.source is event.source:
             bound_var.set((bound[0], rewritten, *bound[2:]))
+
+
+_PREFIX_PRODUCERS = ('webhook', 'api_server', 'msgraph_webhook')
 
 
 def _binding(runner, source, profile):
