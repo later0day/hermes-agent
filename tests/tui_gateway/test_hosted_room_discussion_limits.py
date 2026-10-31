@@ -165,11 +165,14 @@ def test_owner_settings_do_not_leak_from_a_member_scope_and_defaults_are_unchang
     )
     with _profile_runtime_scope(member, hydrate_secrets=False):
         service = _service(owner)
-    assert service.discussion_limits == discussion.DiscussionLimits(max_rounds=3, max_messages=10)
+    assert service.discussion_limits == discussion.DiscussionLimits(
+            max_rounds=discussion.MAX_DISCUSSION_ROUNDS, max_messages=10)  # fork default: 5 rounds
     _create(service, 3)
-    for index in range(9):
+    # Fork default is 5 rounds (upstream: 3), so three members reach the 10-message cap first (upstream: 9
+    # replies end on max_rounds). Either way the member's 99/999 never applies to the owner's room.
+    for index in range(10):
         _settle(service, index)
-    assert service._events(ROOM_ID)[-1]["payload"]["reason_code"] == "max_rounds"
+    assert service._events(ROOM_ID)[-1]["payload"]["reason_code"] == "max_messages"
 
 
 @pytest.mark.parametrize("key", ["max_rounds", "max_messages"])

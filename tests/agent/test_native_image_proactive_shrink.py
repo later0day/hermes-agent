@@ -8,7 +8,7 @@ default) keeps upstream behaviour byte-for-byte.
 import os
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
 

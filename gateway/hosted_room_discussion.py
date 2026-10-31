@@ -1136,7 +1136,10 @@ def _failed_effects(result: Any, **_: Any) -> Effects:
         str(result.get("reason_code") or result.get("reason") or "").strip() if isinstance(result, Mapping) else "")
     reason_code = supplied_reason if supplied_reason in _all_failure_reasons() else classify_agent_error(error_text)
     # The append-only Room log is rendered by Conversation/Activity views: record the typed operator-safe reason,
-    # never arbitrary provider output (which may carry prompts, URLs, or credentials).
+    # never arbitrary provider output (which may carry prompts, URLs, or credentials). Only text the room
+    # driver composed itself (e.g. the directly-addressed pass failure) is published verbatim.
+    if isinstance(result, Mapping) and result.get("operator_safe") is True:
+        return {"error": error_text, "reason_code": reason_code}, []
     return {"error": reason_code, "reason_code": reason_code}, []
 
 
@@ -1184,7 +1187,8 @@ def plan_publication(
         # The execution completed, but did not answer the user. Publish that
         # failure from the durable receipt without replaying any tools or model calls.
         effective_status = "failed"
-        result = {"error": f"@{task.member.handle} was directly addressed but returned no visible reply."}
+        result = {"error": f"@{task.member.handle} was directly addressed but returned no visible reply.",
+                  "operator_safe": True}
     digest = task.identity.task_id.removeprefix("dtask:")
     terminal_event_id = (
         f"ddeferred:{digest}:g{execution_generation}" if effective_status == "deferred" else f"dterminal:{digest}")

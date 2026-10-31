@@ -4,7 +4,7 @@ The fork mapped them through TERMINAL_CONFIG_ENV_MAP; after the backend moved in
 bridged them, so editing ``terminal.ap_container`` in the reverse profile silently had no effect.
 """
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
 

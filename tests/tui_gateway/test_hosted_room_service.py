@@ -411,12 +411,10 @@ def test_send_with_recipient_rejects_non_member_before_append(tmp_path: Path):
     )
     assert accepted["event_id"] == "known-recipient"
 
-def test_send_to_room_with_deleted_member_profile_fails_before_append(tmp_path: Path):
-    """A member whose profile was deleted leaves a roster that no longer validates. send() must refuse
-    BEFORE appending: failing after the commit told callers "error" for a message that was written, so
-    every retry stacked another message the room can never schedule."""
-    from gateway.hosted_room_discussion import DiscussionValidationError
-
+def test_send_to_room_with_deleted_member_profile_is_stored_once_without_raising(tmp_path: Path):
+    """A member whose profile was deleted leaves a roster that no longer validates. send() must not answer
+    "error" for a message it already committed (every retry would stack another one): upstream #143239 stores
+    the Send once and lets the room driver report the stall in the room."""
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
     service.local_profiles = lambda: ("lead", "worker")
     service.create_room(
@@ -425,10 +423,10 @@ def test_send_to_room_with_deleted_member_profile_fails_before_append(tmp_path: 
                  {"member_id": "worker", "profile": "worker", "handle": "worker"}])
     service.local_profiles = lambda: ("lead",)  # `worker` was deleted
 
-    with pytest.raises(DiscussionValidationError):
-        service.send(room_id="orphan-room", event_id="after-delete",
-                     payload={"text": "@worker hi", "thread_id": "thread"}, recipient="worker")
-    assert not any(event["event_id"] == "after-delete" for event in service._events("orphan-room"))
+    sent = service.send(room_id="orphan-room", event_id="after-delete",
+                        payload={"text": "@worker hi", "thread_id": "thread"}, recipient="worker")
+    assert sent["kind"] == "message.user"
+    assert [event["event_id"] for event in service._events("orphan-room")].count("after-delete") == 1
 
 
 def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path):
