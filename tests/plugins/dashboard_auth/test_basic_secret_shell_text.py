@@ -39,7 +39,12 @@ def _clear_basic_env(monkeypatch):
 def test_env_secret_with_shell_text_is_not_used(monkeypatch, caplog, value):
     monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_SECRET", value)
     with caplog.at_level(logging.ERROR, logger=basic.logger.name):
+        monkeypatch.setattr(basic, "_FALLBACK_SECRET", None)
         first = basic._resolve_secret({})
+        # Fork: the random fallback is process-stable (re-registration must not end live sessions);
+        # a fresh process draws a new one, so it is random rather than derived from the text.
+        assert basic._resolve_secret({}) == first
+        monkeypatch.setattr(basic, "_FALLBACK_SECRET", None)
         second = basic._resolve_secret({})
     assert first != value.encode("utf-8")
     assert len(first) == 32
