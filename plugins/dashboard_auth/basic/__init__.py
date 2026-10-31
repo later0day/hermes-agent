@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import time
 from typing import Optional
 
@@ -185,12 +186,15 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     # ---- internals ---------------------------------------------------------
 
     def _mint_session(self, user_id: str) -> Session:
+        # ``jti`` gives every session its own tokens, even two minted in one second: a listener that
+        # drops a session's tokens (the Webapp's sign-out) must not get them back from a later login.
         now = int(time.time())
         exp = now + self._ttl
+        jti = secrets.token_urlsafe(16)
         return self._session(
             user_id, exp,
-            _sign({"sub": user_id, "kind": "access", "exp": exp}, self._secret),
-            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS}, self._secret))
+            _sign({"sub": user_id, "kind": "access", "exp": exp, "jti": jti}, self._secret),
+            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS, "jti": jti}, self._secret))
 
     def _session(self, user_id: str, exp: int, access_token: str, refresh_token: str) -> Session:
         return Session(
@@ -204,27 +208,57 @@ def _load_config_basic_auth_section() -> dict:
     return load_config_section(logger, _TAG, "dashboard", "basic_auth")
 
 
+# Shell syntax that was written to .env/config without being run, e.g. a
+# ``$(openssl rand -base64 32)`` line inside a quoted heredoc, or the command (or a doc
+# placeholder naming it) pasted in place of its output. Base64 and hex never contain
+# these (nor a space), and everyone who copied the same line would share the same key.
+_UNEXPANDED_SHELL_MARKERS = ("$(", "`", "openssl rand")
+
+# The error above only reaches the log files, not the console of ``hermes serve`` /
+# ``hermes dashboard``; one stderr line per process makes it visible there too.
+_shell_text_secret_reported = False
+
+
+def _fallback_secret(log: bool = True) -> bytes:
+    """Process-stable random signing key (fork): every re-registration (e.g. each
+    management-profile switch re-runs register()) reuses it; rotating it would invalidate
+    live sessions mid-use. See _FALLBACK_SECRET."""
+    global _FALLBACK_SECRET
+    if _FALLBACK_SECRET is None:
+        if log:
+            logger.info(
+                "dashboard-auth-basic: no 'secret' configured; generating a random "
+                "per-process signing key. Sessions will not survive a restart or span "
+                "multiple workers. Set dashboard.basic_auth.secret (or "
+                "HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable sessions.")
+        _FALLBACK_SECRET = secrets.token_bytes(32)
+    return _FALLBACK_SECRET
+
+
 def _resolve_secret(cfg_section: dict) -> bytes:
     """Resolve the token-signing secret (base64, hex, or raw text). When unset, generates
     a random per-process secret (sessions then don't survive a restart or span multiple
-    workers — logged at INFO)."""
+    workers — logged at INFO). A value holding unexpanded shell text is never used as the
+    key: it is logged as an error and replaced by a random per-process secret."""
     raw = resolve_env_or_cfg("HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section.get("secret"))
     if not raw:
-        global _FALLBACK_SECRET
-        if _FALLBACK_SECRET is None:
-            logger.info(
-                "dashboard-auth-basic: no 'secret' configured; generating a "
-                "random per-process signing key. Sessions will not survive a "
-                "restart or span multiple workers. Set dashboard.basic_auth."
-                "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
-                "sessions."
-            )
-            _FALLBACK_SECRET = secrets.token_bytes(32)
-        # Reuse the same process-stable key for every re-registration (e.g.
-        # each management-profile switch re-runs register()); rotating it
-        # would invalidate live sessions mid-use. See _FALLBACK_SECRET.
-        return _FALLBACK_SECRET
-    # Try base64, then hex, then fall back to the raw UTF-8 bytes.
+        return _fallback_secret()
+    if any(marker in raw for marker in _UNEXPANDED_SHELL_MARKERS):
+        logger.error(
+            "dashboard-auth-basic: the configured signing secret contains unexpanded shell "
+            "text (such as '$(openssl rand -base64 32)') instead of a random value, so it "
+            "is ignored and a random per-process signing key is used. Set "
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET (or dashboard.basic_auth.secret) to the "
+            "output of 'openssl rand -base64 32' to keep sessions across restarts.")
+        global _shell_text_secret_reported
+        if not _shell_text_secret_reported:
+            _shell_text_secret_reported = True
+            print(
+                "hermes: dashboard login: HERMES_DASHBOARD_BASIC_AUTH_SECRET (or "
+                "dashboard.basic_auth.secret) holds shell text instead of a random value; "
+                "using a per-process key, so sessions end on restart. Replace it with the "
+                "output of: openssl rand -base64 32", file=sys.stderr, flush=True)
+        return _fallback_secret(log=False)
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
             decoded = decoder(raw)

@@ -438,6 +438,7 @@ class InProcessCronScheduler(CronScheduler):
     def start(
         self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None,
         profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_bot_platforms=None,
     ):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
@@ -458,6 +459,7 @@ class InProcessCronScheduler(CronScheduler):
                 stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
                 interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
                 default_profile=default_profile, profile_gate=profile_gate,
+                profile_bot_platforms=profile_bot_platforms,
             )
             return
 
@@ -534,6 +536,7 @@ class InProcessCronScheduler(CronScheduler):
     def _start_multiplex(
         self, stop_event, *, profile_homes, adapters=None, loop=None, interval=60,
         can_dispatch=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_bot_platforms=None,
     ):
         """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
         home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
@@ -562,7 +565,10 @@ class InProcessCronScheduler(CronScheduler):
             # ``/agent use`` binding of that chat; else fail closed (delivery skipped this tick).
             if profile_name is None or profile_name == default_profile:
                 return adapters
-            return satellite_delivery_adapters(profile_name, (profile_adapters or {}).get(profile_name) or {}, adapters)
+            # Fork: routes include ``/agent use`` bindings and keep its own LOCAL adapter (xcx relies on both).
+            return satellite_delivery_adapters(
+                profile_name, (profile_adapters or {}).get(profile_name) or {}, adapters,
+                owned=(profile_bot_platforms or {}).get(profile_name))
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's

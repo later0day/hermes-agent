@@ -957,14 +957,9 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 
 
 def change_members(
-    db_path: Path | str,
-    *,
-    room_id: Any,
-    event_id: Any,
-    members: Any,
-    now: float | None = None,
+    db_path: DbPath, *, room_id: Any, event_id: Any, members: Any, now: float | None = None,
 ) -> dict[str, Any]:
-    """Replace a live room's roster and append its replay event atomically.
+    """Replace a live room's roster and append its replay event atomically (fork).
 
     Storage primitive only: it does NOT decide roster *validity* beyond the
     generic ``_validate_members`` bounds/shape check. Discussion-level rules
@@ -972,100 +967,40 @@ def change_members(
     via ``discussion.validate_roster`` — the same separation ``create_room``
     keeps. Idempotent on ``event_id`` exactly like ``rename_room``.
     """
-    room_id = _validate_identifier(
-        room_id, label="room_id", max_chars=MAX_ROOM_ID_CHARS
-    )
-    event_id = _validate_identifier(
-        event_id, label="event_id", max_chars=MAX_EVENT_ID_CHARS
-    )
+    room_id = _room_id(room_id)
+    event_id = _event_id(event_id)
     normalized_members, members_json = _validate_members(members)
-    now = time.time() if now is None else float(now)
-    actor_json = _canonical_json(
-        {"kind": "system", "id": "room-control"},
-        label="actor",
-        max_bytes=4 * 1024,
-    )
-    payload_json = _canonical_json(
-        {"members": normalized_members},
-        label="payload",
-        max_bytes=MAX_EVENT_JSON_BYTES,
-    )
+    now = _now(now)
+    actor_json = _system_actor_json("room-control")
+    payload_json = _payload_json({"members": normalized_members})
     with _transaction(db_path, immediate=True) as conn:
-        room = conn.execute(
-            """SELECT room_id, name, members_json, authority_gateway_id,
-                      authority_epoch, next_seq, event_bytes, revision, created_at,
-                      updated_at, disbanded_at
-                 FROM hosted_rooms WHERE room_id=?""",
-            (room_id,),
-        ).fetchone()
-        if room is None:
-            _raise_room_not_found(conn, room_id)
+        room = _room_row(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), room_id)
         if room["disbanded_at"] is not None:
             raise RoomNotFoundError("hosted room not found")
-        existing = conn.execute(
-            """SELECT room_id, seq, event_id, kind, actor_json,
-                      authority_epoch, payload_json, created_at
-                 FROM hosted_room_events WHERE room_id=? AND event_id=?""",
-            (room_id, event_id),
-        ).fetchone()
+        existing = _load_event(conn, room_id, event_id)
         if existing is not None:
-            if (
-                existing["kind"] != "room.members_changed"
-                or existing["payload_json"] != payload_json
-            ):
-                raise EventConflictError(
-                    "event_id already exists with different immutable content"
-                )
-            result = _room_from_row(room, idempotent=True)
-            result["event"] = _event_from_row(existing, idempotent=True)
-            return result
+            if existing["kind"] != "room.members_changed" or existing["payload_json"] != payload_json:
+                raise EventConflictError("event_id already exists with different immutable content")
+            return {**_room_from_row(room, idempotent=True), "event": _event_from_row(existing, idempotent=True)}
         seq = int(room["next_seq"])
-        epoch = int(room["authority_epoch"])
-        event_bytes = _event_storage_bytes(
-            event_id=event_id,
-            kind="room.members_changed",
-            actor_json=actor_json,
-            payload_json=payload_json,
-        )
-        _assert_event_capacity(conn, room=room, additional_bytes=event_bytes)
-        conn.execute(
-            """UPDATE hosted_rooms
-               SET members_json=?, next_seq=?, event_bytes=event_bytes+?,
-                   revision=revision+1, updated_at=?
-               WHERE room_id=?""",
-            (members_json, seq + 1, event_bytes, now, room_id),
-        )
-        conn.execute(
-            """INSERT INTO hosted_room_events(
-                   room_id, seq, event_id, kind, actor_json,
-                   authority_epoch, payload_json, created_at
-               ) VALUES (?, ?, ?, 'room.members_changed', ?, ?, ?, ?)""",
-            (room_id, seq, event_id, actor_json, epoch, payload_json, now),
-        )
-        updated = conn.execute(
-            """SELECT room_id, name, members_json, authority_gateway_id,
-                      authority_epoch, next_seq, revision, created_at,
-                      updated_at, disbanded_at
-                 FROM hosted_rooms WHERE room_id=?""",
-            (room_id,),
-        ).fetchone()
-        event = conn.execute(
-            """SELECT room_id, seq, event_id, kind, actor_json,
-                      authority_epoch, payload_json, created_at
-                 FROM hosted_room_events WHERE room_id=? AND event_id=?""",
-            (room_id, event_id),
-        ).fetchone()
-    result = _room_from_row(updated)
-    result["event"] = _event_from_row(event)
-    return result
+        event_bytes = _prepare_event(conn, room, event_id, "room.members_changed", actor_json, payload_json)
+        conn.execute("""UPDATE hosted_rooms
+                SET members_json=?, next_seq=?, event_bytes=event_bytes+?, revision=revision+1, updated_at=?
+                WHERE room_id=?""", (members_json, seq + 1, event_bytes, now, room_id))
+        conn.execute(_INSERT_EVENT, (
+            room_id, seq, event_id, "room.members_changed", actor_json, int(room["authority_epoch"]), payload_json,
+            now))
+        updated = conn.execute(_SELECT_ROOM, (room_id,)).fetchone()
+        return {**_room_from_row(updated), "event": _event_from_row(_load_event(conn, room_id, event_id))}
 
 
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
-    expected_latest_seq: int | None = None) -> dict[str, Any]:
+    expected_latest_seq: int | None = None, control_reserve: bool = False) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
-    with identical content returns the original, different content fails closed."""
+    with identical content returns the original, different content fails closed. ``control_reserve`` lets a
+    bounded gateway notice use the control headroom, so a room whose log is full can still say why."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
@@ -1100,7 +1035,7 @@ def append_event(
                                        manifest=json.loads(payload_json).get("attachments", []), now=now)
         event_bytes = _insert_event(
             conn, room, room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, now,
-            allow_control=kind in _CONTROL_EVENT_KINDS)
+            allow_control=kind in _CONTROL_EVENT_KINDS or (control_reserve and normalized_actor["kind"] == "gateway"))
         _fenced_update(conn, """UPDATE hosted_rooms SET next_seq=?, event_bytes=event_bytes+?, updated_at=?
                 WHERE room_id=? AND next_seq=?""", (seq + 1, event_bytes, now, room_id, seq),
             RuntimeError("hosted room sequence advance lost its write fence"))

@@ -83,6 +83,12 @@ def _cron_preflight_enabled(cfg: dict) -> bool:
     return not isinstance(cron_cfg, dict) or cron_cfg.get("preflight", True) is not False
 
 
+def cron_default_provider(cfg: dict) -> str:
+    """``cron.model_provider``: the provider every cron job without its own pin resolves through."""
+    cron = cfg.get("cron") if isinstance(cfg, dict) else None
+    return str(cron.get("model_provider") or "").strip() if isinstance(cron, dict) else ""
+
+
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
     requested-provider computation. Skipped when the job has a fallback chain — auth-fallback may
@@ -94,9 +100,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     except Exception:
         return None  # fail-open: never block on a preflight-internal error
 
-    _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
-    requested = (
-        job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
+    requested = job.get("provider") or cron_default_provider(cfg) or None
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
@@ -248,7 +252,7 @@ def _satellite_routes_for_current_home(profile_name: Optional[str] = None) -> li
     satellite's ``SharedRouteAdapters`` from exactly this list."""
     return _primary_profile_routes_for_current_home() + _primary_binding_routes_for_current_home(profile_name)
 
-def satellite_delivery_adapters(profile_name, own, primary):
+def satellite_delivery_adapters(profile_name, own, primary, owned=None):
     """Delivery map for a served secondary profile: its own adapters, or — when it runs no messaging
     adapter of its own (credentialless satellite) — a ``SharedRouteAdapters`` view that lends the
     primary's adapter for exactly-routed targets and keeps its own non-messaging adapters.
@@ -256,11 +260,15 @@ def satellite_delivery_adapters(profile_name, own, primary):
     "No messaging adapter", not "empty map": a satellite's map also holds the LOCAL session adapter
     once it runs a local session (gateway/session_local_recovery.py), and every cron run is one. Keyed
     on emptiness, live 2026-10-15 xcx stopped borrowing the default DingTalk bot and its pushes failed
-    "platform 'dingtalk' not configured/enabled"."""
+    "platform 'dingtalk' not configured/enabled".
+
+    ``owned`` is the profile's ``_profile_bot_platforms`` entry (upstream): a bot of its own that dropped
+    leaves the live map while it reconnects, and borrowing the primary meanwhile would send through the
+    wrong bot."""
     from gateway.config import has_messaging_adapter
 
     own = own or {}
-    if not primary or has_messaging_adapter(own):
+    if not primary or owned or has_messaging_adapter(own):
         return own
     routes = _satellite_routes_for_current_home(profile_name)
     return SharedRouteAdapters(primary, routes, own=own) if own else SharedRouteAdapters(primary, routes)
@@ -309,6 +317,16 @@ class SharedRouteAdapters:
             ):
                 return adapter
         return default
+
+
+def has_credential_platform(adapters, owned=None) -> bool:
+    """True when the profile has a bot of its own. Any local session (Desktop chat, CLI run, Kanban
+    worker) adds a ``LOCAL`` adapter, which holds no platform credential: a profile with only that is
+    still a credentialless satellite that may ride routed primary adapters. ``owned`` is the
+    profile's ``_profile_bot_platforms`` entry: a bot that dropped leaves the live map while it
+    disconnects and reconnects, and borrowing the primary meanwhile would send through the wrong bot."""
+    return bool(owned) or any(
+        getattr(platform, "value", platform) != "local" for platform in adapters or ())
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:

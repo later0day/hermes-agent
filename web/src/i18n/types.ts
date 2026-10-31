@@ -157,6 +157,14 @@ export interface Translations extends ForkSections {
     sharedMetricsSaveFailed?: string;
   };
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: string;
+    noProvider: string;
+    builtinLayer: string;
+    builtinNote: string;
+  };
+
   // ── Status page ──
   status: {
     actionFailed: string;

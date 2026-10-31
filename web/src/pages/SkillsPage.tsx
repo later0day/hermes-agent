@@ -69,6 +69,7 @@ import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { installedHubEntry } from "@/lib/skill-hub-installed";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -1062,7 +1063,7 @@ function HubBrowser({
   }, [showToast, profile, s]);
 
   const isInstalled = useCallback(
-    (identifier: string) => Boolean(installed[identifier]),
+    (hit: SkillHubResult) => Boolean(installedHubEntry(installed, hit)),
     [installed],
   );
 
@@ -1162,7 +1163,7 @@ function HubBrowser({
                 <HubResultCard
                   key={r.identifier}
                   result={r}
-                  installed={isInstalled(r.identifier)}
+                  installed={isInstalled(r)}
                   onOpen={() => setDetail(r)}
                   onInstall={() => void install(r.identifier)}
                 />
@@ -1205,7 +1206,7 @@ function HubBrowser({
               <HubResultCard
                 key={r.identifier}
                 result={r}
-                installed={isInstalled(r.identifier)}
+                installed={isInstalled(r)}
                 onOpen={() => setDetail(r)}
                 onInstall={() => void install(r.identifier)}
               />
@@ -1218,7 +1219,7 @@ function HubBrowser({
       {detail && (
         <SkillDetailDialog
           result={detail}
-          installed={isInstalled(detail.identifier)}
+          installed={isInstalled(detail)}
           onClose={() => setDetail(null)}
           onInstall={() => void install(detail.identifier)}
           showToast={showToast}
