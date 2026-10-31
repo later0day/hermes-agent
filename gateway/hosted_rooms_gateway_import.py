@@ -46,6 +46,18 @@ HANDOFF_TABLE = "hosted_room_gateway_handoffs"
 _OWNER = "gateway.hosted.owner.v1:"
 
 
+def handoff_enabled() -> bool:
+    """Fork: the gateway takes over the standalone backend's rooms only when opted in.
+
+    The fork's Rooms dashboard (``hermes_cli/web_routers/rooms.py``) drives its teams through the
+    dashboard's own ``HostedRoomService`` on ``shared-state.db``, not through the forwarded
+    ``groups.*`` RPC. Fencing those rooms to the gateway on every gateway start would freeze them
+    for that dashboard (every write refused), so the hand-over stays off unless
+    ``HERMES_ROOMS_GATEWAY_HANDOFF=1``."""
+    import os
+    return os.environ.get("HERMES_ROOMS_GATEWAY_HANDOFF", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def handoff_gateway_id() -> str:
     """The authority a standalone room is fenced to once the gateway store holds it."""
     from gateway.hosted_rooms import local_authority_gateway_id
@@ -169,6 +181,8 @@ def import_after_ready(authorities) -> None:
     the gateway is starting), so this second pass leaves nothing stranded until the next restart.
     The service's driver re-reads its bindings each tick and is woken for the claimed rooms."""
     import threading
+    if not handoff_enabled():
+        return
     for authority in authorities:
         service = getattr(authority, "hosted_room_service", None)
         if service is None or getattr(service, "_ready_import_started", False):

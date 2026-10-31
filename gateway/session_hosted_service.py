@@ -252,8 +252,10 @@ async def _ensure_hosted_service(runner, authority):
         service = getattr(authority, 'hosted_room_service', None)
         if service is None:
             loop = asyncio.get_running_loop()
-            from gateway.hosted_rooms_gateway_import import import_standalone_rooms
-            await asyncio.to_thread(import_standalone_rooms, Path(authority.db.db_path), runtime_epoch=authority.epoch)
+            from gateway.hosted_rooms_gateway_import import handoff_enabled, import_standalone_rooms
+            if handoff_enabled():  # fork: opt-in, see handoff_enabled()
+                await asyncio.to_thread(
+                    import_standalone_rooms, Path(authority.db.db_path), runtime_epoch=authority.epoch)
             service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
             authority.hosted_room_service = service
         if not getattr(service, '_transport_installed', False):
