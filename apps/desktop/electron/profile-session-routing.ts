@@ -75,6 +75,41 @@ function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
   }
 }
 
+/** Tag the primary aggregate's rows with the connection that actually served them.
+ *
+ * The primary backend's rows carry no `connection_id`, and the renderer stamps
+ * every untagged row with the window's ACTIVE connection. That works while the
+ * window is on the primary. A window pinned to another gateway (e.g. an SSH box)
+ * still gets the primary's local rows merged into its all-profiles list. Left
+ * untagged, a local-only profile like `laptop` is filed under the remote gateway,
+ * and opening it dials a profile that does not exist there. Only fills in rows
+ * that have no tag yet, and does nothing when the primary IS the pinned
+ * connection (the renderer's stamp is already right). */
+export function tagPrimarySessionRows(
+  data: unknown,
+  primaryConnectionId: null | string | undefined,
+  pinnedConnectionId: null | string | undefined
+): unknown {
+  const pinned = String(pinnedConnectionId ?? '').trim()
+  const owner = String(primaryConnectionId ?? '').trim() || 'local'
+
+  if (!pinned || pinned === owner) {
+    return data
+  }
+
+  for (const row of rowsOf(data)) {
+    if (row && typeof row === 'object') {
+      const session = row as Record<string, unknown>
+
+      if (typeof session.connection_id !== 'string' || !session.connection_id.trim()) {
+        session.connection_id = owner
+      }
+    }
+  }
+
+  return data
+}
+
 /** Preserve the registry source that served a session REST response.
  *
  * A registry-pinned request is dispatched directly to that remote host, so its
@@ -1651,4 +1686,44 @@ export async function fetchAllProfilesAggregatePerProfile(
   }
 
   return mergeProfilePullRequests(reads)
+}
+
+/** Which registry connection the primary session aggregate reads: the registry id stamped on a
+ *  remote primary's descriptor, or this device when the descriptor is a local backend. A remote
+ *  primary with no registry id (`HERMES_DESKTOP_REMOTE_URL`) or an unreadable descriptor is
+ *  `null`: its rows stay untagged rather than being sent to a local backend that lacks them.
+ *  `resolve` must be passive, so a sidebar refresh never spawns or dials for it. */
+export async function primaryAggregateConnectionId(resolve: () => Promise<unknown>): Promise<null | string> {
+  try {
+    const descriptor = (await resolve()) as { connectionId?: unknown; mode?: unknown } | null
+    const connectionId = String(descriptor?.connectionId || '').trim()
+
+    if (connectionId) {
+      return connectionId
+    }
+
+    return descriptor && String(descriptor.mode || 'local') === 'local' ? 'local' : null
+  } catch {
+    return null
+  }
+}
+
+/** Tag the primary aggregate's rows for a window pinned to another gateway, when the primary's
+ *  owner is known (see `primaryAggregateConnectionId`). */
+export async function tagPrimaryAggregateRows(
+  data: unknown,
+  resolve: () => Promise<unknown>,
+  pinnedConnectionId: string
+): Promise<void> {
+  const owner = await primaryAggregateConnectionId(resolve)
+
+  if (owner) {
+    tagPrimarySessionRows(data, owner, pinnedConnectionId)
+  }
+}
+
+/** A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson). Session lookups are a
+ *  probe ladder: "not on this profile" is a normal rung outcome, not a failure. */
+export function isNotFoundApiError(error: unknown): boolean {
+  return /(?:^|\s)404\b/.test(String((error as { message?: unknown } | null)?.message ?? error))
 }

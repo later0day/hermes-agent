@@ -20,11 +20,13 @@ import {
   mergeProfileSessionWindow,
   mergeRegistrySessionRows,
   pathWithRemoteOwnerScope,
+  primaryAggregateConnectionId,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
+  tagPrimarySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -1045,6 +1047,29 @@ test('registry paging and splicing keep same-id sessions from different profiles
   )
 })
 
+test('primary rows merged into a window pinned elsewhere keep their real owner', () => {
+  const base = () => ({
+    sessions: [
+      { id: 'laptop-chat', profile: 'laptop' },
+      { id: 'tagged', profile: 'default', connection_id: 'homelab' }
+    ]
+  })
+
+  // Pinned to a remote gateway, local primary: untagged rows are this device's.
+  const pinnedRemote = tagPrimarySessionRows(base(), null, 'butler') as any
+  assert.equal(pinnedRemote.sessions[0].connection_id, 'local')
+  assert.equal(pinnedRemote.sessions[1].connection_id, 'homelab')
+
+  // A remote primary names its own registry id.
+  const remotePrimary = tagPrimarySessionRows(base(), 'butler', 'local') as any
+  assert.equal(remotePrimary.sessions[0].connection_id, 'butler')
+
+  // Pinned to the primary itself, or unpinned: leave the renderer's stamp alone.
+  assert.equal((tagPrimarySessionRows(base(), 'local', 'local') as any).sessions[0].connection_id, undefined)
+  assert.equal((tagPrimarySessionRows(base(), null, null) as any).sessions[0].connection_id, undefined)
+  assert.equal((tagPrimarySessionRows(base(), 'butler', 'butler') as any).sessions[0].connection_id, undefined)
+})
+
 test('registry-pinned session responses retain their owning connection', () => {
   const sidebar = tagRegistrySessionResponse(
     '/api/profiles/sessions/sidebar?recents_profile=default',
@@ -1748,4 +1773,18 @@ test('all-profiles cron list merges one read per profile like the gateway', asyn
   assert.deepEqual(reads.sort(), ['/api/cron/jobs?profile=broken', '/api/cron/jobs?profile=default', '/api/cron/jobs?profile=work'])
   // A duplicate keeps its first position but the default profile's copy; id-less jobs never fold.
   assert.deepEqual(jobs.map(job => `${job.id}:${job.profile ?? job.name}`), ['shared:default', 'w:work', 'unknown:w-orphan', 'unknown:d-orphan'])
+})
+
+test('the primary aggregate names this device only for a local backend', async () => {
+  assert.equal(await primaryAggregateConnectionId(async () => ({ connectionId: 'butler', mode: 'remote' })), 'butler')
+  assert.equal(await primaryAggregateConnectionId(async () => ({ mode: 'local' })), 'local')
+  // HERMES_DESKTOP_REMOTE_URL: remote with no registry id. Its rows are not This device's.
+  assert.equal(await primaryAggregateConnectionId(async () => ({ mode: 'remote' })), null)
+  assert.equal(await primaryAggregateConnectionId(async () => null), null)
+  assert.equal(
+    await primaryAggregateConnectionId(async () => {
+      throw new Error('no backend')
+    }),
+    null
+  )
 })

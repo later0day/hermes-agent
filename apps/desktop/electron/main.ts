@@ -469,6 +469,7 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
+  isNotFoundApiError,
   isRemoteSessionRequestPath,
   mergeRegistrySessionRows,
   type RegistrySessionSource,
@@ -476,6 +477,7 @@ import {
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
+  tagPrimaryAggregateRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -15672,7 +15674,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
     }
 
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, registryConnectionId)
   }
 
   // Batched sidebar slices. With no remote profiles the local batched endpoint
@@ -15701,9 +15703,9 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
 
     const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources, registryConnectionId)
     ])
 
     return assembleSidebarSessionSlices(recents, cron, messaging)
@@ -15843,7 +15845,7 @@ async function remoteOwnerProfileForSession(sessionId: string) {
 // returns data (never `undefined`) so a batched caller can compose slices. A
 // specific local profile reads from the local primary; a remote-override profile
 // reads from its remote; 'all' merges every remote into the primary aggregate.
-async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null) {
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null, pinnedConnectionId = null) {
   const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
   if (requested !== 'all') {
@@ -15854,7 +15856,7 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
     return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
   }
 
-  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, pinnedConnectionId)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
@@ -15863,12 +15865,16 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
 // than breaking the sidebar. Connected registry gateways' sessions are spliced
 // in too (#88880) — the unified Sessions list shows EVERY connected gateway's
 // chats, tagged with connection_id + profile so opens route correctly.
-async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null) {
+async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null, pinned = null) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
+
+  if (pinned) {
+    await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)
+  }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -16040,13 +16046,6 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
     stopPoolBackend(key),
     sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
   ])
-}
-
-// A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson).
-// Session lookups are a probe ladder: "not on this profile" is a normal rung
-// outcome, not a failure.
-function isNotFoundApiError(error) {
-  return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
 }
 
 async function handleHermesApiRequest(request) {
