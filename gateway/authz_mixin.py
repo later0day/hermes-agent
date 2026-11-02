@@ -256,7 +256,13 @@ class GatewayAuthorizationMixin:
         return transport.adapter if transport is not None else None
 
     def _default_bot_routes_to(self, source: SessionSource, profile: str) -> bool:
-        """Whether the most specific default-bot route matching *source*'s chat names *profile*."""
+        """Whether the most specific default-bot route matching *source*'s chat names *profile*.
+
+        Fork: an ``/agent use`` binding of the chat outranks ``profile_routes`` (``_bound_profile_for_source``,
+        the same rule ingress stamps with), so a chat bound to *profile* counts as a default-bot route to it.
+        Without this, restored turns of bound chats (xcx) could not borrow the primary bot after a restart."""
+        if self._agent_binding_routes_to(source, profile):
+            return True
         from gateway.profile_routing import match_profile_route
         route = match_profile_route(
             self.config.profile_routes, source.platform.value, guild_id=getattr(source, "scope_id", None),
@@ -313,6 +319,16 @@ class GatewayAuthorizationMixin:
         from gateway.run import _multiplex_profile_homes
         try:
             return profile_name in {name for name, _home in _multiplex_profile_homes(config)}
+        except Exception:
+            return False
+
+    def _agent_binding_routes_to(self, source: SessionSource, profile: str) -> bool:
+        """True when an ``/agent use`` binding of *source*'s primary-bot chat names *profile*. Fails closed."""
+        resolve = getattr(self, "_bound_profile_for_source", None)
+        if resolve is None or not profile:
+            return False
+        try:
+            return resolve(source, None, self.config) == profile
         except Exception:
             return False
 
