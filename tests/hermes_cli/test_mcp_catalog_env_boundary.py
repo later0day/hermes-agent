@@ -71,7 +71,7 @@ def test_catalog_rejects_undeclared_key_before_any_write_or_install(
     monkeypatch.setattr(
         mcp_catalog,
         "install_entry",
-        lambda entry, enable=True, preloaded_env=None: installs.append(entry.name),
+        lambda entry, enable=True, preloaded_env=None, interactive=True: installs.append(entry.name),
     )
 
     response = client.post(
@@ -119,7 +119,7 @@ def test_catalog_cannot_declare_reserved_control_key(
     monkeypatch.setattr(
         mcp_catalog,
         "install_entry",
-        lambda entry, enable=True, preloaded_env=None: installs.append(entry.name),
+        lambda entry, enable=True, preloaded_env=None, interactive=True: installs.append(entry.name),
     )
 
     response = client.post(

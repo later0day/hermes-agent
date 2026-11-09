@@ -330,6 +330,39 @@ class TestInstall:
         assert servers["demo"]["args"] == ["-y", "demo-mcp"]
         assert servers["demo"]["enabled"] is True
 
+    def test_noninteractive_install_never_opens_the_tool_checklist(self, catalog_dir, monkeypatch):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        import sys as _sys
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: [("tool_a", "a"), ("tool_b", "b")])
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+        def _no_terminal(*args, **kwargs):
+            raise AssertionError("noninteractive install touched the terminal")
+
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", _no_terminal)
+        mc.install_entry(_entry("demo"), enable=True, interactive=False)
+
+        assert "tools" not in load_config()["mcp_servers"]["demo"]
+
+    def test_noninteractive_install_rejects_missing_credentials_without_prompting(
+            self, catalog_dir, monkeypatch):
+        body = _basic_manifest(auth={
+            "type": "api_key",
+            "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+        })
+        _write_manifest(catalog_dir, "demo", body)
+        import hermes_cli.mcp_catalog as mc
+
+        def _no_prompt(*args, **kwargs):
+            raise AssertionError("noninteractive install prompted for credentials")
+
+        monkeypatch.setattr(mc, "_prompt_input", _no_prompt)
+        with pytest.raises(mc.CatalogError, match="DEMO_KEY is required"):
+            mc.install_entry(_entry("demo"), enable=True, interactive=False)
+
     def test_install_default_excluded_writes_exclude_without_probe(
         self, catalog_dir, monkeypatch
     ):

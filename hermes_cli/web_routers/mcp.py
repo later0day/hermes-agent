@@ -500,7 +500,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     effective_profile = body.profile or profile
     # Secrets are persisted to .env here (before install_entry runs); non-secret
     # values ride preloaded_env into install_entry → config.yaml, so .env stays
-    # secrets-only and nothing re-prompts on a non-TTY server.
+    # secrets-only and missing values fail instead of prompting on the service TTY.
     if body.env:
         def _write_env():
             with _profile_scope(effective_profile):
@@ -528,7 +528,8 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     try:
         await scoped_to_thread(
             effective_profile,
-            lambda: mcp_catalog.install_entry(entry, enable=body.enable, preloaded_env=body.env or None),
+            lambda: mcp_catalog.install_entry(
+                entry, enable=body.enable, preloaded_env=body.env or None, interactive=False),
         )
     except HTTPException:
         raise

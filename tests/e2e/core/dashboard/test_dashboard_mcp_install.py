@@ -28,25 +28,12 @@ import pytest
 import hermes_yaml as yaml
 
 from tests.e2e.core.dashboard._helpers import Sandbox, make_sandbox
-from tests.e2e.core._pending_fixes import known_gate
-from tests.e2e.core.dashboard._issue_helpers import Issue120527, PtyDashboard
+from tests.e2e.core.dashboard._issue_helpers import PtyDashboard
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="pty stdin + /proc reaper")
 INSTALL_DEADLINE_S = 30.0  # a healthy install (write config + spawn/probe a local server) takes ~2 s
 FOLLOWUP_DEADLINE_S = 5.0
 FIXTURE = Path(__file__).with_name("fixture_catalog_mcp.py")
-
-# Open issues this file encodes: test name -> (the bug's own failure signature, "#issue reason"). The
-# gate (_pending_fixes.known_failure) excuses only Issue120527 with that message and passes once the
-# fix lands; delete the entry then.
-KNOWN: dict[str, tuple[str, str]] = {
-    "test_catalog_install_from_tty_launched_dashboard_never_wedges_the_server": (
-        # A slow install whose follow-ups both answer is not the wedge; it must stay red.
-        r"^dashboard wedged by an MCP catalog install \(stdin=/dev/pts/\d+\): install -> ReadTimeout after [^;]*; "
-        r"(?!GET /api/config -> HTTP 200; /api/ws -> accepted\n)",
-        "#120527 dashboard MCP catalog install reaches the interactive tool checklist on the serve "
-        "worker thread when stdin is a TTY and wedges _SKILLS_PROFILE_LOCK"),
-}
 
 
 @pytest.fixture
@@ -58,7 +45,7 @@ def sb(tmp_path: Path):
         sandbox.finish()
 
 
-def _write_catalog(root: Path, name: str) -> Path:
+def _write_catalog(root: Path, name: str, *, auth: dict | None = None) -> Path:
     catalog = root / "optional-mcps"
     (catalog / name).mkdir(parents=True)
     (catalog / name / "manifest.yaml").write_text(yaml.safe_dump({
@@ -67,7 +54,7 @@ def _write_catalog(root: Path, name: str) -> Path:
         "description": "Offline stdio fixture MCP for the dashboard e2e lane.",
         "source": "tests/e2e/core/dashboard/fixture_catalog_mcp.py",
         "transport": {"type": "stdio", "command": sys.executable, "args": [str(FIXTURE)]},
-        "auth": {"type": "none"},
+        "auth": auth or {"type": "none"},
     }, sort_keys=False), encoding="utf-8")
     return catalog
 
@@ -83,13 +70,15 @@ def _ws_opens(url: str, timeout: float) -> str:
         return f"{type(exc).__name__}: {exc}"
 
 
-def _install_and_probe(sb: Sandbox, tmp_path: Path, *, tty: bool, wedge_exc: type[AssertionError]) -> dict:
+def _install_and_probe(
+        sb: Sandbox, tmp_path: Path, *, tty: bool, wedge_exc: type[AssertionError],
+        auth: dict | None = None) -> dict:
     """Install the fixture entry through the dashboard, then probe the server's liveness.
 
     Raises ``wedge_exc`` when the install misses its deadline or a follow-up request stalls;
     returns the installed ``mcp_servers.<name>`` block when the install answered 200."""
     name = f"dashfix-{sb.profiles['default'].tag}"
-    catalog = _write_catalog(tmp_path, name)
+    catalog = _write_catalog(tmp_path, name, auth=auth)
     dash = PtyDashboard(sb, tmp_path / "dashboard.log", extra_env={"HERMES_OPTIONAL_MCPS": str(catalog)}, tty=tty)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="e2e-120527")
     try:
@@ -150,7 +139,11 @@ def test_catalog_install_from_headless_dashboard_completes_with_all_probed_tools
 
 
 def test_catalog_install_from_tty_launched_dashboard_never_wedges_the_server(sb: Sandbox, tmp_path: Path) -> None:
-    # Issue120527 is raised only at the wedge verdict, after the install and both follow-ups settled.
-    with known_gate(KNOWN, "test_catalog_install_from_tty_launched_dashboard_never_wedges_the_server",
-                    raises=Issue120527):
-        _install_and_probe(sb, tmp_path, tty=True, wedge_exc=Issue120527)
+    _install_and_probe(sb, tmp_path, tty=True, wedge_exc=AssertionError)
+
+
+def test_catalog_install_missing_credentials_fails_without_reading_the_server_tty(
+        sb: Sandbox, tmp_path: Path) -> None:
+    auth = {"type": "api_key", "env": [{"name": "DASHBOARD_E2E_KEY", "prompt": "key", "secret": True}]}
+    block = _install_and_probe(sb, tmp_path, tty=True, wedge_exc=AssertionError, auth=auth)
+    assert block == {}

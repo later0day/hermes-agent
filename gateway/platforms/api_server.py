@@ -362,13 +362,14 @@ def _cap_list(items: list) -> list:
     return items[:MAX_CONTENT_LIST_SIZE] if len(items) > MAX_CONTENT_LIST_SIZE else items
 
 
-def _normalize_chat_content(content: Any, *, _max_depth: int = 10, _depth: int = 0) -> str:
+def _normalize_chat_content(
+        content: Any, *, _max_depth: int = 10, _depth: int = 0, preserve_text: bool = False) -> str:
     """Flatten OpenAI chat content (string or typed-part array) into one plain string; non-text
-    parts are skipped, recursion depth / list size / output length are bounded."""
+    parts are skipped, recursion depth / list size / output length are bounded unless preserved."""
     if _depth > _max_depth or content is None:
         return ""
     if isinstance(content, str):
-        return _cap_text(content)
+        return content if preserve_text else _cap_text(content)
     if isinstance(content, list):
         parts: list[str] = []
         total_len = 0
@@ -383,16 +384,19 @@ def _normalize_chat_content(content: Any, *, _max_depth: int = 10, _depth: int =
                         with suppress(Exception):
                             part = str(text)
             elif isinstance(item, list):
-                part = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
+                part = _normalize_chat_content(
+                    item, _max_depth=_max_depth, _depth=_depth + 1, preserve_text=preserve_text)
             if part:
-                part = _cap_text(part)
+                part = part if preserve_text else _cap_text(part)
                 parts.append(part)
                 total_len += len(part)
-            if total_len >= MAX_NORMALIZED_TEXT_LENGTH:
+            if not preserve_text and total_len >= MAX_NORMALIZED_TEXT_LENGTH:
                 break
-        return _cap_text("\n".join(parts))
+        normalized = "\n".join(parts)
+        return normalized if preserve_text else _cap_text(normalized)
     try:
-        return _cap_text(str(content))
+        normalized = str(content)
+        return normalized if preserve_text else _cap_text(normalized)
     except Exception:
         return ""
 
@@ -434,24 +438,26 @@ def _normalize_image_part(part: dict[str, Any]) -> dict[str, Any]:
     return image_part
 
 
-def _normalize_multimodal_content(content: Any) -> Any:
+def _normalize_multimodal_content(content: Any, *, preserve_text: bool = False) -> Any:
     """Validate multimodal content: a plain string when text-only, else canonical ``text`` /
     ``image_url`` parts (native OpenAI vision shape; Anthropic conversion happens downstream).
 
-    Raises ``ValueError("<code>:<message>")`` with codes ``unsupported_content_type`` (file
-    parts, non-image data URLs, unknown types), ``invalid_image_url``, ``invalid_content_part``.
+    Session history APIs preserve the complete text; OpenAI-compatible endpoints retain the
+    bounded normalization limit. Raises ``ValueError("<code>:<message>")`` with codes
+    ``unsupported_content_type`` (file parts, non-image data URLs, unknown types),
+    ``invalid_image_url``, ``invalid_content_part``.
     """
     if content is None:
         return ""
     if isinstance(content, str):
-        return _cap_text(content)
+        return content if preserve_text else _cap_text(content)
     if not isinstance(content, list):
-        return _normalize_chat_content(content)
+        return _normalize_chat_content(content, preserve_text=preserve_text)
     normalized_parts: list[dict[str, Any]] = []
     for part in _cap_list(content):
         if isinstance(part, str):
             if part:
-                normalized_parts.append({"type": "text", "text": _cap_text(part)})
+                normalized_parts.append({"type": "text", "text": part if preserve_text else _cap_text(part)})
             continue
         if not isinstance(part, dict):
             continue  # unknown scalars are ignored for forward compatibility (e.g. ``refusal``)
@@ -460,7 +466,9 @@ def _normalize_multimodal_content(content: Any) -> Any:
         if part_type in _TEXT_PART_TYPES:
             text = part.get("text")
             if text is not None and str(text):
-                normalized_parts.append({"type": "text", "text": _cap_text(str(text))})
+                normalized = str(text)
+                normalized_parts.append(
+                    {"type": "text", "text": normalized if preserve_text else _cap_text(normalized)})
         elif part_type in _IMAGE_PART_TYPES:
             normalized_parts.append(_normalize_image_part(part))
         elif part_type in _FILE_PART_TYPES:
@@ -570,12 +578,12 @@ def _clear_turn_process_ownership(agent: Any) -> None:
 
 
 def _session_chat_user_message(body: dict[str, Any], *, param: str = "message") -> tuple[Any, Optional[web.Response]]:
-    """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
+    """Parse session chat input without silently rewriting the persisted user turn."""
     user_message = body.get("message") or body.get("input")
     if not _content_has_visible_payload(user_message):
         return None, _error_response("Missing 'message' field", 400, code="missing_message")
     try:
-        return _normalize_multimodal_content(user_message), None
+        return _normalize_multimodal_content(user_message, preserve_text=True), None
     except ValueError as exc:
         return None, _multimodal_validation_error(exc, param=param)
 

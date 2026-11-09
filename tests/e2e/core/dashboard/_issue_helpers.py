@@ -1,4 +1,4 @@
-"""Shared bits for the dashboard lane's open-issue cells (#120527, #120937).
+"""Shared bits for the dashboard lane's issue-regression cells.
 
 * ``PtyDashboard``: the lane's ``Dashboard`` harness, but spawned with a pseudo-terminal slave as
   stdin — the shape of ``hermes serve`` / ``hermes dashboard`` launched from an interactive
@@ -8,10 +8,6 @@
 * ``GatewayApiServer``: a real ``python -m gateway.run`` with the API-server platform enabled via
   the profile ``.env`` exactly as a user configures it (``API_SERVER_ENABLED``/``_KEY``/``_HOST``/
   ``_PORT``), retrying the pick-then-bind port race like the parity lane's driver.
-* ``KnownIssue`` assertion subclasses: a KNOWN cell gates its final check with
-  ``known_gate(KNOWN, name, raises=<its subclass>)`` (tests/e2e/core/_pending_fixes.py), so only the
-  bug's own signature is excused; a boot failure or any other assertion stays red, and the cell
-  simply passes once the fix lands.
 """
 
 from __future__ import annotations
@@ -36,18 +32,6 @@ from tests.e2e.core.dashboard._helpers import (
     _READY_RE, _TOKEN_RE, Dashboard, Sandbox, group_members, kill_group, poll,
 )
 from tests.e2e.core.dashboard._reaper import kill_identified
-
-
-class KnownIssue(AssertionError):
-    """Base for assertions that encode an OPEN issue's user-visible signature."""
-
-
-class Issue120527(KnownIssue):
-    """#120527: a dashboard MCP catalog install wedges the serve process (interactive prompt)."""
-
-
-class Issue120937(KnownIssue):
-    """#120937: /api/sessions/{id}/chat silently truncates a long message."""
 
 
 # Dashboard with a TTY stdin -----------------------------------------------------------------------

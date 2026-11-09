@@ -36,10 +36,8 @@ from typing import Any, Callable
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
-    KnownSymptom,
     NativeHome,
     assert_no_duplicate_assistant_text,
     latest_session,
@@ -78,13 +76,6 @@ COMPACT_FILES = 8
 COMPACT_ASK = "Read f1.txt through f8.txt one by one, then say done (COMPACT-ASK)."
 SUMMARY = "SUMMARY-ACP-7f3: files f1..fN were read; each is lorem ipsum filler."
 FINAL_COMPACT = "All eight files read (FINAL-COMPACT)."
-
-
-# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
-KNOWN: dict[str, tuple[str, str]] = {
-    "late_chunk": (r"^late chunk dropped: \d+ model calls, stdout=",
-                   "#65788 agent_message_chunk emitted after the session/prompt result is dropped"),
-}
 
 
 @dataclass
@@ -150,8 +141,10 @@ def _flow(root: Path) -> Scenario:
 
 
 def _late(root: Path) -> Scenario:
-    """The agent answers ``session/prompt`` first and streams the message chunk 250 ms later."""
-    sc = _home(root, [[acp.result(), acp.message(LATE_TEXT, delay=0.25)], [acp.message("SECOND-TRY-65788")]])
+    """The agent answers ``session/prompt`` first, then requests a file and streams the answer 250 ms later."""
+    sc = _home(root, [[acp.result(), acp.fs_read(str(NativeHome(root).project / "late.txt")),
+                       acp.message(LATE_TEXT, delay=0.25)], [acp.message("SECOND-TRY-65788")]])
+    (sc.nh.project / "late.txt").write_text(CANARY, encoding="utf-8")
     sc.runs.append(run_chat(sc.nh, "Say the late answer."))
     return sc
 
@@ -320,8 +313,12 @@ def test_message_chunk_after_prompt_result_reaches_the_user(outcomes):
     assert run.returncode == 0, run.describe()
     assert sc.fake.invalid() == [], sc.fake.invalid()
     rows = messages(sc.nh, latest_session(sc.nh))
-    with known_gate(KNOWN, "late_chunk", raises=KnownSymptom):
-        if LATE_TEXT not in run.stdout:
-            raise KnownSymptom(f"late chunk dropped: {len(sc.fake.main_prompts())} model calls, stdout={run.stdout!r}")
+    assert LATE_TEXT in run.stdout, (
+        f"late chunk dropped: {len(sc.fake.main_prompts())} model calls, stdout={run.stdout!r}")
     assert_no_duplicate_assistant_text(rows, LATE_TEXT)
     assert len(sc.fake.main_prompts()) == 1, "a delivered late chunk must not trigger an empty-response retry"
+    reads = [r for r in sc.fake.records() if r.get("kind") == "fs_read_result"]
+    assert len(reads) == 1 and not reads[0]["errors"] and reads[0]["msg"]["result"]["content"] == CANARY, reads
+    pids = sc.fake.pids()
+    assert len(pids) == 1
+    wait_until(lambda: not _alive(pids[0]), 10.0, "the late-chunk agent process to exit")

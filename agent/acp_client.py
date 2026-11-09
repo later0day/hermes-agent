@@ -44,6 +44,8 @@ from agent.runtime_cwd import resolve_agent_cwd
 
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+# Some agents flush their final session/update just after answering session/prompt.
+_PROMPT_RESULT_DRAIN_SECONDS = 1.0
 # ACP JSON-RPC error code meaning "authentication required" (the agent CLI is not signed in).
 _ACP_AUTH_REQUIRED = -32000
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "tool": "Tool", "context": "Context"}
@@ -427,7 +429,7 @@ class ACPClient:
     ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
         """Start one ACP process and yield its ``session/new`` result plus request callable."""
         proc = self._spawn()
-        inbox: queue.Queue[dict[str, Any]] = queue.Queue()
+        inbox: queue.Queue[dict[str, Any] | None] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=40)
 
         def _decode(line: str) -> dict[str, Any]:
@@ -440,7 +442,14 @@ class ACPClient:
             for line in stream or ():
                 sink(line)
 
-        threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
+        def _stdout_pump() -> None:
+            try:
+                for line in proc.stdout or ():
+                    inbox.put(_decode(line))
+            finally:
+                inbox.put(None)
+
+        threading.Thread(target=_stdout_pump, daemon=True).start()
         stderr_pump = threading.Thread(
             target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
         stderr_pump.start()
@@ -468,6 +477,10 @@ class ACPClient:
                     msg = inbox.get(timeout=0.1)
                 except queue.Empty:
                     continue
+                if msg is None:
+                    if proc.poll() is None:
+                        continue
+                    break
                 if self._handle_server_message(
                     msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
                     reasoning_parts=reasoning_parts, allow_file_requests=allow_file_requests,
@@ -475,7 +488,21 @@ class ACPClient:
                     continue
                 if "error" in msg:
                     raise RuntimeError(self._request_error(method, msg.get("error") or {}))
-                return msg.get("result")
+                result = msg.get("result")
+                if method == "session/prompt":
+                    drain_deadline = min(deadline, time.monotonic() + _PROMPT_RESULT_DRAIN_SECONDS)
+                    while (remaining := drain_deadline - time.monotonic()) > 0:
+                        try:
+                            trailing = inbox.get(timeout=min(0.1, remaining))
+                        except queue.Empty:
+                            continue
+                        if trailing is None:
+                            break
+                        self._handle_server_message(
+                            trailing, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
+                            reasoning_parts=reasoning_parts, allow_file_requests=allow_file_requests,
+                        )
+                return result
             if proc.poll() is not None:
                 # The pump can still hold the crash text when poll() first sees the exit; reading
                 # it too early turned a dead CLI into a TimeoutError, which retries differently.
