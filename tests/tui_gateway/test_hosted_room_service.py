@@ -23,6 +23,7 @@ from gateway.hosted_room_peer import (
     catalog_mapping,
     issue_room_grant,
 )
+from tui_gateway import hosted_room_dag
 from tui_gateway.hosted_room_service import (
     HostedRoomService,
     _RouteStatusPeerClient,
@@ -321,7 +322,7 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     """One running task must not be counted again after it becomes stopping."""
 
     identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
-    task = {"identity": identity, "status": "running", "cancel_id": None}
+    task = {"identity": identity, "status": "running", "cancel_id": None, "payload": {"source_event_seq": 1}}
     calls = []
 
     def listed(_db, *, room_id, status):
@@ -340,7 +341,7 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
         "request_room_stop",
         lambda _db, *, room_id, cancel_id, **_authority: {
             "room_id": room_id,
-            "cancel_id": cancel_id,
+            "cancel_id": cancel_id, "seq": 2,
         },
     )
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
@@ -963,7 +964,7 @@ def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
             "text": "@backend inspect it",
         },
     )
-    service._sweep_completed_dag_dispatches(room)
+    hosted_room_dag.sweep_completed(service, room)
     assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "in_progress"
 
     append(
@@ -976,7 +977,7 @@ def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
             "text": "@lead done",
         },
     )
-    service._sweep_completed_dag_dispatches(room)
+    hosted_room_dag.sweep_completed(service, room)
     assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "in_progress"
 
     append(
@@ -989,7 +990,7 @@ def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
             "message_event_id": "worker-message",
         },
     )
-    service._sweep_completed_dag_dispatches(room)
+    hosted_room_dag.sweep_completed(service, room)
     assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "completed"
 
 
@@ -1411,7 +1412,7 @@ def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_
     assert not driver.list_tasks(db, room_id="research-room", status="running")
 
 
-def test_research_team_pending_permission_survives_restart_and_relays_exact_action(tmp_path: Path):
+def test_research_team_pending_permission_survives_restart_and_relays_exact_action(tmp_path: Path, monkeypatch):
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)
     service._set_pending_action(
@@ -1435,6 +1436,9 @@ def test_research_team_pending_permission_survives_restart_and_relays_exact_acti
     rpc = _FakeRPC()
     restarted.rpc = rpc
     restarted.runtime.rpc = rpc
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+        "identity": driver.TaskIdentity("research-room", "site-a-fetch", "thread-1", "turn-1"),
+        "execution_generation": 2, "status": "running", "payload": {"target_profile": "a"}}])
     actions = restarted.pending_actions("research-room")["actions"]
     assert len(actions) == 1
     assert actions[0]["action_id"] == "allow-site-a"
@@ -2836,8 +2840,14 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
     assert peer.dispatches == []
 
 
-def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
+def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypatch):
     db = tmp_path / "state.db"
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+        "identity": driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1"),
+        "execution_generation": 2,
+        "status": "running",
+        "payload": {"target_member_id": "member-peer", "target_profile": "reviewer"},
+    }])
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -2955,8 +2965,11 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
     assert service.status("room-1")["pending_actions"] == []
 
 
-def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
+def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path, monkeypatch):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+        "execution_generation": 1, "status": "running", "payload": {"target_profile": "local"}}])
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -2996,7 +3009,7 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
 
 
 def test_pending_local_approval_survives_restart_and_generic_action_relays(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ):
     db = tmp_path / "state.db"
     first = HostedRoomService(_server(), db_path=db)
@@ -3017,6 +3030,9 @@ def test_pending_local_approval_survives_restart_and_generic_action_relays(
     rpc = _FakeRPC()
     restarted.rpc = rpc
     restarted.runtime.rpc = rpc
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+        "execution_generation": 3, "status": "running", "payload": {"target_profile": "local"}}])
     dashboard_action = restarted.pending_actions("room-1")["actions"][0]
     assert dashboard_action["action_id"] == "approval-local-1"
     assert dashboard_action["kind"] == "permission"
@@ -3043,11 +3059,14 @@ def test_pending_local_approval_survives_restart_and_generic_action_relays(
 
 
 
-def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path):
+def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path, monkeypatch):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+        "execution_generation": 1, "status": "running", "payload": {"target_profile": "local"}}])
     action = {
         "kind": "approval",
         "task_id": "task-local-1",

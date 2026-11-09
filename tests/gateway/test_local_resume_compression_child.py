@@ -35,7 +35,8 @@ async def _resume(authority, user_id, sid):
     from gateway.session_controls import AuthorityConnection
     # The private native bootstrap identity: the subject is the bare principal the session was made by.
     connection = AuthorityConnection(authority, object(), {
-        'provider': 'local', 'user_id': user_id, 'profile_id': 'fixture', 'instance_id': authority.instance_id,
+        'provider': 'local', 'user_id': user_id, 'profile_id': authority.profile_id,
+        'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:control']})
     return await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}})
 
@@ -43,12 +44,12 @@ async def _resume(authority, user_id, sid):
 async def _compressed(tmp_path, monkeypatch):
     from gateway import run
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    authority = await initialize_session_authority(_runner(tmp_path), profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
+    authority = await initialize_session_authority(_runner(tmp_path), profile_id=str(tmp_path), instance_id='first')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:create', 'session:read'}), 'socket')
     ref = create_local_session(authority, actor, dict(request_id='lc12', source='gui', cwd=str(tmp_path),
                                                       model='frozen', toolsets=[]))
     live = authority.sessions[ref.session_id]
@@ -66,7 +67,7 @@ async def _compressed(tmp_path, monkeypatch):
 
 async def _cold(compressed):
     from gateway.session_authority import initialize_session_authority
-    return await initialize_session_authority(_runner(compressed.tmp_path), profile_id='fixture',
+    return await initialize_session_authority(_runner(compressed.tmp_path), profile_id=str(compressed.tmp_path),
                                               instance_id='second')
 
 

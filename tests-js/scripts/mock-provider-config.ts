@@ -15,6 +15,7 @@ const configSchema = z.object({
   approvals: section.optional(),
   display: section.optional(),
   onboarding: section.optional(),
+  stt: section.optional(),
 }).passthrough()
 
 //: Entry name this writer owns in ``custom_providers``; reconfiguring replaces
@@ -76,6 +77,8 @@ export function writeMockProviderConfig(
     // first message the smoke sends; these journeys test install and update, so
     // the root config records onboarding as done.
     onboarding: { ...config.onboarding, run: false },
+    // Pre-v2026.8.13 releases lazy-install faster-whisper on the WS reader when STT is on, stalling the first send.
+    stt: { ...config.stt, enabled: false },
     ...extra,
   }
 
@@ -98,8 +101,8 @@ export function writeEnvFile(hermesHome: string, apiKey = 'e2e-mock-key', mockUr
 
   if (mockUrl) {
     reps.set('OPENAI_BASE_URL', `OPENAI_BASE_URL=${mockUrl}/v1`)
-    reps.set('OPENAI_API_KEY', `OPENAI_API_KEY=${apiKey}`)
   }
+  reps.set('OPENAI_API_KEY', `OPENAI_API_KEY=${apiKey}`)
 
   // Rewrite each key IN PLACE and append only the ones that are missing. Filtering
   // the keys out and re-appending them at the end moved a journey's own entries on

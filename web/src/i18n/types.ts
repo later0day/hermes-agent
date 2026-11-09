@@ -421,6 +421,11 @@ export interface Translations extends ForkSections {
     authRequired: string;
     authRequiredHint: string;
     updateGit: string;
+    updateAll: string;
+    updatingAll: string;
+    updateAllDone: (updated: number, needsReview: number, failed: number) => string;
+    autoUpdate: string;
+    autoUpdateDesc: (hours: number) => string;
     /** Optional: locales without it fall back to the English body at the call site. */
     updateConsentBody?: (name: string, sha: string) => string;
     /** Optional, English fallback: the scan rated an update caution; confirming retries with force. */

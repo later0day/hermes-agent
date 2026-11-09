@@ -366,9 +366,10 @@ class GatewayAgentCommandsMixin:
                 write_profile_meta(p_dir, template=True)
             if parsed.orchestrator:
                 from hermes_cli.config import atomic_config_write, read_user_config_raw
+                from hermes_cli.config_backend import config_exists
 
                 cfg_path = p_dir / "config.yaml"
-                if cfg_path.exists():
+                if config_exists(cfg_path):
                     cfg = read_user_config_raw(cfg_path)
                     ts = cfg.get("toolsets", [])
                     if "kanban" not in ts:

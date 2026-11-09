@@ -67,7 +67,8 @@ async def probe(peer):
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     runner = GatewayRunner()
-    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='policy')
+    authority = await initialize_session_authority(
+        runner, profile_id=str(Path(os.environ['HERMES_HOME'])), instance_id='policy')
     api = await start_gateway_api(runner)
     web_server.app.state.auth_required = True
     async def connect():

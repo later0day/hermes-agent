@@ -89,7 +89,8 @@ async def test_the_release_detaches_by_the_id_the_read_resolved_to(tmp_path, mon
     compressed = await _compressed(tmp_path, monkeypatch)
     authority = compressed.warm
     picker = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {
-        'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
+        'provider': 'local', 'user_id': 'owner', 'profile_id': authority.profile_id,
+        'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:control']})
     read = await _call(picker, 'session.resume', session_id='child-1')  # the id the client holds
     assert read['session_id'] == compressed.owner                      # the owner resolved it elsewhere

@@ -26,6 +26,7 @@ async function authedGoto(page: Page, path: string) {
   await page.context().setExtraHTTPHeaders({
     "X-Hermes-Session-Token": TOKEN,
   });
+  await page.route("https://**/*", (route) => route.abort());
   await page.goto(`${BASE}${path}`, {
     waitUntil: "networkidle",
     timeout: 15000,
@@ -134,13 +135,11 @@ test("E2E MemoryPage: edit → save → content appears rendered on page", async
 // 2. MemoryPage: tab switch MEMORY.md → USER.md → content changes on screen
 // ═══════════════════════════════════════════════════════════════════════
 
-test("E2E MemoryPage: both MEMORY.md and USER.md editors visible with content", async ({ page }) => {
-  // Navigate first to resolve the active profile
+test("E2E MemoryPage: tab switch MEMORY.md → USER.md → content changes on screen", async ({ page }) => {
   await authedGoto(page, "/memory");
   await page.waitForTimeout(1500);
   const profile = await activeProfile(page);
 
-  // Setup: write distinct content to both files
   await page.request.put(`${BASE}/api/profiles/${profile}/memory/MEMORY.md`, {
     headers: { "X-Hermes-Session-Token": TOKEN, "Content-Type": "application/json" },
     data: { content: "# MEMORY_TAB_MARKER" },
@@ -151,26 +150,12 @@ test("E2E MemoryPage: both MEMORY.md and USER.md editors visible with content", 
   });
 
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(2000);
+  await clickPreview(page);
+  await expect(page.getByRole("heading", { name: "MEMORY_TAB_MARKER" })).toBeVisible();
 
-  // On origin/main, both editors are rendered simultaneously as separate Cards.
-  // Each card has its own Preview button. Click each Preview button to see rendered markdown.
-  // After clicking one, it becomes "Edit", so we need to find all remaining "Preview" buttons.
-  let remaining = await page.locator("button").filter({ hasText: /^Preview$/ }).count();
-  while (remaining > 0) {
-    const btn = page.locator("button").filter({ hasText: /^Preview$/ }).first();
-    await btn.click();
-    await page.waitForTimeout(300);
-    remaining = await page.locator("button").filter({ hasText: /^Preview$/ }).count();
-  }
-
-  // Both MEMORY and USER content should be visible on the page
-  await expect(page.locator("h1, h2, h3").filter({ hasText: "MEMORY_TAB_MARKER" })).toBeVisible();
-  await expect(page.locator("h1, h2, h3").filter({ hasText: "USER_TAB_MARKER" })).toBeVisible();
-
-  // Both card titles should be present
-  expect(await page.locator("text=MEMORY.md").first().textContent()).toContain("MEMORY.md");
-  expect(await page.locator("text=USER.md").first().textContent()).toContain("USER.md");
+  await page.getByRole("tab", { name: /USER\.md/ }).click();
+  await expect(page.getByRole("heading", { name: "USER_TAB_MARKER" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "MEMORY_TAB_MARKER" })).not.toBeVisible();
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -272,11 +257,7 @@ test("E2E ProfilesPage: create profile via modal → appears in list → delete 
   const modalCreateBtn = page.locator("div[role='dialog'] button, .fixed button")
     .filter({ hasText: /^Create$|^创建$/ }).first();
   await modalCreateBtn.click();
-  await page.waitForTimeout(2000);
-
-  // Profile should now appear in the list on the page
-  const bodyText = await page.evaluate(() => document.body.innerText);
-  expect(bodyText).toContain(profileName);
+  await expect(page.getByText(profileName, { exact: true }).first()).toBeVisible({ timeout: 15000 });
 
   // Now delete it: each profile card has a kebab (MoreVertical) button that opens a menu.
   // The menu contains a Delete button, only for non-default profiles.
@@ -394,13 +375,6 @@ test("E2E SkillsPage: type in search → list filters → clear → list restore
   await authedGoto(page, "/skills");
   await page.waitForTimeout(2000);
 
-  // Count initial skills visible on the page
-  const initialSkillNames = await page.evaluate(() => {
-    // Skills are rendered as rows with font-mono-ui text-sm class
-    const rows = document.querySelectorAll(".font-mono-ui.text-sm");
-    return Array.from(rows).map((r) => r.textContent?.trim() || "").filter(Boolean);
-  });
-
   // Find the search input in the page header
   const searchInput = page.locator("input[placeholder*='search' i], input[type='text']").last();
   await expect(searchInput).toBeVisible();
@@ -515,11 +489,6 @@ test("E2E Theme: switch to google theme via dropdown → CSS vars change on :roo
   await authedGoto(page, "/");
   await page.waitForTimeout(1500);
 
-  // Get baseline background CSS var
-  const baselineBg = await page.evaluate(() =>
-    getComputedStyle(document.documentElement).getPropertyValue("--background-base"),
-  );
-
   // Find the ThemeSwitcher in the sidebar/header
   // It's a button that opens a dropdown with theme options
   // Look for buttons with palette/theme icon
@@ -557,9 +526,6 @@ test("E2E Theme: switch to google theme via dropdown → CSS vars change on :roo
 test("E2E Locale: switch to Chinese → sidebar shows Chinese characters", async ({ page }) => {
   await authedGoto(page, "/");
   await page.waitForTimeout(1500);
-
-  // Get baseline English text
-  const enText = await page.evaluate(() => document.body.innerText);
 
   // Find the LanguageSwitcher button
   const langBtn = page.locator("button[aria-label*='language' i], button:has(svg.lucide-languages)").first();

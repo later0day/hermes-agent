@@ -45,10 +45,10 @@ async def test_retry_refuses_an_unresendable_turn_before_rewinding(tmp_path, mon
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     db = authority.db
     try:
-        connection = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'fixture'})
+        connection = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': str(tmp_path)})
         ref = create_local_session(authority, connection.actor, {
             'request_id': 'cli', 'source': 'cli', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
         db.append_message(ref.session_id, 'user', content)

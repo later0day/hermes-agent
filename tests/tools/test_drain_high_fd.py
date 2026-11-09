@@ -98,7 +98,7 @@ def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
     from hermes_cli.pty_bridge import PtyBridge
     from tools.environments import fd_wait
 
-    bridge = PtyBridge.spawn(["/bin/sh", "-c", "echo pty-high-fd; exec sleep 30"])
+    bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf pty-high-fd; exec sleep 30"])
     try:
         assert bridge._fd >= 1024
         buf = bytearray()

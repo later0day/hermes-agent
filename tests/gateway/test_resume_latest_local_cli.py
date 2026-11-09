@@ -31,7 +31,7 @@ def _owner(home, monkeypatch):
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _handle_message=None, _peek_session_state=lambda key: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
+    authority = SessionAuthority(runner, profile_id=str(home), instance_id='owner', db=db,
                                  epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
     runner.session_authority = authority
     return store, authority, AuthorityConnection(authority, object(), {'user_id': 'human'})

@@ -154,6 +154,41 @@ describe('Hermes REST helpers', () => {
     )
   })
 
+  it('pins concrete sidebar selectors to their profile when the ambient profile differs', async () => {
+    setApiRequestConnection('local')
+    setApiRequestProfile('alpha')
+    api.mockImplementation(async ({ path }: { path: string }) =>
+      path.startsWith('/api/profiles/sessions/sidebar')
+        ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } }
+        : emptySessionsResponse
+    )
+
+    await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 20,
+      messagingExclude: []
+    })
+    await listAllProfileSessions(20, 1, 'exclude', 'recent', 'default')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'local',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions/sidebar?recents_profile=default')
+      })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'local',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions?')
+      })
+    )
+  })
+
   it('does not stamp ambient profile onto unscoped helpers', async () => {
     setApiRequestProfile('iris')
 

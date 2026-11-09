@@ -55,7 +55,9 @@ def read_download(service, room_id, params):
     return {**saved.attachment, 'data_base64': base64.b64encode(saved.data).decode('ascii')}
 
 
-def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch, actor_id='desktop'):
+def append_user_event(
+    service, *, room_id, event_id, payload, gateway_id, epoch, actor_id='desktop', write_sidecar=None,
+):
     from gateway import hosted_rooms
     store = HostedRoomAttachmentStore(service.db_path)
     manifest = payload.get('attachments', [])
@@ -65,10 +67,16 @@ def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch,
             room_id=room_id, event_id=event_id, manifest=manifest,
             recipient_member_ids=[m['member_id'] for m in service._room(room_id)['members']],
             viewer_access=True, hold_until_event=True)
+
+    def event_payload(conn):
+        write_sidecar(conn)
+        return payload
+
     try:
         return hosted_rooms.append_event(
             service.db_path, room_id=room_id, event_id=event_id, kind='message.user',
-            actor={'kind': 'user', 'id': actor_id}, payload=payload,
+            actor={'kind': 'user', 'id': actor_id},
+            payload=event_payload if write_sidecar is not None else payload,
             authority_gateway_id=gateway_id, authority_epoch=epoch)
     except Exception:
         if transitioned:

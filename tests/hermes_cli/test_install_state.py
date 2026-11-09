@@ -157,6 +157,7 @@ def test_gateway_service_definitions_name_their_homes(tmp_path, monkeypatch):
     from hermes_platform.resolver import known_dirs
     monkeypatch.setattr(known_dirs, "gateway_service_definition_globs", lambda: (str(tmp_path / "*Gateway*"),
                                                                                 str(tmp_path / "*gateway*")))
+    monkeypatch.setattr(known_dirs, "system_gateway_service_definition_globs", lambda: ())
 
     assert set(install_state._service_homes()) == {home, Path(f"{home}-win")}
 

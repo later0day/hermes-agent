@@ -27,7 +27,7 @@ def _owner(tmp_path, monkeypatch, handle):
                              _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db,
                                  epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
     return store, authority, AuthorityConnection(authority, object(), {'user_id': 'human'})
 
@@ -119,7 +119,7 @@ async def _initialize(authority, owner, tmp_path, db):
     from gateway.session_authority import initialize_session_authority
     authority.runner.session_authority = None
     authority.runner._session_db = db
-    await initialize_session_authority(authority.runner, profile_id='owned', instance_id='second')
+    await initialize_session_authority(authority.runner, profile_id=str(tmp_path), instance_id='second')
 
 
 async def _initialize_adoption(authority, owner, tmp_path, db):
@@ -147,7 +147,7 @@ async def _first_read_adoption(authority, owner, tmp_path, db):
     runner = SimpleNamespace(**vars(authority.runner))
     runner.session_store, runner._session_db, runner.adapters = store, store._db, {}
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    cold = SessionAuthority(runner, profile_id='owned', instance_id='cold', db=store._db,
+    cold = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='cold', db=store._db,
                             epoch=rt.begin_runtime_epoch(store._db, instance_id='cold'))
     reader = AuthorityConnection(cold, object(), {'user_id': 'human'})
     try:

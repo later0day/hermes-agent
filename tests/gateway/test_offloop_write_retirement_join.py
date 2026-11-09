@@ -32,7 +32,7 @@ def _owner(tmp_path, monkeypatch):
                              _handle_message=handle, _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db,
                                  epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
     runner.session_authority = authority
     return store, authority, AuthorityConnection(authority, object(), {'user_id': 'human'})

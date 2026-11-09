@@ -16,6 +16,8 @@ import { test, expect, type Page } from "@playwright/test";
 
 const BASE = "http://localhost:9119";
 
+type TrackedWindow = Window & { __wsInstances: WebSocket[] };
+
 async function fetchToken(): Promise<string> {
   const resp = await fetch(`${BASE}/`);
   const html = await resp.text();
@@ -46,19 +48,20 @@ async function authedGoto(page: Page, path: string) {
  */
 async function injectWsTracker(page: Page) {
   await page.addInitScript(() => {
-    (window as any).__wsInstances = [];
+    const trackedWindow = window as TrackedWindow;
+    trackedWindow.__wsInstances = [];
     const OriginalWebSocket = window.WebSocket;
-    const ProxyWebSocket = function (this: any, ...args: any[]) {
+    const ProxyWebSocket = function (this: WebSocket, ...args: ConstructorParameters<typeof WebSocket>) {
       const ws = new OriginalWebSocket(...args);
-      (window as any).__wsInstances.push(ws);
+      trackedWindow.__wsInstances.push(ws);
       return ws;
-    } as any;
+    } as unknown as typeof WebSocket;
     ProxyWebSocket.prototype = OriginalWebSocket.prototype;
     ProxyWebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
     ProxyWebSocket.OPEN = OriginalWebSocket.OPEN;
     ProxyWebSocket.CLOSING = OriginalWebSocket.CLOSING;
     ProxyWebSocket.CLOSED = OriginalWebSocket.CLOSED;
-    (window as any).WebSocket = ProxyWebSocket;
+    window.WebSocket = ProxyWebSocket;
   });
 }
 
@@ -92,20 +95,20 @@ test("Chat: PTY WebSocket connects to backend", async ({ page }) => {
   await authedGoto(page, "/chat");
   // Wait for at least one WebSocket to be created (the PTY connection)
   const wsReady = await page.waitForFunction(
-    () => (window as any).__wsInstances.length > 0,
+    () => (window as TrackedWindow).__wsInstances.length > 0,
     { timeout: 10000 },
   );
   expect(wsReady).toBeTruthy();
   // Wait for the WebSocket to reach OPEN state
   await page.waitForFunction(
     () => {
-      const instances = (window as any).__wsInstances as WebSocket[];
+      const instances = (window as TrackedWindow).__wsInstances;
       return instances.some((ws) => ws.readyState === WebSocket.OPEN);
     },
     { timeout: 10000 },
   );
   const openCount = await page.evaluate(() => {
-    return ((window as any).__wsInstances as WebSocket[]).filter(
+    return ((window as TrackedWindow).__wsInstances).filter(
       (ws) => ws.readyState === WebSocket.OPEN,
     ).length;
   });
@@ -240,10 +243,7 @@ test("Chat: ChatSessionList New Chat button visible", async ({ page }) => {
   const newChatBtn = page.locator("#chat-side-panel button").filter({
     hasText: /new chat|新.*聊天|新建/i,
   });
-  // If no sessions exist, the button may say something else — check it has
-  // at least one actionable button in the session list area
-  const sidePanelButtons = await page.locator("#chat-side-panel button").count();
-  expect(sidePanelButtons).toBeGreaterThanOrEqual(2); // collapse + at least model/session
+  await expect(newChatBtn.first()).toBeVisible();
 });
 
 test("Chat: ChatSessionList refresh button has aria-label", async ({ page }) => {
@@ -272,7 +272,7 @@ test("Chat: Copy button shows 'copied' text after click", async ({ page }) => {
   // Wait for WebSocket to connect (so the click actually sends /copy)
   await page.waitForFunction(
     () => {
-      const instances = (window as any).__wsInstances as WebSocket[];
+      const instances = (window as TrackedWindow).__wsInstances;
       return instances && instances.some((ws) => ws.readyState === WebSocket.OPEN);
     },
     { timeout: 10000 },
@@ -299,7 +299,7 @@ test("Chat: WebSocket disconnect → reconnect overlay appears with Reconnect bu
   // Wait for WebSocket to connect
   await page.waitForFunction(
     () => {
-      const instances = (window as any).__wsInstances as WebSocket[];
+      const instances = (window as TrackedWindow).__wsInstances;
       return instances && instances.some((ws) => ws.readyState === WebSocket.OPEN);
     },
     { timeout: 10000 },
@@ -309,7 +309,7 @@ test("Chat: WebSocket disconnect → reconnect overlay appears with Reconnect bu
   // The onclose handler: code 4409 → setPtyState("closed"), no banner set.
   // showReconnectOverlay = ptyState==="closed" && !banner → overlay appears.
   await page.evaluate(() => {
-    const instances = (window as any).__wsInstances as WebSocket[];
+    const instances = (window as TrackedWindow).__wsInstances;
     instances.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.close(4409, "superseded");
@@ -329,7 +329,7 @@ test("Chat: click Reconnect → new WebSocket connects → overlay disappears", 
   // Wait for initial connection
   await page.waitForFunction(
     () => {
-      const instances = (window as any).__wsInstances as WebSocket[];
+      const instances = (window as TrackedWindow).__wsInstances;
       return instances && instances.some((ws) => ws.readyState === WebSocket.OPEN);
     },
     { timeout: 10000 },
@@ -337,7 +337,7 @@ test("Chat: click Reconnect → new WebSocket connects → overlay disappears", 
 
   // Disconnect with code 4409 to trigger the closed state (no banner)
   await page.evaluate(() => {
-    const instances = (window as any).__wsInstances as WebSocket[];
+    const instances = (window as TrackedWindow).__wsInstances;
     instances.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN) ws.close(4409, "superseded");
     });
@@ -353,7 +353,7 @@ test("Chat: click Reconnect → new WebSocket connects → overlay disappears", 
   // A new WebSocket should be created and reach OPEN state
   await page.waitForFunction(
     () => {
-      const instances = (window as any).__wsInstances as WebSocket[];
+      const instances = (window as TrackedWindow).__wsInstances;
       return instances.some((ws) => ws.readyState === WebSocket.OPEN);
     },
     { timeout: 15000 },

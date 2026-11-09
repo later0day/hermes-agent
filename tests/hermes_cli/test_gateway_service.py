@@ -1569,6 +1569,9 @@ class TestHermesHomeForTargetUser:
     def test_remaps_default_home(self, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        # Supply the sudo process's resolved default directly; conftest intentionally isolates
+        # the platform default even when an individual test repoints Path.home().
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path("/root/.hermes"))
 
         result = gateway_cli._hermes_home_for_target_user("/home/alice")
         assert result == "/home/alice/.hermes"

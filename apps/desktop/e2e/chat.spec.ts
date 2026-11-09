@@ -5,7 +5,7 @@
  * provider). The mock server returns a canned reply, so we verify the
  * response text shows up in the chat transcript.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { runDesktopChatSmoke } from '../../../tests-js/scripts/desktop-chat-smoke'
@@ -40,7 +40,7 @@ test.describe('chat interaction with mock backend', () => {
     await expectVisualSnapshot(fixture!.page, { name: 'chat-with-messages', app: fixture!.app })
   })
 
-  test('offers stop, steer, and queue actions while busy', async () => {
+  test('offers stop, redirect, and queue actions while busy', async () => {
     const testInfo = test.info()
     const page = fixture!.page
     const composer = page.locator('[contenteditable="true"]').first()
@@ -56,12 +56,11 @@ test.describe('chat interaction with mock backend', () => {
 
     await composer.click()
     await composer.type('please answer tersely')
-    // Since "running is not busy" (3bc52fb9df) the primary keeps the Send
-    // affordance mid-turn — steer is routed through the submit engine, not a
-    // separate labeled button. Queue remains the explicit secondary action.
-    await expect(primary).toHaveAttribute('aria-label', 'Send')
+    // The default busy-input mode interrupts the current run with the draft;
+    // Queue remains the explicit secondary action.
+    await expect(primary).toHaveAttribute('aria-label', 'Redirect the current run')
     await expect(queue).toBeVisible()
-    await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })
+    await page.screenshot({ path: testInfo.outputPath('busy-composer-redirect.png') })
 
     await queue.click()
     await expect(primary).toHaveAttribute('aria-label', 'Stop')

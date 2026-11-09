@@ -96,7 +96,7 @@ test("System: click Stop gateway → state changes to stopped", async ({ page })
     return null;
   });
   if (stopBtn) {
-    const isVisible = await stopBtn.evaluate((el: any) => el && !el.disabled).catch(() => false);
+    const isVisible = await stopBtn.evaluate((el) => el instanceof HTMLButtonElement && !el.disabled).catch(() => false);
     if (isVisible) {
       await stopBtn.asElement()!.click();
       await page.waitForTimeout(3000);
@@ -129,7 +129,7 @@ test("System: click Start gateway → state changes to running", async ({ page }
     return null;
   });
   if (startBtn) {
-    const isVisible = await startBtn.evaluate((el: any) => el && !el.disabled).catch(() => false);
+    const isVisible = await startBtn.evaluate((el) => el instanceof HTMLButtonElement && !el.disabled).catch(() => false);
     if (isVisible) {
       await startBtn.asElement()!.click();
       await page.waitForTimeout(3000);

@@ -268,6 +268,51 @@ def test_catalog_policy_comes_from_the_served_profile_not_the_launch_env(tmp_pat
         execution_policy_mapping(target_profile="ghost")
 
 
+def test_catalog_keeps_an_already_bound_named_profile_scope(tmp_path, monkeypatch):
+    _two_profile_homes(tmp_path, monkeypatch)
+    root = tmp_path / ".hermes"
+
+    from agent import secret_scope
+    from gateway.run import _profile_runtime_scope
+    from tui_gateway import launch_profile_policy
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    launch_profile_policy.activate_multi_profile_hosting()
+
+    with _profile_runtime_scope(root / "profiles" / "beta"):
+        catalog = catalog_mapping(
+            installation_id="install-peer", persistent_process=True, target_profile="beta")
+
+    assert catalog["execution_policy"]["max_iterations"] == 7
+    launch = catalog_mapping(installation_id="install-peer", persistent_process=True, target_profile="default")
+    assert launch["execution_policy"]["max_iterations"] == 12
+
+
+def test_catalog_binds_launch_scope_after_multi_profile_hosting(tmp_path, monkeypatch):
+    _two_profile_homes(tmp_path, monkeypatch)
+    root = tmp_path / ".hermes"
+    for name, turns in (("alpha", 12), ("beta", 7)):
+        (root / "profiles" / name / "config.yaml").write_text(
+            f"agent:\n  max_turns: {turns}\napprovals:\n  mode: manual\n")
+    monkeypatch.setenv("XAI_API_KEY", "launch-env-only-key")
+
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    launch_profile_policy.activate_multi_profile_hosting()
+
+    launch = catalog_mapping(installation_id="install-peer", persistent_process=True, target_profile="default")
+    secondary = catalog_mapping(installation_id="install-peer", persistent_process=True, target_profile="beta")
+
+    assert launch["execution_policy"]["max_iterations"] == 12
+    assert "x_search" in launch["execution_policy"]["enabled_toolsets"]
+    assert secondary["execution_policy"]["max_iterations"] == 7
+    assert "x_search" not in secondary["execution_policy"]["enabled_toolsets"]
+    with pytest.raises(secret_scope.UnscopedSecretError):
+        secret_scope.get_secret("XAI_API_KEY")
+
+
 def test_catalog_requires_the_served_profile_and_never_reads_hermes_profile(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
     with pytest.raises(TypeError, match="target_profile"):

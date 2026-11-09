@@ -6,7 +6,7 @@ import { expect, test } from './test'
 
 function rendererCss(): string {
   const assetsDir = path.resolve(import.meta.dirname, '..', 'dist', 'assets')
-  const stylesheet = fs.readdirSync(assetsDir).find(file => /^index-.*\.css$/.test(file))
+  const stylesheet = fs.readdirSync(assetsDir).find(file => /^(?:index|main)-.*\.css$/.test(file))
 
   if (!stylesheet) {
     throw new Error(`Desktop renderer stylesheet not found in ${assetsDir}`)

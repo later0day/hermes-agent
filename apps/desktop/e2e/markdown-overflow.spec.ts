@@ -8,7 +8,7 @@ const LONG_TOKEN = 'x'.repeat(500)
 
 function rendererCss(): string {
   const assetsDir = path.resolve(import.meta.dirname, '..', 'dist', 'assets')
-  const stylesheet = fs.readdirSync(assetsDir).find(file => /^index-.*\.css$/.test(file))
+  const stylesheet = fs.readdirSync(assetsDir).find(file => /^(?:index|main)-.*\.css$/.test(file))
 
   if (!stylesheet) {
     throw new Error(`Desktop renderer stylesheet not found in ${assetsDir}`)
@@ -45,7 +45,7 @@ test('constrains prose while tables and code scroll inside their own cards', asy
             <tr><th class="wrap-anywhere">Header with a long value</th><th>Other</th></tr>
           </thead>
           <tbody>
-            <tr><td class="wrap-anywhere">${LONG_TOKEN}</td><td>value</td></tr>
+            <tr><td>${LONG_TOKEN}</td><td>value</td></tr>
           </tbody>
         </table>
       </div>

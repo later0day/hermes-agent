@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 from gateway.config import Platform
 from gateway.profile_routing import parse_profile_routes
-from tests.gateway.test_satellite_per_platform_borrow import _restored, rig  # noqa: F401  (fixture)
+from tests.gateway.test_satellite_per_platform_borrow import _restored
+
+pytest_plugins = ["tests.gateway.test_satellite_per_platform_borrow"]
 
 
 def _bind(runner, mapping):
@@ -20,7 +22,7 @@ def _bind(runner, mapping):
     runner._source_agent_binding_store = store
 
 
-def test_a_bound_chat_borrows_the_primary_like_a_routed_one(rig):  # noqa: F811
+def test_a_bound_chat_borrows_the_primary_like_a_routed_one(rig):
     r = rig.runner
     r.config.profile_routes = parse_profile_routes([])  # no static route at all
     _bind(r, {})
@@ -31,7 +33,7 @@ def test_a_bound_chat_borrows_the_primary_like_a_routed_one(rig):  # noqa: F811
     assert r._resolve_injection_adapter("discord", _restored("ops", chat_id="555")) is rig.primary_discord
 
 
-def test_a_binding_never_lends_the_primary_for_another_profile_or_an_unbound_chat(rig):  # noqa: F811
+def test_a_binding_never_lends_the_primary_for_another_profile_or_an_unbound_chat(rig):
     r = rig.runner
     r.config.profile_routes = parse_profile_routes([])
     _bind(r, {"555": "team_b"})
@@ -42,7 +44,7 @@ def test_a_binding_never_lends_the_primary_for_another_profile_or_an_unbound_cha
     assert r._resolve_injection_adapter("telegram", _restored("ops", Platform.TELEGRAM, "555")) is rig.ops_tg
 
 
-def test_a_binding_lookup_failure_fails_closed(rig):  # noqa: F811
+def test_a_binding_lookup_failure_fails_closed(rig):
     r = rig.runner
     r.config.profile_routes = parse_profile_routes([])
 

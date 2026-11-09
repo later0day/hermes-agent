@@ -21,7 +21,7 @@ async def _local_session(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state_local import local_receipt
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     monkeypatch.setattr(session_local, 'local_session_info', lambda *a: {})
@@ -29,8 +29,8 @@ async def _local_session(tmp_path, monkeypatch):
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda *a, **k: None, _evict_cached_agent=lambda *a, **k: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'sock')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:create', 'session:read', 'session:control'}), 'sock')
     ref = session_local.create_local_session(authority, actor, dict(
         request_id='resume', source='gui', cwd=str(tmp_path), model='frozen', toolsets=[]))
     return authority, actor, ref, local_receipt(authority.db, ref.session_id)['entry']['session_id']
@@ -211,7 +211,7 @@ async def test_a_delete_during_the_resume_prepare_answers_not_found(tmp_path, mo
 
     def connection():
         return AuthorityConnection(authority, object(), {
-            'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
+            'provider': 'local', 'user_id': 'owner', 'profile_id': str(tmp_path), 'instance_id': authority.instance_id,
             'capabilities': ['session:create', 'session:read', 'session:control']})
     real, deleted = recovery.prepare_history, []
 
@@ -241,7 +241,7 @@ async def test_a_committed_but_unretired_delete_during_the_prepare_answers_not_f
 
     def connection():
         return AuthorityConnection(authority, object(), {
-            'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
+            'provider': 'local', 'user_id': 'owner', 'profile_id': str(tmp_path), 'instance_id': authority.instance_id,
             'capabilities': ['session:create', 'session:read', 'session:control']})
     prepare, write, deletes = session_local_recovery.prepare_history, session_mutations.mutate_runtime_session, []
     committed, release = threading.Event(), threading.Event()

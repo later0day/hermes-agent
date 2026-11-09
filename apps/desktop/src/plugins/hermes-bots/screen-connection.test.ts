@@ -70,6 +70,18 @@ describe('isEventForBotScreen', () => {
     expect(isEventForBotScreen(bot, { payload: { profile_key: '/other' }, type: 'display.lease' }, key)).toBe(false)
   })
 
+  it('accepts an initial full status only for the bot backend profile', () => {
+    routeMock.mockReturnValue({ connectionId: 'local', profile: 'ops' })
+
+    expect(
+      isEventForBotScreen(bot, { payload: { profile: 'ops', profile_key: key }, type: 'display.status' }, null)
+    ).toBe(true)
+    expect(
+      isEventForBotScreen(bot, { payload: { profile: 'other', profile_key: key }, type: 'display.status' }, null)
+    ).toBe(false)
+    expect(isEventForBotScreen(bot, { payload: { profile_key: key }, type: 'display.lease' }, null)).toBe(false)
+  })
+
   it('treats a row whose connection was removed as having no screen instead of throwing', () => {
     routeMock.mockReturnValue(null)
 

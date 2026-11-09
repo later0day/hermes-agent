@@ -17,6 +17,7 @@ import { expect, test } from './test'
 // non-retryable 401.
 
 const ROOM = 'Programmer, Reviewer'
+const BOT_KICKOFF = 'Hey, tell me about yourself!'
 let fixture: MockBackendFixture | null = null
 
 async function openBots(page: MockBackendFixture['page']): Promise<void> {
@@ -37,10 +38,32 @@ async function createAgent(page: MockBackendFixture['page'], name: string, title
   await expect(page.getByRole('button', { name: new RegExp(`^${title}\\b`) }).first()).toBeVisible({ timeout: 30_000 })
 }
 
+async function answerAsCourierGateway(page: MockBackendFixture['page']): Promise<void> {
+  await page.evaluate(() => {
+    const send = WebSocket.prototype.send
+
+    WebSocket.prototype.send = function(data) {
+      let frame: any = null
+
+      try { frame = JSON.parse(String(data)) } catch { frame = null }
+
+      if (frame?.method === 'groups.capabilities') {
+        const result = { driver: false, persistent_process: false }
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }) })))
+      } else {
+        send.call(this, data)
+      }
+    }
+  })
+}
+
 async function createRoom(page: MockBackendFixture['page']) {
+  await answerAsCourierGateway(page)
   await openBots(page)
   await createAgent(page, 'programmer', 'Programmer')
   await createAgent(page, 'reviewer', 'Reviewer')
+  await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes(BOT_KICKOFF)).length, { timeout: 60_000 }).toBe(2)
+  await openBots(page)
 
   await page.getByRole('button', { name: 'New bot or group chat' }).click()
   await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
@@ -52,9 +75,9 @@ async function createRoom(page: MockBackendFixture['page']) {
   }
 
   await dialog.getByRole('textbox', { name: 'Group name' }).fill(ROOM)
-  await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+  await dialog.getByRole('button', { name: 'Create group (2)' }).click()
 
-  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+  const groupTab = page.getByRole('tab', { name: new RegExp(`^${ROOM}$`) })
   const groupComposer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
   await expect(groupTab).toBeVisible({ timeout: 20_000 })
   await expect(groupTab).toHaveAttribute('aria-selected', 'true')
@@ -85,7 +108,7 @@ test('a member whose backend fails the turn is reported at once, not read as bus
   // The gateway has failed the turn; the room must say so within the base
   // turn timeout instead of extending the deadline on the retained snapshot.
   const activity = page.getByRole('button', { name: /^Activity/ })
-  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+  const groupTab = page.getByRole('tab', { name: new RegExp(`^${ROOM}$`) })
 
   await expect(async () => {
     // A just-created bot's background intro turn can front that bot's chat
@@ -125,7 +148,7 @@ test('a member that fails after pre-tool text is reported, and that text is not 
   await groupComposer.press('Enter')
 
   const activity = page.getByRole('button', { name: /^Activity/ })
-  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+  const groupTab = page.getByRole('tab', { name: new RegExp(`^${ROOM}$`) })
 
   await expect(async () => {
     if ((await groupTab.getAttribute('aria-selected')) !== 'true') {

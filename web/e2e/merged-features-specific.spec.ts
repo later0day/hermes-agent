@@ -147,8 +147,8 @@ test("MERGED FEATURE: terminal multiplex — two browser contexts load sessions 
   expect(bodyText2).toBeGreaterThan(0);
 
   // Verify the SPA loaded with distinct state — each page instance has its own JS context
-  const token1 = await page1.evaluate(() => (window as any).__HERMES_SESSION_TOKEN__);
-  const token2 = await page2.evaluate(() => (window as any).__HERMES_SESSION_TOKEN__);
+  const token1 = await page1.evaluate(() => (window as Window & { __HERMES_SESSION_TOKEN__?: string }).__HERMES_SESSION_TOKEN__);
+  const token2 = await page2.evaluate(() => (window as Window & { __HERMES_SESSION_TOKEN__?: string }).__HERMES_SESSION_TOKEN__);
   expect(token1).toBeTruthy();
   expect(token2).toBeTruthy();
 
@@ -176,7 +176,7 @@ test("MERGED FEATURE: per-profile cron cleanup — deleting profile removes its 
   const listResp = await apiGet(`/api/cron/jobs?profile=${encodeURIComponent(profileName)}`);
   const jobs = await listResp.json();
   const jobList = Array.isArray(jobs) ? jobs : (jobs.jobs || []);
-  const foundBefore = jobList.some((j: any) => j.id === job.id);
+  const foundBefore = jobList.some((j: { id: string }) => j.id === job.id);
   expect(foundBefore).toBe(true);
 
   // Delete the profile — this should trigger cron cleanup
@@ -189,7 +189,7 @@ test("MERGED FEATURE: per-profile cron cleanup — deleting profile removes its 
   const globalListResp = await apiGet("/api/cron/jobs");
   const globalJobs = await globalListResp.json();
   const allJobs = Array.isArray(globalJobs) ? globalJobs : (globalJobs.jobs || []);
-  const foundAfter = allJobs.some((j: any) => j.id === job.id);
+  const foundAfter = allJobs.some((j: { id: string }) => j.id === job.id);
   expect(foundAfter).toBe(false);
 });
 
@@ -421,7 +421,7 @@ test("MERGED FEATURE: cron preflight rescue — create + trigger + delete a cron
   const listResp = await apiGet("/api/cron/jobs");
   const jobs = await listResp.json();
   const allJobs = Array.isArray(jobs) ? jobs : (jobs.jobs || []);
-  const found = allJobs.some((j: any) => j.id === job.id);
+  const found = allJobs.some((j: { id: string }) => j.id === job.id);
   expect(found).toBe(true);
 
   // Trigger the job (this exercises the preflight path)
@@ -437,7 +437,7 @@ test("MERGED FEATURE: cron preflight rescue — create + trigger + delete a cron
   const listResp2 = await apiGet("/api/cron/jobs");
   const jobs2 = await listResp2.json();
   const allJobs2 = Array.isArray(jobs2) ? jobs2 : (jobs2.jobs || []);
-  const foundAfter = allJobs2.some((j: any) => j.id === job.id);
+  const foundAfter = allJobs2.some((j: { id: string }) => j.id === job.id);
   expect(foundAfter).toBe(false);
 });
 
@@ -584,14 +584,7 @@ test("MERGED FEATURE: mermaid — markdown component renders mermaid fence as SV
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
-  // Click Preview to see rendered markdown
-  let remaining = await page.locator("button").filter({ hasText: /^Preview$/ }).count();
-  while (remaining > 0) {
-    const btn = page.locator("button").filter({ hasText: /^Preview$/ }).first();
-    await btn.click();
-    await page.waitForTimeout(300);
-    remaining = await page.locator("button").filter({ hasText: /^Preview$/ }).count();
-  }
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
 
   // Mermaid should render as an SVG element
   const svg = page.locator("main svg, div.flex.justify-center svg").first();
@@ -706,10 +699,6 @@ test("MERGED FEATURE: Google Material theme — applying changes CSS variables",
   const themeBtn = page.locator("button, select").filter({ hasText: /theme|主题|skin|Google|Material/i }).first();
 
   if (await themeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-    const beforeBg = await page.evaluate(() =>
-      getComputedStyle(document.documentElement).getPropertyValue("--background").trim()
-    );
-
     await themeBtn.click();
     await page.waitForTimeout(500);
 
@@ -742,7 +731,7 @@ test("MERGED FEATURE: profile lifecycle — create → verify in list → delete
   const listResp = await apiGet("/api/profiles");
   const profiles = await listResp.json();
   const profileList = Array.isArray(profiles) ? profiles : (profiles.profiles || []);
-  const found = profileList.some((p: any) => p.name === profileName);
+  const found = profileList.some((p: { name: string }) => p.name === profileName);
   expect(found).toBe(true);
 
   // Delete
@@ -753,7 +742,7 @@ test("MERGED FEATURE: profile lifecycle — create → verify in list → delete
   const listResp2 = await apiGet("/api/profiles");
   const profiles2 = await listResp2.json();
   const profileList2 = Array.isArray(profiles2) ? profiles2 : (profiles2.profiles || []);
-  const foundAfter = profileList2.some((p: any) => p.name === profileName);
+  const foundAfter = profileList2.some((p: { name: string }) => p.name === profileName);
   expect(foundAfter).toBe(false);
 });
 

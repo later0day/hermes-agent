@@ -25,7 +25,7 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     runner.session_store = store
     runner._session_db = store._db
     runner._draining = False
-    authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='test')
     db = authority.db
     authority._schedule = lambda ref: None
     transport = SimpleNamespace(write=lambda frame: None)
@@ -78,7 +78,7 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     runner.session_store = store
     runner._session_db = store._db
     runner._draining = False
-    authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='test')
     db = authority.db
     authority._schedule = lambda ref: None
     conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'producer'})
@@ -134,7 +134,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     runner.session_store = store
     runner._session_db = store._db
     runner._draining = False
-    authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='test')
     authority._schedule = lambda ref: None
     conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'producer'})
     params = dict(agent='dev', tenant='team', peer='alice', context_id='ctx/a', input_id='first', text='hello')

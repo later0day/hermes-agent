@@ -317,6 +317,57 @@ def create_task(
         conn.close()
 
 
+def create_dispatched_task_locked(
+    conn: sqlite3.Connection,
+    *,
+    room_id: str,
+    task_id: str,
+    subject: str,
+    owner: str,
+    dispatch_thread_id: str,
+) -> dict[str, Any]:
+    """Create or reuse a claimed dispatch on the caller's write-locked connection.
+
+    ``hosted_rooms.append_event`` uses this to commit the scheduler anchor and its
+    sidecar task in one SQLite transaction. Existing ids retain their original
+    assignment so replaying the anchor remains idempotent after completion.
+    """
+
+    subject = (subject or "").strip()
+    owner = (owner or "").strip()
+    if not subject:
+        raise RoomTaskError("task subject must be non-empty")
+    if not owner:
+        raise RoomTaskError("dispatch requires a non-empty owner")
+    if not (dispatch_thread_id or "").strip():
+        raise RoomTaskError("dispatch requires a non-empty thread id")
+    conn.execute(_CREATE_TASK_TABLE)
+    conn.execute(_CREATE_DEPS_TABLE)
+    conn.execute(_CREATE_SEQ_INDEX)
+    conn.execute(_CREATE_DEPS_INDEX)
+    _ensure_dispatch_column(conn)
+    existing = conn.execute(
+        "SELECT * FROM room_task_dag WHERE room_id=? AND task_id=?",
+        (room_id, task_id),
+    ).fetchone()
+    if existing is not None:
+        return _hydrate(conn, existing)
+    now = time.time()
+    conn.execute(
+        """INSERT INTO room_task_dag
+           (room_id, task_id, subject, description, status, owner,
+            seq, created_at, updated_at, dispatch_thread_id)
+           VALUES (?, ?, ?, '', 'in_progress', ?, ?, ?, ?, ?)""",
+        (room_id, task_id, subject, owner, _next_seq(conn, room_id), now, now,
+         dispatch_thread_id),
+    )
+    row = conn.execute(
+        "SELECT * FROM room_task_dag WHERE room_id=? AND task_id=?",
+        (room_id, task_id),
+    ).fetchone()
+    return _hydrate(conn, row)
+
+
 def add_dependency(
     db_path: Path | str, *, room_id: str, task_id: str, blocked_by: str
 ) -> dict[str, Any]:

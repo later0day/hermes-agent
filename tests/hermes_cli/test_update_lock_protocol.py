@@ -558,10 +558,10 @@ _PROBER = """
 import fcntl, os, sys, time
 from pathlib import Path
 path = sys.argv[2]
-end = time.monotonic() + float(sys.argv[3])
+release = Path(sys.argv[3])
 Path(sys.argv[4]).write_text("go", encoding="utf-8")
 n = 0
-while time.monotonic() < end:
+while not release.exists():
     fd = os.open(path, os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -584,19 +584,22 @@ def test_held_probe_never_fails_a_concurrent_acquire(tmp_path):
     install.mkdir()
     lock_path = update_lock.checkout_lock_path(install)
     lock_path.touch()
-    prober = _python(tmp_path, _PROBER, lock_path, 4, tmp_path / "go", stdout=subprocess.PIPE, text=True)
+    release = tmp_path / "release"
+    prober = _python(tmp_path, _PROBER, lock_path, release, tmp_path / "go", stdout=subprocess.PIPE, text=True)
     _wait_for(tmp_path / "go", prober)
     attempts = refused = 0
     try:
-        while prober.poll() is None:
+        for _ in range(51):
+            assert prober.poll() is None
             attempts += 1
             if update_lock._acquire_checkout(install) is not None:
                 refused += 1
             else:
                 update_lock._release_checkout()
     finally:
-        prober.kill()
-        prober.wait()
+        release.touch()
+        prober.wait(timeout=30)
+    assert prober.returncode == 0
     assert attempts > 50
     assert refused == 0, f"{refused}/{attempts} acquires failed against a probe with no real holder"
 

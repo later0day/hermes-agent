@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -20,8 +21,17 @@ from pm.store import current_target, tree_digest
 
 @pytest.fixture
 def tool_store(tmp_path, monkeypatch):
-    rg = shutil.which("rg")
-    assert rg is not None, "this executable parity test requires ripgrep"
+    from hermes_state_guard import _real_platform_state_root
+
+    # Hash a system ripgrep, never the operator's PM store that PATH may select.
+    real_root = _real_platform_state_root()
+    rg = next(
+        (candidate for entry in os.environ.get("PATH", "").split(os.pathsep)
+         if (candidate := shutil.which("rg", path=entry)) is not None
+         and (real_root is None or not Path(candidate).absolute().is_relative_to(real_root))),
+        None,
+    )
+    assert rg is not None, "this executable parity test requires ripgrep outside the real Hermes home"
     version_output = subprocess.run(
         [rg, "--version"], capture_output=True, text=True, check=True, timeout=10,
     ).stdout

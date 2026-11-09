@@ -67,11 +67,11 @@ class _LiveDingTalk:
 
     async def send(self, chat_id, content, metadata=None, **_kw):
         self.calls.append(("send", chat_id, content))
-        return SimpleNamespace(success=True, message_id="m1", error=None)
+        return SimpleNamespace(success=True, message_id="m1", error=None, raw_response=None)
 
     async def send_image_file(self, chat_id, image_path, caption=None, **_kw):
         self.calls.append(("send_image_file", chat_id, image_path))
-        return SimpleNamespace(success=True, message_id="m2", error=None)
+        return SimpleNamespace(success=True, message_id="m2", error=None, raw_response=None)
 
 
 def test_send_message_to_dingtalk_goes_through_the_live_adapter_with_media(monkeypatch, tmp_path):

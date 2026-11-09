@@ -72,10 +72,7 @@ _load_card_sdk()
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
-from gateway.platforms.base import (
-    BasePlatformAdapter,
-    SendResult,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
 from gateway.platforms.event import MessageEvent
 from utils import is_truthy_value
 from gateway.platforms._shared import (
@@ -1485,12 +1482,12 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 if data.get("errcode", 0) != 0:
                     return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
                 result = {"success": True, "platform": "dingtalk", "chat_id": chat_id}
-    except Exception as e:
+    except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)
             from tools.send_message_tool import _error as _redact_error
-            return _redact_error(f"DingTalk send failed: {e}")
+            return _redact_error(f"DingTalk send failed: {describe_proxy_error(e, env_proxy_for_redaction(webhook_url)) or e}")
         except Exception:
-            return send_error(f"DingTalk send failed: {e}")
+            return send_error(f"DingTalk send failed: {describe_proxy_error(e, env_proxy_for_redaction(webhook_url)) or e}")
     if media_files and result.get("success"):
         result["warning"] = "MEDIA attachments were omitted: out-of-process DingTalk delivery is text only"
     return result

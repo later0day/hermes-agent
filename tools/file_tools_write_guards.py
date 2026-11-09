@@ -13,6 +13,7 @@ whole-file overwrite of content this task never saw or that changed since.
 import fnmatch
 import os
 from pathlib import Path
+import posixpath
 
 from agent.file_safety import get_nt_namespace_error
 from tools import file_state
@@ -435,11 +436,17 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         from agent.file_safety import get_container_mirror_warning, get_sandbox_mirror_warning
     except Exception:
         return None
-    resolved = _resolved_or_raw(filepath, task_id)
-    warning = get_sandbox_mirror_warning(resolved)
+    mirror_prefix = _get_container_mirror_prefix_for_task(task_id)
+    # Classify absolute container paths before host task resolution; relative paths use the container cwd.
+    warning = (get_container_mirror_warning(filepath, mirror_prefix=mirror_prefix)
+               if posixpath.isabs(filepath) else None)
     if warning is not None:
         return warning
-    return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
+    resolved = _resolved_or_raw(filepath, task_id)
+    warning = get_container_mirror_warning(resolved, mirror_prefix=mirror_prefix)
+    if warning is not None:
+        return warning
+    return get_sandbox_mirror_warning(resolved)
 
 
 def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:

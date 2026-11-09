@@ -526,16 +526,13 @@ test("E2E FilesPage: renders file browser with content", async ({ page }) => {
 // 11. DocsPage: renders documentation content
 // ═══════════════════════════════════════════════════════════════════════
 
-test("E2E DocsPage: renders documentation with markdown content", async ({ page }) => {
+test("E2E DocsPage: embeds documentation and provides an external link", async ({ page }) => {
   await authedGoto(page, "/docs");
-  await page.waitForTimeout(2000);
 
-  const bodyText = await page.evaluate(() => document.body.innerText);
-  expect(bodyText.length).toBeGreaterThan(50);
-
-  // Docs should render as markdown (headings, paragraphs)
-  const headings = await page.locator("h1, h2, h3").count();
-  expect(headings).toBeGreaterThan(0);
+  const docsFrame = page.getByTitle("Documentation", { exact: true });
+  await expect(docsFrame).toBeVisible();
+  await expect(docsFrame).toHaveAttribute("src", "https://hermes-agent.nousresearch.com/docs/");
+  await expect(page.getByRole("link", { name: "Open documentation in a new tab" })).toBeVisible();
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1160,7 +1157,7 @@ test("E2E CronPage: create modal shows profile select + prompt textarea + schedu
 // 35. MemoryPage: edit → cancel → content unchanged (cancel doesn't save)
 // ═══════════════════════════════════════════════════════════════════════
 
-test("E2E MemoryPage: edit without save → reload → original content preserved on screen", async ({ page }) => {
+test("E2E MemoryPage: unsaved draft survives reload → reload from disk restores original", async ({ page }) => {
   await authedGoto(page, "/memory");
   await page.waitForTimeout(1500);
   const profile = await activeProfile(page);
@@ -1173,31 +1170,21 @@ test("E2E MemoryPage: edit without save → reload → original content preserve
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
 
-  // Page starts in edit mode with the textarea containing original content
   const textarea = page.locator("textarea").first();
   await expect(textarea).toBeVisible();
   expect(await textarea.inputValue()).toContain("Original Content");
 
-  // Type new content (don't save)
   await textarea.fill("# Modified By Test");
-  await page.waitForTimeout(200);
-
-  // Reload without saving — should restore original content from server
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(2000);
 
-  // Switch to preview mode to see rendered markdown
-  {
-    const previewBtn = page.locator("button").filter({ hasText: /Preview|预览/ }).first();
-    if (await previewBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await previewBtn.click();
-      await page.waitForTimeout(500);
-    }
-  }
+  const previewBtn = page.getByRole("button", { name: /Preview|预览/ });
+  await previewBtn.click();
+  await expect(page.getByRole("heading", { name: "Modified By Test" })).toBeVisible();
+  await expect(page.getByText("Restored your unsaved draft")).toBeVisible();
 
-  // Should show original content, not modified
-  await expect(page.locator("h1, h2, h3").filter({ hasText: "Original Content" })).toBeVisible();
-  await expect(page.locator("h1, h2, h3").filter({ hasText: "Modified By Test" })).not.toBeVisible();
+  await page.getByRole("button", { name: "Reload from disk" }).click();
+  await expect(page.getByRole("heading", { name: "Original Content" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Modified By Test" })).not.toBeVisible();
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1412,10 +1399,9 @@ test("E2E MemoryPage: markdown ordered list renders as <ol><li>", async ({ page 
     }
   }
 
-  const ol = page.locator("main ol").first();
-  await expect(ol).toBeVisible();
-  const liCount = await ol.locator("li").count();
-  expect(liCount).toBe(3);
+  const listItems = page.locator("[data-memory-entry] ol > li");
+  await expect(listItems).toHaveCount(3);
+  await expect(listItems).toHaveText(["First", "Second", "Third"]);
 });
 
 // ═══════════════════════════════════════════════════════════════════════

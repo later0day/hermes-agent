@@ -1143,6 +1143,13 @@ def test_optional_target_member_id_is_durable_and_digest_bound(db):
     )
 
 
+def test_lead_routing_flag_is_durable_and_digest_bound(db):
+    identity = _identity()
+    _admit(db, identity, FakeClock(), payload={**_payload(), "lead_routing": True})
+
+    assert driver.get_task(db, identity)["payload"]["lead_routing"] is True
+
+
 @pytest.mark.parametrize(
     ("payload", "match"),
     [
@@ -1156,6 +1163,10 @@ def test_optional_target_member_id_is_durable_and_digest_bound(db):
         (_payload(prompt="x" * (driver.MAX_PROMPT_BYTES + 1)), "prompt is too large"),
         (_payload(source_event_seq=0), "source_event_seq"),
         (_payload(source_event_seq=True), "source_event_seq"),
+        *[
+            ({**_payload(), "lead_routing": value}, "lead_routing must be true")
+            for value in (False, 1, "true", None)
+        ],
     ],
 )
 def test_invalid_task_payload_is_rejected(db, payload, match):

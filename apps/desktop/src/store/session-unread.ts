@@ -665,14 +665,67 @@ function recomputeUnread(): void {
   }
 }
 
-// COLD-BOOT REHYDRATE — module evaluation can race Chromium's storage-area
-// load: an early read comes back empty, the atoms seed their fallbacks, and
-// the first ingest would then re-seed every row and write that emptiness
-// back over the real record. By the time the first session list arrives
-// (seconds later, over IPC) storage is reliably readable, so re-read both
-// keys once right before the first ingest and adopt the disk state, keeping
-// any entry this window already wrote in the meantime (a live edge or an
-// ack beats the stale disk copy for its own key).
+// Three-way rehydrate: disk wins untouched entries; real in-memory writes win changed entries.
+const bootSeenCounts = $sessionSeenCounts.get()
+const bootUnreadMarkers = $unreadFinishedMarkers.get()
+
+function mergeRehydratedSeenCounts(disk: SeenCounts, memory: SeenCounts): SeenCounts {
+  const merged: SeenCounts = {}
+  const profiles = new Set([...Object.keys(disk), ...Object.keys(bootSeenCounts), ...Object.keys(memory)])
+
+  for (const profile of profiles) {
+    const bucket: Record<string, number> = {}
+    const diskBucket = disk[profile]
+    const bootBucket = bootSeenCounts[profile]
+    const memoryBucket = memory[profile]
+
+    const ids = new Set([
+      ...Object.keys(diskBucket ?? {}),
+      ...Object.keys(bootBucket ?? {}),
+      ...Object.keys(memoryBucket ?? {})
+    ])
+
+    for (const id of ids) {
+      const value = bootBucket?.[id] === memoryBucket?.[id] ? diskBucket?.[id] : memoryBucket?.[id]
+
+      if (value !== undefined) {
+        bucket[id] = value
+      }
+    }
+
+    if (Object.keys(bucket).length) {
+      merged[profile] = bucket
+    }
+  }
+
+  return merged
+}
+
+function mergeRehydratedMarkers(disk: Markers, memory: Markers): Markers {
+  const merged: Markers = {}
+  const profiles = new Set([...Object.keys(disk), ...Object.keys(bootUnreadMarkers), ...Object.keys(memory)])
+
+  for (const profile of profiles) {
+    const diskIds = new Set(disk[profile] ?? [])
+    const bootIds = new Set(bootUnreadMarkers[profile] ?? [])
+    const memoryIds = new Set(memory[profile] ?? [])
+    const candidates = new Set([...diskIds, ...bootIds, ...memoryIds])
+
+    const ids = [...candidates].filter(id => {
+      const atBoot = bootIds.has(id)
+      const inMemory = memoryIds.has(id)
+
+      return atBoot === inMemory ? diskIds.has(id) : inMemory
+    })
+
+    if (ids.length) {
+      merged[profile] = ids
+    }
+  }
+
+  return merged
+}
+
 let rehydratedFromDisk = false
 
 function rehydrateFromDiskOnce(): void {
@@ -686,24 +739,14 @@ function rehydrateFromDiskOnce(): void {
     const rawSeen = readKey('hermes.desktop.sessionSeenCounts')
     const diskSeen = rawSeen ? sanitizeSeenCounts(JSON.parse(rawSeen) as unknown) : {}
     const memorySeen = $sessionSeenCounts.get()
-    const mergedSeen: SeenCounts = { ...diskSeen }
 
-    for (const [profile, bucket] of Object.entries(memorySeen)) {
-      mergedSeen[profile] = { ...mergedSeen[profile], ...bucket }
-    }
-
-    $sessionSeenCounts.set(mergedSeen)
+    $sessionSeenCounts.set(mergeRehydratedSeenCounts(diskSeen, memorySeen))
 
     const rawMarkers = readKey('hermes.desktop.unreadFinishedSessions')
     const diskMarkers = rawMarkers ? sanitizeMarkers(JSON.parse(rawMarkers) as unknown) : {}
     const memoryMarkers = $unreadFinishedMarkers.get()
-    const merged: Markers = { ...diskMarkers }
 
-    for (const [profile, ids] of Object.entries(memoryMarkers)) {
-      merged[profile] = [...new Set([...(merged[profile] ?? []), ...ids])]
-    }
-
-    $unreadFinishedMarkers.set(merged)
+    $unreadFinishedMarkers.set(mergeRehydratedMarkers(diskMarkers, memoryMarkers))
   } catch {
     // Unreadable storage: keep the in-memory state — same fallback the
     // atoms started from.

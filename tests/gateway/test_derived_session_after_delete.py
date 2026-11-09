@@ -52,7 +52,7 @@ async def a2a(tmp_path, monkeypatch):
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = run.GatewayRunner.__new__(run.GatewayRunner)
     runner.adapters, runner.session_store, runner._session_db, runner._draining = {}, store, store._db, False
-    authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='test')
     authority._schedule = lambda ref: None
 
     async def forward(input_id, text):

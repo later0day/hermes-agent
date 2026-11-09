@@ -75,6 +75,8 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
     monkeypatch.setattr(docker_env.DockerEnvironment, "init_session", lambda self: None)
     monkeypatch.setattr(os, "geteuid", lambda: 1000)  # Hermes itself is not root
     monkeypatch.setattr(os, "getegid", lambda: 1000)
+    monkeypatch.setattr(os, "getuid", lambda: 1000)  # docker_run_as_host_user uses the real-uid APIs
+    monkeypatch.setattr(os, "getgid", lambda: 1000)
     return calls
 
 

@@ -12,6 +12,7 @@ import { expect, test } from './test'
 // `rm -rf` through the real terminal tool.
 
 const ROOM = 'Programmer, Reviewer'
+const BOT_KICKOFF = 'Hey, tell me about yourself!'
 let fixture: MockBackendFixture | null = null
 
 async function openBots(page: MockBackendFixture['page']): Promise<void> {
@@ -36,24 +37,39 @@ async function createRoom(page: MockBackendFixture['page']) {
   await openBots(page)
   await createAgent(page, 'programmer', 'Programmer')
   await createAgent(page, 'reviewer', 'Reviewer')
+  await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes(BOT_KICKOFF)).length, { timeout: 60_000 }).toBe(2)
 
-  await page.getByRole('button', { name: 'New bot or group chat' }).click()
-  await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
+  // This regression belongs to an existing Desktop-driven room. New Group Chat
+  // deliberately creates only gateway-owned rooms, even when a test double
+  // answers capabilities like an old courier-only gateway.
+  const members = [
+    { name: 'programmer', handle: 'programmer', title: 'Programmer' },
+    { name: 'reviewer', handle: 'reviewer', title: 'Reviewer' }
+  ].map(member => ({
+    ...member,
+    connectionId: 'local',
+    connectionKind: 'local',
+    connectionLabel: 'This device',
+    targetProfile: member.name,
+    route: { connectionId: 'local', mode: 'local', profile: member.name, targetProfile: member.name }
+  }))
+  await page.evaluate(({ room, seated }) => {
+    const key = 'hermes.plugin.hermes-bots.group-chats'
+    const rooms = JSON.parse(localStorage.getItem(key) || '{}')
+    rooms[room] = { engine: 'desktop', roomId: null, members: seated, watermarks: {}, sessions: {}, holds: {}, log: [] }
+    localStorage.setItem(key, JSON.stringify(rooms))
+  }, { room: ROOM, seated: members })
+  await page.reload()
+  await waitForAppReady(fixture!, 120_000)
+  await openBots(page)
+  await page.getByText(ROOM, { exact: true }).first().click()
 
-  const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
-
-  for (const title of ['Programmer', 'Reviewer']) {
-    await dialog.getByText(title, { exact: true }).locator('xpath=ancestor::label').getByRole('checkbox').click()
-  }
-
-  await dialog.getByRole('textbox', { name: 'Group name' }).fill(ROOM)
-  await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
-
-  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+  const groupTab = page.getByRole('tab', { name: new RegExp(`^${ROOM}$`) })
   const groupComposer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
   await expect(groupTab).toBeVisible({ timeout: 20_000 })
   await expect(groupTab).toHaveAttribute('aria-selected', 'true')
   await expect(groupComposer).toBeVisible()
+  expect(await page.evaluate(room => JSON.parse(localStorage.getItem('hermes.plugin.hermes-bots.group-chats') || '{}')[room]?.engine, ROOM)).toBe('desktop')
 
   return groupComposer
 }
@@ -71,7 +87,10 @@ test.afterEach(async () => {
 test('clicking an approval choice in a group room submits it (#91706)', async () => {
   test.setTimeout(240_000)
   const page = fixture!.page
-  // Count approval.respond frames on the real gateway socket.
+  const groupComposer = await createRoom(page)
+
+  // Count approval.respond frames on the real gateway socket. Install after
+  // createRoom's reload, which replaces the renderer and its WebSocket class.
   await page.evaluate(() => {
     const send = WebSocket.prototype.send
 
@@ -87,8 +106,6 @@ test('clicking an approval choice in a group room submits it (#91706)', async ()
       return send.call(this, data)
     }
   })
-  const groupComposer = await createRoom(page)
-
   await groupComposer.fill(`@programmer ${APPROVAL_COMMAND_TRIGGER}`)
   await groupComposer.press('Enter')
 
@@ -97,9 +114,9 @@ test('clicking an approval choice in a group room submits it (#91706)', async ()
   // the Desktop's session-level approval surface, and a build that switches
   // tabs on it would otherwise fail here on visibility instead of on the
   // contract below (the click must be the submit).
-  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+  const groupTab = page.getByRole('tab', { name: new RegExp(`^${ROOM}$`) })
   const card = page.getByText(/wants to run a command/).locator('xpath=..')
-  const once = card.getByRole('button', { name: 'once', exact: true })
+  const once = card.getByRole('button', { name: 'Allow once', exact: true })
 
   await expect(async () => {
     if ((await groupTab.getAttribute('aria-selected')) !== 'true') {

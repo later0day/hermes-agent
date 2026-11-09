@@ -1384,8 +1384,10 @@ def test_upgrade_keeps_rooms_from_before_the_shared_state_db_split(tmp_path):
     ] == ["event-1"]
 
 
-def test_legacy_import_is_a_one_shot_and_skips_driver_liveness_state(tmp_path):
-    """The copy runs once, never overwrites, and leaves the driver's lease behind (#109775)."""
+def test_legacy_import_is_a_one_shot_and_skips_liveness_state(tmp_path):
+    """The copy runs once, never overwrites, and leaves driver and router liveness behind (#109775)."""
+    from tui_gateway.hosted_room_router_call import RouterCalls
+
     legacy = tmp_path / "state.db"
     _create(legacy)
 
@@ -1407,15 +1409,21 @@ def test_legacy_import_is_a_one_shot_and_skips_driver_liveness_state(tmp_path):
         ttl_seconds=30,
         clock=now,
     )
+    assert RouterCalls(legacy, clock=now)._claim(("room-1", "discussion-1")) is True
 
     store = tmp_path / "shared-state.db"
     assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
     with sqlite3.connect(store) as conn:
-        # Durable work follows the room across; the lease is liveness state and stays behind.
+        # Durable work follows the room across; process-owned liveness state stays behind.
         assert conn.execute("SELECT COUNT(*) FROM hosted_room_driver_tasks").fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_leases'"
-        ).fetchone()[0] == 0
+        imported_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?)",
+                ("hosted_room_driver_leases", "hosted_room_router_claims"),
+            )
+        }
+        assert imported_tables == set()
 
     # Forcing a second import (marker cleared) must not replace what this store already owns.
     rooms.rename_room(store, room_id="room-1", event_id="rename-1", name="Renamed", now=12)

@@ -242,7 +242,13 @@ const gatewayGroup = (page: Page, id: string) =>
 async function selectGateway(page: Page, id: string, label: string, profile: string): Promise<void> {
   const group = gatewayGroup(page, id)
   await expect(group).toBeVisible({ timeout: 60_000 })
-  await group.getByRole('button', { name: `${profile} · ${label}`, exact: true }).click()
+
+  const target =
+    id === 'local'
+      ? group.locator('[data-slot="profile-rail-local-device"]')
+      : group.getByRole('button', { name: `${profile} · ${label}`, exact: true })
+
+  await target.click()
   await expect(page.getByRole('button', { name: /^Registered gateways: / })).toHaveAttribute(
     'aria-label',
     `Registered gateways: ${label}`,

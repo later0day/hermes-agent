@@ -73,9 +73,12 @@ test('a fresh (non-clone) bot gets a runnable model block on disk', async () => 
   await expect.poll(() => existsSync(cfgPath), { timeout: 30_000 }).toBe(true)
   const cfg = readFileSync(cfgPath, 'utf8')
   expect(cfg).toMatch(/^model:/m)
-  expect(cfg).toMatch(/provider:\s*mock/)
+  expect(cfg).toMatch(/provider:\s*custom/)
   expect(cfg).toMatch(/default:\s*mock-model/)
-  // The inherited model rides a custom `providers:` gateway; its definition must travel with it
-  // or the first turn dies with "Unknown provider 'mock'".
-  expect(cfg).toMatch(/^providers:\n\s+mock:/m)
+  expect(cfg).toContain(`base_url: ${fixture!.mockUrl}/v1`)
+  expect(readFileSync(join(fixture!.sandbox.hermesHome, 'profiles', 'fresh-scout', '.env'), 'utf8'))
+    .toMatch(/^OPENAI_API_KEY=e2e-mock-key$/m)
+  await expect.poll(() => fixture!.mock.receivedPrompts.some(prompt => prompt.includes('Hey, tell me about yourself!')), {
+    timeout: 60_000,
+  }).toBe(true)
 })

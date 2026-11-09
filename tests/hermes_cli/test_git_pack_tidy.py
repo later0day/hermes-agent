@@ -30,6 +30,12 @@ def _objects(repo: Path) -> set[str]:
     return set(_git("cat-file", "--batch-all-objects", "--batch-check=%(objectname)", cwd=repo, env=_OFFLINE).split())
 
 
+def _git_supports_incremental_midx() -> bool:
+    help_result = subprocess.run(["git", "multi-pack-index", "write", "-h"], env=_GIT_ENV,
+                                 check=False, capture_output=True, text=True)
+    return "--incremental" in help_result.stdout + help_result.stderr
+
+
 def _age(repo: Path) -> None:
     old = time.time() - 2 * 3600
     for entry in (repo / ".git" / "objects" / "pack").iterdir():
@@ -148,7 +154,11 @@ tidy.tidy_partial_clone_packs(Path(sys.argv[1]))
 """
 
 
-@pytest.mark.parametrize("midx_layout", [[], ["--incremental"]])
+@pytest.mark.parametrize("midx_layout", [
+    [],
+    pytest.param(["--incremental"], marks=pytest.mark.skipif(
+        not _git_supports_incremental_midx(), reason="git multi-pack-index write lacks --incremental")),
+])
 def test_a_refused_or_killed_erase_leaves_git_reading_and_is_finished_later(
         clone: Path, monkeypatch: pytest.MonkeyPatch, midx_layout: list) -> None:
     pack_dir = clone / ".git" / "objects" / "pack"

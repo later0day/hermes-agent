@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -205,7 +207,12 @@ def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=app_lifespan)
+app = FastAPI(
+    title="Hermes Agent",
+    version=get_version_info().base_version,
+    lifespan=app_lifespan,
+    docs_url="/api-docs",
+)
 
 from hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware
 
@@ -354,11 +361,13 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     _LOOPBACK_HOST_VALUES,
     _dashboard_public_hosts,
+    _dashboard_public_origins,
     _desktop_loopback_auth_exempt,
     _host_header_hostname,
     _is_accepted_host,
     public_hosts_engage_gate,
     public_url_hosts,
+    public_url_origins,
     should_require_auth,
 )
 
@@ -557,20 +566,27 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+def _is_trusted_local_origin(origin: str) -> bool:
+    """The dashboard app's :func:`hermes_cli.web_server_boundary.is_trusted_local_origin`."""
+    from hermes_cli.web_server_boundary import is_trusted_local_origin
+    return is_trusted_local_origin(origin, app.state)
+
+
+class _LocalOriginCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return _is_trusted_local_origin(origin)
+
+
+# CORS: the trusted loopback origins only (web_server_boundary.is_trusted_local_origin, the same
+# rule the WebSocket Origin gate applies). allow_origins=["*"] on 0.0.0.0 would let any website
+# read/modify config and secrets; any local port would let a page on another port read
+# index.html's session token.
 #
 # Registered AFTER all ``@app.middleware("http")`` decorators so it is the
 # *outermost* middleware (Starlette's onion: last-added runs first).
 # Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
 # middlewares before CORS can answer, producing 401 instead of 204 + headers.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
 
 
 # Authenticated-route self-test: one in-process request per minute against a
@@ -782,6 +798,7 @@ from hermes_cli.web_routers import (
     config_env as _config_env_routes,
     models as _models_routes,
     messaging as _messaging_routes,
+    messaging_relay as _messaging_relay_routes,
     oauth as _oauth_routes,
     cron as _cron_routes,
     mcp as _mcp_routes,
@@ -799,6 +816,9 @@ from hermes_cli.web_routers import (
     weixin_onboarding as _weixin_onboarding_routes,
     webapp_access as _webapp_access_routes,
     ui_preferences as _ui_preferences_routes,
+    gateway_connections as _gateway_connections_routes,
+    gateway_connections_reach as _gateway_connections_reach_routes,
+    webapp_relay_proxy as _webapp_relay_proxy_routes,
 )
 
 import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
@@ -825,6 +845,7 @@ app.include_router(_config_env_routes.config_router)
 app.include_router(_models_routes.router)
 app.include_router(_config_env_routes.router)
 app.include_router(_messaging_routes.router)
+app.include_router(_messaging_relay_routes.router)
 app.include_router(_oauth_routes.router)
 app.include_router(_sessions_routes.manage_router)
 app.include_router(_status_routes.logs_router)
@@ -840,12 +861,16 @@ app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
+# The saved-connections proxy checks its surface per request (WebSocket routes take no Request).
+app.include_router(_webapp_relay_proxy_routes.router)
 app.include_router(_shared_metrics_routes.router)
 app.include_router(_delegation_routes.router)
 app.include_router(_rooms_routes.router)
 app.include_router(_weixin_onboarding_routes.router)
 app.include_router(_webapp_access_routes.router, dependencies=[_Depends(_route_on("web_access"))])
 app.include_router(_ui_preferences_routes.router, dependencies=[_Depends(_route_on("ui_preferences"))])
+app.include_router(_gateway_connections_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
+app.include_router(_gateway_connections_reach_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -973,6 +998,8 @@ def _configure_auth_gate(
     own_url = getattr(app.state, "listener_public_url", None)
     app.state.trusted_public_hosts = (
         _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
+    app.state.trusted_public_origins = (  # its exact loopback origin: a proxy on another local port
+        _dashboard_public_origins() if own_url is None else public_url_origins(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.
     if own_url is None and _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):

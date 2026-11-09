@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
@@ -108,15 +109,18 @@ class RoomExecutionPolicy:
 
 
 def _served_profile_scope(target_profile: str):
-    """Runtime scope of the SERVED profile: a no-op when it is the active home, else the profile's
-    own home + secret scope (fail closed on an unknown profile). The advertised policy is signed
-    for ``target_profile``, so its config and credentials must be read there, never from the
-    launch profile's env or whatever home happens to be active (#116900)."""
-    from contextlib import nullcontext
+    """Runtime scope of the SERVED profile: the launch scope for ``default``, the existing scope when
+    the target is already active, else the profile's own home + secret scope (fail closed on an
+    unknown profile). The advertised policy is signed for ``target_profile``, so its config and
+    credentials must be read there, never from the launch profile's env or whatever home happens to
+    be active (#116900)."""
     from hermes_cli.profiles import get_profile_dir, normalize_profile_name, profile_exists, profile_matches_home
     # "default" is the launch home (a `-p x` multiplexer hosts it too), never a switch to ~/.hermes.
-    if normalize_profile_name(target_profile) == "default" or profile_matches_home(target_profile):
-        return nullcontext()
+    if normalize_profile_name(target_profile) == "default":
+        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+        return launch_profile_scope_if_multiplexed()
+    if profile_matches_home(target_profile):
+        return contextlib.nullcontext()
     if not profile_exists(target_profile):
         raise RoomExecutionPolicyError(f"target_profile {target_profile!r} is not a live profile")
     from gateway.run import _profile_runtime_scope

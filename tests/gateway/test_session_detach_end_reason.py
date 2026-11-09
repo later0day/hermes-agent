@@ -21,11 +21,11 @@ async def test_detach_with_end_reason_ends_the_idle_local_row(tmp_path, monkeypa
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     db = authority.db
 
     def viewer():
-        return AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'fixture'})
+        return AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': str(tmp_path)})
 
     try:
         first, second = viewer(), viewer()

@@ -22,11 +22,13 @@
  *  5. Open session A → dot clears.
  *  6. Restart once more → the cleared state must persist too (no zombie dot).
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { expect, type Page, test } from '@playwright/test'
 import { type ElectronApplication } from '@playwright/test'
+
+import { restartMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
   buildAppEnv,
@@ -35,7 +37,6 @@ import {
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import { restartMockServer } from '../../../tests-js/scripts/mock-server'
 
 /** Finished-unread dot aria-label (from i18n en.ts). */
 const UNREAD_DOT_LABEL = 'Finished — unread'
@@ -138,11 +139,7 @@ test.describe('unread dot survives app restart', () => {
       .toBeGreaterThan(0)
 
     // ── 5. Open session A — the dot clears ─────────────────────────────
-    // The dot sits inside A's sidebar row button; click that row.
-    await unreadDots(page)
-      .first()
-      .locator('xpath=ancestor::button[1]')
-      .click()
+    await page.getByRole('button', { name: /^E2E unread restart: hold this stream/ }).click()
 
     await expect
       .poll(() => unreadDots(page).count(), {

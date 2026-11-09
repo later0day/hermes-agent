@@ -8,6 +8,7 @@ import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
@@ -16,7 +17,6 @@ import {
   launchDesktop,
   type Sandbox,
 } from './fixtures'
-import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { collectErrorBanners, type ElectronApplication, expect, installErrorBannerGuard, type Page, test } from './test'
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../../..')
@@ -266,6 +266,8 @@ peerTest('Ctrl+Shift+N resumes a remote-only profile on its owning gateway', asy
   const peer = await opened
   installErrorBannerGuard(peer)
   await expectReady(peer, REMOTE_LABEL)
+  await expect(peer.getByRole('tab', { name: 'New session', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await peer.getByRole('button', { name: /^Remember this remote profile session/ }).click()
   await expect(peer.locator('[data-slot="aui_assistant-message-content"]').getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 60_000 })
   await expectReady(source, REMOTE_LABEL)
   await peer.reload()

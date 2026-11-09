@@ -13,7 +13,8 @@ from tests.gateway.test_local_resume_compression_child import _cold, _compressed
 async def _mutate(authority, sid, request_id, operation, payload):
     from gateway.session_controls import AuthorityConnection
     connection = AuthorityConnection(authority, object(), {
-        'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
+        'provider': 'local', 'user_id': 'owner', 'profile_id': authority.profile_id,
+        'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:control']})
     try:
         row = authority.db.get_session(sid)
@@ -58,7 +59,8 @@ async def test_a_segment_rewind_keeps_the_owner_busy_gate(tmp_path, monkeypatch,
     sid = compressed.owner if addressed == 'owner' else 'child-2'
     row = db.get_session(sid)
     connection = AuthorityConnection(authority, object(), {
-        'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
+        'provider': 'local', 'user_id': 'owner', 'profile_id': authority.profile_id,
+        'instance_id': authority.instance_id,
         'capabilities': ['session:create', 'session:read', 'session:submit', 'session:control']})
     try:
         reply = await connection.dispatch({'id': 1, 'method': 'session.mutate', 'params': {

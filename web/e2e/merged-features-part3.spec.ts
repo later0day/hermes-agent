@@ -136,7 +136,7 @@ test("REAL EnvPage: set env var → Save → badge shows 'set' → Clear → bad
   // The badge for this env var should now show "set" (tone="success")
   // The row should now have a Badge with tone="success" and text "set"
   const successBadges = page.locator("[class*='badge'][class*='success'], [data-tone='success']");
-  const badgeCount = await successBadges.count();
+  expect(await successBadges.count()).toBeGreaterThan(0);
 
   // Now find and click Clear to revert
   const clearBtn = page.locator("button").filter({ hasText: /^Clear$|^清除$/ }).first();
@@ -175,12 +175,6 @@ test("REAL EnvPage: click Eye → secret value revealed → click EyeOff → red
   // Get the first eye button and its current label
   const firstEye = eyeBtns.first();
   const initialLabel = await firstEye.getAttribute("aria-label");
-
-  // Get the redacted value before reveal
-  const valueBefore = await page.evaluate(() => {
-    const div = document.querySelector("[class*='font-mono-ui'][class*='text-xs']");
-    return div?.textContent?.trim() || "";
-  });
 
   // Click reveal
   await firstEye.click();
@@ -320,8 +314,6 @@ test("REAL SystemPage: click New hook → fill form → Create → hook appears 
     await page.waitForTimeout(2000);
   }
 
-  // Verify the hook is gone
-  const finalText = await page.evaluate(() => document.body.innerText);
   // /bin/true may appear elsewhere, but the hook entry should be gone
   const hookRowsFinal = await page.locator("button[aria-label='Remove hook']").count();
   expect(hookRowsFinal).toBeLessThanOrEqual(hookRowsAfter);
@@ -640,9 +632,6 @@ test("REAL LogsPage: switch level to ERROR → only error lines visible → swit
   await authedGoto(page, "/logs");
   await page.waitForTimeout(2000);
 
-  // Get baseline log line count
-  const baselineLines = await page.locator("[class*='text-destructive'], [class*='text-warning'], [class*='text-foreground'], [class*='text-debug']").count();
-
   // Click ERROR level filter
   const errorTab = page.locator("button").filter({ hasText: /^ERROR$/i }).first();
   if (await errorTab.isVisible().catch(() => false)) {
@@ -774,9 +763,6 @@ test("REAL ProfilesPage: click 'Set Active' on a non-default profile → profile
     return;
   }
 
-  // Get the current active profile name (the one with "running" badge or "active" badge)
-  const beforeText = await page.evaluate(() => document.body.innerText);
-
   // Open the kebab menu on the second profile
   await kebabBtns.nth(1).click();
   await page.waitForTimeout(500);
@@ -806,9 +792,6 @@ test("REAL ProfilesPage: click 'Set Active' on a non-default profile → profile
 test("REAL McpPage: add MCP server → appears in list → delete it", async ({ page }) => {
   await authedGoto(page, "/mcp");
   await page.waitForTimeout(2000);
-
-  // Count servers before
-  const deleteBtnsBefore = await page.locator("button[aria-label='Delete']").count();
 
   // Click Add Server
   const addBtn = page.locator("button").filter({ hasText: /Add Server|添加.*服务/ }).first();
@@ -1228,11 +1211,9 @@ test("REAL ProfilesPage: create → verify appears → delete via kebab → conf
   const modalCreate = page.locator(".fixed button, div[role='dialog'] button")
     .filter({ hasText: /^Create$|^创建$/ }).first();
   await modalCreate.click();
-  await page.waitForTimeout(2000);
 
-  // Verify profile appears in the list
-  const afterCreateText = await page.evaluate(() => document.body.innerText);
-  expect(afterCreateText).toContain(profileName);
+  const createdProfile = page.getByText(profileName, { exact: true });
+  await expect(createdProfile).toBeVisible({ timeout: 30000 });
 
   // Open kebab menu for the new profile
   const kebabFound = await page.evaluate((name) => {
@@ -1267,10 +1248,13 @@ test("REAL ProfilesPage: create → verify appears → delete via kebab → conf
   const confirmBtn = page.locator("[role='dialog'] button, [role='alertdialog'] button, .fixed button")
     .filter({ hasText: /^Delete$|^删除$|^确认$/ }).first();
   await expect(confirmBtn).toBeVisible();
+  const deleteResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "DELETE" &&
+    response.url().includes(`/api/profiles/${encodeURIComponent(profileName)}`),
+  );
   await confirmBtn.click();
-  await page.waitForTimeout(2000);
-
-  // Verify profile is gone
-  const finalText = await page.evaluate(() => document.body.innerText);
-  expect(finalText).not.toContain(profileName);
+  const deleteResponse = await deleteResponsePromise;
+  expect(deleteResponse.status(), await deleteResponse.text()).toBe(200);
+  await expect(confirmBtn).toBeHidden({ timeout: 30000 });
+  await expect(createdProfile).toHaveCount(0, { timeout: 30000 });
 });

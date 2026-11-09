@@ -1545,6 +1545,7 @@ class TestLaunchdPlistRespawnGovernance:
 
 class TestPermissionErrorOnLockFile:
     @pytest.mark.platforms("linux")
+    @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root opens mode-0 files")
     def test_inaccessible_lock_is_not_deleted_or_treated_as_absence(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         lock = tmp_path / "gateway.lock"

@@ -86,13 +86,23 @@ test('a delayed history read cannot remove the latest completed reply', async ()
     }, stored)
 
     // An actual backend metadata write produces the production change tick.
-    await page.evaluate(async sessionId => {
-      await (window as any).hermesDesktop.api({
+    const mutation = await page.evaluate(async sessionId => {
+      const api = (window as any).hermesDesktop.api
+      const snapshot = await api({ path: `/api/sessions/${sessionId}/mutation-snapshot` })
+      const response = await api({
         path: `/api/sessions/${sessionId}`,
         method: 'PATCH',
-        body: { title: 'Completed reply regression' }
+        body: {
+          title: 'Completed reply regression',
+          request_id: crypto.randomUUID(),
+          expected_revision: snapshot.runtime_revision,
+          expected_generation: snapshot.runtime_generation
+        }
       })
+
+      return response
     }, stored)
+    expect(mutation?.ok, JSON.stringify(mutation)).toBe(true)
     await expect
       .poll(() => app.evaluate(() => (globalThis as any).__historyRead.admitted), { timeout: 20_000 })
       .toBe(true)

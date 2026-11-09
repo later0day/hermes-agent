@@ -55,7 +55,8 @@ async def probe():
     run_agent.AIAgent.run_conversation = run_conversation
 
     runner = GatewayRunner()
-    await initialize_session_authority(runner, profile_id='fixture', instance_id='local')
+    await initialize_session_authority(
+        runner, profile_id=str(Path(os.environ['HERMES_HOME'])), instance_id='local')
     api = await start_gateway_api(runner)
     port = api.socket.getsockname()[1]
     web_server.app.state.auth_required = True

@@ -22,6 +22,24 @@ from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.event import MessageEvent
 
 
+def _isolate_literal_host_credential(monkeypatch):
+    """Model the absent real-host credential without probing the real /root/.hermes tree.
+
+    Sandbox candidates still use production resolution, so translating a credential through
+    either persistent-home mount continues to fail these tests.
+    """
+    from gateway.platforms import base
+
+    real_resolve = base._resolve_path
+
+    def resolve(path, *, strict=False, expand=False):
+        if strict and path == Path("/root/.hermes/auth.json"):
+            return None
+        return real_resolve(path, strict=strict, expand=expand)
+
+    monkeypatch.setattr(base, "_resolve_path", resolve)
+
+
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     """Encrypted Bitwarden cache is covered by the media credential guard."""
     from gateway.platforms import base
@@ -1046,6 +1064,7 @@ class TestDockerContainerMediaPathTranslation:
         monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
         monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
         monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        _isolate_literal_host_credential(monkeypatch)
 
         assert BasePlatformAdapter.validate_media_delivery_path(
             "/root/.hermes/auth.json"
@@ -1566,6 +1585,7 @@ class TestDockerProfileSandboxMediaTranslation:
         the home mount must never expose the container's secret surface —
         in the profile layout AND the legacy session layout."""
         self._enable_docker(monkeypatch)
+        _isolate_literal_host_credential(monkeypatch)
         for task in ("default", f"session:{self.SESSION_KEY}"):
             secrets = self._sandbox_dir(task) / "home" / ".hermes"
             secrets.mkdir(parents=True, exist_ok=True)

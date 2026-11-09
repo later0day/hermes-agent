@@ -91,12 +91,14 @@ export function botScreenRoute(bot: RosterRow): PluginProfileRoute | string | nu
 /**
  * Does a `display.*` event belong to `bot`'s screen? Two hosts can share the same
  * `~/.hermes` path, so the profile key alone is ambiguous: the event must also have
- * arrived on the bot's registry connection (local/legacy events carry no tag).
+ * arrived on the bot's registry connection (local/legacy events carry no tag). Before
+ * the first reply, a full status snapshot matches its backend profile; lease-only events
+ * still fail closed until a status has established the key.
  */
 export function isEventForBotScreen(bot: RosterRow, event: RpcEvent, profileKey: null | string | undefined): boolean {
-  const payload = event.payload as { profile_key?: string } | undefined
+  const payload = event.payload as { profile?: string; profile_key?: string } | undefined
 
-  if (!profileKey || payload?.profile_key !== profileKey) {
+  if (!payload?.profile_key) {
     return false
   }
 
@@ -105,6 +107,12 @@ export function isEventForBotScreen(bot: RosterRow, event: RpcEvent, profileKey:
   const resolved = resolveBotConnectionRoute(bot)
 
   if (resolved.status === 'owner_removed') {
+    return false
+  }
+
+  const expectedProfile = resolved.route?.targetProfile ?? resolved.route?.profile ?? bot.name
+
+  if (profileKey ? payload.profile_key !== profileKey : payload.profile !== expectedProfile) {
     return false
   }
 

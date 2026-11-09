@@ -24,7 +24,8 @@ async def probe(peer, target, kind):
     from tools.approval import resolve_gateway_approval
 
     runner = GatewayRunner()
-    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='local')
+    authority = await initialize_session_authority(
+        runner, profile_id=str(Path(os.environ['HERMES_HOME'])), instance_id='local')
     api = await start_gateway_api(runner)
     port = api.socket.getsockname()[1]
     web_server.app.state.auth_required = True
@@ -82,11 +83,11 @@ async def probe(peer, target, kind):
         finally:
             os.environ.pop('GATEWAY_ALLOW_ALL_USERS')
         from gateway.session_local import create_local_session
-        from gateway.session_contract import Principal
+        from gateway.session_contract import SessionActor
         from hermes_state_runtime import RuntimeStoreError
-        for actor, reason in ((Principal('read-only', 'fixture', frozenset({'session:read'}), 'readonly'),
-                               'permission_denied'),
-                              (Principal('creator', 'foreign', frozenset({'session:create'}), 'foreign'),
+        for actor, reason in ((SessionActor('read-only', str(Path(os.environ['HERMES_HOME'])),
+                                            frozenset({'session:read'}), 'readonly'), 'permission_denied'),
+                              (SessionActor('creator', 'foreign', frozenset({'session:create'}), 'foreign'),
                                'profile_mismatch')):
             try:
                 create_local_session(authority, actor, {'api_key': 'denied-launch-key',
@@ -140,7 +141,7 @@ async def probe(peer, target, kind):
         assert pong.get('result', {}).get('pong') is True, pong
         described = await rpc(c, 'runtime.describe')
         assert described['result']['instance_id'] == authority.instance_id
-        assert str(Path(os.environ['HERMES_HOME'])) not in json.dumps(described)
+        assert described['result']['profile_id'] == authority.profile_id
         # Public transport auth remains mandatory, even for metadata or fresh sessions.
         try:
             async with websockets.connect(f'ws://127.0.0.1:{port}/api/ws?token=forged') as bad:

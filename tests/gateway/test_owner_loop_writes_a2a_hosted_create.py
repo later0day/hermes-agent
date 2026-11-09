@@ -61,7 +61,7 @@ async def test_a2a_forward_creation_commits_off_the_owner_loop(tmp_path, monkeyp
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = run.GatewayRunner.__new__(run.GatewayRunner)
     runner.adapters, runner.session_store, runner._session_db, runner._draining = {}, store, store._db, False
-    authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='test')
     authority._schedule = lambda ref: None
     conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'producer'})
     params = dict(agent='dev', tenant='team', peer='alice', context_id='ctx', text='hello')

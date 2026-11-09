@@ -194,14 +194,13 @@ test("Sessions: rename → type new title → Save → title updates", async ({ 
       await titleInput.fill("e2e-renamed-session");
       const saveBtn = page.locator('button[aria-label="Save title"]');
       if (await saveBtn.count() > 0) {
+        const responsePromise = page.waitForResponse((response) =>
+          response.request().method() === "PATCH" && /\/api\/sessions\//.test(response.url()),
+        );
         await saveBtn.first().click();
-        await page.waitForTimeout(1000);
-        // The title should be updated
-        const titleText = await page.evaluate(() => {
-          const main = document.querySelector("main");
-          return main?.textContent?.includes("e2e-renamed-session") || false;
-        });
-        expect(titleText).toBeTruthy();
+        const response = await responsePromise;
+        expect(response.status(), await response.text()).toBe(200);
+        await expect(page.locator("main")).toContainText("e2e-renamed-session");
       }
     }
   } else {

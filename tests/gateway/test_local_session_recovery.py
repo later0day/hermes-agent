@@ -10,7 +10,7 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway import run
     from hermes_state_runtime import RuntimeStoreError
@@ -23,7 +23,7 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
                                adapters={}, _draining=False)
     first = runner()
     authority = await initialize_session_authority(first, profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
     params = {'request_id': 'retry', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []}
     ref = create_local_session(authority, actor, params)
     policy = first.adapters[Platform.LOCAL].policies[authority.sessions[ref.session_id].source.chat_id]
@@ -35,7 +35,7 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
     assert second.adapters[Platform.LOCAL].policies[cold.sessions[ref.session_id].source.chat_id] == policy
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         create_local_session(cold, actor, {**params, 'source': 'tui'})
-    foreign = Principal('other', 'fixture', actor.capabilities, 'other-socket')
+    foreign = SessionActor('other', 'fixture', actor.capabilities, 'other-socket')
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         await cold.resolve(foreign, ref)
 
@@ -64,6 +64,45 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
                   ('{}', 'gateway.local_policy.v1:' + ref.session_id))
     await cold._drain(ref)
     assert list_session_admissions(db, session_id=ref.session_id, pending_only=False)[0]['status'] == 'queued'
+
+
+@pytest.mark.asyncio
+async def test_cold_local_session_without_a_model_can_be_renamed(tmp_path, monkeypatch):
+    """An unconfigured profile may create a chat before choosing a provider; metadata must still work."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import SessionActor, SessionRef
+    from gateway.session_local import stage_local_session
+    from gateway.session_mutations import mutate_session
+    from gateway import run
+    from hermes_state_local import commit_local_session
+
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    receipt = stage_local_session(authority, actor, {
+        'request_id': 'unconfigured', 'source': 'tui', 'cwd': str(tmp_path), 'toolsets': []})
+    assert receipt['policy']['model'] is None
+    commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+
+    cold_store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    cold_runner = SimpleNamespace(session_store=cold_store, _session_db=cold_store._db,
+                                  adapters={}, _draining=False)
+    cold = await initialize_session_authority(cold_runner, profile_id='fixture', instance_id='second')
+    ref = SessionRef('fixture', receipt['session_id'])
+    result = await mutate_session(cold, actor, ref, dict(
+        session_id=ref.session_id, request_id='rename', expected_revision=0,
+        operation='rename', payload={'title': 'Before provider setup'}))
+
+    assert result['revision'] == 1
+    assert cold.db.get_session(ref.session_id)['title'] == 'Before provider setup'
+    from gateway.session_policy import restore_policy
+    from hermes_state_runtime import RuntimeStoreError
+    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+        restore_policy({**receipt['policy'], 'model': ' '})
 
 
 @pytest.mark.platforms("linux")
@@ -115,7 +154,7 @@ async def test_branch_and_local_entries_keep_the_routing_prune_sweep_running(tmp
     from gateway.session import SessionSource, SessionStore
     from gateway.session_api import bind_api_session
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
     from gateway import run
@@ -124,7 +163,7 @@ async def test_branch_and_local_entries_keep_the_routing_prune_sweep_running(tmp
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
     ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path),
                                                   'model': 'frozen', 'toolsets': []})
     bind_api_session(authority, 'api-owner')
@@ -151,7 +190,7 @@ async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_pat
     from gateway.session import SessionStore
     from gateway.session_api import bind_api_session
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
     from gateway import run
@@ -161,7 +200,7 @@ async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_pat
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
     params = {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []}
     local = create_local_session(authority, actor, params)
     api = bind_api_session(authority, 'api-owner', declared_key='conversation')

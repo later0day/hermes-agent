@@ -90,6 +90,7 @@
   "/resume": null,
   "/retry": null,
   "/review": null,
+  "/rewind": "terminal",
   "/rollback": null,
   "/room": null,
   "/s": null,

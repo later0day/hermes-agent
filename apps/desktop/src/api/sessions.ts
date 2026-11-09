@@ -152,6 +152,7 @@ export async function listAllProfileSessions(
 
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
+    ...(profile === 'all' ? {} : { profile }),
     path:
       `/api/profiles/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
@@ -337,6 +338,7 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   try {
     result = await hermesApi<SidebarSessionsResponse>({
       ...profileScoped(),
+      ...(req.recentsProfile === 'all' ? {} : { profile: req.recentsProfile }),
       path: `/api/profiles/sessions/sidebar?${params.toString()}`,
       timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
     })

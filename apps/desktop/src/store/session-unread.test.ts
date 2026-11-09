@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
@@ -226,5 +226,46 @@ describe('persisted unread (session-unread)', () => {
     expect(markers).toHaveLength(200)
     expect(markers[0]).toBe('s1')
     expect(markers.at(-1)).toBe('s200')
+  })
+
+  it('does not let a stale boot snapshot resurrect an ack already on disk', async () => {
+    vi.resetModules()
+    // Start from a stale pre-ack storage snapshot.
+    localStorage.setItem('hermes.desktop.sessionSeenCounts', JSON.stringify({ default: { s1: 0 } }))
+    localStorage.setItem('hermes.desktop.unreadFinishedSessions', JSON.stringify({ default: ['s1'] }))
+
+    const sessionStore = await import('./session')
+    const unreadStore = await import('./session-unread')
+
+    // Storage catches up with the previous run's ack before the first list.
+    localStorage.setItem('hermes.desktop.sessionSeenCounts', JSON.stringify({ default: { s1: 2 } }))
+    localStorage.setItem('hermes.desktop.unreadFinishedSessions', JSON.stringify({}))
+
+    sessionStore.setSessions([session({ id: 's1', message_count: 2 })])
+
+    expect(unreadStore.$sessionSeenCounts.get()).toEqual({ default: { s1: 2 } })
+    expect(unreadStore.$unreadFinishedMarkers.get()).toEqual({})
+    expect(sessionStore.$unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('keeps a pre-list acknowledgement when the storage re-read is still stale', async () => {
+    vi.resetModules()
+    localStorage.setItem('hermes.desktop.sessionSeenCounts', JSON.stringify({ default: { s1: 2 } }))
+    localStorage.setItem('hermes.desktop.unreadFinishedSessions', JSON.stringify({ default: ['s1'] }))
+
+    const sessionStore = await import('./session')
+    const unreadStore = await import('./session-unread')
+
+    unreadStore.ackStoredSessionId('s1')
+    expect(unreadStore.$unreadFinishedMarkers.get()).toEqual({})
+
+    // Force the re-read to return the stale record too.
+    localStorage.setItem('hermes.desktop.unreadFinishedSessions', JSON.stringify({ default: ['s1'] }))
+
+    sessionStore.setSessions([session({ id: 's1', message_count: 2 })])
+
+    expect(unreadStore.$sessionSeenCounts.get()).toEqual({ default: { s1: 2 } })
+    expect(unreadStore.$unreadFinishedMarkers.get()).toEqual({})
+    expect(sessionStore.$unreadFinishedSessionIds.get()).toEqual([])
   })
 })
