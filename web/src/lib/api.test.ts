@@ -131,6 +131,7 @@ describe("management profile scope", () => {
   it.each([
     "/api/credentials/pool/anthropic/0",
     "/api/dashboard/plugin-providers",
+    "/api/messaging/weixin/onboarding/start",
     "/api/model/recommended-default",
     "/api/local-models",
     "/api/ops/restart",
@@ -358,5 +359,46 @@ describe("api.getAuthMe loopback contract", () => {
 
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect((init.headers as Headers).get(SESSION_HEADER)).toBe("loopback-token");
+  });
+});
+
+describe("session token stays on the dashboard origin", () => {
+  const foreign = [
+    "https://evil.example/x.png",
+    "//evil.example/x.png",
+    "http://localhost:1/api/status", // same host, other port: another origin
+  ];
+
+  it.each(foreign)("fetchJSON and authedFetch refuse %s without calling fetch", async (url) => {
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authedFetch(url)).rejects.toThrow(/Refusing to send the Hermes session/);
+    await expect(fetchJSON(url)).rejects.toThrow(/Refusing to send the Hermes session/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("relative and same-origin absolute URLs still carry the token", async () => {
+    window.__HERMES_SESSION_TOKEN__ = "live-token";
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const own = `${window.location.origin}/api/plugins/demo/blob`;
+
+    await authedFetch("/api/plugins/demo/blob", { mode: "cors" });
+    await authedFetch(own);
+    await fetchJSON("/api/plugins/demo/data", { mode: "no-cors" });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/plugins/demo/blob",
+      own,
+      "/api/plugins/demo/data",
+    ]);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect((init?.headers as Headers).get(SESSION_HEADER)).toBe("live-token");
+      expect(init?.credentials).toBe("include");
+      // Pinned after the caller's init: the browser then refuses cross-origin
+      // redirects and off-origin <base href> resolution the URL check can't see.
+      expect(init?.mode).toBe("same-origin");
+    }
   });
 });

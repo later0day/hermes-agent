@@ -311,12 +311,8 @@ class GatewayAgentCommandsMixin:
         args, actor_user_id, actor_user_name = c.args, c.actor_user_id, c.actor_user_name
         import argparse
 
-        from hermes_cli.profiles import (
-            create_profile,
-            get_profile_dir,
-            read_profile_meta,
-            write_profile_meta,
-        )
+        from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+        from hermes_cli.profiles import get_profile_dir, read_profile_meta, write_profile_meta
 
         parser = argparse.ArgumentParser(prog="/agent create", add_help=False)
         parser.add_argument("name")
@@ -340,8 +336,10 @@ class GatewayAgentCommandsMixin:
                     return f"Profile `{parsed.from_template}` is not marked as a template."
                 # create/delete stop processes, copy trees and may spawn skill installs: off the loop.
                 await self._run_in_executor_with_context(functools.partial(
-                    create_profile, target_name, clone_from=parsed.from_template,
-                    clone_env=parsed.with_env, clone_skills=parsed.with_env))
+                    provision_profile, ProfileCreateRequest(
+                        name=target_name, clone_from=parsed.from_template, alias=False,
+                        clone_env=parsed.with_env, clone_skills=parsed.with_env,
+                        mirror_credentials=False)))
                 self._append_agent_audit(
                     "agent.template_clone",
                     profile_name=target_name,
@@ -351,8 +349,10 @@ class GatewayAgentCommandsMixin:
                 )
             else:
                 await self._run_in_executor_with_context(functools.partial(
-                    create_profile, target_name, clone_from="default",
-                    clone_env=parsed.with_env, clone_skills=parsed.with_env))
+                    provision_profile, ProfileCreateRequest(
+                        name=target_name, clone_from="default", alias=False,
+                        clone_env=parsed.with_env, clone_skills=parsed.with_env,
+                        mirror_credentials=False)))
                 self._append_agent_audit(
                     "agent.create",
                     after={"profile_name": target_name, "orchestrator": parsed.orchestrator},
