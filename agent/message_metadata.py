@@ -58,6 +58,13 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 DATA_USE = "data_use"
 
 
+def is_typed_content_part(part: Any, types: set[str] | frozenset[str]) -> bool:
+    if not isinstance(part, dict):
+        return False
+    part_type = part.get("type")
+    return isinstance(part_type, str) and part_type in types
+
+
 def _set_display_metadata_key(message: MutableMapping[str, Any], key: str, value: Any) -> None:
     """Set *key* in *message*'s ``display_metadata`` as a new dict (a non-dict value starts empty)."""
     metadata = message.get("display_metadata")

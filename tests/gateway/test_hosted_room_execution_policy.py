@@ -313,6 +313,35 @@ def test_catalog_binds_launch_scope_after_multi_profile_hosting(tmp_path, monkey
         secret_scope.get_secret("XAI_API_KEY")
 
 
+def test_catalog_tolerates_multiplex_activation_during_launch_config_load(tmp_path, monkeypatch):
+    _two_profile_homes(tmp_path, monkeypatch)
+    root = tmp_path / ".hermes"
+    for name, turns in (("alpha", 12), ("beta", 7)):
+        (root / "profiles" / name / "config.yaml").write_text(
+            f"agent:\n  max_turns: {turns}\napprovals:\n  mode: manual\n")
+    monkeypatch.setenv("XAI_API_KEY", "launch-env-only-key")
+
+    from agent import secret_scope
+    import gateway.run as gateway_run
+    from tui_gateway import launch_profile_policy
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    load_config = gateway_run._load_gateway_config
+
+    def load_with_concurrent_activation():
+        launch_profile_policy.activate_multi_profile_hosting()
+        return load_config()
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", load_with_concurrent_activation)
+    try:
+        launch = catalog_mapping(installation_id="install-peer", persistent_process=True, target_profile="default")
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert launch["execution_policy"]["max_iterations"] == 12
+    assert "x_search" in launch["execution_policy"]["enabled_toolsets"]
+
+
 def test_catalog_requires_the_served_profile_and_never_reads_hermes_profile(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
     with pytest.raises(TypeError, match="target_profile"):

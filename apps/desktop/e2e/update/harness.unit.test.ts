@@ -22,14 +22,19 @@ test.skipIf(process.platform !== 'linux')(
 
     fs.mkdirSync(releaseDir(facts), { recursive: true })
     const exe = path.join(releaseDir(facts), 'Hermes')
+    const crashpadExe = path.join(releaseDir(facts), 'chrome_crashpad_handler')
     fs.copyFileSync(process.execPath, exe)
+    fs.copyFileSync(process.execPath, crashpadExe)
     const app = spawn(exe, ['-e', 'setTimeout(() => {}, 60_000)'], { env: {}, stdio: 'ignore' })
+    const crashpad = spawn(crashpadExe, ['-e', 'setTimeout(() => {}, 60_000)'], { env: {}, stdio: 'ignore' })
 
     try {
       await expect.poll(() => installProcesses(facts).map(proc => proc.pid)).toContain(app.pid)
+      await expect.poll(() => installProcesses(facts).map(proc => proc.pid)).toContain(crashpad.pid)
       expect(desktopMainProcesses(facts).map(proc => proc.pid)).toEqual([app.pid])
     } finally {
       app.kill('SIGKILL')
+      crashpad.kill('SIGKILL')
       await expect.poll(() => installProcesses(facts).length).toBe(0)
       fs.rmSync(root, { recursive: true, force: true })
     }

@@ -281,7 +281,8 @@ function exeOf(pid: number): string {
  * whose parent is itself a candidate is that child, not a second app.
  */
 export function desktopMainProcesses(facts: InstallFacts): ProcInfo[] {
-  const candidates = processesRunningFrom(releaseDir(facts)).filter(proc => !/--type=/.test(proc.cmdline))
+  const executable = packagedExe(facts)
+  const candidates = processesRunningFrom(releaseDir(facts)).filter(proc => exeOf(proc.pid) === executable)
   const pids = new Set(candidates.map(proc => proc.pid))
 
   return candidates.filter(proc => !pids.has(proc.ppid))

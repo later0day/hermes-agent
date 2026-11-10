@@ -73,6 +73,28 @@ def update(name, timeout=240):
     return cp.returncode, cp.stdout
 
 
+def update_to_fetch(name, timeout=240):
+    proc = subprocess.Popen(ARGV, env=envs[name], cwd=checkout, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            start_new_session=True)
+    deadline = time.monotonic() + timeout
+    fetch_seen = False
+    try:
+        while time.monotonic() < deadline and proc.poll() is None:
+            if (root / "fetch.log").exists():
+                fetch_seen = True
+                break
+            time.sleep(0.05)
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    out, _ = proc.communicate()
+    return proc.returncode, out, fetch_seen
+
+
 def completion_child(home):
     for p in Path("/proc").iterdir():
         if not p.name.isdigit():
@@ -88,7 +110,7 @@ def completion_child(home):
 
 
 result = {}
-if mode == "owner":
+if mode in ("owner", "recycled"):
     age, offset = float(sys.argv[4]), float(sys.argv[5])
     owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
     time.sleep(0.2)
@@ -96,7 +118,10 @@ if mode == "owner":
     marker.parent.mkdir(parents=True, exist_ok=True)
     body = f"{owner.pid}\n{int(time.time() - age)}\nct:{ct(owner.pid) + offset:.3f}\n"
     marker.write_text(body, encoding="utf-8")
-    result["rc"], result["out"] = update("home-a")
+    if mode == "recycled":
+        result["rc"], result["out"], result["fetch_seen"] = update_to_fetch("home-a")
+    else:
+        result["rc"], result["out"] = update("home-a")
     result["marker_kept"] = marker.exists() and marker.read_text(encoding="utf-8") == body
     owner.kill()
 elif mode in ("kill-mid-completion", "orphan-reader"):
@@ -231,8 +256,9 @@ def test_live_owner_is_not_aged_out(rig):
 
 def test_reused_pid_marker_is_reclaimed(rig):
     """(c) A live pid whose creation time does not match the claim is a recycled pid: reclaim."""
-    r = rig.driver("owner", "0", "-500")
+    r = rig.driver("recycled", "0", "-500")
     assert r["rc"] != 2 and REFUSAL not in r["out"], f"a recycled pid blocked the update (rc={r['rc']}):\n{r['out']}"
+    assert r["fetch_seen"], f"the update did not reach fetch within 240 seconds (rc={r['rc']}):\n{r['out']}"
     assert rig.fetchers(), f"the update never got past the lock:\n{r['out']}"
 
 

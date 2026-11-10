@@ -790,7 +790,8 @@ class CLILoopsMixin:
                         parts = [
                             p.get("text", "")
                             for p in content
-                            if isinstance(p, dict) and p.get("type") in {"text", "output_text"}]
+                            if isinstance(p, dict) and isinstance(p.get("type"), str)
+                            and p.get("type") in {"text", "output_text"}]
                         return "\n".join(t for t in parts if t)
                     return str(content or "")
         except Exception:

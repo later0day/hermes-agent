@@ -26,7 +26,9 @@ from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, reme
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.message_metadata import (
+    PERSISTENCE_ONLY_MESSAGE_FIELDS, is_typed_content_part, unpriced_replay_fields, without_persistence_fields,
+)
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
     _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
 )
@@ -2477,7 +2479,7 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
 
 
 def _count_parts(parts: Any, types: set) -> int:
-    return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
+    return sum(1 for part in parts if is_typed_content_part(part, types)) if isinstance(parts, list) else 0
 
 
 _IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
@@ -2523,6 +2525,13 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
       ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
       prices them, and the usage anchor carries that price forward."""
+    def _strip_image_payloads(parts: list) -> list:
+        return [
+            {"type": part.get("type"), "image": "[stripped]"}
+            if is_typed_content_part(part, _IMAGE_PART_TYPES) else part
+            for part in parts
+        ]
+
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     drop_reasoning_dup = isinstance(_rc := msg.get("reasoning_content"), str) and bool(_rc.strip())
@@ -2537,24 +2546,14 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
         elif k == "content" and sidecar_wins:
             continue
         elif k == "content" and isinstance(v, list):
-            shadow[k] = [
-                {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
-                else part
-                for part in v
-            ]
+            shadow[k] = _strip_image_payloads(v)
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
         elif k == "output" and isinstance(v, list):
             # Responses ``function_call_output`` output parts: strip the image
             # payload like the ``content`` branch above so encoded bytes are
             # priced by the flat per-image model, never as text.
-            shadow[k] = [
-                {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
-                else part
-                for part in v
-            ]
+            shadow[k] = _strip_image_payloads(v)
         elif k == "codex_reasoning_items":
             shadow[k] = strip_opaque_replay_items(v)
         elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row

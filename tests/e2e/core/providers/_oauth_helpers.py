@@ -41,6 +41,10 @@ class FakeHome:
     def auth_path(self) -> Path:
         return self.hermes_home / "auth.json"
 
+    @property
+    def project(self) -> Path:
+        return self.root
+
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         import pwd  # POSIX-only; the suite is Linux-gated
 

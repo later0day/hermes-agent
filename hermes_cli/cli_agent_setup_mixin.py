@@ -142,7 +142,8 @@ def _user_display_text(content) -> str:
         return " ".join(
             part.get("text", "") if part.get("type") == "text" else "[image]"
             for part in content
-            if isinstance(part, dict) and part.get("type") in ("text", "image_url"))
+            if isinstance(part, dict) and isinstance(part.get("type"), str)
+            and part.get("type") in ("text", "image_url"))
     return "" if content is None else str(content)
 
 

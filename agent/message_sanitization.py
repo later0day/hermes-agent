@@ -379,7 +379,13 @@ def _strip_images_from_messages(messages: list) -> bool:
         content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list):
             continue
-        new_parts = [p for p in content if not (isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)]
+        new_parts = [
+            p for p in content
+            if not (
+                isinstance(p, dict) and isinstance(p.get("type"), str)
+                and p.get("type") in _IMAGE_PART_TYPES
+            )
+        ]
         if len(new_parts) < len(content):
             found = True
             if new_parts:
@@ -461,7 +467,11 @@ def _messages_carry_images(messages: Any) -> bool:
     """True when any message holds an image part in Hermes's own message format."""
     return isinstance(messages, list) and any(
         isinstance(m, dict) and isinstance(m.get("content"), list)
-        and any(isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES for p in m["content"])
+        and any(
+            isinstance(p, dict) and isinstance(p.get("type"), str)
+            and p.get("type") in _IMAGE_PART_TYPES
+            for p in m["content"]
+        )
         for m in messages
     )
 

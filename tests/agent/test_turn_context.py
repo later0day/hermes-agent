@@ -508,6 +508,35 @@ def test_gateway_notes_alone_on_a_stored_image_turn_backfill_the_row(tmp_path):
     assert _previous_user_message_text([*reloaded, {"role": "assistant", "content": "x"}]) == "look"
 
 
+def test_gateway_notes_backfill_preserves_the_native_image_persistence_override(tmp_path):
+    """Model-facing notes must not replace the clean image ref already chosen for durable history."""
+    import threading
+    from hermes_state import SessionDB
+    from agent.turn_context import _append_multimodal_context, _merge_gateway_notes
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s", "cli")
+    image_path = "/tmp/e2e shots/e2e capture.png"
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    row = {"role": "user", "content": [
+        {"type": "text", "text": f"look\n\n[Image attached at: {image_path}]"},
+        image,
+    ]}
+    row["_row_id"] = db.append_message("s", "user", f"look\n@image:`{image_path}`\n[screenshot]")
+    override = [{"type": "text", "text": f"look\n@image:`{image_path}`"}, image]
+    agent = types.SimpleNamespace(_session_db=db, session_id="s", _session_persist_lock=threading.Lock(),
+                                  _persist_user_message_override=override, _last_compaction_in_place=False,
+                                  _gateway_turn_context_notes="GATEWAY NOTE")
+    plugin_user_context = _merge_gateway_notes(agent, [row], 0, "")
+    _append_multimodal_context(agent, row, "", plugin_user_context, preflight_compressed=False)
+
+    stored = db.get_messages_as_conversation("s")[-1]["content"]
+    assert stored == f"look\n@image:`{image_path}`\n[screenshot]"
+    assert "[Image attached at:" not in stored
+    assert "GATEWAY NOTE" not in stored
+    assert row["content"][-1] == {"type": "text", "text": "GATEWAY NOTE"}
+
+
 def test_a_vetoed_turn_drops_its_typed_ask_stamp():
     """A gateway note can stamp a multimodal turn before a ``pre_llm_call`` hook vetoes it; the vetoed
     text must not survive in the stamp, where ``previous_message`` would hand it to memory providers."""

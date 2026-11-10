@@ -108,6 +108,14 @@ class RoomExecutionPolicy:
         return {**asdict(self), "enabled_toolsets": list(self.enabled_toolsets)}
 
 
+@contextlib.contextmanager
+def _launch_room_profile_scope():
+    """Keep launch credentials available if multiplexing activates midway through policy resolution."""
+    from tui_gateway.launch_profile_policy import launch_body, launch_profile_scope_if_multiplexed
+    with launch_body(), launch_profile_scope_if_multiplexed():
+        yield
+
+
 def _served_profile_scope(target_profile: str):
     """Runtime scope of the SERVED profile: the launch scope for ``default``, the existing scope when
     the target is already active, else the profile's own home + secret scope (fail closed on an
@@ -117,8 +125,7 @@ def _served_profile_scope(target_profile: str):
     from hermes_cli.profiles import get_profile_dir, normalize_profile_name, profile_exists, profile_matches_home
     # "default" is the launch home (a `-p x` multiplexer hosts it too), never a switch to ~/.hermes.
     if normalize_profile_name(target_profile) == "default":
-        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
-        return launch_profile_scope_if_multiplexed()
+        return _launch_room_profile_scope()
     if profile_matches_home(target_profile):
         return contextlib.nullcontext()
     if not profile_exists(target_profile):

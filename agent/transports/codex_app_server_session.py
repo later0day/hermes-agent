@@ -142,9 +142,9 @@ def _build_turn_input(user_input: Any) -> tuple[list[dict], str]:
         if not isinstance(item, dict):
             if item.strip() if isinstance(item, str) else item is not None:
                 texts.append(str(item))
-        elif item.get("type") in _TEXT_PART_TYPES:
+        elif isinstance(item.get("type"), str) and item.get("type") in _TEXT_PART_TYPES:
             texts.append(str(item.get("text") or item.get("content") or ""))
-        elif item.get("type") in _IMAGE_PART_TYPES:
+        elif isinstance(item.get("type"), str) and item.get("type") in _IMAGE_PART_TYPES:
             mapped = _image_part_to_turn_input(item)
             if mapped is not None:
                 images.append(mapped)

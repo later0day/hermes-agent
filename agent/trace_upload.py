@@ -67,7 +67,7 @@ def _part_to_block(part: Any, redact: bool) -> dict[str, Any]:
         return _text_block(str(part), redact)
     if part.get("type") == "text":
         return _text_block(part.get("text", ""), redact)
-    if part.get("type") in ("image_url", "image"):
+    if isinstance(part.get("type"), str) and part.get("type") in ("image_url", "image"):
         return {"type": "text", "text": "[image omitted]"}  # the viewer renders text turns; no base64
     return _text_block(json.dumps(part), redact)
 

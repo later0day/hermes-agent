@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
+from agent.message_metadata import is_typed_content_part
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from utils import base_url_host_matches, base_url_hostname
 
@@ -29,7 +30,7 @@ _DATA_URL_SUFFIXES = {
 
 
 def _is_image_part(part: Any) -> bool:
-    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+    return is_typed_content_part(part, _IMAGE_PART_TYPES)
 
 
 def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
@@ -39,7 +40,7 @@ def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
     for part in content:
         if isinstance(part, str):
             text = part.strip()
-        elif isinstance(part, dict) and (any_dict_text or part.get("type") in _TEXT_PART_TYPES):
+        elif isinstance(part, dict) and (any_dict_text or is_typed_content_part(part, _TEXT_PART_TYPES)):
             text = str(part.get("text", "") or "").strip()
         else:
             continue

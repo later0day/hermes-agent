@@ -437,7 +437,9 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         item = params.get("item")
         if not isinstance(item, dict):
             return
-        item_type = item.get("type") or ""
+        item_type = item.get("type")
+        if not isinstance(item_type, str):
+            item_type = ""
         if item_type in _CODEX_TOOL_ITEM_TYPES:
             (_fire_tool_completed if completed else _fire_tool_started)(item)
         elif completed and item_type == "agentMessage":
@@ -458,10 +460,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         # progress even without UI callbacks (or when commentary is hidden), but
         # never let empty deltas or transport keepalives mask a stalled turn.
         item = params.get("item")
+        item_type = item.get("type") if isinstance(item, dict) else None
         is_delta = method in _CODEX_PROGRESS_DELTA_METHODS and bool(_delta_text(params))
         is_item = (
-            method in {"item/started", "item/completed"} and isinstance(item, dict)
-            and item.get("type") in _CODEX_PROGRESS_ITEM_TYPES
+            method in {"item/started", "item/completed"}
+            and isinstance(item_type, str) and item_type in _CODEX_PROGRESS_ITEM_TYPES
         )
         if is_delta or is_item:
             agent_cb("_touch_activity", "_touch_activity raised", args=(f"codex app-server: {method}",))

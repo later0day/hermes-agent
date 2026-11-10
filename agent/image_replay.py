@@ -112,7 +112,11 @@ def replay_recent_images(api_messages: list[dict[str, Any]], keep: int) -> int:
             continue
         content = msg.get("content")
         if isinstance(content, list):
-            slots += sum(1 for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
+            slots += sum(
+                1 for p in content
+                if isinstance(p, dict) and isinstance(p.get("type"), str)
+                and p.get("type") in _IMAGE_PART_TYPES
+            )
             continue
         parts = _split_rebuilt_row(content) if isinstance(content, str) else None
         if parts is None:

@@ -88,3 +88,14 @@ def test_repaired_reload_commit_archives_only_held_rows(tmp_path, case):
         assert [recalled.count(content) for content in live] == [1] * len(live)
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("part_type", [{"slug": "full-time"}, ["string", "null"]])
+def test_coverage_text_projection_tolerates_non_string_part_types(part_type):
+    from hermes_state_coverage import _text_of
+
+    content = [
+        {"type": "text", "text": "kept"},
+        {"type": part_type, "text": "not a provider text block"},
+    ]
+    assert _text_of(content) == "kept"

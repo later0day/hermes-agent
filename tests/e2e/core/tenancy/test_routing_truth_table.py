@@ -34,6 +34,7 @@ from urllib.parse import urlparse
 import pytest
 
 from tests.fakes.fake_llm_provider import MODEL_ID, Error, ToolCall
+from tests.waiting import wait_until
 
 from ._routing_helpers import (
     EgressTrap,
@@ -245,10 +246,6 @@ CASES: list[Case] = [
          [Leg(Q, ("main",), {"main": 1}, "main"),
           Leg(["-p", "work", *Q], ("profile",), {"profile": 1}, "profile")],
          profiles=_profile_work),
-    Case("aux_bare_custom_never_reaches_env_openai_base_url",
-         [Leg(Q, ("named",), {"named": 1}, "named")], _aux_bare_custom),
-    Case("aux_title_endpoint_separate_from_main",
-         [Leg(Q, ("main", "aux"), {"main": 1, "aux": 1}, "main")], _aux_title_endpoint),
     Case("delegation_endpoint_child_routed",
          [Leg(Q, ("main", "deleg"), {"main": 2, "deleg": 1}, "main")], _delegation_endpoint),
     Case("delegation_named_provider_child_routed",
@@ -326,6 +323,63 @@ def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any]) -> No
                 seen.append(r["auth"])
         assert seen == [f"Bearer {fleet.key(host, i)}" for i in order], (
             f"{host} main-request keys in order: {seen}")
+
+
+# Automatic titles need a persistent session: finite CLI sessions deliberately skip the model upgrade.
+
+
+@pytest.mark.parametrize(
+    ("setup", "main_host", "aux_host"),
+    [
+        pytest.param(_aux_title_endpoint, "main", "aux", id="aux_title_endpoint_separate_from_main"),
+        pytest.param(_aux_bare_custom, "named", "named", id="aux_bare_custom_never_reaches_env_openai_base_url"),
+    ],
+)
+def test_tui_gateway_auxiliary_title_routing(
+    tmp_path: Path,
+    setup: Callable[[dict[str, Any], dict[str, str], Fleet], None],
+    main_host: str,
+    aux_host: str,
+) -> None:
+    fleet = Fleet(ROLES).start()
+    trap = EgressTrap()
+    home = tmp_path / "home"
+    config, env = base_config(fleet)
+    setup(config, env, fleet)
+    write_home(home / ".hermes", config, env)
+    gw = TuiGateway(home, proxy=trap.url)
+    try:
+        gw.wait(gw.event("gateway.ready"), timeout=120)
+        created = gw.call("session.create", {"cols": 100})
+        sid = created["result"]["session_id"]
+        # Persistent startup probes the ambient built-in providers asynchronously; keep that boot
+        # traffic out of the prompt window without ignoring any egress once the turn begins.
+        startup_egress = {"https://api.anthropic.com:443"}
+        if env.get("OPENROUTER_API_KEY"):
+            startup_egress.add("https://openrouter.ai:443")
+        wait_until(
+            lambda: startup_egress.issubset({target for _method, target in trap.attempts}),
+            timeout=60,
+            what="persistent startup provider probes to finish",
+        )
+        marks, egress_mark = fleet.marks(), len(trap.attempts)
+        done = gw.turn(sid, "hello")
+        gw.seen_or_wait(_titled(gw, sid, f"aux-from-{aux_host}"), timeout=120)
+        log = fleet.since(marks)
+        payload = (done.get("params") or {}).get("payload") or {}
+        must_hit = {main_host: 1}
+        must_hit[aux_host] = must_hit.get(aux_host, 0) + 1
+        ctx = f"persistent aux title route ({main_host=}, {aux_host=}): {describe(log)}\n{payload}"
+        assert_routing(
+            check_routing(fleet, log, {h: fleet.keys[h] for h in (main_host, aux_host)}, must_hit), ctx)
+        assert payload.get("text") == f"answer-from-{main_host}", ctx
+        assert payload.get("text") == f"answer-from-{main_host}", ctx
+        leaked = [t for _m, t in trap.attempts[egress_mark:] if urlparse(t).hostname in inference_hosts()]
+        assert not leaked, f"prompt egress to a real inference API: {leaked}\n{ctx}"
+    finally:
+        gw.close()
+        fleet.stop()
+        trap.stop()
 
 
 # Mid-session /model switches through the real tui_gateway (TUI / Desktop backend) -------------

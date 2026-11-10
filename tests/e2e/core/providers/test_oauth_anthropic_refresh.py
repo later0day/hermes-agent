@@ -1,6 +1,7 @@
 """Anthropic OAuth access token expires mid-turn: one refresh, the turn completes, the rotation persists.
 
-Real ``hermes -z`` process, native ``anthropic`` provider on the OAuth route
+Real ``hermes -z`` processes and a persistent stdio ``tui_gateway`` session for the
+auxiliary-title race, native ``anthropic`` provider on the OAuth route
 (``sk-ant-oat…`` pool credential), inference against the SDK-oracle loopback
 Messages endpoint (accepted base-URL override ``http://127.0.0.1:<port>/anthropic``),
 and the vendor token endpoint (hardcoded ``https://platform.claude.com``)
@@ -21,6 +22,7 @@ token and the login is lost.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import time
@@ -39,6 +41,7 @@ from tests.e2e.core.providers._oauth_helpers import (
     tool,
     wait_until,
 )
+from tests.e2e.core.providers._openai_tui import TuiGateway
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="tagged-tree cleanup uses /proc")
 
@@ -57,6 +60,18 @@ CASES = {
 def _has_tool_result(body: dict) -> bool:
     return any(isinstance(m.get("content"), list) and any(b.get("type") == "tool_result" for b in m["content"])
                for m in body.get("messages") or [])
+
+
+def _run_persistent_turn(rig) -> subprocess.CompletedProcess:
+    prompt = "Read the note file and report."
+    gw = TuiGateway(rig.fh, extra_env=rig.child_env)
+    try:
+        sid = gw.call("session.create", {"cols": 120}, timeout=150)["session_id"]
+        answer = gw.turn(sid, prompt, timeout=150)
+    finally:
+        returncode = gw.close(timeout=60)
+    return subprocess.CompletedProcess(
+        ["tui_gateway", prompt], 1 if returncode is None else returncode, answer, gw.tail())
 
 
 def _run_turn(tmp_path, *, aux_401: bool, clock_expired: bool):
@@ -112,7 +127,10 @@ def _run_turn(tmp_path, *, aux_401: bool, clock_expired: bool):
         rig.tokens.before_refresh_response = slow_token_endpoint
         threading.Thread(target=settle, daemon=True).start()
     try:
-        proc = run_hermes(rig.fh, ["-z", "Read the note file and report."], extra_env=rig.child_env, timeout=150)
+        if aux_401:
+            proc = _run_persistent_turn(rig)
+        else:
+            proc = run_hermes(rig.fh, ["-z", "Read the note file and report."], extra_env=rig.child_env, timeout=150)
     finally:
         for ev in (aux_sent, refresh_in_flight, aux_answered, aux_settled):
             ev.set()

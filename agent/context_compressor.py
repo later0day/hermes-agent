@@ -42,6 +42,7 @@ from agent.context_compressor_tail import (
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
+from agent.message_metadata import is_typed_content_part
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -1404,11 +1405,7 @@ def _is_text_only_content(content: Any) -> bool:
         return True
     return isinstance(content, list) and all(
         isinstance(part, str)
-        or (
-            isinstance(part, dict)
-            and part.get("type") in {"text", "input_text"}
-            and isinstance(part.get("text"), str)
-        )
+        or (is_typed_content_part(part, {"text", "input_text"}) and isinstance(part.get("text"), str))
         for part in content
     )
 
@@ -1554,7 +1551,7 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 def _is_image_part(part: Any) -> bool:
     """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``)."""
-    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+    return is_typed_content_part(part, _IMAGE_PART_TYPES)
 
 
 def _content_has_images(content: Any) -> bool:
@@ -4293,7 +4290,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         def _blank_part(part: Any) -> bool:
             if isinstance(part, str):
                 return not part.strip()
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
+            if is_typed_content_part(part, {"text", "input_text"}):
                 return isinstance(part.get("text"), str) and not part["text"].strip()
             return False
 

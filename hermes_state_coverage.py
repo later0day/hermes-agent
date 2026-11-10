@@ -23,7 +23,8 @@ def _text_of(content: Any) -> str:
     if isinstance(content, list):
         return "\n".join(
             str(part.get("text") or "") for part in content
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"})
+            if isinstance(part, dict) and isinstance(part.get("type"), str)
+            and part.get("type") in {"text", "input_text", "output_text"})
     return ""
 
 

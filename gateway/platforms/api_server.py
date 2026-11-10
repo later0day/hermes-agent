@@ -354,22 +354,21 @@ def _auto_truncate_response_history(
     return [conversation_history[index] for index in sorted(kept_indices)]
 
 
-def _cap_text(text: str) -> str:
-    return text[:MAX_NORMALIZED_TEXT_LENGTH] if len(text) > MAX_NORMALIZED_TEXT_LENGTH else text
+def _cap_text(text: str, preserve_text: bool = False) -> str:
+    return text if preserve_text or len(text) <= MAX_NORMALIZED_TEXT_LENGTH else text[:MAX_NORMALIZED_TEXT_LENGTH]
 
 
 def _cap_list(items: list) -> list:
     return items[:MAX_CONTENT_LIST_SIZE] if len(items) > MAX_CONTENT_LIST_SIZE else items
 
 
-def _normalize_chat_content(
-        content: Any, *, _max_depth: int = 10, _depth: int = 0, preserve_text: bool = False) -> str:
+def _normalize_chat_content(content: Any, *, _max_depth: int = 10, _depth: int = 0, preserve_text: bool = False) -> str:
     """Flatten OpenAI chat content (string or typed-part array) into one plain string; non-text
     parts are skipped, recursion depth / list size / output length are bounded unless preserved."""
     if _depth > _max_depth or content is None:
         return ""
     if isinstance(content, str):
-        return content if preserve_text else _cap_text(content)
+        return _cap_text(content, preserve_text)
     if isinstance(content, list):
         parts: list[str] = []
         total_len = 0
@@ -384,19 +383,16 @@ def _normalize_chat_content(
                         with suppress(Exception):
                             part = str(text)
             elif isinstance(item, list):
-                part = _normalize_chat_content(
-                    item, _max_depth=_max_depth, _depth=_depth + 1, preserve_text=preserve_text)
+                part = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1, preserve_text=preserve_text)
             if part:
-                part = part if preserve_text else _cap_text(part)
+                part = _cap_text(part, preserve_text)
                 parts.append(part)
                 total_len += len(part)
             if not preserve_text and total_len >= MAX_NORMALIZED_TEXT_LENGTH:
                 break
-        normalized = "\n".join(parts)
-        return normalized if preserve_text else _cap_text(normalized)
+        return _cap_text("\n".join(parts), preserve_text)
     try:
-        normalized = str(content)
-        return normalized if preserve_text else _cap_text(normalized)
+        return _cap_text(str(content), preserve_text)
     except Exception:
         return ""
 
@@ -442,22 +438,20 @@ def _normalize_multimodal_content(content: Any, *, preserve_text: bool = False) 
     """Validate multimodal content: a plain string when text-only, else canonical ``text`` /
     ``image_url`` parts (native OpenAI vision shape; Anthropic conversion happens downstream).
 
-    Session history APIs preserve the complete text; OpenAI-compatible endpoints retain the
-    bounded normalization limit. Raises ``ValueError("<code>:<message>")`` with codes
-    ``unsupported_content_type`` (file parts, non-image data URLs, unknown types),
-    ``invalid_image_url``, ``invalid_content_part``.
+    Raises ``ValueError("<code>:<message>")`` with codes ``unsupported_content_type`` (file
+    parts, non-image data URLs, unknown types), ``invalid_image_url``, ``invalid_content_part``.
     """
     if content is None:
         return ""
     if isinstance(content, str):
-        return content if preserve_text else _cap_text(content)
+        return _cap_text(content, preserve_text)
     if not isinstance(content, list):
         return _normalize_chat_content(content, preserve_text=preserve_text)
     normalized_parts: list[dict[str, Any]] = []
     for part in _cap_list(content):
         if isinstance(part, str):
             if part:
-                normalized_parts.append({"type": "text", "text": part if preserve_text else _cap_text(part)})
+                normalized_parts.append({"type": "text", "text": _cap_text(part, preserve_text)})
             continue
         if not isinstance(part, dict):
             continue  # unknown scalars are ignored for forward compatibility (e.g. ``refusal``)
@@ -466,9 +460,7 @@ def _normalize_multimodal_content(content: Any, *, preserve_text: bool = False) 
         if part_type in _TEXT_PART_TYPES:
             text = part.get("text")
             if text is not None and str(text):
-                normalized = str(text)
-                normalized_parts.append(
-                    {"type": "text", "text": normalized if preserve_text else _cap_text(normalized)})
+                normalized_parts.append({"type": "text", "text": _cap_text(str(text), preserve_text)})
         elif part_type in _IMAGE_PART_TYPES:
             normalized_parts.append(_normalize_image_part(part))
         elif part_type in _FILE_PART_TYPES:
