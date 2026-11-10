@@ -53,9 +53,11 @@ def handoff_enabled() -> bool:
     dashboard's own ``HostedRoomService`` on ``shared-state.db``, not through the forwarded
     ``groups.*`` RPC. Fencing those rooms to the gateway on every gateway start would freeze them
     for that dashboard (every write refused), so the hand-over stays off unless
-    ``HERMES_ROOMS_GATEWAY_HANDOFF=1``."""
-    import os
-    return os.environ.get("HERMES_ROOMS_GATEWAY_HANDOFF", "").strip().lower() in {"1", "true", "yes", "on"}
+    ``hosted_rooms.gateway_handoff: true`` in the owning profile's ``config.yaml``."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    rooms = load_user_config_effective().get("hosted_rooms", {})
+    return isinstance(rooms, dict) and rooms.get("gateway_handoff") is True
 
 
 def handoff_gateway_id() -> str:
@@ -180,7 +182,8 @@ def import_after_ready(authorities) -> None:
     still write a room in between. Once ready, that backend forwards every call (or waits while
     the gateway is starting), so this second pass leaves nothing stranded until the next restart.
     The service's driver re-reads its bindings each tick and is woken for the claimed rooms."""
-    import threading
+    from agent.memory_provider import spawn_context_thread
+
     if not handoff_enabled():
         return
     for authority in authorities:
@@ -195,4 +198,4 @@ def import_after_ready(authorities) -> None:
             with owner_scope(authority):  # a new thread holds the launch profile's scope otherwise
                 if import_standalone_rooms(target, runtime_epoch=epoch):
                     service.wakeup()
-        threading.Thread(target=run, name="hosted-rooms-ready-import", daemon=True).start()
+        spawn_context_thread(run, name="hosted-rooms-ready-import").start()

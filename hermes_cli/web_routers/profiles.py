@@ -50,7 +50,7 @@ from hermes_cli.web_models import (
 from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
 
 # Same logger the handlers used before extraction (identical logger object).
-_log = logging.getLogger("hermes_cli.web_server")
+logger = logging.getLogger("hermes_cli.web_server")
 
 # A per-profile read failure is not an empty session list. The sidebar slice for
 # that profile is a failed load (``failed`` + ``retry``) so Desktop can offer Retry
@@ -65,7 +65,7 @@ def _warn_profile_read_error(profile: str, exc: Exception) -> None:
     if key in _profile_read_warned:
         return
     _profile_read_warned.add(key)
-    _log.warning("profile session read failed for %r (reported only in the response "
+    logger.warning("profile session read failed for %r (reported only in the response "
                  "errors array): %s", profile, exc)
 
 
@@ -79,7 +79,7 @@ def _audit_profile_action(
     """Emit a lifecycle audit line for a profile mutation.
 
     The dashboard's profile create/delete/rename/import endpoints otherwise leave no trace of a
-    *successful* mutation — only ``_log.exception`` on failure — so there is no way to answer "who
+    *successful* mutation — only ``logger.exception`` on failure — so there is no way to answer "who
     removed profile X, and when". This records a single structured INFO line (parsed like the
     api_server audit-suffix lines) to the shared ``hermes_cli.web_server`` logger, which already
     lands in errors.log/agent.log. It carries NO secrets: only the action, the profile name, the
@@ -92,7 +92,7 @@ def _audit_profile_action(
         safe = str(detail).replace("\r", " ").replace("\n", " ").strip()[:300]
         if safe:
             parts.append(f"detail={safe!r}")
-    _log.info("profile_audit %s", " ".join(parts))
+    logger.info("profile_audit %s", " ".join(parts))
 
 
 def _audit_outcome_for_status(status_code: int) -> str:
@@ -231,7 +231,7 @@ def _profile_errors(log_msg: str, *args, not_found=(FileNotFoundError,),
     except ProfileIdentitySettlementPending:
         raise
     except Exception as e:
-        _log.exception(log_msg, *args)
+        logger.exception(log_msg, *args)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -249,7 +249,7 @@ def _best_effort(log_msg: str, *args, fn, default=None):
     try:
         return fn()
     except Exception:
-        _log.exception(log_msg, *args)
+        logger.exception(log_msg, *args)
         return default
 
 
@@ -262,7 +262,7 @@ def _profile_targets(log_label: str) -> list[tuple[str, Path]]:
     try:
         targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
-        _log.exception("%s: profile enumeration failed", log_label)
+        logger.exception("%s: profile enumeration failed", log_label)
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
@@ -471,7 +471,7 @@ def _sidebar_singleflight_cache(func):
             try:
                 snapshot = copy.deepcopy(result)
             except Exception:
-                _log.exception("sidebar response could not be cached")
+                logger.exception("sidebar response could not be cached")
                 return result
             with cache_lock:
                 cache[key] = (time.monotonic() + ttl, snapshot)
@@ -837,7 +837,7 @@ def _read_profiles():
         profiles = profiles_mod.list_profiles(lazy_skill_count=True)
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
-        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+        logger.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
@@ -915,7 +915,7 @@ async def get_profiles_bindings():
                     }
                 )
         except Exception:
-            _log.exception("GET /api/profiles/bindings: static route load failed")
+            logger.exception("GET /api/profiles/bindings: static route load failed")
 
         # ── Dynamic runtime bindings from the store ────────────────────
         try:
@@ -944,7 +944,7 @@ async def get_profiles_bindings():
             finally:
                 store.close()
         except Exception:
-            _log.exception("GET /api/profiles/bindings: dynamic binding load failed")
+            logger.exception("GET /api/profiles/bindings: dynamic binding load failed")
 
         return {"bindings": list(by_profile.values())}
 
@@ -1238,7 +1238,7 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         # Temp file + fsync + replace blocks for as long as the filesystem takes to commit.
         await run_in_threadpool(_run)
     except OSError as e:
-        _log.exception("PUT /api/profiles/%s/soul failed", name)
+        logger.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
     return {"ok": True}
 
@@ -1319,7 +1319,7 @@ async def update_profile_memory(name: str, doc: str, body: ProfileMemoryUpdate):
     try:
         await asyncio.to_thread(_write)
     except OSError as e:
-        _log.exception("PUT /api/profiles/%s/memory/%s failed", name, doc)
+        logger.exception("PUT /api/profiles/%s/memory/%s failed", name, doc)
         raise HTTPException(status_code=500, detail=f"Could not write {doc}: {e}")
     return {
         "ok": True,

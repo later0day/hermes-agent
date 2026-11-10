@@ -7,13 +7,13 @@ non-secret (members carry no tokens, peer-route status is a classification).
 """
 
 import asyncio
+import logging
 from typing import List, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from hermes_cli.web_routers._common import log as _log
-
+logger = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
 
 
@@ -132,7 +132,7 @@ async def list_hosted_rooms(all: bool = False):
                 enriched.append(room_summary(room, tasks=workspace["tasks"], actions=workspace["pending_actions"]))
             except Exception:
                 # One malformed sidecar must not hide the entire Room inbox.
-                _log.exception("failed to build workspace summary for Room %s", room.get("room_id"))
+                logger.exception("failed to build workspace summary for Room %s", room.get("room_id"))
                 enriched.append({**room, "workspace": None})
         return {"rooms": enriched}
 
@@ -167,6 +167,7 @@ async def get_hosted_room(room_id: str):
             try:
                 driver_status = service.status(str(room.get("room_id")))
             except Exception:
+                logger.exception("failed to load driver status for Room %s", room_id)
                 driver_status = None
         return {"room": room, "driver_status": driver_status}
 
@@ -233,7 +234,8 @@ async def get_room_topology(room_id: str):
         try:
             topology = service.topology(room_id)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            logger.exception("failed to load topology for Room %s", room_id)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if topology is None:
             raise HTTPException(status_code=404, detail="room not found")
         return topology

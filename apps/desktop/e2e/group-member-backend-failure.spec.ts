@@ -38,50 +38,42 @@ async function createAgent(page: MockBackendFixture['page'], name: string, title
   await expect(page.getByRole('button', { name: new RegExp(`^${title}\\b`) }).first()).toBeVisible({ timeout: 30_000 })
 }
 
-async function answerAsCourierGateway(page: MockBackendFixture['page']): Promise<void> {
-  await page.evaluate(() => {
-    const send = WebSocket.prototype.send
-
-    WebSocket.prototype.send = function(data) {
-      let frame: any = null
-
-      try { frame = JSON.parse(String(data)) } catch { frame = null }
-
-      if (frame?.method === 'groups.capabilities') {
-        const result = { driver: false, persistent_process: false }
-        queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }) })))
-      } else {
-        send.call(this, data)
-      }
-    }
-  })
-}
-
 async function createRoom(page: MockBackendFixture['page']) {
-  await answerAsCourierGateway(page)
   await openBots(page)
   await createAgent(page, 'programmer', 'Programmer')
   await createAgent(page, 'reviewer', 'Reviewer')
   await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes(BOT_KICKOFF)).length, { timeout: 60_000 }).toBe(2)
+
+  // These regressions belong to an existing Desktop-driven room. New Group Chat
+  // deliberately creates only gateway-owned rooms on every capability plan.
+  const members = [
+    { name: 'programmer', handle: 'programmer', title: 'Programmer' },
+    { name: 'reviewer', handle: 'reviewer', title: 'Reviewer' }
+  ].map(member => ({
+    ...member,
+    connectionId: 'local',
+    connectionKind: 'local',
+    connectionLabel: 'This device',
+    targetProfile: member.name,
+    route: { connectionId: 'local', mode: 'local', profile: member.name, targetProfile: member.name }
+  }))
+  await page.evaluate(({ room, seated }) => {
+    const key = 'hermes.plugin.hermes-bots.group-chats'
+    const rooms = JSON.parse(localStorage.getItem(key) || '{}')
+    rooms[room] = { engine: 'desktop', roomId: null, members: seated, watermarks: {}, sessions: {}, holds: {}, log: [] }
+    localStorage.setItem(key, JSON.stringify(rooms))
+  }, { room: ROOM, seated: members })
+  await page.reload()
+  await waitForAppReady(fixture!, 120_000)
   await openBots(page)
-
-  await page.getByRole('button', { name: 'New bot or group chat' }).click()
-  await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
-
-  const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
-
-  for (const title of ['Programmer', 'Reviewer']) {
-    await dialog.getByText(title, { exact: true }).locator('xpath=ancestor::label').getByRole('checkbox').click()
-  }
-
-  await dialog.getByRole('textbox', { name: 'Group name' }).fill(ROOM)
-  await dialog.getByRole('button', { name: 'Create group (2)' }).click()
+  await page.getByText(ROOM, { exact: true }).first().click()
 
   const groupTab = page.getByRole('tab', { name: new RegExp(`^${ROOM}$`) })
   const groupComposer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
   await expect(groupTab).toBeVisible({ timeout: 20_000 })
   await expect(groupTab).toHaveAttribute('aria-selected', 'true')
   await expect(groupComposer).toBeVisible()
+  expect(await page.evaluate(room => JSON.parse(localStorage.getItem('hermes.plugin.hermes-bots.group-chats') || '{}')[room]?.engine, ROOM)).toBe('desktop')
 
   return groupComposer
 }

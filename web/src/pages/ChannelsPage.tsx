@@ -32,8 +32,11 @@ import type {
   MessagingPlatformUpdate,
   TelegramOnboardingStartResponse,
   WhatsAppOnboardingStartResponse,
-  WeixinOnboardingStartResponse,
 } from "@/lib/api";
+import {
+  weixinOnboardingApi,
+  type WeixinOnboardingStartResponse,
+} from "@/lib/api-weixin";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { AllowlistInput } from "@/components/AllowlistInput";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -1186,27 +1189,133 @@ export function WhatsAppOnboardingPanel({
   );
 }
 
+type WeixinOnboardingPhase = "idle" | "starting" | "waiting" | "connected" | "applying";
+
+interface WeixinOnboardingPanelProps {
+  onChanged: () => Promise<void>;
+  onRestartNeeded: () => void;
+  platform: MessagingPlatform;
+  setRestartNeeded: (needed: boolean) => void;
+  showToast: (message: string, type: "success" | "error") => void;
+}
+
+interface WeixinSetupDetailsProps {
+  setup: WeixinOnboardingStartResponse;
+  phase: WeixinOnboardingPhase;
+  expiresIn: string;
+  qrDataUrl: string;
+  s: ChannelsStrings;
+  onApply: () => Promise<void>;
+  onCancel: () => Promise<void>;
+}
+
+function WeixinSetupDetails({
+  setup,
+  phase,
+  expiresIn,
+  qrDataUrl,
+  s,
+  onApply,
+  onCancel,
+}: WeixinSetupDetailsProps) {
+  const scanned = setup.scan_state === "scaned";
+  const setupHelp =
+    phase === "connected" || phase === "applying"
+      ? s.weixinHelpLinked
+      : scanned
+        ? s.weixinHelpScanned
+        : s.weixinHelpScan;
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+      <div className="grid gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {phase === "connected" || phase === "applying" ? (
+            <Badge tone="success">{s.confirmed}</Badge>
+          ) : scanned ? (
+            <Badge tone="warning">{s.scanned}</Badge>
+          ) : (
+            <Badge tone="warning">{s.waitingForScan}</Badge>
+          )}
+          <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
+            {expiryLabel(expiresIn, s)}
+          </Badge>
+        </div>
+
+        <div className="text-sm text-muted-foreground">{setupHelp}</div>
+
+        {(phase === "connected" || phase === "applying") && (
+          <>
+            {setup.account_id && (
+              <div className="text-xs text-muted-foreground">
+                {s.linkedAccount}{" "}
+                <span className="font-mono">{setup.account_id}</span>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                className="uppercase"
+                onClick={() => void onApply()}
+                disabled={phase === "applying"}
+                prefix={
+                  phase === "applying" ? (
+                    <Spinner />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )
+                }
+              >
+                {phase === "applying" ? s.saving : s.saveAndRestartShort}
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex flex-col items-center gap-3">
+        {qrDataUrl ? (
+          <div className="flex flex-col items-center gap-2">
+            <img
+              alt={s.weixinQrAlt}
+              className="h-60 w-60 border border-border bg-white p-2"
+              src={qrDataUrl}
+            />
+          </div>
+        ) : (
+          <div className="flex h-60 w-60 flex-col items-center justify-center gap-3 border border-border bg-background/50 p-4 text-center">
+            <Spinner className="text-2xl" />
+            <div className="text-xs text-muted-foreground">
+              {s.weixinWaitingQr}
+            </div>
+          </div>
+        )}
+        {phase === "waiting" && (
+          <span className="text-center text-xs text-muted-foreground">
+            {s.weixinScanHint}
+          </span>
+        )}
+        <Button size="sm" ghost onClick={() => void onCancel()}>
+          {s.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function WeixinOnboardingPanel({
   onChanged,
   onRestartNeeded,
   platform,
   setRestartNeeded,
   showToast,
-}: {
-  onChanged: () => Promise<void>;
-  onRestartNeeded: () => void;
-  platform: MessagingPlatform;
-  setRestartNeeded: (needed: boolean) => void;
-  showToast: (message: string, type: "success" | "error") => void;
-}) {
+}: WeixinOnboardingPanelProps) {
   const { t } = useI18n();
   // Memoized: the polling effects below depend on it and must not restart every render.
   const s = useMemo(() => localeSection(t, "channelsPage"), [t]);
   const [setup, setSetup] = useState<WeixinOnboardingStartResponse | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState("");
-  const [phase, setPhase] = useState<
-    "idle" | "starting" | "waiting" | "connected" | "applying"
-  >("idle");
+  const [phase, setPhase] = useState<WeixinOnboardingPhase>("idle");
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
@@ -1228,7 +1337,7 @@ function WeixinOnboardingPanel({
 
     const poll = async () => {
       try {
-        const status = await api.getWeixinOnboardingStatus(setup.pairing_id);
+        const status = await weixinOnboardingApi.status(setup.pairing_id);
         if (cancelled) return;
         setSetup(status);
         if (status.qr_payload && status.qr_payload !== setup.qr_payload) {
@@ -1291,7 +1400,7 @@ function WeixinOnboardingPanel({
     setError("");
     setQrDataUrl("");
     try {
-      const res = await api.startWeixinOnboarding();
+      const res = await weixinOnboardingApi.start();
       setSetup(res);
       if (res.qr_payload) {
         await updateQr(res.qr_payload);
@@ -1312,7 +1421,7 @@ function WeixinOnboardingPanel({
   const cancel = async () => {
     if (setup) {
       try {
-        await api.cancelWeixinOnboarding(setup.pairing_id);
+        await weixinOnboardingApi.cancel(setup.pairing_id);
       } catch {
         /* local cleanup still wins */
       }
@@ -1345,7 +1454,7 @@ function WeixinOnboardingPanel({
     setPhase("applying");
     setError("");
     try {
-      const result = await api.applyWeixinOnboarding(setup.pairing_id);
+      const result = await weixinOnboardingApi.apply(setup.pairing_id);
       resetSetup();
       if (result.restart_started) {
         showToast(s.weixinSavedRestarting, "success");
@@ -1370,13 +1479,6 @@ function WeixinOnboardingPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [setup, tick],
   );
-  const scanned = setup?.scan_state === "scaned";
-  const setupHelp =
-    phase === "connected" || phase === "applying"
-      ? s.weixinHelpLinked
-      : scanned
-        ? s.weixinHelpScanned
-        : s.weixinHelpScan;
   const alreadyLinked = Boolean(platform.weixin_setup?.account_set);
 
   return (
@@ -1410,79 +1512,15 @@ function WeixinOnboardingPanel({
         )}
 
         {setup && (
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
-            <div className="grid gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                {phase === "connected" || phase === "applying" ? (
-                  <Badge tone="success">{s.confirmed}</Badge>
-                ) : scanned ? (
-                  <Badge tone="warning">{s.scanned}</Badge>
-                ) : (
-                  <Badge tone="warning">{s.waitingForScan}</Badge>
-                )}
-                <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
-                  {expiryLabel(expiresIn, s)}
-                </Badge>
-              </div>
-
-              <div className="text-sm text-muted-foreground">{setupHelp}</div>
-
-              {(phase === "connected" || phase === "applying") && (
-                <>
-                  {setup.account_id && (
-                    <div className="text-xs text-muted-foreground">
-                      {s.linkedAccount}{" "}
-                      <span className="font-mono">{setup.account_id}</span>
-                    </div>
-                  )}
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      className="uppercase"
-                      onClick={() => void apply()}
-                      disabled={phase === "applying"}
-                      prefix={
-                        phase === "applying" ? (
-                          <Spinner />
-                        ) : (
-                          <Save className="h-4 w-4" />
-                        )
-                      }
-                    >
-                      {phase === "applying" ? s.saving : s.saveAndRestartShort}
-                    </Button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="flex flex-col items-center gap-3">
-              {qrDataUrl ? (
-                <div className="flex flex-col items-center gap-2">
-                  <img
-                    alt={s.weixinQrAlt}
-                    className="h-60 w-60 border border-border bg-white p-2"
-                    src={qrDataUrl}
-                  />
-                </div>
-              ) : (
-                <div className="flex h-60 w-60 flex-col items-center justify-center gap-3 border border-border bg-background/50 p-4 text-center">
-                  <Spinner className="text-2xl" />
-                  <div className="text-xs text-muted-foreground">
-                    {s.weixinWaitingQr}
-                  </div>
-                </div>
-              )}
-              {phase === "waiting" && (
-                <span className="text-center text-xs text-muted-foreground">
-                  {s.weixinScanHint}
-                </span>
-              )}
-              <Button size="sm" ghost onClick={() => void cancel()}>
-                {s.cancel}
-              </Button>
-            </div>
-          </div>
+          <WeixinSetupDetails
+            setup={setup}
+            phase={phase}
+            expiresIn={expiresIn}
+            qrDataUrl={qrDataUrl}
+            s={s}
+            onApply={apply}
+            onCancel={cancel}
+          />
         )}
       </div>
     </div>

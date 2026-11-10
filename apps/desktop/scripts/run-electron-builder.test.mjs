@@ -34,6 +34,36 @@ test('validate-only admits real prepared inputs without launching tools and reje
   }
 })
 
+test('strict builder runs the staged CommonJS icon tool inside the ESM desktop package', async () => {
+  const source = path.resolve(import.meta.dirname, '../../..')
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'builder-icons-'))
+  try {
+    const electron = path.join(out, 'electron.zip')
+    fs.writeFileSync(electron, 'fixture archive')
+    const toolsets = { sevenZip: path.join(out, 'sevenZip'), icons: path.join(out, 'icons') }
+    for (const dir of Object.values(toolsets)) fs.mkdirSync(dir)
+    fs.writeFileSync(path.join(toolsets.icons, 'icon-tool.js'),
+      "console.log(require('node:path').basename(__filename))\n")
+    const manifest = await publishPackagingInputs({ source, out, target: `${process.platform}-${process.arch}`, formats: ['dir'], electron, toolsets })
+    const nativeDeps = path.join(out, 'native')
+    fs.mkdirSync(path.join(nativeDeps, 'node-pty'), { recursive: true })
+    fs.writeFileSync(path.join(nativeDeps, 'node-pty/package.json'), '{}')
+    recordNativeInputs({ source, out: nativeDeps, platform: process.platform, arch: process.arch })
+    let builderArgs = []
+    const spawn = (_node, args) => { builderArgs = args; return { status: 0 } }
+    const args = ['--prepared', manifest, '--native-deps', nativeDeps, '--dir']
+    assert.equal(runElectronBuilder(args, { spawn }), 0)
+    const selection = builderArgs.find(arg => arg.startsWith('-c.toolsets.icons.url=file://'))
+    assert.ok(selection)
+    const staged = selection.slice('-c.toolsets.icons.url=file://'.length)
+    const result = spawnSync(process.execPath, [path.join(staged, 'icon-tool.js')], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout.trim(), 'icon-tool.js')
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true })
+  }
+})
+
 test('source multiarch prepares isolated native and packaging inputs before each strict invocation', () => {
   const calls = []
   const spawn = (_node, args) => { calls.push(args); return { status: 0 } }

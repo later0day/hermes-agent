@@ -559,8 +559,8 @@ def _retry_identity(key):
 def _retry_eligible(authority, record):
     """Exactly the main-lane gate (``tools.bot_failure_reasons.result_retry_action``): the original
     admission SETTLED ``failed`` with a committed result whose error classifies transient (429/5xx/
-    context overflow). queued/started/unknown admissions never qualify — unknown execution is never
-    replayed — and the retry itself is never retried."""
+    context overflow with compression headroom). queued/started/unknown admissions never qualify —
+    unknown execution is never replayed — and the retry itself is never retried."""
     if (record.get('retry') or {}).get('refused') or _retry_admission(authority, record):
         return False
     row = get_session_admission(authority.db, admission_id=record['admission_id'])
@@ -569,6 +569,9 @@ def _retry_eligible(authority, record):
     from gateway.session_results import admission_result
     saved = admission_result(authority.db, record['admission_id'])
     if saved is None:
+        return False
+    # Exhaustion already rotated the Bot Chat; replaying the same oversized DM would rotate it again.
+    if saved['result'].get('compression_exhausted'):
         return False
     from tools.bot_failure_reasons import RETRY_NONE, result_retry_action
     return result_retry_action(saved['result']) != RETRY_NONE

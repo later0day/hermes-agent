@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  api,
+  roomsApi,
   type PeerGrant,
   type PendingAction,
   type PolicyTraceResponse,
@@ -9,7 +9,7 @@ import {
   type RoomSummary,
   type RoomTopologyResponse,
   type RoomWorkspaceResponse,
-} from "@/lib/api";
+} from "@/lib/api-rooms";
 import { roomErrorMessage, sortRoomsByPriority } from "./room-model";
 
 export type RoomsWorkspaceTab = "tasks" | "conversation" | "activity";
@@ -147,7 +147,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
     const token = listGuard.current.next();
     setLoadingList(true); setListError(null);
     try {
-      const response = await api.listRooms(showDisbanded);
+      const response = await roomsApi.listRooms(showDisbanded);
       if (!mounted.current || !listGuard.current.current(token)) return;
       const next = sortRoomsByPriority(response.rooms);
       setRooms(next);
@@ -168,13 +168,13 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
       if (!mounted.current || !roomGuard.current.current(token)) return;
       setAncillary((previous) => ({ ...previous, [key]: { data, loading: false, error: error ? String(error) : null } }));
     };
-    void api.getRoomTopology(roomId).then((r) => commit("topology", r)).catch((e) => commit("topology", null, e));
-    void api.getRoomPendingActions(roomId).then((r) => commit("pendingActions", r.actions)).catch((e) => commit("pendingActions", null, e));
-    void api.getRoomPeerGrants(roomId).then((r) => commit("peerGrants", r.peer_grants)).catch((e) => commit("peerGrants", null, e));
-    void api.getRoomReplicationHealth(roomId).then((r) => commit("replication", r)).catch((e) => commit("replication", null, e));
-    void api.getRoomPolicyTrace(roomId).then((r) => commit("policy", r)).catch((e) => commit("policy", null, e));
+    void roomsApi.getRoomTopology(roomId).then((r) => commit("topology", r)).catch((e) => commit("topology", null, e));
+    void roomsApi.getRoomPendingActions(roomId).then((r) => commit("pendingActions", r.actions)).catch((e) => commit("pendingActions", null, e));
+    void roomsApi.getRoomPeerGrants(roomId).then((r) => commit("peerGrants", r.peer_grants)).catch((e) => commit("peerGrants", null, e));
+    void roomsApi.getRoomReplicationHealth(roomId).then((r) => commit("replication", r)).catch((e) => commit("replication", null, e));
+    void roomsApi.getRoomPolicyTrace(roomId).then((r) => commit("policy", r)).catch((e) => commit("policy", null, e));
     try {
-      const response = await api.getRoomWorkspace(roomId);
+      const response = await roomsApi.getRoomWorkspace(roomId);
       if (!mounted.current || !roomGuard.current.current(token)) return;
       setWorkspace(response);
       setAncillary((previous) => ({
@@ -209,7 +209,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
     if (!selectedRoomId || busyActionId) return false;
     setBusyActionId(actionId);
     try {
-      const response = await (decision === "approve" ? api.approveRoomAction(selectedRoomId, actionId) : api.denyRoomAction(selectedRoomId, actionId));
+      const response = await (decision === "approve" ? roomsApi.approveRoomAction(selectedRoomId, actionId) : roomsApi.denyRoomAction(selectedRoomId, actionId));
       requireSuccess(response);
       setAncillary((previous) => ({ ...previous, pendingActions: { ...previous.pendingActions, data: previous.pendingActions.data?.filter((item) => item.action_id !== actionId) ?? null } }));
       setWorkspace((previous) => previous ? { ...previous, pending_actions: previous.pending_actions.filter((item) => item.action_id !== actionId) } : null);

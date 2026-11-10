@@ -22,12 +22,13 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from agent.memory_provider import spawn_context_thread
 from hermes_cli.web_deps import late
 from hermes_cli.web_routers.messaging import _multiplex_port_binding_conflict, _onboarding_save_errors
 from hermes_cli.web_server_gateway import _restart_gateway_after
 
 router = APIRouter()
-_log = logging.getLogger("hermes_cli.web_server")
+logger = logging.getLogger("hermes_cli.web_server")
 
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
@@ -121,7 +122,7 @@ def _run_weixin_qr_poll(pairing_id: str) -> None:
         try:
             status_resp = asyncio.run(weixin_poll_qr(qrcode, base_url=base_url))
         except Exception as exc:  # transient transport error -- keep polling
-            _log.debug("weixin onboarding poll error: %s", exc)
+            logger.debug("weixin onboarding poll error: %s", exc, exc_info=True)
             time.sleep(1.5)
             continue
         status = str(status_resp.get("status") or "wait")
@@ -147,6 +148,7 @@ def _run_weixin_qr_poll(pairing_id: str) -> None:
             try:
                 fresh = asyncio.run(weixin_create_qr())
             except Exception as exc:
+                logger.warning("weixin onboarding: QR refresh failed", exc_info=True)
                 with _weixin_onboarding_lock:
                     if record := _live_record(pairing_id):
                         record.status, record.error = "error", f"Failed to refresh Weixin QR: {exc}"
@@ -193,7 +195,7 @@ async def start_weixin_onboarding(body: WeixinOnboardingStart):
     try:
         qr = await weixin_create_qr()
     except Exception as exc:
-        _log.exception("Weixin onboarding: QR create failed")
+        logger.exception("Weixin onboarding: QR create failed")
         raise HTTPException(status_code=502, detail=f"Could not fetch a Weixin QR code: {exc}") from exc
 
     pairing_id = secrets.token_urlsafe(16)
@@ -205,7 +207,7 @@ async def start_weixin_onboarding(body: WeixinOnboardingStart):
     with _weixin_onboarding_lock:
         _prune_weixin_onboarding_sessions()
         _weixin_onboarding_sessions[pairing_id] = record
-    threading.Thread(target=_run_weixin_qr_poll, args=(pairing_id,), daemon=True).start()
+    spawn_context_thread(_run_weixin_qr_poll, args=(pairing_id,), name="weixin-qr-poll").start()
     return _weixin_onboarding_payload(pairing_id, record)
 
 
@@ -253,7 +255,7 @@ async def apply_weixin_onboarding(pairing_id: str, body: WeixinOnboardingApply, 
                 save_weixin_account(str(get_hermes_home()), account_id=account_id, token=token,
                                     base_url=cred_base_url, user_id=user_id)
             except Exception:
-                _log.warning("weixin onboarding: account credential file write skipped", exc_info=True)
+                logger.warning("weixin onboarding: account credential file write skipped", exc_info=True)
             _write_platform_enabled("weixin", True)
 
     with _onboarding_save_errors("Weixin onboarding apply failed", "Failed to save Weixin setup."):

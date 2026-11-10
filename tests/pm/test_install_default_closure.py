@@ -42,6 +42,7 @@ def install_spy(monkeypatch):
     monkeypatch.setattr(pm.cli, "_install_names", fake_install_names)
     monkeypatch.setattr(importlib.import_module("pm.install"), "sync_venv", fake_sync_venv)
     monkeypatch.setattr(importlib.import_module("pm.install"), "activate", fake_activate)
+    monkeypatch.setattr("pm.extras.legacy_selection", lambda _root: ["all"])
     return calls
 
 

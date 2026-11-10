@@ -8,8 +8,37 @@ export interface BindableChat {
   chat_type: string;
 }
 
+export interface ProfileStaticRoute {
+  name: string;
+  platform: string;
+  guild_id: string | null;
+  chat_id: string | null;
+  thread_id: string | null;
+  enabled: boolean;
+}
+
+export interface ProfileDynamicBinding {
+  source_binding_key: string;
+  platform: string;
+  scope: string;
+  chat_id: string;
+  agent_id: string;
+  has_fallback_webhook: boolean;
+  created_at: number;
+  created_by_name: string | null;
+  updated_at: number;
+  updated_by_name: string | null;
+}
+
+export interface ProfileBindingSummary {
+  profile: string;
+  static: ProfileStaticRoute[];
+  dynamic: ProfileDynamicBinding[];
+}
+
 /** Dashboard-side ``/agent use``: bind a whole chat to a profile, list bindable chats, unbind one row. */
 export const profileBindingsApi = {
+  summaries: () => fetchJSON<{ bindings: ProfileBindingSummary[] }>("/api/profiles/bindings"),
   chats: () => fetchJSON<{ chats: BindableChat[] }>("/api/profiles/binding-chats"),
   bind: (profile: string, chat: BindableChat) =>
     fetchJSON<{ ok: boolean; source_binding_key: string }>(

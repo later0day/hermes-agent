@@ -1302,6 +1302,39 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         note_busy_admitting(event)
         return True, await admit_message(authority, event)
 
+    async def _hm_route_inbound_room(
+        self, event: MessageEvent, source: SessionSource, is_internal: bool,
+    ) -> tuple[bool, Optional[str]]:
+        """Route opted-in plain chat to its hosted room, before claiming a local agent turn."""
+        if is_internal or event.get_command() or not (event.text or "").strip():
+            return False, None
+        from gateway.room_mirror_watcher import INBOUND_ROOM_NOT_ROUTED
+        reply = await self._maybe_route_inbound_to_room(event, source)
+        if reply is INBOUND_ROOM_NOT_ROUTED:
+            return False, None
+        return True, reply
+
+    async def _hm_new_turn_gate(
+        self, source: SessionSource, is_internal: bool, session_key: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Apply non-internal gates that refuse a new turn before its session is claimed."""
+        if is_internal:
+            return False, None
+        # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
+        # conversational "yes" would execute a dangerous command.
+        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+            # Debounced so a user who forgets about topic mode doesn't get ten reminders.
+            if self._should_send_telegram_lobby_reminder(source):
+                return True, self._telegram_topic_root_lobby_message()
+            return True, None
+        # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
+        # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
+        # only fall to zero. Reversible.
+        if self._external_drain_active:
+            logger.info("Refusing new turn for session %s — external drain active.", session_key)
+            return True, t("gateway.busy.draining_maintenance")
+        return False, None
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1350,26 +1383,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # with inbound enabled lands in the room as message.user instead of running the local agent. Commands
         # still dispatch locally; echo is impossible (inbound writes message.user, the mirror forwards only
         # message.member); idempotent on the IM message id. See gateway/room_mirror_watcher.py.
-        if not is_internal and not event.get_command() and (event.text or "").strip():
-            from gateway.room_mirror_watcher import INBOUND_ROOM_NOT_ROUTED
-            _room_reply = await self._maybe_route_inbound_to_room(event, source)
-            if _room_reply is not INBOUND_ROOM_NOT_ROUTED:
-                return _room_reply
+        _room_handled, _room_reply = await self._hm_route_inbound_room(event, source, is_internal)
+        if _room_handled:
+            return _room_reply
 
-        # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
-        # conversational "yes" would execute a dangerous command.
-        if not is_internal:
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                # Debounced so a user who forgets about topic mode doesn't get ten reminders.
-                if self._should_send_telegram_lobby_reminder(source):
-                    return self._telegram_topic_root_lobby_message()
-                return None
-            # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
-            # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
-            # only fall to zero. Reversible.
-            if self._external_drain_active:
-                logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
-                return t("gateway.busy.draining_maintenance")
+        _new_turn_blocked, _new_turn_notice = await self._hm_new_turn_gate(
+            source, is_internal, _quick_key,
+        )
+        if _new_turn_blocked:
+            return _new_turn_notice
 
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them

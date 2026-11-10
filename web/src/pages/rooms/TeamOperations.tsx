@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import { Send } from "lucide-react";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@nous-research/ui/ui/components/dialog";
-import type { ProfileInfo, RoomCreateRequest, RoomSummary, RoomTopologyResponse } from "@/lib/api";
+import type { ProfileInfo } from "@/lib/api";
+import type { RoomCreateRequest, RoomSummary, RoomTopologyResponse } from "@/lib/api-rooms";
 import { useI18n } from "@/i18n";
 import { localeSection } from "@/i18n/section";
 

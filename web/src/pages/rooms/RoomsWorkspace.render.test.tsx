@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RoomConversationItem, RoomSummary, RoomWorkspaceResponse } from "@/lib/api";
+import type { RoomConversationItem, RoomSummary, RoomWorkspaceResponse } from "@/lib/api-rooms";
 import { RoomsWorkspace, type RoomsWorkspaceProps } from "./RoomsWorkspace";
 
 const noop = () => undefined;

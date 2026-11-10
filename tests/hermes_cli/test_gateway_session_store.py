@@ -1,5 +1,6 @@
 """GatewaySessionStore: main's ``_session_db`` facade over gateway verbs (scripted gateway, no live one)."""
 import asyncio
+import os
 import types
 from contextlib import asynccontextmanager
 
@@ -872,7 +873,7 @@ def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store
     monkeypatch.setattr("hermes_cli.banner.build_welcome_banner", lambda **kw: banners.append(kw))
     monkeypatch.setattr(cli_mod, "get_tool_definitions", lambda **_kw: pytest.fail("walked the CLI's registry"))
     monkeypatch.setattr(cli_mod, "_cprint", lambda *_a: None)
-    monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: types.SimpleNamespace(columns=200, lines=50))
+    monkeypatch.setattr("shutil.get_terminal_size", lambda *_a, **_k: os.terminal_size((200, 50)))
     shell = HermesCLI.__new__(HermesCLI)
     shell.__dict__.update(
         _session_db=db, session_id="local-old", compact=False, model="fake-model", provider="custom",

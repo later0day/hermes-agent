@@ -4,7 +4,7 @@ import type {
   RoomEvent,
   RoomRoleKind,
   RoomSummary,
-} from "@/lib/api";
+} from "@/lib/api-rooms";
 
 export function roomErrorMessage(
   error: unknown,
@@ -18,26 +18,42 @@ export function requireRoomActionSuccess(response: RoomActionResponse, fallback 
   if (!response.ok) throw new Error(response.message || fallback);
 }
 
+const ACTOR_FILTERS: Record<string, (actorKind: string, role: RoomRoleKind | undefined) => boolean> = {
+  coordinator: (_actorKind, role) => role === "coordinator" || role === "team_lead",
+  teammate: (_actorKind, role) => role === "teammate",
+  observer: (_actorKind, role) => role === "observer",
+  user: (actorKind) => actorKind === "user",
+  system: (actorKind) => actorKind === "system" || actorKind === "gateway",
+};
+
+const KIND_FILTERS: Record<string, (kind: string) => boolean> = {
+  message: (kind) => kind.startsWith("message."),
+  turn: (kind) => kind.startsWith("turn."),
+  protocol: (kind) => /^(coordinator|teammate|observer|heartbeat)./.test(kind),
+};
+
+function eventMatchesFilters(
+  event: RoomEvent,
+  actorFilter: string,
+  kindFilter: string,
+  memberRoles: ReadonlyMap<string, RoomRoleKind>,
+): boolean {
+  const actorKind = String(event.actor?.kind ?? "");
+  const actorId = String(event.actor?.id ?? "");
+  const role = actorKind === "member" ? memberRoles.get(actorId) : undefined;
+  const matchesActor = ACTOR_FILTERS[actorFilter];
+  if (matchesActor && !matchesActor(actorKind, role)) return false;
+  const matchesKind = KIND_FILTERS[kindFilter];
+  return !matchesKind || matchesKind(event.kind);
+}
+
 export function filterEvents(
   events: RoomEvent[],
   actorFilter: string,
   kindFilter: string,
   memberRoles: ReadonlyMap<string, RoomRoleKind> = new Map(),
 ): RoomEvent[] {
-  return events.filter((event) => {
-    const actorKind = String(event.actor?.kind ?? "");
-    const actorId = String(event.actor?.id ?? "");
-    const role = actorKind === "member" ? memberRoles.get(actorId) : undefined;
-    if (actorFilter === "coordinator" && role !== "coordinator" && role !== "team_lead") return false;
-    if (actorFilter === "teammate" && role !== "teammate") return false;
-    if (actorFilter === "observer" && role !== "observer") return false;
-    if (actorFilter === "user" && actorKind !== "user") return false;
-    if (actorFilter === "system" && actorKind !== "system" && actorKind !== "gateway") return false;
-    if (kindFilter === "message" && !event.kind.startsWith("message.")) return false;
-    if (kindFilter === "turn" && !event.kind.startsWith("turn.")) return false;
-    if (kindFilter === "protocol" && !/^(coordinator|teammate|observer|heartbeat)./.test(event.kind)) return false;
-    return true;
-  });
+  return events.filter((event) => eventMatchesFilters(event, actorFilter, kindFilter, memberRoles));
 }
 
 export type VisualTaskState = "blocked" | "working" | "queued" | "completed" | "idle";
@@ -151,23 +167,46 @@ export function groupRoomConversations(events: readonly RoomEvent[], gapSeconds 
   return groups;
 }
 
+export interface RoomHealthOptions {
+  blockedTasks?: number;
+  pendingActions?: number;
+  observerViolations?: number;
+}
+
+function collectRoomHealthIssues(
+  replication: ReplicationHealthResponse | null | undefined,
+  options: RoomHealthOptions,
+): string[] {
+  const candidates = [
+    { present: Boolean(replication && !replication.healthy), message: "Replication is unhealthy" },
+    { present: Boolean(replication && replication.unavailable > 0), message: `${replication?.unavailable} peer(s) unavailable` },
+    { present: Boolean(replication && replication.needs_reauthorization > 0), message: `${replication?.needs_reauthorization} peer(s) need reauthorization` },
+    { present: (options.blockedTasks ?? 0) > 0, message: `${options.blockedTasks} blocked task(s)` },
+    { present: (options.pendingActions ?? 0) > 0, message: `${options.pendingActions} pending action(s)` },
+    { present: (options.observerViolations ?? 0) > 0, message: `${options.observerViolations} observer violation(s)` },
+  ];
+  return candidates.filter((candidate) => candidate.present).map((candidate) => candidate.message);
+}
+
+function roomHealthLevel(
+  replication: ReplicationHealthResponse | null | undefined,
+  issues: readonly string[],
+  severe: boolean,
+): HealthLevel {
+  if (!replication && issues.length === 0) return "unknown";
+  if (severe) return "unhealthy";
+  if (issues.length > 0) return "degraded";
+  return "healthy";
+}
+
 export function aggregateRoomHealth(
   replication: ReplicationHealthResponse | null | undefined,
-  options: { blockedTasks?: number; pendingActions?: number; observerViolations?: number } = {},
+  options: RoomHealthOptions = {},
 ): RoomHealth {
-  const issues: string[] = [];
-  if (replication) {
-    if (!replication.healthy) issues.push("Replication is unhealthy");
-    if (replication.unavailable > 0) issues.push(`${replication.unavailable} peer(s) unavailable`);
-    if (replication.needs_reauthorization > 0) issues.push(`${replication.needs_reauthorization} peer(s) need reauthorization`);
-  }
-  if ((options.blockedTasks ?? 0) > 0) issues.push(`${options.blockedTasks} blocked task(s)`);
-  if ((options.pendingActions ?? 0) > 0) issues.push(`${options.pendingActions} pending action(s)`);
-  if ((options.observerViolations ?? 0) > 0) issues.push(`${options.observerViolations} observer violation(s)`);
-
-  const severe = Boolean(replication && !replication.healthy)
+  const issues = collectRoomHealthIssues(replication, options);
+  const severe = replication?.healthy === false
     || (options.blockedTasks ?? 0) > 0
     || (options.observerViolations ?? 0) > 0;
-  const level: HealthLevel = !replication && issues.length === 0 ? "unknown" : severe ? "unhealthy" : issues.length ? "degraded" : "healthy";
+  const level = roomHealthLevel(replication, issues, severe);
   return { level, healthy: level === "unknown" ? null : level === "healthy", issues, readyPeers: replication?.ready ?? 0, totalPeers: replication?.total_peers ?? 0 };
 }

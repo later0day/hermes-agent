@@ -9,6 +9,38 @@ from contextlib import suppress
 
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
+# Tail of the output a completion notification carries. Right for a build log; a spawner whose
+# output IS the payload (a bot DM's reply) asks for more per process (completion_output_chars).
+COMPLETION_OUTPUT_CHARS = 2000
+
+
+def format_uptime_short(seconds: int) -> str:
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    mins, secs = divmod(s, 60)
+    if mins < 60:
+        return f"{mins}m {secs}s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours}h {mins}m"
+
+
+def _output_tail(session, n: int) -> str:
+    """Last *n* chars of the session output with ANSI sequences stripped."""
+    from tools.ansi_strip import strip_ansi
+
+    return strip_ansi(session.output_buffer[-n:])
+
+
+def _completion_output(session) -> dict:
+    """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
+
+    Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server
+    or one-shot session cannot receive notifications and polls instead, so the polled result must
+    carry the same whole reply and the same cut marker (#115334)."""
+    limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
+    cut = len(session.output_buffer) - limit
+    return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
 
 
 @dataclass(frozen=True, slots=True)

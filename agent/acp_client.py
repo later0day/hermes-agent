@@ -39,6 +39,7 @@ from agent.acp_openai_bridge import (
 )
 from agent.file_safety import (
     get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
+from agent.memory_provider import spawn_context_thread
 from agent.redact import redact_sensitive_text
 from agent.runtime_cwd import resolve_agent_cwd
 
@@ -449,9 +450,10 @@ class ACPClient:
             finally:
                 inbox.put(None)
 
-        threading.Thread(target=_stdout_pump, daemon=True).start()
-        stderr_pump = threading.Thread(
-            target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
+        spawn_context_thread(_stdout_pump, name="acp-stdout-pump").start()
+        stderr_pump = spawn_context_thread(
+            _pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))),
+            name="acp-stderr-pump")
         stderr_pump.start()
         request_ids = iter(range(1, 1 << 62))
         # One budget for the WHOLE session (initialize + session/new + any prompt), not per

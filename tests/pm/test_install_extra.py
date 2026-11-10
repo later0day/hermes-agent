@@ -16,6 +16,7 @@ def test_hint_names_a_command_the_cli_accepts(monkeypatch):
     monkeypatch.setattr(cli, "_install_names",
                         lambda names, target=None, **kwargs: 0 if not names else pytest.fail(f"tools installed: {names}"))
     monkeypatch.setattr(install_mod, "activate", lambda **kwargs: [])
+    monkeypatch.setattr("pm.extras.legacy_selection", lambda _root: ["all"])
 
     argv = install_hint("anthropic").split()[2:]
     assert cli.main(argv) == 0
@@ -29,6 +30,7 @@ def test_extra_syncs_only_the_named_extras(monkeypatch):
     synced = []
     monkeypatch.setattr(install_mod, "sync_venv", lambda extras, **kwargs: synced.append(list(extras)))
     monkeypatch.setattr(install_mod, "activate", lambda **kwargs: [])
+    monkeypatch.setattr("pm.extras.legacy_selection", lambda _root: ["all"])
     monkeypatch.setattr(cli, "_install_names", lambda names, target=None, **kwargs: 0)
     assert cli.cmd_install(SimpleNamespace(names=[], extra=["otlp", "mcp", "otlp"], target=None, tools_only=False)) == 0
     assert synced == [["otlp", "mcp"]]

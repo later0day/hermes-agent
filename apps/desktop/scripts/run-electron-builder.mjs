@@ -80,6 +80,8 @@ function toolsetArguments(inputs) {
     const destination = path.join(tools, name)
     fs.rmSync(destination, { recursive: true, force: true })
     fs.cpSync(directory, destination, { recursive: true, verbatimSymlinks: true })
+    // The upstream icon bundle is CommonJS but runs below this ESM package.
+    if (name === 'icons') fs.writeFileSync(path.join(destination, 'package.json'), '{"type":"commonjs"}\n')
     // Upstream parses this as a literal path after slicing file:// (not URL decoding).
     return `-c.toolsets.${name}.url=file://${destination}`
   })

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type PendingAction, type ProfileInfo, type RoomCreateRequest } from "@/lib/api";
+import { api, type ProfileInfo } from "@/lib/api";
+import { roomsApi, type PendingAction, type RoomCreateRequest } from "@/lib/api-rooms";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
@@ -53,7 +54,7 @@ export default function RoomsPage() {
   const createTeam = async (request: RoomCreateRequest) => {
     setTeamBusy(true);
     try {
-      await api.createRoom(request);
+      await roomsApi.createRoom(request);
       await state.refreshList();
       selectRoom(request.room_id);
       showToast(s.teamCreated, "success");
@@ -66,7 +67,7 @@ export default function RoomsPage() {
     if (!state.selectedRoomId) return false;
     setTeamBusy(true);
     try {
-      await api.sendRoomMessage(state.selectedRoomId, { recipient, text, event_id: `web-${crypto.randomUUID()}`, thread_id: `web-${crypto.randomUUID()}` });
+      await roomsApi.sendRoomMessage(state.selectedRoomId, { recipient, text, event_id: `web-${crypto.randomUUID()}`, thread_id: `web-${crypto.randomUUID()}` });
       await state.refreshRoom();
       showToast(s.workSent.replace("{recipient}", recipient), "success");
       return true;

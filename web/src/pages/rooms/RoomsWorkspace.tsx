@@ -21,20 +21,21 @@ import {
   DialogTitle,
 } from "@nous-research/ui/ui/components/dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
+import type { ProfileInfo } from "@/lib/api";
 import type {
   PeerGrant,
   PendingAction,
   PolicyTraceResponse,
-  ProfileInfo,
   RoomCreateRequest,
   ReplicationHealthResponse,
   RoomActivityItem,
   RoomMemberRole,
   RoomSummary,
+  RoomTaskAttempt,
   RoomTopologyResponse,
   RoomWorkspaceResponse,
   RoomWorkspaceTask,
-} from "@/lib/api";
+} from "@/lib/api-rooms";
 import { useI18n } from "@/i18n";
 import { localeSection } from "@/i18n/section";
 import type { Translations } from "@/i18n/types";
@@ -426,7 +427,45 @@ function Diagnostics({ s, children }: { s: Copy; children: React.ReactNode }) {
   return <details className="mt-4 rounded-lg border border-border p-3 text-xs"><summary className="cursor-pointer font-semibold">{s.diagnostics}</summary><div className="mt-2 space-y-1 break-all font-mono text-text-secondary">{children}</div></details>;
 }
 
-function Inspector({ p, s, room }: { p: RoomsWorkspaceProps; s: Copy; room: RoomSummary }) {
+interface EventInspectorProps {
+  p: RoomsWorkspaceProps;
+  s: Copy;
+  event: RoomActivityItem;
+}
+
+function EventInspector({ p, s, event }: EventInspectorProps) {
+  return <><p className={`mt-3 text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{event.summary}</p>{event.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: event.task_id! })}>{s.openRelatedTask}</button> : null}<EventDiagnostics s={s} event={event} /></>;
+}
+
+interface TaskInspectorProps {
+  p: RoomsWorkspaceProps;
+  s: Copy;
+  task: RoomWorkspaceTask;
+  attempt?: RoomTaskAttempt;
+  member?: RoomMemberRole;
+}
+
+function TaskInspector({ p, s, task, attempt, member }: TaskInspectorProps) {
+  return <div className="mt-3 space-y-3"><Badge tone={tone(attempt?.status ?? task.status)}>{stateLabel(s, attempt?.status ?? task.status)}</Badge><div><small className="block text-text-tertiary">{s.owner}</small><p>{task.owner ? `@${task.owner}` : s.unassigned}{member ? <span className="text-text-secondary"> · {roleLabel(s, member.role)}</span> : null}</p></div>{task.description ? <p className={`text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{task.description}</p> : null}{task.pending_actions[0] ? <button type="button" className={compactPrimaryButtonClass} onClick={() => p.onOpenActionCenter(task.pending_actions[0])}>{s.reviewAction}</button> : null}{attempt ? <Diagnostics s={s}><div>{s.diagRoomContext}</div><div>{s.diagConversationContext}</div><div>{s.diagAttemptRef}</div><div>{fill(s.diagExecutionGeneration, { value: attempt.execution_generation })}</div><div>{fill(s.diagCancelGeneration, { value: attempt.cancel_generation })}</div><div>{fill(s.diagCreated, { value: stamp(attempt.created_at) })}</div><div>{fill(s.diagUpdated, { value: stamp(attempt.updated_at) })}</div><div>{fill(s.diagStarted, { value: stamp(attempt.started_at) })}</div><div>{fill(s.diagTerminal, { value: stamp(attempt.terminal_at) })}</div><div>{fill(s.diagSettlement, { value: attempt.settlement_status ?? "—" })}</div><div className="font-sans text-warning">{s.payloadRedacted}</div></Diagnostics> : null}</div>;
+}
+
+interface RoomInspectorProps {
+  p: RoomsWorkspaceProps;
+  s: Copy;
+  room: RoomSummary;
+}
+
+function RoomInspector({ p, s, room }: RoomInspectorProps) {
+  return <div className="mt-4 space-y-3 text-sm"><div className="rounded-lg border border-border bg-background p-3"><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-4 w-4 text-primary" /> {s.teamHealth}</span><p className="mt-2 text-text-secondary">{p.replicationHealth?.healthy === false ? s.healthAttention : s.healthNormal}</p></div><dl className="grid gap-2"><div><dt className="text-xs text-text-tertiary">{s.connectedPeers}</dt><dd>{fill(s.peersReady, { ready: p.replicationHealth?.ready ?? 0, total: p.replicationHealth?.total_peers ?? p.peerGrants?.length ?? 0 })}</dd></div><div><dt className="text-xs text-text-tertiary">{s.policyEvents}</dt><dd>{p.policyTrace?.event_count ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">{s.teamMembers}</dt><dd>{p.topology?.members.length ?? room.members.length}</dd></div></dl><Diagnostics s={s}><div>{s.diagRoomContext}</div><div>{fill(s.diagRevision, { value: room.revision })}</div><div>{fill(s.diagLatestSequence, { seq: room.latest_seq })}</div></Diagnostics></div>;
+}
+
+interface InspectorProps {
+  p: RoomsWorkspaceProps;
+  s: Copy;
+  room: RoomSummary;
+}
+
+function Inspector({ p, s, room }: InspectorProps) {
   const workspace = p.workspace!;
   const attempt = p.inspector.kind === "attempt" ? workspace.attempts[p.inspector.attemptIndex] : undefined;
   const taskId = p.inspector.kind === "task" ? p.inspector.taskId : attempt?.identity.task_id;
@@ -437,9 +476,9 @@ function Inspector({ p, s, room }: { p: RoomsWorkspaceProps; s: Copy; room: Room
   return <aside aria-label="Context inspector" className={`border-t border-border bg-surface/20 p-4 xl:min-h-0 xl:overflow-y-auto xl:border-l xl:border-t-0 ${wrapContentClass}`}>
     <p className="text-xs font-semibold uppercase tracking-[0.15em] text-primary">{s.contextHeading}</p>
     <h2 className={`mt-1 text-xl font-bold ${wrapContentClass}`}>{event?.title ?? task?.subject ?? room.name}</h2>
-    {event ? <><p className={`mt-3 text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{event.summary}</p>{event.task_id ? <button type="button" className={`${compactButtonClass} mt-3`} onClick={() => p.onInspectorChange({ kind: "task", taskId: event.task_id! })}>{s.openRelatedTask}</button> : null}<EventDiagnostics s={s} event={event} /></> : null}
-    {task ? <div className="mt-3 space-y-3"><Badge tone={tone(attempt?.status ?? task.status)}>{stateLabel(s, attempt?.status ?? task.status)}</Badge><div><small className="block text-text-tertiary">{s.owner}</small><p>{task.owner ? `@${task.owner}` : s.unassigned}{member ? <span className="text-text-secondary"> · {roleLabel(s, member.role)}</span> : null}</p></div>{task.description ? <p className={`text-sm leading-relaxed text-text-secondary ${wrapContentClass}`}>{task.description}</p> : null}{task.pending_actions[0] ? <button type="button" className={compactPrimaryButtonClass} onClick={() => p.onOpenActionCenter(task.pending_actions[0])}>{s.reviewAction}</button> : null}{attempt ? <Diagnostics s={s}><div>{s.diagRoomContext}</div><div>{s.diagConversationContext}</div><div>{s.diagAttemptRef}</div><div>{fill(s.diagExecutionGeneration, { value: attempt.execution_generation })}</div><div>{fill(s.diagCancelGeneration, { value: attempt.cancel_generation })}</div><div>{fill(s.diagCreated, { value: stamp(attempt.created_at) })}</div><div>{fill(s.diagUpdated, { value: stamp(attempt.updated_at) })}</div><div>{fill(s.diagStarted, { value: stamp(attempt.started_at) })}</div><div>{fill(s.diagTerminal, { value: stamp(attempt.terminal_at) })}</div><div>{fill(s.diagSettlement, { value: attempt.settlement_status ?? "—" })}</div><div className="font-sans text-warning">{s.payloadRedacted}</div></Diagnostics> : null}</div> : null}
-    {!event && !task ? <div className="mt-4 space-y-3 text-sm"><div className="rounded-lg border border-border bg-background p-3"><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-4 w-4 text-primary" /> {s.teamHealth}</span><p className="mt-2 text-text-secondary">{p.replicationHealth?.healthy === false ? s.healthAttention : s.healthNormal}</p></div><dl className="grid gap-2"><div><dt className="text-xs text-text-tertiary">{s.connectedPeers}</dt><dd>{fill(s.peersReady, { ready: p.replicationHealth?.ready ?? 0, total: p.replicationHealth?.total_peers ?? p.peerGrants?.length ?? 0 })}</dd></div><div><dt className="text-xs text-text-tertiary">{s.policyEvents}</dt><dd>{p.policyTrace?.event_count ?? 0}</dd></div><div><dt className="text-xs text-text-tertiary">{s.teamMembers}</dt><dd>{p.topology?.members.length ?? room.members.length}</dd></div></dl><Diagnostics s={s}><div>{s.diagRoomContext}</div><div>{fill(s.diagRevision, { value: room.revision })}</div><div>{fill(s.diagLatestSequence, { seq: room.latest_seq })}</div></Diagnostics></div> : null}
+    {event ? <EventInspector p={p} s={s} event={event} /> : null}
+    {task ? <TaskInspector p={p} s={s} task={task} attempt={attempt} member={member} /> : null}
+    {!event && !task ? <RoomInspector p={p} s={s} room={room} /> : null}
   </aside>;
 }
 

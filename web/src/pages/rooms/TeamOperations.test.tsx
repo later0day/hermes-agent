@@ -2,7 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProfileInfo, RoomSummary, RoomTopologyResponse } from "@/lib/api";
+import type { ProfileInfo } from "@/lib/api";
+import type { RoomSummary, RoomTopologyResponse } from "@/lib/api-rooms";
 import { buildMemberHandles, CreateTeamDialog, WorkComposer } from "./TeamOperations";
 
 const profile = (name: string): ProfileInfo => ({ name, path: "/profiles/" + name, is_default: false, model: "model", provider: "provider", has_env: true, skill_count: 0, gateway_running: true, description: name + " agent", description_auto: false, display_name: name[0].toUpperCase() + name.slice(1), distribution_name: null, distribution_version: null, distribution_source: null, has_alias: false });
@@ -12,7 +13,7 @@ async function render(node: React.ReactNode) { const container = document.create
 
 describe("TeamOperations", () => {
   it("requires 2–6 profiles and one leader, then emits decider/worker roster", async () => {
-    const onCreate = vi.fn(async (...args: [import("@/lib/api").RoomCreateRequest]) => Boolean(args[0]));
+    const onCreate = vi.fn(async (...args: [import("@/lib/api-rooms").RoomCreateRequest]) => Boolean(args[0]));
     await render(<CreateTeamDialog profiles={[profile("lead"), profile("researcher")]} createOpen onCloseCreate={() => undefined} onCreate={onCreate} />);
     const submit = document.querySelector<HTMLButtonElement>("[data-testid=create-team-submit]")!;
     expect(submit.disabled).toBe(true);

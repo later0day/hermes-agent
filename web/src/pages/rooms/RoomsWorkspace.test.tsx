@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RoomSummary } from "@/lib/api";
+import type { RoomSummary } from "@/lib/api-rooms";
 import { filterRoomInbox, roomMatchesPreset, taskProgress } from "./workspace-helpers";
 
 function room(id: string, state: NonNullable<RoomSummary["workspace"]>["state"], name=id): RoomSummary {

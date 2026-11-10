@@ -16,6 +16,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger("tools.process_registry")
 
 
+def _sandbox_job_kill_command(pid: int) -> str:
+    """Shell that stops a sandbox background job's whole process group, then the recorded PID.
+
+    ``spawn_via_env`` records ``$!`` of ``( nohup bash -lc CMD ...; ) &`` — the wrapper subshell. A
+    bare ``kill`` of it reparents ``bash -lc CMD`` and its children (a dev server, a watcher) to the
+    sandbox init, where they keep running. The job inherits the process group of the one ``execute``
+    that launched it, so that group holds exactly this job; it is skipped if it is the killing shell's
+    own group (a backend that runs every command in one persistent shell)."""
+    pgrp = f"$(sed 's/.*) //' /proc/{pid}/stat 2>/dev/null | cut -d' ' -f3)"
+    own = "$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3)"
+    return (f'pg={pgrp}; [ -n "$pg" ] || pg=$(ps -o pgid= -p {pid} 2>/dev/null | tr -d " "); '
+            f'own={own}; [ -n "$own" ] || own=$(ps -o pgid= -p $$ 2>/dev/null | tr -d " "); '
+            f'if [ -n "$pg" ] && [ "$pg" != "$own" ] && [ "$pg" != 1 ]; then kill -TERM -- "-$pg" 2>/dev/null; fi; '
+            f'kill {pid} 2>/dev/null; true')
+
+
 class ProcessTerminationMixin:
     """The subclass supplies ``_host_pid_is_ours``, ``_is_host_pid_alive``,
     ``_detached_host_fate`` and ``_daemon_term_grace_seconds``. See ProcessRegistry."""

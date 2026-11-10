@@ -33,11 +33,12 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 from hermes_cli.config import get_hermes_home
 
 from tools.process_registry_notifications import (
-    format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
+    COMPLETION_OUTPUT_CHARS, _completion_output, _output_tail, format_process_notification, format_uptime_short,
+    heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_ownership import ProcessOwnershipMixin
-from tools.process_registry_termination import ProcessTerminationMixin
+from tools.process_registry_termination import ProcessTerminationMixin, _sandbox_job_kill_command
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
@@ -57,9 +58,6 @@ def _checkpoint_path() -> Path:
     return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
-# Tail of the output a completion notification carries. Right for a build log; a spawner whose
-# output IS the payload (a bot DM's reply) asks for more per process (completion_output_chars).
-COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
 
@@ -506,37 +504,8 @@ def _stop_systemd_unit(unit_name: str) -> bool:
         return False
 
 
-def format_uptime_short(seconds: int) -> str:
-    s = max(0, int(seconds))
-    if s < 60:
-        return f"{s}s"
-    mins, secs = divmod(s, 60)
-    if mins < 60:
-        return f"{mins}m {secs}s"
-    hours, mins = divmod(mins, 60)
-    return f"{hours}h {mins}m"
-
-
 def _not_found(session_id: str) -> dict:
     return {"status": "not_found", "error": f"No process with ID {session_id}"}
-
-
-def _output_tail(session: "ProcessSession", n: int) -> str:
-    """Last *n* chars of the session output with ANSI sequences stripped."""
-    from tools.ansi_strip import strip_ansi
-
-    return strip_ansi(session.output_buffer[-n:])
-
-
-def _completion_output(session: "ProcessSession") -> dict:
-    """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
-
-    Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server
-    or one-shot session cannot receive notifications and polls instead, so the polled result must
-    carry the same whole reply and the same cut marker (#115334)."""
-    limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
-    cut = len(session.output_buffer) - limit
-    return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
 
 
 SANDBOX_OWNER_ENV = "HERMES_BG_OWNER"
@@ -554,22 +523,6 @@ def sandbox_owner_kill_command(session_key: str) -> str:
             "pg=$(sed 's/.*) //' /proc/$p/stat 2>/dev/null | cut -d' ' -f3); "
             'if [ -n "$pg" ] && [ "$pg" != 1 ] && [ "$pg" != "$own" ]; then kill -TERM -- "-$pg" 2>/dev/null; fi; '
             '[ "$p" = "$$" ] || kill "$p" 2>/dev/null; echo "$p"; done; true')
-
-
-def _sandbox_job_kill_command(pid: int) -> str:
-    """Shell that stops a sandbox background job's whole process group, then the recorded PID.
-
-    ``spawn_via_env`` records ``$!`` of ``( nohup bash -lc CMD ...; ) &`` — the wrapper subshell. A
-    bare ``kill`` of it reparents ``bash -lc CMD`` and its children (a dev server, a watcher) to the
-    sandbox init, where they keep running. The job inherits the process group of the one ``execute``
-    that launched it, so that group holds exactly this job; it is skipped if it is the killing shell's
-    own group (a backend that runs every command in one persistent shell)."""
-    pgrp = f"$(sed 's/.*) //' /proc/{pid}/stat 2>/dev/null | cut -d' ' -f3)"
-    own = "$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3)"
-    return (f'pg={pgrp}; [ -n "$pg" ] || pg=$(ps -o pgid= -p {pid} 2>/dev/null | tr -d " "); '
-            f'own={own}; [ -n "$own" ] || own=$(ps -o pgid= -p $$ 2>/dev/null | tr -d " "); '
-            f'if [ -n "$pg" ] && [ "$pg" != "$own" ] && [ "$pg" != 1 ]; then kill -TERM -- "-$pg" 2>/dev/null; fi; '
-            f'kill {pid} 2>/dev/null; true')
 
 
 @dataclass

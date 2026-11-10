@@ -1,4 +1,4 @@
-import type { RoomSummary } from "@/lib/api";
+import type { RoomSummary } from "@/lib/api-rooms";
 import type { RoomPreset } from "./RoomsWorkspace";
 
 export function roomMatchesPreset(room: RoomSummary, preset: RoomPreset): boolean {

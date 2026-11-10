@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ReplicationHealthResponse, RoomEvent, RoomSummary } from "@/lib/api";
+import type { ReplicationHealthResponse, RoomEvent, RoomSummary } from "@/lib/api-rooms";
 import { aggregateRoomHealth, groupRoomConversations, projectRoomActivity, sortRoomsByPriority, visualTaskState } from "./room-model";
 
 function room(overrides: Partial<RoomSummary>): RoomSummary {

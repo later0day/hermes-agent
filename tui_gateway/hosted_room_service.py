@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import sqlite3
 import threading
 import time
 import weakref
@@ -15,6 +16,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from agent.memory_provider import spawn_context_thread
 from gateway import hosted_room_actions
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
@@ -54,6 +56,8 @@ _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 _FENCED_APPEND_ATTEMPTS = 3
 _APPROVABLE_STATUSES = ("running", "indeterminate", "deferred")
 _PEER_RUN_ENDED = frozenset({"completed", "failed", "interrupted", "cancelled"})
+# Durable stores, local RPCs, peer transports and host process operations surface these failures.
+_ROOM_OPERATION_ERRORS = (OSError, RuntimeError, ValueError, sqlite3.Error)
 # Owed grant revokes run on the room supervisor's cycle, so one short attempt per cycle, then backoff
 # up to an hour: a member gateway that accepts and never answers holds the supervisor only briefly.
 _OWED_REVOKES_PER_CYCLE = 1
@@ -319,7 +323,7 @@ class HostedRoomService:
                     from gateway import room_mirror_db
 
                     room_mirror_db.remove_subs_for_room(self.db_path, room_id=room_id)
-            except Exception as exc:  # one room's cleanup must not stall scheduling for the rest
+            except _ROOM_OPERATION_ERRORS as exc:  # one room's cleanup must not stall scheduling for the rest
                 logger.warning("room %s: background process cleanup failed: %s", room_id, exc)
         for room_id in current - set(self._served_rooms):
             try:
@@ -357,7 +361,7 @@ class HostedRoomService:
             # persistent container is invisible to it, so also sweep the member's container by owner tag.
             try:
                 killed += self._reap_container_jobs(profile, key)
-            except Exception as exc:
+            except _ROOM_OPERATION_ERRORS as exc:
                 logger.warning("room %s: container job sweep for %s failed: %s", room_id, profile, exc)
         if killed:
             logger.info("room %s disbanded: stopped %d member background process(es)", room_id, killed)
@@ -410,8 +414,8 @@ class HostedRoomService:
             ):
                 return
             self._action_relay_stop.clear()
-            self._action_relay_thread = threading.Thread(
-                target=self._action_relay_loop,
+            self._action_relay_thread = spawn_context_thread(
+                self._action_relay_loop,
                 name="hosted-room-action-relay",
                 daemon=True,
             )
@@ -430,7 +434,7 @@ class HostedRoomService:
         while not self._action_relay_stop.is_set():
             try:
                 self._relay_action_decisions_once()
-            except Exception as exc:
+            except _ROOM_OPERATION_ERRORS as exc:
                 logger.warning("Room action relay failed: %s", exc)
             self._action_relay_stop.wait(_HOSTED_ROOM_ACTIVE_POLL_SECONDS)
 
@@ -484,7 +488,7 @@ class HostedRoomService:
                     choice=str(decision.get("choice") or "deny"),
                     request_id=str(action.get("request_id") or action_id),
                 )
-            except Exception as exc:
+            except _ROOM_OPERATION_ERRORS as exc:
                 # A local session may have just settled. Exact task-generation
                 # checks make the decision stale rather than transferable.
                 logger.warning("Room action decision remains undelivered: %s", exc)
@@ -1540,143 +1544,9 @@ class HostedRoomService:
     # ── Agent team UI extensions ──────────────────────────────────────
 
     def topology(self, room_id: str) -> dict[str, Any] | None:
-        """Return team topology: members with roles, states, and current tasks."""
-        room = hosted_rooms.room_state(self.db_path, room_id=room_id)
-        if room is None:
-            return None
-        members = room.get("members") or []
-        if not members:
-            return None
+        from tui_gateway.hosted_room_service_topology import topology
 
-        # Build member role list from stored role data
-        member_roles: list[dict[str, Any]] = []
-        coordinator_id = None
-        team_lead_id = None
-
-        for m in members:
-            handle = str(m.get("handle") or "")
-            member_id = str(m.get("member_id") or "")
-            profile = str(m.get("profile") or "")
-            stored_role = str(m.get("role") or "worker")
-            role = (
-                "team_lead"
-                if stored_role == discussion.DECIDER_ROLE
-                else "teammate"
-                if stored_role == discussion.WORKER_ROLE
-                else stored_role
-            )
-
-            entry: dict[str, Any] = {
-                "member_id": member_id,
-                "handle": handle,
-                "profile": profile,
-                "role": role,
-                "observer_state": None,
-                "activity_level": None,
-                "current_task": None,
-                "current_task_id": None,
-            }
-
-            if role == "coordinator":
-                coordinator_id = member_id
-            elif role == "team_lead":
-                team_lead_id = member_id
-            elif role == "observer":
-                # Derive observer state from driver
-                entry["observer_state"] = self._derive_observer_state(room_id)
-                entry["activity_level"] = None
-            elif role == "teammate":
-                entry["activity_level"] = self._derive_activity_level(room_id, member_id)
-                # Fetch current task from C3 DAG
-                task = self._current_task_for_member(room_id, handle)
-                if task:
-                    entry["current_task"] = task.get("subject")
-                    entry["current_task_id"] = task.get("task_id")
-
-            member_roles.append(entry)
-
-        # Sort: coordinator → team_lead → teammate → observer
-        _order = {"coordinator": 0, "team_lead": 1, "teammate": 2, "observer": 3}
-        member_roles.sort(key=lambda x: _order.get(str(x["role"]), 99))
-
-        # Derive current turn/round from driver tasks
-        current_turn = None
-        current_round = None
-        max_rounds = None
-        try:
-            tasks = driver.list_tasks(self.db_path, room_id=room_id)
-            for task in tasks:
-                if task.get("status") in {"running", "queued"}:
-                    tid = task.get("identity")
-                    if tid and hasattr(tid, "turn_id"):
-                        parsed = discussion._TURN_ID_RE.match(tid.turn_id)
-                        if parsed:
-                            current_turn = int(parsed.group("turn"))
-                            current_round = int(parsed.group("round"))
-                    break
-            max_rounds = getattr(discussion, "MAX_DISCUSSION_ROUNDS", 5)
-        except Exception:
-            pass
-
-        return {
-            "room_id": room_id,
-            "members": member_roles,
-            "coordinator_id": coordinator_id,
-            "team_lead_id": team_lead_id,
-            "current_turn": current_turn,
-            "current_round": current_round,
-            "max_rounds": max_rounds,
-        }
-
-    def _derive_observer_state(self, room_id: str) -> str | None:
-        """Derive observer state-machine state from driver / policy."""
-        # v1: derive from pending_actions and driver status
-        with self._policy_lock, self._state_lock:
-            for (action_room_id, _member_id), action in self._pending_actions.items():
-                if action_room_id == room_id and action.get("kind") == "observer":
-                    return "armed"
-        # Check if room has an observer member with activity
-        try:
-            room = hosted_rooms.room_state(self.db_path, room_id=room_id)
-            if room:
-                has_observer = any(
-                    str(m.get("role") or "") == "observer"
-                    for m in (room.get("members") or [])
-                )
-                if has_observer:
-                    return "armed"
-        except Exception:
-            pass
-        return None
-
-    def _derive_activity_level(self, room_id: str, member_id: str) -> int | None:
-        """Derive a 0-100 activity level for a teammate."""
-        try:
-            tasks = driver.list_tasks(self.db_path, room_id=room_id)
-            member_tasks = [
-                t for t in tasks
-                if t.get("identity") and getattr(t["identity"], "member_id", None) == member_id
-            ]
-            total = len(tasks)
-            if total == 0:
-                return None
-            completed = sum(1 for t in member_tasks if t.get("status") == "settled")
-            return int((completed / max(total, 1)) * 100)
-        except Exception:
-            return None
-
-    def _current_task_for_member(
-        self, room_id: str, handle: str
-    ) -> dict[str, Any] | None:
-        """Return the current in-progress task for a member from the C3 DAG."""
-        try:
-            from gateway.room_task_dag import current_task_for_owner
-
-            return current_task_for_owner(
-                self.db_path, room_id=room_id, owner=handle
-            )
-        except Exception:
-            return None
+        return topology(self, room_id)
 
     def pending_actions(self, room_id: str) -> dict[str, Any]:
         """Return approvals and explicit retries awaiting operator action."""
@@ -1779,7 +1649,7 @@ class HostedRoomService:
                 self.retry_room_task(
                     room_id, task_id=retry_task["identity"].task_id
                 )
-            except Exception as exc:
+            except _ROOM_OPERATION_ERRORS as exc:
                 return {"ok": False, "message": str(exc)}
             return {"ok": True, "message": "Room turn retry queued"}
         matched: tuple[tuple[str, str], dict[str, Any]] | None = None
@@ -1838,7 +1708,7 @@ class HostedRoomService:
                     choice="once" if decision == "approve" else "deny",
                     request_id=str(action.get("request_id") or action_id),
                 )
-            except Exception as exc:
+            except _ROOM_OPERATION_ERRORS as exc:
                 return {"ok": False, "message": str(exc)}
             return {
                 "ok": True,
@@ -1894,34 +1764,9 @@ class HostedRoomService:
         }
 
     def policy_trace(self, room_id: str) -> dict[str, Any]:
-        """Return policy checkpoint snapshot for a room."""
-        try:
-            room = hosted_rooms.room_state(self.db_path, room_id=room_id)
-            latest_seq = int(room.get("latest_seq") or 0) if room else 0
-            snapshot = self.policy_checkpoint.snapshot(
-                room_id=room_id, latest_seq=latest_seq
-            )
-            return {
-                "room_id": room_id,
-                "through_seq": snapshot.through_seq,
-                "stopped_through_seq": snapshot.stopped_through_seq,
-                "event_count": len(snapshot.events),
-                "events": [
-                    {
-                        "seq": ev.get("seq"),
-                        "kind": ev.get("kind"),
-                        "actor": ev.get("actor"),
-                        "created_at": ev.get("created_at"),
-                    }
-                    for ev in snapshot.events
-                ],
-                "watermarks": {
-                    f"{k[0]}::{k[1]}": v
-                    for k, v in (snapshot.watermarks or {}).items()
-                },
-            }
-        except Exception:
-            return {"room_id": room_id, "error": "policy trace unavailable"}
+        from tui_gateway.hosted_room_service_topology import policy_trace
+
+        return policy_trace(self, room_id)
 
 
 class _RouteStatusPeerClient:

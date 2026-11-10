@@ -5,9 +5,24 @@ across two profile namespaces; deleting a profile under a live turn removes the 
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from tests.gateway.test_agent_command_basic import _event, _runner, _source, env
+from gateway.source_agent_binding import SourceAgentBindingStore
+from tests.gateway.test_agent_command_basic import _event, _runner, _seed_profile_identity, _source
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    root = tmp_path / "hermes-home"
+    _seed_profile_identity(root / "profiles" / "coder")
+    _seed_profile_identity(root / "profiles" / "reviewer")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    store = SourceAgentBindingStore(db_path=tmp_path / "bindings.sqlite")
+    audit_path = tmp_path / "agent-audit.jsonl"
+    yield SimpleNamespace(store=store, audit_path=audit_path, root=root)
+    store.close()
 
 
 @pytest.mark.asyncio

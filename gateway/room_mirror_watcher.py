@@ -84,7 +84,7 @@ class GatewayRoomMirrorMixin:
         try:
             from gateway import room_mirror_db as _mir
             from gateway.hosted_rooms import default_db_path, user_event_id
-        except Exception:
+        except ImportError:
             return INBOUND_ROOM_NOT_ROUTED
 
         platform = source.platform.value if getattr(source, "platform", None) else ""
@@ -164,7 +164,7 @@ class GatewayRoomMirrorMixin:
         except Exception as exc:
             logger.warning(
                 "room inbound: failed to route message to room %s: %s",
-                room_id, exc,
+                room_id, exc, exc_info=True,
             )
             # Fail-open would silently drop the message into the agent path,
             # which is wrong for a bound room; instead tell the user it didn't
@@ -192,8 +192,8 @@ class GatewayRoomMirrorMixin:
         try:
             from gateway import hosted_rooms as _rooms
             from gateway import room_mirror_db as _mir
-        except Exception:
-            logger.warning("room mirror: modules not importable; mirror disabled")
+        except ImportError:
+            logger.warning("room mirror: modules not importable; mirror disabled", exc_info=True)
             return
 
         db_path = _rooms.default_db_path()
@@ -213,7 +213,7 @@ class GatewayRoomMirrorMixin:
                     try:
                         subs = _mir.list_subs(db_path)
                     except Exception as exc:
-                        logger.debug("room mirror: cannot list subs: %s", exc)
+                        logger.debug("room mirror: cannot list subs: %s", exc, exc_info=True)
                         return claimed
                     for sub in subs:
                         try:
@@ -240,6 +240,10 @@ class GatewayRoomMirrorMixin:
                                             m.get("handle") or ""
                                         )
                             except Exception:
+                                logger.debug(
+                                    "room mirror: cannot load member handles for room %s",
+                                    sub.get("room_id"), exc_info=True,
+                                )
                                 handles = {}
                             claimed.append({
                                 "sub": sub,
@@ -253,7 +257,7 @@ class GatewayRoomMirrorMixin:
                             # cannot block delivery for every other mirror.
                             logger.warning(
                                 "room mirror: claim failed for room %s: %s",
-                                sub.get("room_id"), sub_exc,
+                                sub.get("room_id"), sub_exc, exc_info=True,
                             )
                     return claimed
 
@@ -315,7 +319,7 @@ class GatewayRoomMirrorMixin:
                             parsed = _json.loads(raw_meta)
                             if isinstance(parsed, dict):
                                 metadata = dict(parsed)
-                        except Exception:
+                        except _json.JSONDecodeError:
                             metadata = {}
                     if sub.get("thread_id") and not metadata.get("thread_id"):
                         metadata["thread_id"] = sub["thread_id"]
@@ -352,6 +356,7 @@ class GatewayRoomMirrorMixin:
                                 if fails >= _MAX_SEND_FAILURES
                                 else "",
                                 exc,
+                                exc_info=True,
                             )
                             delivered_ok = False
                             break

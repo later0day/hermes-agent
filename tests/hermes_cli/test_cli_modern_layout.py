@@ -189,7 +189,7 @@ def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):
         for width in (60, 140):
             emitted: list[str] = []
             monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
-            monkeypatch.setattr(shutil, "get_terminal_size", lambda *_a, w=width: __import__("os").terminal_size((w, 40)))
+            monkeypatch.setattr(shutil, "get_terminal_size", lambda *_a, w=width, **_k: __import__("os").terminal_size((w, 40)))
             cli._print_user_message_preview(text)
             out[width] = [line for line in "\n".join(emitted).split("\n") if line.strip()]
         assert out[60] == out[140], out

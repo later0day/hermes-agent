@@ -226,7 +226,7 @@ def inbound_binding_for_source(
 
     try:
         conn = _connect(db_path)
-    except Exception:
+    except (OSError, sqlite3.Error):
         return None
     try:
         row = conn.execute(
@@ -238,7 +238,7 @@ def inbound_binding_for_source(
             (platform, chat_id, thread_id or ""),
         ).fetchone()
         return dict(row) if row is not None else None
-    except Exception:
+    except sqlite3.Error:
         return None
     finally:
         conn.close()
@@ -253,7 +253,7 @@ def inbound_sources(db_path: Path | str) -> frozenset[tuple[str, str, str]]:
     """
     try:
         conn = _connect(db_path)
-    except Exception:
+    except (OSError, sqlite3.Error):
         return frozenset()
     try:
         # Only LIVE rooms capture a chat: a disbanded room's leftover binding must hand the chat back to
@@ -263,7 +263,7 @@ def inbound_sources(db_path: Path | str) -> frozenset[tuple[str, str, str]]:
                AND EXISTS (SELECT 1 FROM hosted_rooms h
                            WHERE h.room_id = room_notify_subs.room_id AND h.disbanded_at IS NULL)""").fetchall()
         return frozenset((str(r[0]), str(r[1]), str(r[2] or "")) for r in rows)
-    except Exception:
+    except sqlite3.Error:
         return frozenset()
     finally:
         conn.close()

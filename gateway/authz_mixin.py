@@ -330,6 +330,7 @@ class GatewayAuthorizationMixin:
         try:
             return resolve(source, None, self.config) == profile
         except Exception:
+            logger.debug("agent binding route lookup failed for %s", profile, exc_info=True)
             return False
 
     def _profile_has_agent_binding(self, profile_name: str) -> bool:

@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "@/lib/api";
+import { roomsApi } from "@/lib/api-rooms";
 import { useRoomsWorkspace } from "./useRoomsWorkspace";
 
 let root: Root | undefined;
@@ -23,7 +23,7 @@ function Probe({ onState }: { onState: (loading: boolean) => void }) {
 
 describe("useRoomsWorkspace request stability", () => {
   it("loads the room list once even when callers pass inline callbacks every render", async () => {
-    const listRooms = vi.spyOn(api, "listRooms").mockResolvedValue({ rooms: [] } as never);
+    const listRooms = vi.spyOn(roomsApi, "listRooms").mockResolvedValue({ rooms: [] } as never);
     let loading = true;
     const container = document.createElement("div");
     document.body.append(container);

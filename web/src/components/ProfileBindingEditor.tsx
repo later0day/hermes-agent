@@ -2,8 +2,11 @@ import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import type { ProfileBindingSummary } from "@/lib/api";
-import { profileBindingsApi, type BindableChat } from "@/lib/api-profile-bindings";
+import {
+  profileBindingsApi,
+  type BindableChat,
+  type ProfileBindingSummary,
+} from "@/lib/api-profile-bindings";
 import { useI18n } from "@/i18n";
 import { localeSection } from "@/i18n/section";
 

@@ -47,8 +47,9 @@ async def bot(tmp_path, monkeypatch):
         error = errors.pop(0) if errors else None
         if error is None:
             return 'pong'
+        result = dict(error) if isinstance(error, dict) else {'error': error}
         authority.pending_results[row['admission_id']] = {
-            'result': {'final_response': '', 'messages': [], 'failed': True, 'error': error}, 'usage': {}}
+            'result': {'final_response': '', 'messages': [], 'failed': True, **result}, 'usage': {}}
         return ''
 
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
@@ -161,6 +162,20 @@ async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_op
             break
     assert record['retry']['refused'] == 'open_user_tail' and len(_admissions(bot)) == 3
     assert (record['status'], record['reason']) == ('failed', 'context_overflow'), record
+
+
+@pytest.mark.asyncio
+async def test_compression_exhaustion_never_replays_the_oversized_dm_into_the_fresh_chat(bot):
+    from gateway.session_bot import deliver, recover_bot_deliveries
+    bot.errors[:] = [{'error': "This model's maximum context length is 200000 tokens",
+                      'failure_reason': 'context_overflow', 'compression_exhausted': True}]
+    await deliver(bot.connection, dict(id=KEY, profile='default', message='oversized'))
+    receipt = await _settled(bot, 1)
+    assert (receipt['status'], receipt['reason']) == ('failed', 'context_overflow'), receipt
+    assert not receipt.get('retry_admission_id')
+    await recover_bot_deliveries(bot.authority)
+    await _settle_quietly(bot)
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
 
 
 @pytest.mark.asyncio

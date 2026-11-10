@@ -396,8 +396,6 @@ class GatewayAgentCommandsMixin:
         import secrets as _secrets
         import time as _t
 
-        from gateway.session import SessionSource
-        from gateway.session_identity import restore_identity
         from hermes_cli.profiles import delete_profile
 
         if not args:
@@ -489,23 +487,29 @@ class GatewayAgentCommandsMixin:
             actor_user_id=actor_user_id,
             actor_user_name=actor_user_name,
         )
-        # Best-effort notify OTHER bound sessions (never the one that
-        # issued the delete, each other chat at most once).
+        await self._notify_agent_delete_bindings(bindings, source, source_key, target_name)
+        return f"Deleted agent profile `{target_name}`."
+
+    async def _notify_agent_delete_bindings(self, bindings, source, source_key: str, target_name: str) -> None:
+        """Best-effort notify other bound chats, once each, after their profile is deleted."""
+        from gateway.session import SessionSource
+        from gateway.session_identity import restore_identity
+
         issuing_chat_id = getattr(source, "chat_id", None)
         notified_chats: set = set()
-        for b in bindings:
-            if b.source_binding_key == source_key or not b.fallback_target:
+        for binding in bindings:
+            if binding.source_binding_key == source_key or not binding.fallback_target:
                 continue
-            target_chat_id = b.fallback_target.get("chat_id")
+            target_chat_id = binding.fallback_target.get("chat_id")
             if target_chat_id == issuing_chat_id or target_chat_id in notified_chats:
                 continue
             notified_chats.add(target_chat_id)
             metadata_to_send: dict = {}
-            if b.fallback_extra and "session_webhook" in b.fallback_extra:
-                metadata_to_send["session_webhook"] = b.fallback_extra["session_webhook"]
+            if binding.fallback_extra and "session_webhook" in binding.fallback_extra:
+                metadata_to_send["session_webhook"] = binding.fallback_extra["session_webhook"]
             try:
                 # Back through the bot that served the bound chat (bindings are primary-bot only).
-                target = SessionSource.from_dict(b.fallback_target)
+                target = SessionSource.from_dict(binding.fallback_target)
                 restore_identity(target, runner=self, transport_profile=None)
                 adapter = self._delivery_adapter_for(target)
                 if adapter is not None:
@@ -516,4 +520,3 @@ class GatewayAgentCommandsMixin:
                     )
             except Exception:
                 logger.warning("/agent delete: failed to notify binding %s", target_chat_id, exc_info=True)
-        return f"Deleted agent profile `{target_name}`."

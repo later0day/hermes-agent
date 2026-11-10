@@ -87,7 +87,11 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     runtime = tmp_path / 'store'
     managed = runtime / 'uv-fixture' / uv.name
     managed.parent.mkdir(parents=True)
-    shutil.copy2(uv, managed)
+    if os.name == 'nt':
+        shutil.copy2(uv, managed)
+    else:
+        managed.write_text(f'#!/bin/sh\nexec {shlex.quote(str(uv))} "$@"\n', encoding='utf-8')
+        managed.chmod(0o755)
     python = Path(sys._base_executable).resolve()
     python_root = python.parent if os.name == 'nt' else python.parents[1]
     shared = _shared_prefix(python_root)

@@ -116,8 +116,8 @@ test.describe('batch clarify card', () => {
     await expect(confirmButton).toBeEnabled()
     await confirmButton.click()
 
-    const settled = page.locator('[data-clarify-settled]')
-    await settled.waitFor({ state: 'visible', timeout: 30_000 })
+    await expect(page.locator('[data-clarify-settled]')).toHaveCount(2)
+    const settled = page.locator('[data-clarify-settled]').last()
     await expect(settled.getByText(SINGLE_BATCH_CLARIFY_QUESTIONS[0]!.question)).toBeVisible()
     await expect(settled.getByText('Espresso', { exact: true })).toBeVisible()
 

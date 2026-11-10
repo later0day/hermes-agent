@@ -26,7 +26,11 @@ import {
 import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { ActiveProfileInfo, ProfileInfo, ProfileBindingSummary } from "@/lib/api";
+import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import {
+  profileBindingsApi,
+  type ProfileBindingSummary,
+} from "@/lib/api-profile-bindings";
 import { ProfileBindingEditor } from "@/components/ProfileBindingEditor";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -44,7 +48,7 @@ import {
   SelectOption,
 } from "@nous-research/ui/ui/components/select";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { useI18n } from "@/i18n";
+import { useI18n, type Translations } from "@/i18n";
 import { localeSection } from "@/i18n/section";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
@@ -358,6 +362,71 @@ function ProfileBindings({ summary, labels }: ProfileBindingsProps) {
   );
 }
 
+type ProfilesPageStrings = NonNullable<Translations["profilesPageX"]>;
+
+function profileLabels(
+  p: Translations["profiles"],
+  s: ProfilesPageStrings,
+) {
+  const fallbacks = {
+    activeProfile: "Active profile",
+    activeBadge: "active",
+    setActive: "Set as active",
+    activeSet: "Active profile set",
+    gatewayRunning: "Gateway running",
+    gatewayStopped: "Gateway stopped",
+    gatewayRunningWarning: "This profile's gateway is running — it will be stopped.",
+    aliasBadge: "alias",
+    description: "Description",
+    descriptionPlaceholder: "What is this profile good at? Used to route kanban tasks by role.",
+    noDescription: "No description",
+    editDescription: "Edit description",
+    descriptionSaved: "Description saved",
+    reviewBadge: "review",
+    autoGenerate: "Auto-generate",
+    generating: "Generating…",
+    describeFailed: "Could not generate description",
+    distribution: "Distribution",
+    advancedOptions: "Advanced options",
+    cloneAll: "Clone everything (memories, sessions, skills, state)",
+    noSkillsOption: "Don't seed bundled skills",
+    descriptionOptional: "Description (optional)",
+    modelOptional: "Model (optional)",
+    modelInherit: "Inherit from clone / default",
+    modelLoading: "Loading models…",
+    modelNone: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
+    editModel: "Change model",
+    modelSaved: "Model updated",
+    modelSelect: "Select a model",
+    actions: "Actions",
+    manageSkills: s.manageSkills,
+    activeSetHint: s.activeSetHint,
+    boundSources: s.boundSources,
+    boundStatic: s.boundStatic,
+    boundDynamic: s.boundDynamic,
+    boundNone: s.boundNone,
+    boundMore: s.boundMore,
+  };
+  const labels = {} as Record<keyof typeof fallbacks, string>;
+  for (const key of Object.keys(fallbacks) as Array<keyof typeof fallbacks>) {
+    labels[key] = p[key] ?? fallbacks[key];
+  }
+  return labels;
+}
+
+type ProfileEditorKind = "model" | "desc" | "soul" | null;
+
+function profileEditorKind(
+  editingModelFor: string | null,
+  editingDescFor: string | null,
+  editingSoulFor: string | null,
+): ProfileEditorKind {
+  if (editingModelFor) return "model";
+  if (editingDescFor) return "desc";
+  if (editingSoulFor) return "soul";
+  return null;
+}
+
 export default function ProfilesPage() {
   const navigate = useNavigate();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
@@ -375,54 +444,7 @@ export default function ProfilesPage() {
   // the i18n type so untranslated locales don't break the build — they render
   // the English literal until translated.
   const s = useMemo(() => localeSection(t, "profilesPageX"), [t]);
-  const L = useMemo(() => {
-    const p = t.profiles;
-    return {
-      activeProfile: p.activeProfile ?? "Active profile",
-      activeBadge: p.activeBadge ?? "active",
-      setActive: p.setActive ?? "Set as active",
-      activeSet: p.activeSet ?? "Active profile set",
-      gatewayRunning: p.gatewayRunning ?? "Gateway running",
-      gatewayStopped: p.gatewayStopped ?? "Gateway stopped",
-      gatewayRunningWarning:
-        p.gatewayRunningWarning ??
-        "This profile's gateway is running — it will be stopped.",
-      aliasBadge: p.aliasBadge ?? "alias",
-      description: p.description ?? "Description",
-      descriptionPlaceholder:
-        p.descriptionPlaceholder ??
-        "What is this profile good at? Used to route kanban tasks by role.",
-      noDescription: p.noDescription ?? "No description",
-      editDescription: p.editDescription ?? "Edit description",
-      descriptionSaved: p.descriptionSaved ?? "Description saved",
-      reviewBadge: p.reviewBadge ?? "review",
-      autoGenerate: p.autoGenerate ?? "Auto-generate",
-      generating: p.generating ?? "Generating…",
-      describeFailed: p.describeFailed ?? "Could not generate description",
-      distribution: p.distribution ?? "Distribution",
-      advancedOptions: p.advancedOptions ?? "Advanced options",
-      cloneAll:
-        p.cloneAll ?? "Clone everything (memories, sessions, skills, state)",
-      noSkillsOption: p.noSkillsOption ?? "Don't seed bundled skills",
-      descriptionOptional: p.descriptionOptional ?? "Description (optional)",
-      modelOptional: p.modelOptional ?? "Model (optional)",
-      modelInherit: p.modelInherit ?? "Inherit from clone / default",
-      modelLoading: p.modelLoading ?? "Loading models…",
-      modelNone:
-        p.modelNone ?? "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
-      editModel: p.editModel ?? "Change model",
-      modelSaved: p.modelSaved ?? "Model updated",
-      modelSelect: p.modelSelect ?? "Select a model",
-      actions: p.actions ?? "Actions",
-      manageSkills: p.manageSkills ?? s.manageSkills,
-      activeSetHint: p.activeSetHint ?? s.activeSetHint,
-      boundSources: p.boundSources ?? s.boundSources,
-      boundStatic: p.boundStatic ?? s.boundStatic,
-      boundDynamic: p.boundDynamic ?? s.boundDynamic,
-      boundNone: p.boundNone ?? s.boundNone,
-      boundMore: p.boundMore ?? s.boundMore,
-    };
-  }, [t.profiles, s]);
+  const L = useMemo(() => profileLabels(t.profiles, s), [t.profiles, s]);
 
   // Create modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -516,8 +538,8 @@ export default function ProfilesPage() {
     // Bindings are a secondary, best-effort overlay: a failure here must not
     // block the profile list from rendering, so it loads independently and
     // swallows errors (the section simply stays empty).
-    api
-      .getProfileBindings()
+    profileBindingsApi
+      .summaries()
       .then((res) => {
         const map: Record<string, ProfileBindingSummary> = {};
         for (const b of res.bindings) map[b.profile] = b;
@@ -809,13 +831,7 @@ export default function ProfilesPage() {
   // Exactly one editor is open at a time; derive which profile + kind so a
   // single dialog can render the right body.
   const editorName = editingModelFor ?? editingDescFor ?? editingSoulFor;
-  const editorKind: "model" | "desc" | "soul" | null = editingModelFor
-    ? "model"
-    : editingDescFor
-      ? "desc"
-      : editingSoulFor
-        ? "soul"
-        : null;
+  const editorKind = profileEditorKind(editingModelFor, editingDescFor, editingSoulFor);
   const editorModalRef = useModalBehavior({
     open: editorName != null,
     onClose: closeEditor,

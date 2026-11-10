@@ -27,6 +27,11 @@ def _standalone_room(source: Path, room_id: str) -> None:
         authority_gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1)
 
 
+def _enable_handoff(monkeypatch, home: Path) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text("hosted_rooms:\n  gateway_handoff: true\n", encoding="utf-8")
+
+
 def test_standalone_rooms_move_once_with_history_owner_and_one_driver(tmp_path):
     source, target = _stores(tmp_path)
     _standalone_room(source, "room-desk")
@@ -85,7 +90,7 @@ def test_a_room_disbanded_in_the_gateway_never_comes_back(tmp_path):
 
 def test_the_gateway_imports_again_once_ready(tmp_path, monkeypatch):
     import threading
-    monkeypatch.setenv("HERMES_ROOMS_GATEWAY_HANDOFF", "1")  # fork: the hand-over is opt-in
+    _enable_handoff(monkeypatch, tmp_path)
     from types import SimpleNamespace
     from gateway.hosted_rooms_gateway_import import import_after_ready
     source, target = _stores(tmp_path)
@@ -103,7 +108,7 @@ def test_the_gateway_imports_again_once_ready(tmp_path, monkeypatch):
 def test_gateway_startup_takes_over_the_standalone_rooms(tmp_path, monkeypatch):
     """The import is wired into the gateway's own hosted-service start, not only callable: a
     gateway starting beside a standalone store serves and drives the rooms that store held."""
-    monkeypatch.setenv("HERMES_ROOMS_GATEWAY_HANDOFF", "1")  # fork: the hand-over is opt-in
+    _enable_handoff(monkeypatch, tmp_path)
     import asyncio
     from types import SimpleNamespace
     from gateway import session_hosted_service, session_hosted_transport
@@ -128,11 +133,11 @@ def test_gateway_startup_takes_over_the_standalone_rooms(tmp_path, monkeypatch):
 
 
 def test_fork_handoff_is_off_by_default(tmp_path, monkeypatch):
-    """Fork: without HERMES_ROOMS_GATEWAY_HANDOFF the gateway leaves the dashboard's rooms alone,
+    """Fork: without hosted_rooms.gateway_handoff the gateway leaves the dashboard's rooms alone,
     so the fork's Rooms dashboard keeps driving them on shared-state.db."""
     from types import SimpleNamespace
     from gateway.hosted_rooms_gateway_import import handoff_enabled, import_after_ready
-    monkeypatch.delenv("HERMES_ROOMS_GATEWAY_HANDOFF", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert handoff_enabled() is False
     source, target = _stores(tmp_path)
     _standalone_room(source, "room-dash")
