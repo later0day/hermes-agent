@@ -208,6 +208,46 @@ async def test_resend_shortcut_redelivers_the_image_from_the_real_session_transc
     assert db.get_messages("s1")[-1]["content"] == f"[resent image attachment: {image}]"
 
 
+@pytest.mark.asyncio
+async def test_preagent_resend_clears_prepared_env_without_starting_an_agent(monkeypatch):
+    from types import SimpleNamespace
+
+    from gateway import run_turn_setup_guard as setup_guard
+
+    class Prepared:
+        pass
+
+    cleared, emitted = [], []
+    state = SimpleNamespace(turn=SimpleNamespace(setup_stop=None))
+    source, session_entry = SimpleNamespace(), SimpleNamespace(session_id="s1")
+
+    async def resolve(_event, _source):
+        return source, session_entry, "session-key"
+
+    async def prepare(*_args):
+        return Prepared(), ["env-token"]
+
+    async def resend(*_args):
+        return True
+
+    async def emit(*args):
+        emitted.append(args)
+
+    runner = SimpleNamespace(
+        _PreparedTurn=Prepared,
+        _hmwa_resolve_session=resolve,
+        _hmwa_prepare_turn=prepare,
+        _session_state=lambda _key: state,
+        _clear_session_env=cleared.append,
+        hooks=SimpleNamespace(emit=emit),
+    )
+    monkeypatch.setattr(setup_guard, "answer_recent_image_resend", resend)
+    setup, reply = await setup_guard.run_preagent_setup(runner, object(), source, "quick", 1)
+    assert (setup, reply) == (None, None)
+    assert cleared == [["env-token"]]
+    assert emitted == []
+
+
 def test_latest_image_lookup_reads_multimodal_list_content(tmp_path):
     """Session rows decode multimodal content to a list of parts; the lookup must read their text
     instead of handing the list to the regex (TypeError broke the resend turn)."""

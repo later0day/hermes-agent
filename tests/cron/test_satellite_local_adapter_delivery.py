@@ -14,7 +14,8 @@ ROUTES = [ProfileRoute(name="binding:c1", platform="dingtalk", profile="sat", ch
 
 def _patch_routes(monkeypatch):
     from cron import scheduler_preflight as sp
-    monkeypatch.setattr(sp, "_satellite_routes_for_current_home", lambda profile=None: list(ROUTES))
+    monkeypatch.setattr(
+        sp, "_primary_route_tables_for_current_home", lambda profile_name=None: (list(ROUTES), list(ROUTES)))
     return sp
 
 
@@ -26,6 +27,20 @@ def test_satellite_with_only_a_local_adapter_borrows_the_primary_for_routed_chat
     assert view.get(DING, {"chat_id": "other"}) is None  # unrouted chat: fail closed, never the default bot
     assert view.get(Platform.LOCAL, {"chat_id": "x"}) is local
     assert view.get(Platform.LOCAL) is local
+
+
+def test_dynamic_binding_outranks_static_dispatch_for_every_profile():
+    from cron.scheduler_preflight import SharedRouteAdapters
+
+    ding = object()
+    binding = ROUTES[0]
+    static = ProfileRoute(
+        name="static-other", platform="dingtalk", profile="other", chat_id="c1", guild_id="guild")
+    dispatch = [static, binding]
+    satellite = SharedRouteAdapters({DING: ding}, [binding], dispatch_routes=dispatch)
+    other = SharedRouteAdapters({DING: ding}, [static], dispatch_routes=dispatch)
+    assert satellite.get(DING, {"chat_id": "c1"}) is ding
+    assert other.get(DING, {"chat_id": "c1"}) is None
 
 
 def test_a_profile_with_its_own_messaging_bot_keeps_it(monkeypatch):

@@ -546,9 +546,7 @@ class InProcessCronScheduler(CronScheduler):
         heartbeated."""
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
-        from cron.scheduler_preflight import (
-            satellite_delivery_adapters,
-        )
+        from cron.scheduler_preflight import satellite_delivery_adapters
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
         from cron.dispatch_hold import note_dispatching, note_held_profiles
@@ -569,7 +567,7 @@ class InProcessCronScheduler(CronScheduler):
             # ``/agent use`` binding of that chat; else fail closed (delivery skipped this tick).
             if profile_name is None or profile_name == default_profile:
                 return adapters
-            # Fork: routes include ``/agent use`` bindings and keep its own LOCAL adapter (xcx relies on both).
+            # Routes include ``/agent use`` bindings and keep the profile's own LOCAL adapter.
             return satellite_delivery_adapters(
                 profile_name, (profile_adapters or {}).get(profile_name) or {}, adapters,
                 owned=(profile_bot_platforms or {}).get(profile_name))

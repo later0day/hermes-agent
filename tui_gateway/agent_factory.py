@@ -734,7 +734,7 @@ def _make_agent(
         session, onboarding_toolsets(_load_enabled_toolsets(platform),
                                      session_db if session_db is not None else _get_db(), session_id or key))
     agent = AIAgent(
-        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        model=model, max_iterations=_cfg_max_turns(cfg), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),

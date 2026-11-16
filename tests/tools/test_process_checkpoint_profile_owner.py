@@ -42,6 +42,8 @@ def test_each_profile_checkpoint_lists_only_its_own_processes(tmp_path):
     try:
         assert _listed(home_a) == {a.id}
         assert _listed(home_b) == {b.id}
+        entries_a = json.loads((home_a / "processes.json").read_text(encoding="utf-8"))
+        assert entries_a[0]["checkpoint_owner"] == str(home_a / "processes.json")
         assert "ISO_A" not in (home_b / "processes.json").read_text(encoding="utf-8")
 
         fresh = ProcessRegistry()  # the next gateway process: recovery replays each served home under its scope
@@ -53,3 +55,43 @@ def test_each_profile_checkpoint_lists_only_its_own_processes(tmp_path):
         for session in (a, b):
             session.process.kill()
             session.process.wait(timeout=10)
+
+
+def _foreign_entries(home: Path, other: Path) -> list[dict]:
+    return [
+        {"session_id": "foreign", "pid": 123, "pid_scope": "host", "command": "foreign",
+         "checkpoint_owner": str(other / "processes.json")},
+        {"session_id": "hosted", "pid": 124, "pid_scope": "host", "command": "hosted",
+         "sandbox_key": "hosted-agent"},
+    ]
+
+
+def test_recovery_refuses_foreign_and_hosted_checkpoint_entries(tmp_path, monkeypatch):
+    home, other = tmp_path / "profile-a", tmp_path / "profile-b"
+    home.mkdir()
+    (home / "processes.json").write_text(json.dumps(_foreign_entries(home, other)), encoding="utf-8")
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_args: "running")
+    assert _recover_in(registry, home) == 0
+    assert registry._running == {}
+    assert json.loads((home / "processes.json").read_text(encoding="utf-8")) == []
+
+
+def test_log_handoffs_do_not_preserve_foreign_or_hosted_entries(tmp_path, monkeypatch):
+    home, other = tmp_path / "profile-a", tmp_path / "profile-b"
+    log_dir = home / "logs" / "process-output"
+    log_dir.mkdir(parents=True)
+    entries = _foreign_entries(home, other)
+    for entry in entries:
+        log = log_dir / f"{entry['session_id']}.log"
+        log.write_text("", encoding="utf-8")
+        entry["output_log"] = str(log)
+    checkpoint = home / "processes.json"
+    checkpoint.write_text(json.dumps(entries), encoding="utf-8")
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_args: "running")
+    token = set_hermes_home_override(home)
+    try:
+        assert registry._foreign_handoffs(checkpoint, set()) == []
+    finally:
+        reset_hermes_home_override(token)

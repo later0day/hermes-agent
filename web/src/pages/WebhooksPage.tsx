@@ -15,7 +15,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { WebhookRoute, WebhooksResponse } from "@/lib/api";
+import type { WebhookRoute, WebhookSignature, WebhooksResponse } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -30,6 +30,7 @@ import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 import { useI18n } from "@/i18n";
 import { localeSection } from "@/i18n/section";
+import type { Translations } from "@/i18n/types";
 
 interface CreatedWebhook {
   url: string;
@@ -61,6 +62,365 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
+const DELIVER_OPTIONS: ReadonlyArray<readonly [string, string]> = [
+  ["log", "Log"],
+  ["telegram", "Telegram"],
+  ["discord", "Discord"],
+  ["slack", "Slack"],
+  ["email", "Email"],
+  ["github_comment", "GitHub comment"],
+];
+
+const SIGNATURE_OPTIONS: ReadonlyArray<readonly [WebhookSignature, string]> = [
+  ["generic", "Generic (timestamped)"],
+  ["github", "GitHub"],
+  ["gitlab", "GitLab"],
+  ["linear", "Linear"],
+];
+
+function SignatureField({
+  value,
+  onChange,
+}: {
+  value: WebhookSignature;
+  onChange: (value: WebhookSignature) => void;
+}) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor="webhook-signature">Signature</Label>
+      <Select
+        id="webhook-signature"
+        value={value}
+        onValueChange={(v) => onChange(v as WebhookSignature)}
+      >
+        {SIGNATURE_OPTIONS.map(([scheme, label]) => (
+          <SelectOption key={scheme} value={scheme}>{label}</SelectOption>
+        ))}
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        The only signature scheme this route accepts. GitHub, GitLab and Linear
+        deliveries need their own pin.
+      </p>
+    </div>
+  );
+}
+
+interface WebhookSubscriptionCardProps {
+  sub: WebhookRoute;
+  s: NonNullable<Translations["webhooksPage"]>;
+  toggling: boolean;
+  onToggle: () => void;
+  onDelete: () => void;
+}
+
+function WebhookSubscriptionCard({
+  sub,
+  s,
+  toggling,
+  onToggle,
+  onDelete,
+}: WebhookSubscriptionCardProps) {
+  return (
+    <Card>
+      <CardContent className="flex items-start gap-4 py-4">
+        <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="font-medium text-sm truncate">{sub.name}</span>
+            <Badge tone="outline">{sub.deliver}</Badge>
+            {sub.deliver_only && (
+              <Badge tone="secondary">{s.badgeDeliverOnly}</Badge>
+            )}
+            {!sub.enabled && <Badge tone="warning">{s.badgeDisabled}</Badge>}
+          </div>
+
+          {sub.description && (
+            <p className="text-xs text-muted-foreground mb-2">{sub.description}</p>
+          )}
+
+          <div className="flex items-center gap-1 flex-wrap mb-2">
+            {sub.events.length === 0 ? (
+              <Badge tone="secondary">{s.badgeAll}</Badge>
+            ) : (
+              sub.events.map((evt) => (
+                <Badge key={evt} tone="secondary">{evt}</Badge>
+              ))
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="flex-1 min-w-0 truncate font-mono">{sub.url}</span>
+            <CopyButton value={sub.url} />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <Button
+            ghost
+            size="sm"
+            className="uppercase"
+            disabled={toggling}
+            onClick={onToggle}
+          >
+            {sub.enabled ? s.disable : s.enable}
+          </Button>
+          <Button
+            ghost
+            destructive
+            size="icon"
+            title={s.delete}
+            aria-label={s.delete}
+            onClick={onDelete}
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+interface WebhookCreateDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+  s: NonNullable<Translations["webhooksPage"]>;
+  showToast: ReturnType<typeof useToast>["showToast"];
+}
+
+function WebhookCreateDialog({
+  open,
+  onClose,
+  onCreated,
+  s,
+  showToast,
+}: WebhookCreateDialogProps) {
+  const deliverLabels: Record<string, string> = {
+    log: s.deliverLog,
+    telegram: "Telegram",
+    discord: "Discord",
+    slack: "Slack",
+    email: s.deliverEmail,
+    github_comment: s.deliverGithubComment,
+  };
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [events, setEvents] = useState("");
+  const [deliver, setDeliver] = useState("log");
+  const [deliverOnly, setDeliverOnly] = useState(false);
+  const [signature, setSignature] = useState<WebhookSignature>("generic");
+  const [prompt, setPrompt] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState<CreatedWebhook | null>(null);
+
+  const closeCreateModal = useCallback(() => {
+    setCreated(null);
+    onClose();
+  }, [onClose]);
+  const createModalRef = useModalBehavior({
+    open,
+    onClose: closeCreateModal,
+  });
+
+  const resetForm = useCallback(() => {
+    setName("");
+    setDescription("");
+    setEvents("");
+    setDeliver("log");
+    setDeliverOnly(false);
+    setSignature("generic");
+    setPrompt("");
+  }, []);
+
+  const handleCreate = async () => {
+    if (!name.trim()) {
+      showToast(s.nameRequired, "error");
+      return;
+    }
+    setCreating(true);
+    try {
+      const eventsList = events
+        .split(",")
+        .map((e) => e.trim())
+        .filter(Boolean);
+      const res = await api.createWebhook({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        events: eventsList.length ? eventsList : undefined,
+        deliver,
+        deliver_only: deliverOnly,
+        signature,
+        prompt: prompt.trim() || undefined,
+      });
+      showToast(s.createdToast, "success");
+      setCreated({ url: res.url, secret: res.secret });
+      resetForm();
+      onCreated();
+    } catch (e) {
+      showToast(s.createFailed.replace("{error}", errorMessage(e)), "error");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div
+      ref={createModalRef}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
+      onClick={(e) => e.target === e.currentTarget && closeCreateModal()}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-webhook-title"
+    >
+      <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto")}>
+        <Button
+          ghost
+          size="icon"
+          onClick={closeCreateModal}
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          aria-label={s.close}
+        >
+          <X />
+        </Button>
+
+        <header className="p-5 pb-3 border-b border-border">
+          <h2
+            id="create-webhook-title"
+            className="font-mondwest text-display text-base tracking-wider"
+          >
+            {s.newSubscription}
+          </h2>
+        </header>
+
+        {created ? (
+          <div className="p-5 grid gap-4">
+            <p className="text-sm text-muted-foreground">
+              {s.createdMsg}
+            </p>
+
+            <div className="grid gap-2">
+              <Label>{s.webhookUrl}</Label>
+              <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
+                <span className="flex-1 min-w-0 truncate font-mono text-xs">
+                  {created.url}
+                </span>
+                <CopyButton value={created.url} />
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>{s.secretLabel}</Label>
+              <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
+                <span className="flex-1 min-w-0 truncate font-mono text-xs">
+                  {created.secret}
+                </span>
+                <CopyButton value={created.secret} />
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button
+                className="uppercase"
+                size="sm"
+                onClick={closeCreateModal}
+              >
+                {s.done}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="p-5 grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="webhook-name">{s.nameLabel}</Label>
+              <Input
+                id="webhook-name"
+                autoFocus
+                placeholder={s.namePlaceholder}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="webhook-description">{s.descLabel}</Label>
+              <Input
+                id="webhook-description"
+                placeholder={s.descPlaceholder}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="webhook-events">{s.eventsLabel}</Label>
+              <Input
+                id="webhook-events"
+                placeholder={s.eventsPlaceholder}
+                value={events}
+                onChange={(e) => setEvents(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="webhook-deliver">{s.deliverLabel}</Label>
+                <Select
+                  id="webhook-deliver"
+                  value={deliver}
+                  onValueChange={(v) => setDeliver(v)}
+                >
+                  {DELIVER_OPTIONS.map(([value, label]) => (
+                    <SelectOption key={value} value={value}>{deliverLabels[value] ?? label}</SelectOption>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="webhook-deliver-only">{s.deliverOnlyLabel}</Label>
+                <label className="flex items-center gap-2 text-sm text-muted-foreground h-9">
+                  <input
+                    id="webhook-deliver-only"
+                    type="checkbox"
+                    checked={deliverOnly}
+                    onChange={(e) => setDeliverOnly(e.target.checked)}
+                  />
+                  {s.deliverOnlyDesc}
+                </label>
+              </div>
+            </div>
+
+            <SignatureField value={signature} onChange={setSignature} />
+
+            <div className="grid gap-2">
+              <Label htmlFor="webhook-prompt">{s.promptLabel}</Label>
+              <textarea
+                id="webhook-prompt"
+                className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
+                placeholder={s.promptPlaceholder}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
+            </div>
+
+            <div className="flex justify-end">
+              <Button
+                className="uppercase"
+                size="sm"
+                onClick={handleCreate}
+                disabled={creating}
+                prefix={creating ? <Spinner /> : undefined}
+              >
+                {creating ? s.creating : s.create}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function WebhooksPage() {
   const { t } = useI18n();
   const s = useMemo(() => localeSection(t, "webhooksPage"), [t]);
@@ -74,25 +434,8 @@ export default function WebhooksPage() {
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
 
-  // New subscription modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [events, setEvents] = useState("");
-  const [deliver, setDeliver] = useState("log");
-  const [deliverOnly, setDeliverOnly] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [created, setCreated] = useState<CreatedWebhook | null>(null);
-
-  const closeCreateModal = useCallback(() => {
-    setCreateModalOpen(false);
-    setCreated(null);
-  }, []);
-  const createModalRef = useModalBehavior({
-    open: createModalOpen,
-    onClose: closeCreateModal,
-  });
+  const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
 
   const enabled = data?.enabled ?? false;
   const subscriptions = data?.subscriptions ?? [];
@@ -190,45 +533,6 @@ export default function WebhooksPage() {
     }
   }, [loadWebhooks, s, showToast, watchRestartOutcome]);
 
-  const resetForm = useCallback(() => {
-    setName("");
-    setDescription("");
-    setEvents("");
-    setDeliver("log");
-    setDeliverOnly(false);
-    setPrompt("");
-  }, []);
-
-  const handleCreate = async () => {
-    if (!name.trim()) {
-      showToast(s.nameRequired, "error");
-      return;
-    }
-    setCreating(true);
-    try {
-      const eventsList = events
-        .split(",")
-        .map((e) => e.trim())
-        .filter(Boolean);
-      const res = await api.createWebhook({
-        name: name.trim(),
-        description: description.trim() || undefined,
-        events: eventsList.length ? eventsList : undefined,
-        deliver,
-        deliver_only: deliverOnly,
-        prompt: prompt.trim() || undefined,
-      });
-      showToast(s.createdToast, "success");
-      setCreated({ url: res.url, secret: res.secret });
-      resetForm();
-      loadWebhooks();
-    } catch (e) {
-      showToast(s.createFailed.replace("{error}", errorMessage(e)), "error");
-    } finally {
-      setCreating(false);
-    }
-  };
-
   const [togglingName, setTogglingName] = useState<string | null>(null);
 
   const handleToggleEnabled = useCallback(
@@ -274,10 +578,7 @@ export default function WebhooksPage() {
         size="sm"
         disabled={!enabled || enabling}
         prefix={<Plus />}
-        onClick={() => {
-          setCreated(null);
-          setCreateModalOpen(true);
-        }}
+        onClick={() => setCreateModalOpen(true)}
       >
         {s.newSubscription}
       </Button>,
@@ -314,165 +615,13 @@ export default function WebhooksPage() {
         loading={webhookDelete.isDeleting}
       />
 
-      {/* Create subscription modal */}
-      {createModalOpen && (
-        <div
-          ref={createModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={(e) => e.target === e.currentTarget && closeCreateModal()}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="create-webhook-title"
-        >
-          <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto")}>
-            <Button
-              ghost
-              size="icon"
-              onClick={closeCreateModal}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label={s.close}
-            >
-              <X />
-            </Button>
-
-            <header className="p-5 pb-3 border-b border-border">
-              <h2
-                id="create-webhook-title"
-                className="font-mondwest text-display text-base tracking-wider"
-              >
-                {s.newSubscription}
-              </h2>
-            </header>
-
-            {created ? (
-              <div className="p-5 grid gap-4">
-                <p className="text-sm text-muted-foreground">
-                  {s.createdMsg}
-                </p>
-
-                <div className="grid gap-2">
-                  <Label>{s.webhookUrl}</Label>
-                  <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.url}
-                    </span>
-                    <CopyButton value={created.url} />
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label>{s.secretLabel}</Label>
-                  <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.secret}
-                    </span>
-                    <CopyButton value={created.secret} />
-                  </div>
-                </div>
-
-                <div className="flex justify-end">
-                  <Button
-                    className="uppercase"
-                    size="sm"
-                    onClick={closeCreateModal}
-                  >
-                    {s.done}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="p-5 grid gap-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="webhook-name">{s.nameLabel}</Label>
-                  <Input
-                    id="webhook-name"
-                    autoFocus
-                    placeholder={s.namePlaceholder}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                  />
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="webhook-description">{s.descLabel}</Label>
-                  <Input
-                    id="webhook-description"
-                    placeholder={s.descPlaceholder}
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                  />
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="webhook-events">{s.eventsLabel}</Label>
-                  <Input
-                    id="webhook-events"
-                    placeholder={s.eventsPlaceholder}
-                    value={events}
-                    onChange={(e) => setEvents(e.target.value)}
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver">{s.deliverLabel}</Label>
-                    <Select
-                      id="webhook-deliver"
-                      value={deliver}
-                      onValueChange={(v) => setDeliver(v)}
-                    >
-                      <SelectOption value="log">{s.deliverLog}</SelectOption>
-                      <SelectOption value="telegram">Telegram</SelectOption>
-                      <SelectOption value="discord">Discord</SelectOption>
-                      <SelectOption value="slack">Slack</SelectOption>
-                      <SelectOption value="email">{s.deliverEmail}</SelectOption>
-                      <SelectOption value="github_comment">
-                        {s.deliverGithubComment}
-                      </SelectOption>
-                    </Select>
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver-only">{s.deliverOnlyLabel}</Label>
-                    <label className="flex items-center gap-2 text-sm text-muted-foreground h-9">
-                      <input
-                        id="webhook-deliver-only"
-                        type="checkbox"
-                        checked={deliverOnly}
-                        onChange={(e) => setDeliverOnly(e.target.checked)}
-                      />
-                      {s.deliverOnlyDesc}
-                    </label>
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="webhook-prompt">{s.promptLabel}</Label>
-                  <textarea
-                    id="webhook-prompt"
-                    className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-                    placeholder={s.promptPlaceholder}
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                  />
-                </div>
-
-                <div className="flex justify-end">
-                  <Button
-                    className="uppercase"
-                    size="sm"
-                    onClick={handleCreate}
-                    disabled={creating}
-                    prefix={creating ? <Spinner /> : undefined}
-                  >
-                    {creating ? s.creating : s.create}
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <WebhookCreateDialog
+        open={createModalOpen}
+        onClose={closeCreateModal}
+        onCreated={loadWebhooks}
+        s={s}
+        showToast={showToast}
+      />
 
       {!enabled && (
         <Card className="border-warning/50">
@@ -552,69 +701,14 @@ export default function WebhooksPage() {
         )}
 
         {subscriptions.map((sub: WebhookRoute) => (
-          <Card key={sub.name}>
-            <CardContent className="flex items-start gap-4 py-4">
-              <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <span className="font-medium text-sm truncate">
-                    {sub.name}
-                  </span>
-                  <Badge tone="outline">{sub.deliver}</Badge>
-                  {sub.deliver_only && (
-                    <Badge tone="secondary">{s.badgeDeliverOnly}</Badge>
-                  )}
-                  {!sub.enabled && <Badge tone="warning">{s.badgeDisabled}</Badge>}
-                </div>
-
-                {sub.description && (
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {sub.description}
-                  </p>
-                )}
-
-                <div className="flex items-center gap-1 flex-wrap mb-2">
-                  {sub.events.length === 0 ? (
-                    <Badge tone="secondary">{s.badgeAll}</Badge>
-                  ) : (
-                    sub.events.map((evt) => (
-                      <Badge key={evt} tone="secondary">
-                        {evt}
-                      </Badge>
-                    ))
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex-1 min-w-0 truncate font-mono">
-                    {sub.url}
-                  </span>
-                  <CopyButton value={sub.url} />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1 shrink-0">
-                <Button
-                  ghost
-                  size="sm"
-                  className="uppercase"
-                  disabled={togglingName === sub.name}
-                  onClick={() => handleToggleEnabled(sub.name, !sub.enabled)}
-                >
-                  {sub.enabled ? s.disable : s.enable}
-                </Button>
-                <Button
-                  ghost
-                  destructive
-                  size="icon"
-                  title={s.delete}
-                  aria-label={s.delete}
-                  onClick={() => webhookDelete.requestDelete(sub.name)}
-                >
-                  <Trash2 />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+          <WebhookSubscriptionCard
+            key={sub.name}
+            sub={sub}
+            s={s}
+            toggling={togglingName === sub.name}
+            onToggle={() => handleToggleEnabled(sub.name, !sub.enabled)}
+            onDelete={() => webhookDelete.requestDelete(sub.name)}
+          />
         ))}
       </div>
     </div>

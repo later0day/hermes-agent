@@ -817,7 +817,11 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
             body = resp.text
             logger.warning(
-                "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
+                "[%s] Send failed HTTP %d (%d response bytes)",
+                self.name, resp.status_code, len(body),
+            )
+            logger.debug(
+                "[%s] Send failed response body: %s", self.name, body[:200]
             )
             # A webhook that DingTalk rejects (expired mid-flight -> 400
             # "expired", robot removed from group, etc.) is just as dead as a
