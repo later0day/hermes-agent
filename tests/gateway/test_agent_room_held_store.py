@@ -167,8 +167,8 @@ class TestPersistenceAcrossReopen:
     def test_held_survives_reopen(self, tmp_path):
         path = tmp_path / "held.sqlite"
         s1 = AgentRoomHeldStore(db_path=path)
-        held = s1.hold("room1", session_id="s", member="m", room_version=5,
-                       payload="survive me", held_reason=HELD_REASON_NO_WEBHOOK)
+        s1.hold("room1", session_id="s", member="m", room_version=5,
+                payload="survive me", held_reason=HELD_REASON_NO_WEBHOOK)
         s1.close()
         # Simulate a gateway restart — the held reply must still be there.
         s2 = AgentRoomHeldStore(db_path=path)

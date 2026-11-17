@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
+import { removeDeletedEnvVarFromState } from "@/lib/env-state";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -36,8 +37,10 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -126,6 +129,7 @@ function EnvVarRow({
   compact?: boolean;
 }) {
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "envPageX"), [t]);
   const isEditing = edits[varKey] !== undefined;
   const isRevealed = !!revealed[varKey];
   const displayValue = isRevealed
@@ -260,7 +264,7 @@ function EnvVarRow({
               size="icon"
               onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
+              aria-label={(isRevealed ? s.hideKey : s.revealKey).replace("{key}", varKey)}
             >
               {isRevealed ? <EyeOff /> : <Eye />}
             </Button>
@@ -360,6 +364,7 @@ function ProviderGroupCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "envPageX"), [t]);
 
   // Separate API keys from base URLs and other settings
   const apiKeys = group.entries.filter(
@@ -399,7 +404,7 @@ function ProviderGroupCard({
           </span>
           {hasAnyConfigured && (
             <Badge tone="success" className="text-xs">
-              {configuredCount} {t.common.set.toLowerCase()}
+              {s.setCount.replace("{count}", String(configuredCount))}
             </Badge>
           )}
         </div>
@@ -614,6 +619,7 @@ export default function EnvPage() {
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "envPageX"), [t]);
   const { setAfterTitle } = usePageHeader();
 
   useEffect(() => {
@@ -626,15 +632,15 @@ export default function EnvPage() {
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
     const items: { id: string; label: string }[] = [
-      { id: "section-oauth", label: t.env.oauth ?? "OAuth" },
-      { id: "section-providers", label: t.env.providers ?? "Providers" },
+      { id: "section-oauth", label: "OAuth" },
+      { id: "section-providers", label: s.navProviders },
     ];
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: t.env.tools ?? "Tools",
+        tool: s.navTools,
         messaging: t.common.gateway ?? "Gateway",
-        setting: t.env.settings ?? "Settings",
+        setting: s.navSettings,
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
@@ -648,7 +654,7 @@ export default function EnvPage() {
       items.push({ id: "section-custom", label: t.env.customTitle });
     }
     return items;
-  }, [vars, t]);
+  }, [vars, t, s]);
 
   useLayoutEffect(() => {
     if (!vars) {
@@ -661,16 +667,16 @@ export default function EnvPage() {
     setAfterTitle(
       <nav
         className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label={t.env.jumpToSection}
+        aria-label={s.jumpToSection}
       >
-        {sections.map((s) => (
+        {sections.map((sec) => (
           <button
-            key={s.id}
+            key={sec.id}
             type="button"
-            onClick={() => scrollTo(s.id)}
+            onClick={() => scrollTo(sec.id)}
             className="shrink-0 cursor-pointer px-2 py-0.5 font-mondwest text-display text-xs tracking-wider text-text-secondary hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
           >
-            {s.label}
+            {sec.label}
           </button>
         ))}
       </nav>,
@@ -678,7 +684,7 @@ export default function EnvPage() {
     return () => {
       setAfterTitle(null);
     };
-  }, [vars, sections, setAfterTitle]);
+  }, [vars, sections, setAfterTitle, s]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -708,9 +714,9 @@ export default function EnvPage() {
         delete n[key];
         return n;
       });
-      showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+      showToast(s.savedKey.replace("{key}", key), "success");
     } catch (e) {
-      showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
+      showToast(`${t.config.failedToSave} ${key}: ${errorMessage(e)}`, "error");
     } finally {
       setSaving(null);
     }
@@ -722,14 +728,7 @@ export default function EnvPage() {
         setSaving(key);
         try {
           await api.deleteEnvVar(key);
-          setVars((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
-                }
-              : prev,
-          );
+          setVars((prev) => removeDeletedEnvVarFromState(prev, key));
           setEdits((prev) => {
             const n = { ...prev };
             delete n[key];
@@ -742,7 +741,7 @@ export default function EnvPage() {
           });
           showToast(`${key} ${t.common.removed}`, "success");
         } catch (e) {
-          showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
+          showToast(`${t.common.failedToRemove} ${key}: ${errorMessage(e)}`, "error");
           throw e;
         } finally {
           setSaving(null);

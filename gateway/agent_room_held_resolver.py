@@ -118,7 +118,7 @@ class AgentRoomHeldResolver:
             return 0
         try:
             return int(self._room_version_provider(room_id) or 0)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("held resolver: room_version_provider failed: %s", exc)
             return 0
 
@@ -211,7 +211,7 @@ class AgentRoomHeldResolver:
             )
         try:
             ok = bool(await self._deliver(chat_id, held.payload))
-        except Exception as exc:  # noqa: BLE001 — transport error != crash
+        except Exception as exc:
             logger.warning("held %d: delivery raised: %s", held.id, exc)
             return ResolveOutcome(
                 held_id=held.id, path=path, delivered=False, resolved=False,
@@ -234,7 +234,7 @@ class AgentRoomHeldResolver:
     async def _do_revise(self, held: HeldReply) -> ResolveOutcome:
         try:
             fresh = await self._rerun_member(held)  # type: ignore[misc]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "held %d: revise rerun raised (%s); falling back to Send-as-is",
                 held.id, exc,
@@ -262,7 +262,7 @@ class AgentRoomHeldResolver:
             )
         try:
             ok = bool(await self._deliver(chat_id, fresh))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("held %d: revise delivery raised: %s", held.id, exc)
             return ResolveOutcome(
                 held_id=held.id, path=RESOLUTION_REVISE,
@@ -296,7 +296,7 @@ class AgentRoomHeldResolver:
         for held in self._held_store.list_held(room_id):
             try:
                 outcomes.append(await self.resolve_one(held, path=path))
-            except Exception as exc:  # noqa: BLE001 — isolate one row
+            except Exception as exc:
                 logger.warning(
                     "held %s: resolve_one crashed: %s", held.id, exc,
                 )

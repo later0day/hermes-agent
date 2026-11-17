@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli.config_backend import read_config_doc
+from hermes_cli.profiles import read_profile_meta
 from gateway.agent_room_bootstrapper import (
     OBSERVER_MARKER_FILENAME,
     BootstrapError,
@@ -229,8 +231,7 @@ def test_build_observer_writes_toolsets_lockdown_config(hermes_home):
         members=[("a", "A")],
         default_member="a",
     )
-    import yaml
-    config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+    config = read_config_doc(profile_dir / "config.yaml")
     # Spike 3 verification: observer profile has EXACTLY one toolset,
     # and it's the room_observer one. No _HERMES_CORE_TOOLS leak.
     assert config["toolsets"] == ["room_observer"]
@@ -245,8 +246,7 @@ def test_build_observer_writes_profile_yaml_with_description_auto(hermes_home):
         members=[("a", "A")],
         default_member="a",
     )
-    import yaml
-    meta = yaml.safe_load((profile_dir / "profile.yaml").read_text())
+    meta = read_profile_meta(profile_dir)
     assert meta.get("description_auto") is True
     assert "Room observer for Support" in meta.get("description", "")
 

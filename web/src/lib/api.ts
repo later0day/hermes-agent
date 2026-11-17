@@ -1,4 +1,67 @@
-import { buildHermesWebSocketUrl } from "@hermes/shared";
+import type { CronDeliveryTarget } from "./api-cron-runs";
+import {
+  buildHermesWebSocketUrl,
+  type ModelOptionProvider,
+  type ModelOptionsResult,
+} from "@hermes/shared";
+import { createDashboardSessionMutations } from "./session-mutations";
+
+const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
+
+import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
+import type { ProfileCreateResponse } from "./api-profiles";
+import type {
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
+import type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartRequest,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+export type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+import type {
+  WebhookCreate,
+  WebhookEnableResponse,
+  WebhookRoute,
+  WebhooksResponse,
+} from "./api-webhooks";
+export type {
+  WebhookCreate,
+  WebhookEnableResponse,
+  WebhookRoute,
+  WebhookSignature,
+  WebhooksResponse,
+} from "./api-webhooks";
+import type {
+  MessagingPlatform,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
+} from "./api-messaging";
+export type {
+  MessagingPlatform,
+  MessagingPlatformEnvVar,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
+} from "./api-messaging";
+import type {
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
+import { dashboardServingProfile } from "./profile-bootstrap";
+import { PROFILE_SCOPED_PREFIXES, sameOriginRequestUrl as resolveSameOrigin } from "./api-request-scope";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -24,6 +87,8 @@ import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
+import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
+import type { AutomationBlueprint } from "@/lib/automation-blueprints";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -59,46 +124,32 @@ export function setManagementProfile(name: string): void {
   _managementProfile = (name || "").trim();
 }
 
+/**
+ * The profile every management call targets: the switcher's selection, or —
+ * before it has resolved / on a host with no switcher interaction — the profile
+ * this backend itself serves.
+ *
+ * The fallback is not a guess: the backend injects a name only when it provably
+ * resolves back to its own home, so it names exactly the home an unnamed request
+ * already reached. Without it the dashboard sends no `?profile=` at all and every
+ * destructive route 400s as soon as the host has a second profile directory.
+ */
 export function getManagementProfile(): string {
-  return _managementProfile;
+  return _managementProfile || dashboardServingProfile();
 }
 
-// Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// cron (which has its own per-job profile params), profiles themselves — is
-// machine-global or self-scoped and must NOT be rewritten.
-const PROFILE_SCOPED_PREFIXES = [
-  "/api/status",
-  "/api/gateway",
-  "/api/analytics",
-  "/api/skills",
-  "/api/tools/toolsets",
-  "/api/config",
-  "/api/env",
-  "/api/mcp",
-  "/api/messaging/platforms",
-  "/api/messaging/telegram/onboarding",
-  "/api/messaging/weixin",
-  "/api/messaging/whatsapp/onboarding",
-  "/api/model/info",
-  "/api/model/set",
-  "/api/model/auxiliary",
-  "/api/model/moa",
-  "/api/model/options",
-  "/api/logs",
-  // A named profile keeps its own pairing whitelist, and its gateway only
-  // consults that one — approving into the global store would grant access
-  // the running gateway never sees.
-  "/api/pairing",
-];
-
+// The dashboard's own profile when nothing else named one. The backend injects it only
+// when it provably resolves back to the serving home, so this can never retarget another
+// profile — it just says out loud what an unnamed request already meant. Without it every
+// destructive route 400s on a host that merely HAS a second profile directory.
 function withManagementProfile(url: string): string {
-  if (!_managementProfile) return url;
+  const scope = getManagementProfile();
+  if (!scope) return url;
   if (url.includes("profile=")) return url; // explicit param wins
   const path = url.split("?")[0];
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
   const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+  return `${url}${sep}profile=${encodeURIComponent(scope)}`;
 }
 
 export async function fetchJSON<T>(
@@ -107,21 +158,37 @@ export async function fetchJSON<T>(
   options?: FetchJSONOptions,
 ): Promise<T> {
   url = withManagementProfile(url);
+  const target = resolveSameOrigin(BASE, url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(target, {
+      ...init,
+      headers,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+      // After ``...init`` so a caller cannot widen it: the browser then refuses a
+      // cross-origin redirect and any ``<base href>`` resolution off this origin,
+      // which the up-front URL check cannot see.
+      mode: "same-origin",
+    });
+  } catch (cause) {
+    // fetch() only rejects when the request never got a response: the
+    // backend is down, the port is closed, or the network dropped. Tell the
+    // user that in words instead of `TypeError: Failed to fetch`.
+    const err = apiErrorFromNetworkFailure(cause, url);
+    // The toast shows only the sentence; keep status/path/body in the console for bug reports.
+    console.warn("[api]", err.details);
+    throw err;
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -179,7 +246,9 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    const err = apiErrorFromResponse(res.status, text, url);
+    console.warn("[api]", err.details);
+    throw err;
   }
   return res.json();
 }
@@ -207,7 +276,7 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
+    throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), "/api/auth/ws-ticket");
   }
   return res.json();
 }
@@ -247,15 +316,22 @@ export async function authedFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
+  // Same management scope as fetchJSON: a binary endpoint under a profile-scoped
+  // family (``/api/ops/backup/download``) must read the SELECTED profile's archive,
+  // not the launch profile's, and an unprofiled back door beside a family that now
+  // 400s is exactly how the next hole gets in.
+  url = withManagementProfile(url);
+  const target = resolveSameOrigin(BASE, url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
-  return fetch(`${BASE}${url}`, {
+  return fetch(target, {
     ...init,
     headers,
     credentials: init?.credentials ?? "include",
+    mode: "same-origin",
   });
 }
 
@@ -276,12 +352,9 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  return buildHermesWebSocketUrl({
-    authParam: await buildWsAuthParam(),
-    basePath: BASE,
-    params,
-    path,
-  });
+  const profile = getManagementProfile(); // a plugin socket names it as its REST calls do (PLG-3)
+  if (profile && path.startsWith("/api/plugins/") && !params?.profile) params = { ...params, profile };
+  return buildHermesWebSocketUrl({ authParam: await buildWsAuthParam(), basePath: BASE, params, path });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -342,19 +415,14 @@ export const api = {
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
-   * Returns the verified Session as JSON when gated mode is active and a
-   * valid cookie is attached. Loopback mode is unaffected — the endpoint
-   * still exists but is never useful there (no Session, no cookie). The
-   * AuthWidget component swallows 401s from this call: if the gate isn't
-   * engaged, /api/auth/me returns 401 and the widget renders nothing.
+   * Returns the verified Session when gated mode is active. In loopback mode,
+   * a valid injected session token returns a synthetic ``provider=loopback``
+   * identity; AuthWidget recognizes that provider and renders nothing, so it
+   * never exposes a logout action that would redirect to an unavailable login.
    *
-   * ``allowUnauthorized`` is load-bearing: in loopback mode this endpoint
-   * 401s by design, and fetchJSON's default loopback behaviour treats a
-   * 401 as a rotated session token and full-page-reloads to pick up a
-   * fresh one. Because every *other* dashboard request succeeds (and so
-   * clears the one-shot reload guard), that turns this expected 401 into
-   * an infinite reload loop. Opting out keeps the 401 a plain throw the
-   * widget can catch.
+   * ``allowUnauthorized`` remains load-bearing for a missing or stale loopback
+   * token: keep that 401 local to the widget instead of triggering the global
+   * rotated-token reload path.
    */
   getAuthMe: () =>
     fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
@@ -368,7 +436,7 @@ export const api = {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
+      window.location.assign(`${BASE}/login`);
       return r;
     }),
   getSessions: (
@@ -396,6 +464,20 @@ export const api = {
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
+  /**
+   * Directories a FRESH dashboard chat may start in: the profile's explicit
+   * projects plus discovered git repos (session-derived + scanned). ``scan``
+   * asks the host to rescan its discovery roots first (headless installs have
+   * no Desktop to populate the cache).
+   */
+  getChatWorkspaces: (profile = getManagementProfile(), scan = false) =>
+    fetchJSON<ChatWorkspacesResponse>(
+      appendQueryParam(
+        appendProfileParam("/api/chat/workspaces", profile),
+        "scan",
+        scan ? "1" : undefined,
+      ),
+    ),
   getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
       appendProfileParam(
@@ -404,12 +486,7 @@ export const api = {
       ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
-      {
-        method: "DELETE",
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean }>(id, "DELETE", {}, profile),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
     fetchJSON<{ count: number }>(
       appendProfileParam("/api/sessions/empty/count", profile),
@@ -422,20 +499,13 @@ export const api = {
       },
     ),
   bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+    fetchJSON<{ ok: boolean; deleted: number; skipped_active?: string[] }>("/api/sessions/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(
-      `/api/sessions/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, profile: profile || undefined }),
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean; title: string }>(id, "PATCH", { title }, profile),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -443,12 +513,11 @@ export const api = {
   importSessions: (
     sessions: Array<Record<string, unknown>>,
     profile = getManagementProfile(),
-  ) =>
-    fetchJSON<SessionImportResponse>("/api/sessions/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessions, profile: profile || undefined }),
-    }),
+  ) => {
+    const id = sessions[0]?.id;
+    if (typeof id !== "string" || !id) return Promise.reject(new Error("session id is required"));
+    return mutateSessionHttp<SessionImportResponse>(id, "POST", { sessions }, profile);
+  },
   pruneSessions: (
     older_than_days: number,
     source?: string,
@@ -541,7 +610,7 @@ export const api = {
     // desktop chat pickers (#56974), so opt in explicitly here.
     qs.set("include_unconfigured", "1");
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
+    return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
     fetchJSON<AuxiliaryModelsResponse>(
@@ -566,6 +635,14 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getSharedMetricsConsent: (profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
+  saveSharedMetricsConsent: (answer: { enabled: boolean; send: boolean }, profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(answer),
+    }),
   saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
@@ -605,8 +682,10 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
+  getCronDeliveryTargets: (profile = "default") =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>(
+      `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
+    ),
   createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -634,14 +713,12 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
-  listCronJobRuns: (jobId: string, profile?: string, limit = 10) =>
-    fetchJSON<{ runs: CronJobRun[]; limit: number }>(
-      `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`
-    ),
 
   // Automation Blueprints — parameterized automation blueprints
-  getAutomationBlueprints: () =>
-    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  getAutomationBlueprints: (profile = "default") =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>(
+      `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
+    ),
   instantiateAutomationBlueprint: (
     body: { blueprint: string; values: Record<string, string> },
     profile = "default",
@@ -676,15 +753,7 @@ export const api = {
     keep_skills?: string[];
     hub_skills?: string[];
   }) =>
-    fetchJSON<{
-      ok: boolean;
-      name: string;
-      path: string;
-      model_set?: boolean;
-      mcp_written?: number;
-      skills_disabled?: number;
-      hub_installs?: Array<{ identifier: string; pid: number | null }>;
-    }>("/api/profiles", {
+    fetchJSON<ProfileCreateResponse>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -714,85 +783,6 @@ export const api = {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider, model }),
-      },
-    ),
-  getProfileDetails: (name: string) =>
-    fetchJSON<ProfileDetails>(
-      `/api/profiles/${encodeURIComponent(name)}/details`,
-    ),
-  getProfileModelOptions: (name: string) =>
-    fetchJSON<ModelOptionsResponse>(
-      `/api/profiles/${encodeURIComponent(name)}/model/options`,
-    ),
-  bindSourceAgent: (body: { source_binding_key: string; profile_name: string }) =>
-    fetchJSON<{ ok: boolean; binding: SourceBindingInfo }>("/api/source-bindings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  clearSourceAgentBinding: (sourceBindingKey: string) =>
-    fetchJSON<{ ok: boolean; deleted: boolean }>(
-      `/api/source-bindings/${encodeURIComponent(sourceBindingKey)}`,
-      { method: "DELETE" },
-    ),
-  createSourceBindingTask: (body: {
-    source_binding_key: string;
-    profile_name: string;
-    task: string;
-    board?: string | null;
-  }) =>
-    fetchJSON<{
-      ok: boolean;
-      task_id: string;
-      board: string;
-      profile_name: string;
-      title: string;
-      subscribed: boolean;
-    }>("/api/source-bindings/tasks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  getProfileMemoryFile: (name: string, file: "MEMORY.md" | "USER.md") =>
-    fetchJSON<{
-      name: string;
-      path: string;
-      exists: boolean;
-      content: string;
-      bytes: number;
-    }>(
-      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(file)}`,
-    ),
-  updateProfileMemoryFile: (name: string, file: "MEMORY.md" | "USER.md", content: string) =>
-    fetchJSON<{ ok: boolean; name: string; path: string; bytes: number; memory: ProfileMemorySummary }>(
-      `/api/profiles/${encodeURIComponent(name)}/memory/${encodeURIComponent(file)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      },
-    ),
-  getProfileSkillManifest: (name: string, skill: string) =>
-    fetchJSON<{
-      skill: string;
-      path: string;
-      content: string;
-      bytes: number;
-    }>(
-      `/api/profiles/${encodeURIComponent(name)}/skills/${encodeURIComponent(skill)}/manifest`,
-    ),
-  updateProfileSkillManifest: (name: string, skill: string, content: string) =>
-    fetchJSON<{
-      ok: boolean;
-      skill: string;
-      path: string;
-      bytes: number;
-    }>(
-      `/api/profiles/${encodeURIComponent(name)}/skills/${encodeURIComponent(skill)}/manifest`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
       },
     ),
   renameProfile: (name: string, newName: string) =>
@@ -839,10 +829,6 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, enabled, profile: profile || undefined }),
-    }),
-  deleteSkill: (name: string, profile: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(profile)}/skills/${encodeURIComponent(name)}`, {
-      method: "DELETE",
     }),
   getSkillContent: (name: string, profile?: string) =>
     fetchJSON<SkillContent>(
@@ -960,14 +946,28 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
+  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
+  // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       },
+    ),
+  getRelayLinks: () => fetchJSON<RelayLinksResponse>("/api/messaging/relay"),
+  requestRelayLink: (platform: string) =>
+    fetchJSON<RelayLinkCode>(`/api/messaging/relay/${encodeURIComponent(platform)}/link`, {
+      method: "POST",
+    }),
+  getRelayLinkState: (code: string) =>
+    fetchJSON<RelayLinkCodeState>(`/api/messaging/relay/link/${encodeURIComponent(code)}`),
+  unlinkRelayAccount: (platform: string, platformUserId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+      { method: "DELETE" },
     ),
   testMessagingPlatform: (id: string) =>
     fetchJSON<MessagingPlatformTestResult>(
@@ -1004,10 +1004,7 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
-  startWhatsAppOnboarding: (body: {
-    mode?: "bot" | "self-chat";
-    allowed_users?: string;
-  }) =>
+  startWhatsAppOnboarding: (body: WhatsAppOnboardingStartRequest) =>
     fetchJSON<WhatsAppOnboardingStartResponse>(
       "/api/messaging/whatsapp/onboarding/start",
       {
@@ -1037,26 +1034,13 @@ export const api = {
       `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
-
-  // WeChat (Weixin) QR login
-  startWeixinQR: () =>
-    fetchJSON<{ session_id: string; qr_url: string; qr_value: string }>(
-      "/api/messaging/weixin/qr-new",
-      { method: "POST" },
-    ),
-  getWeixinQRStatus: (sessionId: string) =>
-    fetchJSON<{ session_id: string; status: string; qr_url: string | null; credentials: Record<string, string> | null }>(
-      `/api/messaging/weixin/qr/${encodeURIComponent(sessionId)}`,
-    ),
-  cancelWeixinQR: (sessionId: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/messaging/weixin/qr/${encodeURIComponent(sessionId)}`,
-      { method: "DELETE" },
-    ),
-
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  getGatewayMigratePlan: () =>
+    fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
+  migrateGatewayToMultiplex: () =>
+    fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -1069,12 +1053,15 @@ export const api = {
     ),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getPlugins: (profile = getManagementProfile()) => // the profile the caller's asset URLs will name
+    fetchJSON<PluginManifestResponse[]>(`/api/dashboard/plugins${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
   getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
+
+  getPluginsCatalog: () =>
+    fetchJSON<CatalogResponse>("/api/dashboard/plugins/catalog"),
 
   installAgentPlugin: (body: AgentPluginInstallRequest) =>
     fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
@@ -1084,22 +1071,52 @@ export const api = {
     }),
 
   enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/enable`, {
+      method: "POST",
+    }),
 
   disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/disable`, {
+      method: "POST",
+    }),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
+      },
     ),
+
+  updateAllAgentPlugins: () =>
+    fetchJSON<AgentPluginsUpdateAllResponse>("/api/dashboard/agent-plugins/update-all", {
+      method: "POST",
+    }),
+
+  getPluginAutoUpdate: () =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update"),
+
+  setPluginAutoUpdate: (enabled: boolean) =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
 
   removeAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string }>(
@@ -1200,13 +1217,13 @@ export const api = {
   // rewrite in withManagementProfile doesn't reach them — send it explicitly
   // or an approval lands in the wrong profile's whitelist.
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
-  approvePairing: (platform: string, request_id: string) =>
+  approvePairing: (platform: string, target: { request_id: string } | { code: string }) =>
     fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         platform,
-        request_id,
+        ...target,
         profile: getManagementProfile() || undefined,
       }),
     }),
@@ -1273,6 +1290,7 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+
   getMemoryProviderConfig: (provider: string) =>
     fetchJSON<MemoryProviderConfig>(
       `/api/memory/providers/${encodeURIComponent(provider)}/config`,
@@ -1387,11 +1405,11 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        consent: true, // sent only after the confirm dialog; the backend refuses its absence
         redact: opts?.redact ?? true,
         lines: opts?.lines ?? 200,
       }),
     }),
-
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
   pruneCheckpoints: () =>
@@ -1434,161 +1452,13 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
-
-  // ── Agent Room API (M1.8 REST + M2.4 planner) ─────────────────────────
-  listRooms: () =>
-    fetchJSON<{ rooms: RoomRecord[] }>("/api/rooms"),
-  getRoom: (roomId: string) =>
-    fetchJSON<{ room: RoomRecord }>(`/api/rooms/${encodeURIComponent(roomId)}`),
-  createRoom: (body: RoomCreateRequest) =>
-    fetchJSON<{ ok: boolean; room: RoomRecord }>("/api/rooms", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  patchRoom: (roomId: string, body: RoomPatchRequest) =>
-    fetchJSON<{ ok: boolean; room: RoomRecord }>(
-      `/api/rooms/${encodeURIComponent(roomId)}`,
-      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-    ),
-  deleteRoom: (roomId: string) =>
-    fetchJSON<{ ok: boolean; deleted: boolean }>(
-      `/api/rooms/${encodeURIComponent(roomId)}`,
-      { method: "DELETE" },
-    ),
-  bindRoom: (roomId: string, source_binding_key: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/rooms/${encodeURIComponent(roomId)}/bind`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_binding_key }),
-      },
-    ),
-  unbindRoom: (roomId: string, source_binding_key: string) =>
-    fetchJSON<{ ok: boolean; unbound: boolean }>(
-      `/api/rooms/${encodeURIComponent(roomId)}/unbind`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_binding_key }),
-      },
-    ),
-  planRoom: (body: RoomPlanRequest) =>
-    fetchJSON<{ plan: RoomPlan }>("/api/rooms/plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  confirmRoomPlan: (body: RoomPlanConfirmRequest = {}) =>
-    fetchJSON<{ ok: boolean; room: RoomRecord; new_profiles: string[] }>(
-      "/api/rooms/plan/confirm",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-    ),
-  listRoomMessages: (roomId: string, limit: number = 100) =>
-    fetchJSON<{
-      room_id: string;
-      count: number;
-      messages: RoomMessageRow[];
-    }>(`/api/rooms/${encodeURIComponent(roomId)}/messages?limit=${limit}`),
-  deleteRoomMessage: (roomId: string, sequence: number) =>
-    fetchJSON<{ ok: boolean; deleted: boolean }>(
-      `/api/rooms/${encodeURIComponent(roomId)}/messages/${sequence}`,
-      { method: "DELETE" },
-    ),
-  dispatchRoomMessage: (roomId: string, message: string, broadcast: boolean = false) =>
-    fetchJSON<{
-      ok: boolean;
-      target_members: string[];
-      broadcast: boolean;
-      decompose?: boolean;
-      replies: Record<string, string>;
-      synthesis?: string | null;
-      routing?: {
-        reason?: string | null;
-        decompose?: boolean;
-        orchestration?: unknown;
-      };
-    }>(`/api/rooms/${encodeURIComponent(roomId)}/dispatch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, broadcast }),
-    }),
 };
-
-// ── Agent Room types ─────────────────────────────────────────────────────
-
-export interface RoomRecord {
-  room_id: string;
-  room_name: string;
-  observer_profile: string;
-  members: string[];
-  description: string;
-  default_member: string;
-  created_at: number;
-  updated_at: number;
-  actor: string;
-}
-
-export interface RoomToolCall {
-  id?: string;
-  function?: {
-    name?: string;
-    arguments?: string;
-  };
-}
-
-export interface RoomMessageRow {
-  room_id: string;
-  sequence: number;
-  sender_kind: "user" | "observer" | "member" | "tool_result";
-  sender_name: string;
-  content: string;
-  tool_calls?: RoomToolCall[] | null;
-  tool_call_id?: string;
-  timestamp: number;
-}
-
-export interface RoomCreateRequest {
-  name: string;
-  members: string[];
-  description?: string;
-  default_member?: string;
-}
-
-export interface RoomPatchRequest {
-  members?: string[];
-  description?: string;
-  default_member?: string;
-}
-
-export interface RoomPlannedMember {
-  profile: string | null;   // existing profile name, null if new
-  is_new: boolean;
-  name: string;
-  description: string;
-  reason: string;
-}
-
-export interface RoomPlan {
-  rationale: string;
-  members: RoomPlannedMember[];
-  room_description: string;
-}
-
-export interface RoomPlanRequest {
-  requirement: string;
-  max_members?: number;
-}
-
-export interface RoomPlanConfirmRequest {
-  room_name?: string;
-}
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *
  * Returned by the dashboard's gated middleware when a valid session cookie
- * is attached. ``email`` and ``display_name`` are empty strings under the
+ * is attached, or as a synthetic ``provider=loopback`` identity after token
+ * validation in local mode. ``email`` and ``display_name`` are empty strings under the
  * Nous Portal contract V1 (the access token has no email/name claims —
  * see Contract Anchor C4 in the plan). The AuthWidget surfaces a
  * truncated ``user_id`` instead.
@@ -1600,6 +1470,16 @@ export interface AuthMeResponse {
   org_id: string;
   provider: string;
   expires_at: number;
+}
+
+/** Preflight for `hermes gateway migrate --multiplex` (mirrors the CLI plan JSON). */
+export interface GatewayMigratePlan {
+  already_multiplexed: boolean;
+  blockers: string[];
+  command: string;
+  eligible: boolean;
+  notices: string[];
+  profiles: { profile: string; pid: number | null; service: { kind: string; system: boolean } | null }[];
 }
 
 export interface ActionResponse {
@@ -1793,44 +1673,6 @@ export interface McpOAuthFlow {
   tools?: Array<{ name: string; description: string }>;
 }
 
-export interface MessagingPlatformEnvVar {
-  key: string;
-  required: boolean;
-  is_set: boolean;
-  redacted_value: string | null;
-  description: string;
-  prompt: string;
-  help: string;
-  url: string | null;
-  is_password: boolean;
-  advanced: boolean;
-}
-
-export interface MessagingPlatform {
-  id: string;
-  name: string;
-  description: string;
-  docs_url: string;
-  enabled: boolean;
-  configured: boolean;
-  gateway_running: boolean;
-  /**
-   * "connected" | "disabled" | "not_configured" | "pending_restart" |
-   * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string
-   */
-  state: string;
-  error_code: string | null;
-  error_message: string | null;
-  updated_at: string | null;
-  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
-  whatsapp_setup?: {
-    mode?: string;
-    allowed_users_set?: boolean;
-    home_channel_set?: boolean;
-  } | null;
-  env_vars: MessagingPlatformEnvVar[];
-}
-
 export interface MessagingPlatformsResponse {
   env_path: string;
   gateway_start_command: string;
@@ -1860,48 +1702,6 @@ export interface PairingUser {
 export interface PairingResponse {
   pending: PairingUser[];
   approved: PairingUser[];
-}
-
-export interface WebhookRoute {
-  name: string;
-  description: string;
-  events: string[];
-  deliver: string;
-  deliver_only: boolean;
-  prompt: string;
-  skills: string[];
-  created_at: string | null;
-  url: string;
-  secret_set: boolean;
-  enabled: boolean;
-}
-
-export interface WebhooksResponse {
-  enabled: boolean;
-  base_url: string;
-  subscriptions: WebhookRoute[];
-}
-
-export interface WebhookEnableResponse {
-  ok: boolean;
-  platform: "webhook";
-  enabled: true;
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
-export interface WebhookCreate {
-  name: string;
-  description?: string;
-  events?: string[];
-  prompt?: string;
-  skills?: string[];
-  deliver?: string;
-  deliver_only?: boolean;
-  deliver_chat_id?: string;
 }
 
 export interface CredentialPoolEntry {
@@ -1945,6 +1745,7 @@ export interface MemoryProviderExternalDependency {
 
 export interface MemoryProviderSetupInfo {
   pip_dependencies: string[];
+  python_dependencies_declared?: boolean;
   external_dependencies: MemoryProviderExternalDependency[];
   required_env: string[];
   dependencies_installed: boolean;
@@ -2023,10 +1824,10 @@ export interface HookCreate {
 export interface UpdateCheckResponse {
   install_method: string;
   current_version: string;
-  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
-  // count (nix/pypi), or null when the check could not run.
+  // commits behind: >=1 known, 0 up to date, -1 unknown count (nix/pypi), null = check could not run.
   behind: number | null;
   update_available: boolean;
+  rollback_to?: string | null; // a stable release this build already contains: applying it moves back
   can_apply: boolean;
   update_command: string;
   message: string | null;
@@ -2111,6 +1912,15 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+/** One profile's shared-metrics answer; `reask` = a pre-fix "off" asked once more. */
+export interface SharedMetricsConsent {
+  enabled: boolean;
+  send: boolean;
+  decided: boolean;
+  managed: boolean;
+  reask?: boolean;
+}
+
 export interface StatusResponse {
   active_sessions: number;
   /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
@@ -2137,10 +1947,25 @@ export interface StatusResponse {
   config_version: number;
   env_path: string;
   gateway_exit_reason: string | null;
+  /** Why a multi-profile host's gateway came up STANDALONE on a boot guard (unset
+   * ``gateway.multiplex_profiles`` refused): the other profiles' bots are silent until
+   * ``hermes gateway migrate --multiplex`` runs. null/absent when it multiplexes or only one
+   * profile exists. */
+  multiplex_standalone_reason?: string | null;
+  /** Every profile installed on this host (multiplex or not). */
+  profiles?: string[];
   gateway_health_url: string | null;
+  /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
+   * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).
+   * null when healthy; absent on older backends. */
+  gateway_heartbeat_stale_s?: number | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
+  /** Every profile the gateway process serves when the managed profile is carried by the
+   * shared multiplexer (e.g. ["default", "alpha", "beta"]); null/absent for a standalone
+   * gateway or an older backend. */
+  gateway_shared_with?: string[] | null;
   gateway_state: string | null;
   gateway_updated_at: string | null;
   hermes_home: string;
@@ -2183,6 +2008,31 @@ export interface DiskPressureStatus {
   used_percent?: number | null;
 }
 
+export interface ChatWorkspaceProject {
+  id: string;
+  slug: string;
+  name: string;
+  primary_path: string | null;
+  archived: boolean;
+  folders: Array<{ path: string; label: string | null; is_primary: boolean }>;
+}
+
+export interface ChatWorkspaceRepo {
+  root: string;
+  label: string;
+  sessions: number;
+  last_active: number;
+}
+
+export interface ChatWorkspacesResponse {
+  projects: ChatWorkspaceProject[];
+  repos: ChatWorkspaceRepo[];
+  /** Where a fresh chat lands when no workspace is picked. */
+  default_cwd: string;
+  home: string;
+  scan_enabled: boolean;
+}
+
 export interface SessionInfo {
   id: string;
   source: string | null;
@@ -2198,6 +2048,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile stamped by the list/detail endpoints (the store the row
+   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  profile?: string;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -2257,38 +2110,6 @@ export interface TelegramOnboardingApplyResponse {
   restart_error?: string;
 }
 
-export interface WhatsAppOnboardingStartResponse {
-  pairing_id: string;
-  status:
-    | "starting"
-    | "installing"
-    | "waiting"
-    | "connected"
-    | "error"
-    | "expired"
-    | "cancelled";
-  qr_payload?: string | null;
-  expires_at: string;
-  mode: "bot" | "self-chat";
-  allowed_users: string;
-  account_id?: string | null;
-  account_name?: string | null;
-  account_phone?: string | null;
-  error?: string | null;
-}
-
-export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
-
-export interface WhatsAppOnboardingApplyResponse {
-  ok: boolean;
-  platform: "whatsapp";
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
@@ -2317,43 +2138,12 @@ export interface LogsResponse {
   lines: string[];
 }
 
-export interface ManagedFileEntry {
-  name: string;
-  path: string;
-  is_directory: boolean;
-  size: number | null;
-  mtime: number;
-  mime_type: string | null;
-}
-
-export interface ManagedFilesResponse {
-  root: string | null;
-  path: string;
-  parent: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-  entries: ManagedFileEntry[];
-}
-
-export interface ManagedFileReadResponse {
-  name: string;
-  path: string;
-  size: number;
-  mime_type: string;
-  data_url: string;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
-
-export interface ManagedFileWriteResponse {
-  ok: boolean;
-  path: string;
-  entry: ManagedFileEntry;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
+export type {
+  ManagedFileEntry,
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
 
 export interface AnalyticsDailyEntry {
   day: string;
@@ -2439,11 +2229,6 @@ export interface ProfileInfo {
   distribution_version: string | null;
   distribution_source: string | null;
   has_alias: boolean;
-  binding_summary?: {
-    total: number;
-    webhook_configured: number;
-    webhook_expired: number;
-  };
 }
 
 export interface ModelsAnalyticsModelEntry {
@@ -2523,6 +2308,8 @@ export interface CronJob {
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  /** The chat the job was created in (and delivers to for ``deliver: origin``). */
+  origin?: { platform?: string | null; chat_id?: string | null; chat_name?: string | null } | null;
   model?: string | null;
   provider?: string | null;
   base_url?: string | null;
@@ -2532,54 +2319,12 @@ export interface CronJob {
   workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  /** Seconds since the job's profile ticker last iterated; null when it cannot be dated. */
+  scheduler_heartbeat_age_s?: number | null;
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
   last_fire_error?: { at?: string | null; detail?: string | null } | null;
-}
-
-export interface CronJobRun {
-  run_id: string;
-  job_id: string;
-  session_id?: string | null;
-  /** DB column: end_reason (e.g. "cron_complete", "max_iterations") */
-  status: string;
-  end_reason?: string | null;
-  title?: string | null;
-  started_at?: string | null;
-  ended_at?: string | null;
-  error?: string | null;
-  preview?: string | null;
-}
-
-export interface CronDeliveryTarget {
-  id: string;
-  name: string;
-  home_target_set: boolean;
-  home_env_var: string | null;
-}
-
-export interface AutomationBlueprintField {
-  name: string;
-  type: "time" | "enum" | "text" | "weekdays";
-  label: string;
-  default: string | null;
-  options: string[];
-  optional: boolean;
-  /** When false, options are suggestions — any value is accepted. */
-  strict?: boolean;
-  help: string;
-}
-
-export interface AutomationBlueprint {
-  key: string;
-  title: string;
-  description: string;
-  category: string;
-  tags: string[];
-  fields: AutomationBlueprintField[];
-  command: string;
-  appUrl: string;
 }
 
 export interface SkillInfo {
@@ -2587,8 +2332,6 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
-  provenance?: string;
-  usage?: number;
 }
 
 export interface SkillContent {
@@ -2680,35 +2423,20 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  is_user_defined?: boolean;
-  source?: string;
-  warning?: string;
-  authenticated?: boolean;
-}
+export type { ModelOptionProvider, ModelOptionsResult };
 
-export interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
-
-export interface AuxiliaryTaskAssignment {
-  task: string;
-  provider: string;
-  model: string;
-  base_url: string;
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
-}
+export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type {
+  AgentPluginScanFinding,
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogCapabilities,
+  CatalogEntry,
+  CatalogRemovedEntry,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2728,9 +2456,7 @@ export interface MoaConfigResponse {
     aggregator_temperature: number;
     reference_timeout: number | null;
     degraded_reference_policy: "loud" | "silent";
-    max_tokens: number;
-    /** Optional advisor output cap — round-tripped, not edited here. */
-    reference_max_tokens?: number | null;
+
     /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
     fanout?: string;
     enabled: boolean;
@@ -2741,7 +2467,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number;
   reference_timeout: number | null;
   degraded_reference_policy: "loud" | "silent";
-  max_tokens: number;
+
   enabled: boolean;
 }
 
@@ -2754,29 +2480,6 @@ export interface ModelAssignmentRequest {
   base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
-}
-
-/** An auxiliary task still pinned to a provider that differs from the
- *  newly-selected main provider after a main-model switch. */
-export interface StaleAuxAssignment {
-  task: string;
-  provider: string;
-  model: string;
-}
-
-export interface ModelAssignmentResponse {
-  confirm_message?: string;
-  confirm_required?: boolean;
-  ok: boolean;
-  scope?: string;
-  provider?: string;
-  model?: string;
-  tasks?: string[];
-  reset?: boolean;
-  /** Auxiliary slots still pinned to a different provider than the new main.
-   *  Switching main never clears aux pins; this lets the UI warn the user
-   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
-  stale_aux?: StaleAuxAssignment[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
@@ -2893,6 +2596,8 @@ export interface HubAgentPluginRow {
   auth_required: boolean;
   auth_command: string;
   user_hidden: boolean;
+  /** Reason string when this plugin is on the catalog removed blocklist. */
+  removed_reason?: string | null;
 }
 
 export interface PluginsHubProviders {
@@ -2912,6 +2617,8 @@ export interface AgentPluginInstallRequest {
   identifier: string;
   force?: boolean;
   enable?: boolean;
+  /** Install by curated-catalog name (resolves repo + pinned SHA server-side). */
+  catalog_name?: string;
 }
 
 export interface AgentPluginInstallResponse {
@@ -2922,143 +2629,4 @@ export interface AgentPluginInstallResponse {
   after_install_path?: string | null;
   enabled?: boolean;
   error?: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-}
-
-export interface PluginProvidersPutRequest {
-  memory_provider?: string;
-  context_engine?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Profile binding management types (ported from local-custom fork)
-// ---------------------------------------------------------------------------
-
-export interface ProfileBindingSummary {
-  total: number;
-  webhook_configured: number;
-  webhook_expired: number;
-  webhook_permanent: number;
-  webhook_temporary: number;
-}
-
-export interface SourceBindingTargetSummary {
-  platform: string;
-  chat_type: string;
-  chat_id?: string | null;
-  chat_name?: string | null;
-  thread_id?: string | number | null;
-  user_name?: string | null;
-  user_id?: string | null;
-  label: string;
-  scope: string;
-}
-
-export interface SourceBindingWebhookStatus {
-  configured: boolean;
-  state: "missing" | "configured" | "expired" | string;
-  kind: "none" | "temporary" | "permanent" | string;
-  expires_at?: number | null;
-  expired: boolean;
-  label: string;
-}
-
-export interface SourceBindingInfo {
-  source_binding_key: string;
-  profile_name: string;
-  agent_id: string;
-  fallback_target?: Record<string, unknown> | null;
-  fallback_extra?: Record<string, unknown> | null;
-  target_summary?: SourceBindingTargetSummary;
-  webhook_status?: SourceBindingWebhookStatus;
-  created_at?: number | null;
-  updated_at?: number | null;
-  created_by?: string | null;
-  updated_by?: string | null;
-}
-
-export interface ProfileSkillsSummary {
-  count: number;
-  names: string[];
-  truncated: boolean;
-}
-
-export interface ProfileMemorySummary {
-  provider: string;
-  memory_dir: string;
-  memory_dir_exists: boolean;
-  memory_file_count: number;
-  memory_bytes: number;
-  state_db: string;
-  state_db_exists: boolean;
-  state_db_bytes: number;
-  previews?: Array<{
-    name: string;
-    path: string;
-    exists: boolean;
-    bytes: number;
-    content: string;
-    truncated: boolean;
-  }>;
-}
-
-export interface AgentAuditEvent {
-  ts?: string;
-  action?: string;
-  profile_name?: string;
-  actor_user_id?: string;
-  actor_user_name?: string;
-  source?: Record<string, unknown>;
-  before?: Record<string, unknown> | null;
-  after?: Record<string, unknown> | null;
-  extra?: Record<string, unknown> | null;
-}
-
-export interface ProfileDetails {
-  profile: {
-    name: string;
-    path: string;
-    is_default: boolean;
-    model: string | null;
-    provider: string | null;
-    has_env: boolean;
-    description?: string;
-    description_auto?: boolean;
-    template?: boolean;
-  };
-  model: { provider: string; model: string };
-  bindings: SourceBindingInfo[];
-  health: {
-    status: "ok" | "warning" | string;
-    checks: Record<string, boolean>;
-    recent_error?: string | null;
-    config_error?: string | null;
-  };
-  kanban: {
-    total: number;
-    active: number;
-    by_status: Record<string, number>;
-    error?: string;
-  };
-  cron: {
-    owner_job_count: number;
-    owner_jobs: CronJob[];
-  };
-  paths: {
-    workspace: string;
-    scripts: string;
-    sessions: string;
-  };
-  skills: ProfileSkillsSummary;
-  memory: ProfileMemorySummary;
-  audit: {
-    events: AgentAuditEvent[];
-  };
 }

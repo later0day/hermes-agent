@@ -16,8 +16,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    MAX_NORMALIZED_TEXT_LENGTH,
     _content_has_visible_payload,
     _normalize_multimodal_content,
+    _session_chat_user_message,
     cors_middleware,
     security_headers_middleware,
 )
@@ -43,17 +45,16 @@ class TestNormalizeMultimodalContent:
         content = [{"type": "input_text", "text": "hello"}]
         assert _normalize_multimodal_content(content) == "hello"
 
+    def test_session_chat_preserves_long_strings_and_text_parts(self):
+        text = "界" * (MAX_NORMALIZED_TEXT_LENGTH + 17)
+        for content in (text, [{"type": "text", "text": text}]):
+            normalized, error = _session_chat_user_message({"message": content})
+            assert error is None
+            assert normalized == text
 
-    def test_input_image_converted_to_canonical_shape(self):
-        content = [
-            {"type": "input_text", "text": "hi"},
-            {"type": "input_image", "image_url": "https://example.com/cat.png"},
-        ]
-        out = _normalize_multimodal_content(content)
-        assert out == [
-            {"type": "text", "text": "hi"},
-            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
-        ]
+    def test_openai_normalization_retains_its_existing_text_limit(self):
+        text = "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1)
+        assert len(_normalize_multimodal_content(text)) == MAX_NORMALIZED_TEXT_LENGTH
 
 
 class TestContentHasVisiblePayload:

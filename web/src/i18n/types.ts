@@ -1,3 +1,5 @@
+import type { ForkSections } from "./types-fork";
+
 export type Locale =
   | "en"
   | "zh"
@@ -17,9 +19,12 @@ export type Locale =
   | "hu"
   | "ar";
 
-export interface Translations {
+export interface Translations extends ForkSections {
   // ── Common ──
   common: {
+    /** Optional — the boundary keeps its English copy until translated. */
+    errorBoundaryTitle?: string;
+    errorBoundaryDescription?: string;
     save: string;
     saving: string;
     cancel: string;
@@ -28,6 +33,9 @@ export interface Translations {
     delete: string;
     refresh: string;
     retry: string;
+    /** Optional — English fallback until translated. "{what}" = the noun that failed to load. */
+    loadFailed?: string;
+    loadFailedDetails?: string;
     search: string;
     loading: string;
     create: string;
@@ -81,7 +89,9 @@ export interface Translations {
     activeSessionsLabel: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
+      degraded?: string;
       failed: string;
+      heartbeatStale?: string;
       off: string;
       running: string;
       starting: string;
@@ -100,7 +110,19 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      /** Optional — falls back to English literal until translated. */
+      memory?: string;
+      /** Optional — falls back to English literal until translated. */
+      rooms?: string;
+      files?: string;
+      mcp?: string;
+      channels?: string;
+      webhooks?: string;
+      pairing?: string;
+      system?: string;
     };
+    /** Optional sidebar labels for plugin tabs, keyed by plugin manifest name. */
+    pluginTabLabels?: Record<string, string>;
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
     navigation: string;
@@ -122,13 +144,32 @@ export interface Translations {
     /** NS-656 disk-usage banner — optional, English fallback. */
     diskCriticalBanner?: string;
     diskElevatedBanner?: string;
+    /** Multi-profile host whose gateway boots standalone on a guard — optional, English fallback. */
+    multiplexStandaloneBanner?: string;
     dismiss?: string;
+    /** First-run shared-metrics offer — optional, English fallback. */
+    sharedMetricsTitle?: string;
+    sharedMetricsBody?: string;
+    sharedMetricsReaskBody?: string;
+    sharedMetricsShare?: string;
+    sharedMetricsOff?: string;
+    sharedMetricsDetails?: string;
+    sharedMetricsSaveFailed?: string;
+  };
+
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: string;
+    noProvider: string;
+    builtinLayer: string;
+    builtinNote: string;
   };
 
   // ── Status page ──
   status: {
     actionFailed: string;
     actionFinished: string;
+    actionFinishedOwed: string;
     actions: string;
     agent: string;
     connected: string;
@@ -176,6 +217,12 @@ export interface Translations {
     sourceFilter: string;
     anySource: string;
     searchPlaceholder: string;
+    /** Cmd/Ctrl+K global session-search palette — optional, English fallback. */
+    searchGlobalPlaceholder?: string;
+    searchNoRecent?: string;
+    searchHintNavigate?: string;
+    searchHintOpen?: string;
+    searchHintClose?: string;
     noSessions: string;
     noSessionsInFilter: string;
     noMatch: string;
@@ -200,9 +247,14 @@ export interface Translations {
     deleteSelectedConfirmTitle: string;
     deleteSelectedConfirmMessage: string;
     selectedSessionsDeleted: string;
+    selectedSessionsSkippedActive: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    workspace: string;
+    workspaceDefault: string;
+    workspaceRescan: string;
+    workspaceCustom: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -266,6 +318,9 @@ export interface Translations {
 
   // ── Cron page ──
   cron: {
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    scriptRequired?: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
     newJob: string;
@@ -314,6 +369,8 @@ export interface Translations {
     noJobs: string;
     last: string;
     next: string;
+    overdueSince?: string;
+    schedulerLastTicked?: string;
     pause: string;
     resume: string;
     triggerNow: string;
@@ -351,6 +408,7 @@ export interface Translations {
     disableRuntime: string;
     enableAfterInstall: string;
     enableRuntime: string;
+    toggleTakesEffectAfterRestart: string;
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
@@ -379,9 +437,34 @@ export interface Translations {
     authRequired: string;
     authRequiredHint: string;
     updateGit: string;
+    updateAll: string;
+    updatingAll: string;
+    updateAllDone: (updated: number, needsReview: number, failed: number) => string;
+    autoUpdate: string;
+    autoUpdateDesc: (hours: number) => string;
+    /** Optional: locales without it fall back to the English body at the call site. */
+    updateConsentBody?: (name: string, sha: string) => string;
+    /** Optional, English fallback: the scan rated an update caution; confirming retries with force. */
+    updateScanBody?: (name: string, count: number) => string;
+    /** Optional, English fallback: the scan rated an update dangerous; never overridable. */
+    updateScanBlocked?: (name: string) => string;
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    // Catalog section (en-only fallback convention — optional keys).
+    catalogHeading?: string;
+    catalogHint?: string;
+    catalogSearchPlaceholder?: string;
+    catalogEmpty?: string;
+    catalogEmptyDocsLink?: string;
+    catalogInstallBtn?: string;
+    catalogInstalledBadge?: string;
+    catalogUpdateBtn?: string;
+    catalogRemovedBadge?: string;
+    catalogConfirmTitle?: string;
+    catalogConfirmInstallNote?: string;
+    catalogRequiresEnv?: string;
+    removedFromCatalog?: string;
   };
 
   // ── Profiles page ──
@@ -449,12 +532,21 @@ export interface Translations {
     actions?: string;
     manageSkills?: string;
     activeSetHint?: string;
+    boundSources?: string;
+    boundStatic?: string;
+    boundDynamic?: string;
+    boundNone?: string;
+    boundMore?: string;
   };
 
   // ── Skills page ──
   skills: {
     title: string;
     searchPlaceholder: string;
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    browseHub?: string;
+    createSkill?: string;
     enabledOf: string;
     all: string;
     categories: string;
@@ -518,6 +610,140 @@ export interface Translations {
     };
   };
 
+  // ── Memory page (MEMORY.md / USER.md editors) ──
+  // Optional: full locales that omit it fall back to English literals baked
+  // into MemoryPage. en/zh translate it.
+  memory?: {
+    memoryDescription: string;
+    userDescription: string;
+    memoryPlaceholder: string;
+    userPlaceholder: string;
+    empty: string;
+    unsavedChanges: string;
+    saved: string; // "{doc} saved"
+    failedToSave: string; // "Failed to save {doc}"
+    /** Edit/preview toggle — optional, English fallback. */
+    preview?: string;
+    edit?: string;
+  };
+
+  // ── Rooms page (hosted-room read-only inspector) ──
+  // Optional: full locales that omit it fall back to English literals baked
+  // into RoomsPage. en/zh translate it.
+  rooms?: {
+    title: string;
+    description: string;
+    empty: string;
+    showDisbanded: string;
+    members: string;
+    revision: string;
+    latestSeq: string;
+    authorityEpoch: string;
+    authorityGateway: string;
+    created: string;
+    updated: string;
+    disbanded: string;
+    driver: string;
+    running: string;
+    working: string;
+    blocked: string;
+    idle: string;
+    eventLog: string;
+    seq: string;
+    kind: string;
+    actor: string;
+    content: string;
+    noEvents: string;
+    loadMore: string;
+    selectRoom: string;
+    teamTopology: string;
+    roleCoordinator: string;
+    roleTeammate: string;
+    roleObserver: string;
+    roleTeamLead: string;
+    noTopology: string;
+    turnProgress: string;
+    roundProgress: string;
+    pendingActions: string;
+    noPendingActions: string;
+    approve: string;
+    deny: string;
+    approveAll: string;
+    permissionRequest: string;
+    planApproval: string;
+    shutdownRequest: string;
+    scopeSession: string;
+    scopeTask: string;
+    from: string;
+    toolFiltering: string;
+    filterAll: string;
+    filterOrchestration: string;
+    filterExecution: string;
+    filterCustom: string;
+    noTools: string;
+    mailbox: string;
+    newMessages: string;
+    noMessages: string;
+    markAllRead: string;
+    filterCoordinator: string;
+    filterTeammate: string;
+    filterObserver: string;
+    filterUser: string;
+    filterSystem: string;
+    filterProtocol: string;
+    filterMessage: string;
+    filterTurn: string;
+    noEventsMatchingFilter: string;
+    state: string;
+    rulesChecked: string;
+    violations: string;
+    heartbeat: string;
+    lastDigest: string;
+    secondsAgo: string;
+    never: string;
+    noObserver: string;
+    kindTaskAssign: string;
+    kindTaskCancel: string;
+    kindPlanSubmit: string;
+    kindResultSynthesize: string;
+    kindResultReport: string;
+    kindStatusReport: string;
+    kindClarificationRequest: string;
+    kindActivityDigest: string;
+    kindHeartbeat: string;
+    kindRuleViolation: string;
+    kindShutdown: string;
+    kindPermission: string;
+    kindPlan: string;
+    peerGrants: string;
+    noPeerGrants: string;
+    grantStatus: string;
+    grantReady: string;
+    grantUnavailable: string;
+    grantNeedsReauth: string;
+    replicationHealth: string;
+    healthy: string;
+    unhealthy: string;
+    peersReady: string;
+    policyTrace: string;
+    noPolicyTrace: string;
+    policyEvents: string;
+    policyWatermarks: string;
+    policyThroughSeq: string;
+    linkage: string;
+    noLinkage: string;
+    targetProfile: string;
+    linkStatus: string;
+    linkReady: string;
+    linkUnavailable: string;
+    linkNeedsReauth: string;
+    clearMailbox: string;
+    denyAll: string;
+    memberDetail: string;
+    of: string;
+    reject: string;
+  };
+
   // ── Env / Keys page ──
   env: {
     changesNote: string;
@@ -574,6 +800,7 @@ export interface Translations {
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    sessionExpiredNoError: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;
@@ -912,5 +1139,4 @@ export interface Translations {
   mcp?: Record<string, string>;
   webhooks?: Record<string, string>;
   system?: Record<string, string>;
-  memory?: Record<string, string>;
 }

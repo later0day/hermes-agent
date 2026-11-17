@@ -35,6 +35,7 @@ import {
   FileText,
   Globe,
   Heart,
+  Home,
   KeyRound,
   Menu,
   MessageSquare,
@@ -64,16 +65,18 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { CockpitSidebarSlot } from "@/components/CockpitSidebarSlot";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
-import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
+import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
+import { SharedMetricsConsentBanner } from "@/components/SharedMetricsConsentBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
@@ -88,20 +91,17 @@ const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
 const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
 const CronPage = lazy(() => import("@/pages/CronPage"));
 const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
+const MemoryPage = lazy(() => import("@/pages/MemoryPage"));
+const RoomsPage = lazy(() => import("@/pages/RoomsPage"));
 const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
 const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
 const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
 const McpPage = lazy(() => import("@/pages/McpPage"));
 const PairingPage = lazy(() => import("@/pages/PairingPage"));
 const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
-const RoomsPage = lazy(() => import("@/pages/RoomsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
-// fork feature: dedicated Memory admin page (also lazy for consistency)
-const MemoryPage = lazy(() => import("@/pages/MemoryPage"));
-// fork feature: global Cmd+K session search modal (named export, kept eager)
-import { SessionSearchModal } from "@/components/SessionSearchModal";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -111,8 +111,10 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
+import { sharedGatewayProfiles, sharedGatewayRestartDescription } from "@/lib/shared-gateway";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
+import { GuardedSuspense } from "@/components/GuardedSuspense";
 
 function RouteFallback({ label = "Loading…" }: { label?: string }) {
   return (
@@ -163,7 +165,6 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/files": FilesPage,
-  "/memory": MemoryPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -173,11 +174,12 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/mcp": McpPage,
   "/pairing": PairingPage,
   "/channels": ChannelsPage,
-  "/rooms": RoomsPage,
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
   "/profiles": ProfilesPage,
   "/profiles/new": ProfileBuilderPage,
+  "/memory": MemoryPage,
+  "/rooms": RoomsPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -199,7 +201,6 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
-  { path: "/memory", labelKey: "memory", label: "Memory", icon: Brain },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -218,10 +219,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
   { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
-  { path: "/rooms", labelKey: "rooms", label: "Rooms", icon: MessageSquare },
   { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
   { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
+  { path: "/memory", labelKey: "memory", label: "Memory", icon: Brain },
+  { path: "/rooms", labelKey: "rooms", label: "Rooms", icon: Home },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/system", labelKey: "system", label: "System", icon: Wrench },
@@ -236,9 +238,9 @@ const BUILTIN_NAV_REST: NavItem[] = [
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
   BarChart3,
-  Brain,
   Clock,
   Cpu,
+  Brain,
   FileText,
   FolderOpen,
   KeyRound,
@@ -277,6 +279,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
+      pluginName: manifest.name,
       icon: resolveIcon(manifest.icon),
     };
 
@@ -383,7 +386,8 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
-  const { manifests, loading: pluginsLoading } = usePlugins();
+  const { profile } = useProfileScope();
+  const { manifests, loading: pluginsLoading } = usePlugins(profile);
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
@@ -412,19 +416,6 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
-  // fork feature: global Cmd+K session search toggle
-  const [searchOpen, setSearchOpen] = useState(false);
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setSearchOpen((prev) => !prev);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
-
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
@@ -504,6 +495,7 @@ export default function App() {
         .map((m) => ({
           path: m.tab.override ?? m.tab.path,
           label: m.label,
+          name: m.name,
         })),
     [manifests],
   );
@@ -534,7 +526,6 @@ export default function App() {
   }, []);
 
   return (
-    <ProfileProvider>
     <div
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -556,7 +547,8 @@ export default function App() {
           "bg-background-base",
         )}
         style={{
-          background: "var(--component-header-background)",
+          background:
+            "var(--component-header-background, var(--background-base))",
           borderImage: "var(--component-header-border-image)",
           clipPath: "var(--component-header-clip-path)",
         }}
@@ -598,6 +590,8 @@ export default function App() {
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
       <MemoryPressureBanner status={sidebarStatus} />
+      <MultiplexStandaloneBanner status={sidebarStatus} />
+      <SharedMetricsConsentBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -615,7 +609,8 @@ export default function App() {
               collapsed && "lg:w-14",
             )}
             style={{
-              background: "var(--component-sidebar-background)",
+              background:
+                "var(--component-sidebar-background, var(--background-base))",
               clipPath: "var(--component-sidebar-clip-path)",
               borderImage: "var(--component-sidebar-border-image)",
             }}
@@ -688,38 +683,16 @@ export default function App() {
                 ))}
               </ul>
 
-              {sidebarNav.pluginItems.length > 0 && (
-                <div
-                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
-                  role="group"
-                >
-                  <span
-                    className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-                      isDesktopCollapsed && "lg:hidden",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
-                  >
-                    {t.app.pluginNavSection}
-                  </span>
-
-                  <ul className="flex flex-col">
-                    {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        collapsed={isDesktopCollapsed}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                        tooltipWarmRef={tooltipWarmRef}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <SidebarPluginNav
+                closeMobile={closeMobile}
+                collapsed={isDesktopCollapsed}
+                items={sidebarNav.pluginItems}
+                t={t}
+                tooltipWarmRef={tooltipWarmRef}
+              />
             </nav>
+
+            <CockpitSidebarSlot layoutVariant={layoutVariant} />
 
             <SidebarSystemActions
               collapsed={isDesktopCollapsed}
@@ -790,7 +763,6 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute && !isDocsRoute && "flex-1 min-h-0 overflow-y-auto",
                   !isChatRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
@@ -798,7 +770,7 @@ export default function App() {
                 )}
               >
                 <ProfileKeyedRoutes>
-                  <Suspense fallback={<RouteFallback />}>
+                  <GuardedSuspense fallback={<RouteFallback />}>
                     <Routes>
                       {routes.map(({ key, path, element }) => (
                         <Route key={key} path={path} element={element} />
@@ -810,7 +782,7 @@ export default function App() {
                         }
                       />
                     </Routes>
-                  </Suspense>
+                  </GuardedSuspense>
                 </ProfileKeyedRoutes>
 
                 {embeddedChat &&
@@ -849,9 +821,7 @@ export default function App() {
       </div>
 
       <PluginSlot name="overlay" />
-      <SessionSearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
-    </ProfileProvider>
   );
 }
 
@@ -883,7 +853,7 @@ function SidebarNavLink({
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
+    : (item.pluginName && t.app.pluginTabLabels?.[item.pluginName]) || label;
   const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
     setHovered(true);
     setTooltipAnchor(event.currentTarget);
@@ -956,6 +926,38 @@ function SidebarNavLink({
   );
 }
 
+function SidebarPluginNav({
+  items,
+  ...linkProps
+}: Omit<SidebarNavLinkProps, "item"> & { items: NavItem[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div
+      aria-labelledby="hermes-sidebar-plugin-nav-heading"
+      className="flex flex-col border-t border-current/10 pb-2"
+      role="group"
+    >
+      <span
+        className={cn(
+          "px-5 pt-2.5 pb-1",
+          "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+          linkProps.collapsed && "lg:hidden",
+        )}
+        id="hermes-sidebar-plugin-nav-heading"
+      >
+        {linkProps.t.app.pluginNavSection}
+      </span>
+
+      <ul className="flex flex-col">
+        {items.map((item) => (
+          <SidebarNavLink {...linkProps} item={item} key={item.path} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function SidebarSystemActions({
   collapsed,
   onNavigate,
@@ -967,6 +969,8 @@ function SidebarSystemActions({
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
   const canUpdateHermes = status?.can_update_hermes === true;
+  // Served by the shared multiplexer: a restart blips every bot on this device — say which.
+  const sharedGateway = sharedGatewayProfiles(status);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
   const [updateConfirmInfo, setUpdateConfirmInfo] =
@@ -1100,17 +1104,21 @@ function SidebarSystemActions({
 
     <ConfirmDialog
       cancelLabel={t.common.cancel}
-      confirmLabel={t.status.restartGateway}
+      confirmLabel={sharedGateway ? "Restart all" : t.status.restartGateway}
       description={
-        t.status.restartGatewayConfirmMessage ??
-        "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
+        sharedGateway
+          ? sharedGatewayRestartDescription(sharedGateway)
+          : (t.status.restartGatewayConfirmMessage ??
+            "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.")
       }
       loading={pendingAction === "restart"}
       onCancel={() => setRestartConfirmOpen(false)}
       onConfirm={confirmRestart}
       open={restartConfirmOpen}
       title={
-        t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
+        sharedGateway
+          ? "Restart the shared gateway?"
+          : (t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`)
       }
     />
 
@@ -1372,6 +1380,8 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+  /** Plugin tabs: manifest name, the key for the locale's optional ``app.pluginTabLabels``. */
+  pluginName?: string;
 }
 
 interface SidebarIconWithTooltipProps {

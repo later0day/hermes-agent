@@ -1,4 +1,5 @@
-import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
+import { parseColor, THEME_PRESET_PALETTES, type ThemePresetPalette } from "@hermes/shared";
+import type { DashboardTheme, ThemePalette, ThemeTypography, ThemeLayout } from "./types";
 
 /**
  * Built-in dashboard themes.
@@ -9,6 +10,10 @@ import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
  *
  * Theme names must stay in sync with the backend's
  * `_BUILTIN_DASHBOARD_THEMES` list in `hermes_cli/web_server.py`.
+ *
+ * Presets that also ship on the desktop (midnight, ember, mono, cyberpunk)
+ * take their colours from `@hermes/shared` `THEME_PRESET_PALETTES` so both
+ * surfaces render one palette; only typography/layout/overrides live here.
  */
 
 // ---------------------------------------------------------------------------
@@ -33,6 +38,28 @@ const DEFAULT_LAYOUT: ThemeLayout = {
   radius: "0.5rem",
   density: "comfortable",
 };
+
+/**
+ * Project a shared (desktop-shaped) preset palette onto the dashboard's
+ * 3-slot model. The dashboard's `midground` is its text + primary-fill
+ * colour, which is the desktop's `primary`; its `warmGlow` is the brand
+ * accent stroke, which is the desktop's `midground` (falling back to `ring`).
+ * `foreground` stays the dashboard's invisible white overlay. Dark palettes
+ * are the dashboard's home turf, so a preset shipping `darkColors` is read
+ * from that side.
+ */
+export function webPresetFromShared(
+  preset: ThemePresetPalette,
+): Omit<ThemePalette, "noiseOpacity"> {
+  const colors = preset.darkColors ?? preset.colors;
+  const [r, g, b] = parseColor(colors.midground ?? colors.ring) ?? [255, 255, 255];
+  return {
+    background: { hex: colors.background, alpha: 1 },
+    midground: { hex: colors.primary, alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: `rgba(${r}, ${g}, ${b}, 0.3)`,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Themes
@@ -59,10 +86,7 @@ export const midnightTheme: DashboardTheme = {
   label: "Midnight",
   description: "Deep blue-violet with cool accents",
   palette: {
-    background: { hex: "#0a0a1f", alpha: 1 },
-    midground: { hex: "#d4c8ff", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(167, 139, 250, 0.32)",
+    ...webPresetFromShared(THEME_PRESET_PALETTES.midnight),
     noiseOpacity: 0.8,
   },
   typography: {
@@ -84,10 +108,7 @@ export const emberTheme: DashboardTheme = {
   label: "Ember",
   description: "Warm crimson and bronze — forge vibes",
   palette: {
-    background: { hex: "#1a0a06", alpha: 1 },
-    midground: { hex: "#ffd8b0", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(249, 115, 22, 0.38)",
+    ...webPresetFromShared(THEME_PRESET_PALETTES.ember),
     noiseOpacity: 1,
   },
   typography: {
@@ -112,10 +133,7 @@ export const monoTheme: DashboardTheme = {
   label: "Mono",
   description: "Clean grayscale — minimal and focused",
   palette: {
-    background: { hex: "#0e0e0e", alpha: 1 },
-    midground: { hex: "#eaeaea", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 255, 255, 0.1)",
+    ...webPresetFromShared(THEME_PRESET_PALETTES.mono),
     noiseOpacity: 0.6,
   },
   typography: {
@@ -136,10 +154,7 @@ export const cyberpunkTheme: DashboardTheme = {
   label: "Cyberpunk",
   description: "Neon green on black — matrix terminal",
   palette: {
-    background: { hex: "#040608", alpha: 1 },
-    midground: { hex: "#9bffcf", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(0, 255, 136, 0.22)",
+    ...webPresetFromShared(THEME_PRESET_PALETTES.cyberpunk),
     noiseOpacity: 1.2,
   },
   typography: {
@@ -208,6 +223,66 @@ export const nousBlueTheme: DashboardTheme = {
 };
 
 /**
+ * Google homepage-inspired light theme: white canvas, dark ink text,
+ * signature `#dadce0` hairline borders and pill radius, Roboto/Product-Sans
+ * typography, and the four-color logo palette wired into the swatch + data
+ * series (Google Blue / Red / Yellow / Green).
+ */
+export const googleTheme: DashboardTheme = {
+  name: "google",
+  label: "Google",
+  description: "Light mode — google.com homepage: white canvas, Google blue accents",
+  palette: {
+    background: { hex: "#ffffff", alpha: 1 },
+    midground: { hex: "#202124", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(66, 133, 244, 0.12)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Roboto", "Arial", ${SYSTEM_SANS}`,
+    fontMono: `"Roboto Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap",
+    baseSize: "14px",
+    lineHeight: "1.5",
+  },
+  layout: {
+    radius: "1.5rem",
+    density: "comfortable",
+  },
+  colorOverrides: {
+    card: "#ffffff",
+    cardForeground: "#202124",
+    popover: "#ffffff",
+    popoverForeground: "#202124",
+    primary: "#1a73e8",
+    primaryForeground: "#ffffff",
+    secondary: "#f1f3f4",
+    secondaryForeground: "#202124",
+    muted: "#f8f9fa",
+    mutedForeground: "#5f6368",
+    accent: "#e8f0fe",
+    accentForeground: "#1a73e8",
+    destructive: "#d93025",
+    destructiveForeground: "#ffffff",
+    success: "#188038",
+    warning: "#f9ab00",
+    border: "#dadce0",
+    input: "#dadce0",
+    ring: "#1a73e8",
+  },
+  seriesColors: {
+    inputTokenAccent: "#4285F4",
+    outputTokenAccent: "#34A853",
+  },
+  swatchColors: ["#4285F4", "#EA4335", "#FBBC05"],
+  terminalBackground: "#ffffff",
+  terminalForeground: "#202124",
+};
+
+/**
  * Same look as ``defaultTheme`` but with a larger root font size, looser
  * line-height, and ``spacious`` density so every rem-based size in the
  * dashboard scales up. For users who find the default 15px UI too dense.
@@ -227,6 +302,12 @@ export const defaultLargeTheme: DashboardTheme = {
     density: "spacious",
   },
 };
+
+// ---------------------------------------------------------------------------
+// Pure Ink — pure-grayscale light/dark pair adapted from the Hermes Web UI.
+// No hue at all; contrast comes entirely from value. Uses Inter/JetBrains Mono
+// with a slightly tighter base size and a touch more corner radius.
+// ---------------------------------------------------------------------------
 
 const PURE_INK_TYPOGRAPHY: ThemeTypography = {
   fontSans: `"Inter", ${SYSTEM_SANS}`,
@@ -313,71 +394,11 @@ export const pureInkDarkTheme: DashboardTheme = {
   },
 };
 
-/**
- * Light theme modelled on the google.com homepage: a pure-white canvas,
- * Google's interactive blue (`#1a73e8`), Material surfaces with the
- * signature `#dadce0` hairline borders and pill radius, Roboto/Product-Sans
- * typography, and the four-color logo palette wired into the swatch + data
- * series (Google Blue / Red / Yellow / Green).
- */
-export const googleTheme: DashboardTheme = {
-  name: "google",
-  label: "Google",
-  description: "Light mode — google.com homepage: white canvas, Google blue accents",
-  palette: {
-    background: { hex: "#ffffff", alpha: 1 },
-    midground: { hex: "#202124", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(66, 133, 244, 0.12)",
-    noiseOpacity: 0,
-  },
-  typography: {
-    ...DEFAULT_TYPOGRAPHY,
-    fontSans: `"Roboto", "Arial", ${SYSTEM_SANS}`,
-    fontMono: `"Roboto Mono", ${SYSTEM_MONO}`,
-    fontUrl:
-      "https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap",
-    baseSize: "14px",
-    lineHeight: "1.5",
-  },
-  layout: {
-    radius: "1.5rem",
-    density: "comfortable",
-  },
-  colorOverrides: {
-    card: "#ffffff",
-    cardForeground: "#202124",
-    popover: "#ffffff",
-    popoverForeground: "#202124",
-    primary: "#1a73e8",
-    primaryForeground: "#ffffff",
-    secondary: "#f1f3f4",
-    secondaryForeground: "#202124",
-    muted: "#f8f9fa",
-    mutedForeground: "#5f6368",
-    accent: "#e8f0fe",
-    accentForeground: "#1a73e8",
-    destructive: "#d93025",
-    destructiveForeground: "#ffffff",
-    success: "#188038",
-    warning: "#f9ab00",
-    border: "#dadce0",
-    input: "#dadce0",
-    ring: "#1a73e8",
-  },
-  seriesColors: {
-    inputTokenAccent: "#4285F4",
-    outputTokenAccent: "#34A853",
-  },
-  swatchColors: ["#4285F4", "#EA4335", "#FBBC05"],
-  terminalBackground: "#ffffff",
-  terminalForeground: "#202124",
-};
-
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
   "nous-blue": nousBlueTheme,
+  google: googleTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
@@ -385,5 +406,4 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   rose: roseTheme,
   "pure-ink-light": pureInkLightTheme,
   "pure-ink-dark": pureInkDarkTheme,
-  google: googleTheme,
 };

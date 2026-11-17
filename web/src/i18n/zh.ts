@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { mergeTranslations } from "@hermes/shared/i18n";
 
-export const zh: Translations = {
+import { defineLocale } from "./define-locale";
+import type { Translations } from "./types";
+import { zhFork } from "./zh-fork";
+
+const zhUpstream: Translations = {
   common: {
     save: "保存",
     saving: "保存中...",
@@ -10,6 +14,8 @@ export const zh: Translations = {
     delete: "删除",
     refresh: "刷新",
     retry: "重试",
+    errorBoundaryTitle: "出错了",
+    errorBoundaryDescription: "此页面遇到意外错误。你可以重试，或重新加载仪表盘。",
     search: "搜索...",
     loading: "加载中...",
     create: "创建",
@@ -78,6 +84,8 @@ export const zh: Translations = {
       plugins: "插件管理",
       sessions: "会话",
       skills: "技能",
+      memory: "记忆",
+      rooms: "房间",
     },
     modelToolsSheetSubtitle: "与工具",
     modelToolsSheetTitle: "模型",
@@ -91,9 +99,18 @@ export const zh: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "当前记忆提供方",
+    noProvider: "无 — 仅内置",
+    builtinLayer: "内置层",
+    builtinNote: "MEMORY.md 和 USER.md 是 Hermes 自己的记忆，独立于任何外部提供方。两者默认都会载入会话；配置开关 (memory.memory_enabled / memory.user_profile_enabled) 可分别关闭。外部提供方是对它们的补充，绝不会取代它们。",
+  },
+
   status: {
     actionFailed: "操作失败",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步骤（重新运行 `hermes update` 以完成）",
     actions: "操作",
     agent: "代理",
     activeSessions: "活跃会话",
@@ -134,6 +151,11 @@ export const zh: Translations = {
     sourceFilter: "会话来源",
     anySource: "任意来源",
     searchPlaceholder: "搜索消息内容...",
+    searchGlobalPlaceholder: "搜索会话…",
+    searchNoRecent: "暂无最近会话",
+    searchHintNavigate: "↑↓ 导航",
+    searchHintOpen: "↵ 打开",
+    searchHintClose: "esc 关闭",
     noSessions: "暂无会话",
     noSessionsInFilter: "此筛选条件下暂无会话",
     noMatch: "没有匹配的会话",
@@ -160,9 +182,14 @@ export const zh: Translations = {
     deleteSelectedConfirmMessage:
       "此操作将永久删除所选的 {count} 个会话及其所有消息。无法撤销。",
     selectedSessionsDeleted: "已删除 {count} 个会话",
+    selectedSessionsSkippedActive: "已删除 {deleted} 个；{count} 个因仍有回合运行中而保留",
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",
+    workspace: "工作区",
+    workspaceDefault: "默认",
+    workspaceRescan: "重新扫描仓库",
+    workspaceCustom: "其他路径…",
     previousPage: "上一页",
     nextPage: "下一页",
     roles: {
@@ -333,6 +360,8 @@ export const zh: Translations = {
     disableRuntime: "禁用",
     enableAfterInstall: "安装后启用",
     enableRuntime: "启用",
+    toggleTakesEffectAfterRestart:
+      "已保存 — 重启网关以应用更改。",
     forceReinstall: "强制重装（先删除已有目录）",
     headline: "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
     identifierLabel: "Git 地址或 owner/repo",
@@ -362,6 +391,13 @@ export const zh: Translations = {
     authRequired: "需要认证",
     authRequiredHint: "运行此命令以完成认证：",
     updateGit: "git pull",
+    updateAll: "全部更新",
+    updatingAll: "正在更新插件…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `已更新 ${updated}，需审核 ${needsReview}，失败 ${failed}`,
+    autoUpdate: "自动更新",
+    autoUpdateDesc: (hours: number) =>
+      `网关检查时（每 ${hours} 小时）自动应用插件更新。更新后的代码在新会话中加载。`,
     versionBadge: "版本",
     showInSidebar: "在侧边栏显示",
     hideFromSidebar: "从侧边栏隐藏",
@@ -428,6 +464,150 @@ export const zh: Translations = {
     },
   },
 
+  memory: {
+    memoryDescription: "代理自己的长期笔记与工作记忆。",
+    userDescription: "代理对你的了解（偏好、事实、上下文）。",
+    memoryPlaceholder: "# 这个代理应当记住的内容…",
+    userPlaceholder: "# 代理对用户的了解…",
+    empty: "（空）",
+    unsavedChanges: "有未保存的更改",
+    saved: "{doc} 已保存",
+    failedToSave: "保存 {doc} 失败",
+    preview: "预览",
+    edit: "编辑",
+  },
+
+  rooms: {
+    title: "托管房间",
+    description:
+      "多智能体托管房间的只读观察面板——成员、authority、驱动状态与追加式事件日志。可在聊天中用 /room 创建或解散。",
+    empty: "暂无托管房间。可在聊天中用 /room create 创建。",
+    showDisbanded: "显示已解散",
+    members: "成员",
+    revision: "修订",
+    latestSeq: "日志 seq",
+    authorityEpoch: "authority epoch",
+    authorityGateway: "authority 网关",
+    created: "创建于",
+    updated: "更新于",
+    disbanded: "已解散",
+    driver: "驱动",
+    running: "运行中",
+    working: "工作中",
+    blocked: "阻塞",
+    idle: "空闲",
+    eventLog: "事件日志",
+    seq: "序号",
+    kind: "类型",
+    actor: "发起方",
+    content: "内容",
+    noEvents: "暂无事件。",
+    loadMore: "加载更多",
+    selectRoom: "选择一个房间以查看其状态与事件日志。",
+
+    // ── 团队拓扑 ──
+    teamTopology: "团队拓扑",
+    roleCoordinator: "协调者",
+    roleTeammate: "队友",
+    roleObserver: "观察者",
+    roleTeamLead: "队长",
+    noTopology: "暂无拓扑数据。",
+
+    // ── 回合进度 ──
+    turnProgress: "轮次",
+    roundProgress: "回合",
+    of: "/",
+
+    // ── 待处理动作 ──
+    pendingActions: "待处理",
+    noPendingActions: "暂无待处理动作。",
+    approve: "批准",
+    deny: "拒绝",
+    reject: "驳回",
+    approveAll: "全部批准",
+    denyAll: "全部拒绝",
+    permissionRequest: "权限请求",
+    planApproval: "计划审批",
+    shutdownRequest: "关闭请求",
+    scopeSession: "范围: 会话",
+    scopeTask: "范围: 任务",
+    from: "来自",
+
+    // ── 成员详情 ──
+    memberDetail: "成员详情",
+    toolFiltering: "工具过滤",
+    filterAll: "全部",
+    filterOrchestration: "编排",
+    filterExecution: "执行",
+    filterCustom: "自定义",
+    noTools: "暂无工具。",
+
+    // ── 邮箱 ──
+    mailbox: "邮箱",
+    newMessages: "{count} 条新",
+    noMessages: "暂无消息。",
+    markAllRead: "全部已读",
+    clearMailbox: "清除",
+
+    // ── 事件日志过滤 ──
+    filterCoordinator: "协调者",
+    filterTeammate: "队友",
+    filterObserver: "观察者",
+    filterUser: "用户",
+    filterSystem: "系统",
+    filterProtocol: "协议",
+    filterMessage: "消息",
+    filterTurn: "回合",
+    noEventsMatchingFilter: "无匹配过滤条件的事件。",
+
+    // ── 观察者监控 ──
+    state: "状态",
+    rulesChecked: "已检查规则",
+    violations: "违规",
+    heartbeat: "心跳",
+    lastDigest: "最近摘要",
+    secondsAgo: "{n}秒前",
+    never: "从未",
+    noObserver: "该房间未配置观察者。",
+
+    // ── 协议消息类型标签 ──
+    kindTaskAssign: "分配",
+    kindTaskCancel: "取消",
+    kindPlanSubmit: "计划",
+    kindResultSynthesize: "汇总",
+    kindResultReport: "报告",
+    kindStatusReport: "状态",
+    kindClarificationRequest: "澄清",
+    kindActivityDigest: "摘要",
+    kindHeartbeat: "心跳",
+    kindRuleViolation: "违规",
+    kindShutdown: "关闭",
+    kindPermission: "权限",
+    kindPlan: "计划",
+    peerGrants: "对等授权",
+    noPeerGrants: "无对等路由配置。",
+    grantStatus: "状态",
+    grantReady: "就绪",
+    grantUnavailable: "不可用",
+    grantNeedsReauth: "需重新授权",
+    replicationHealth: "副本健康",
+    healthy: "健康",
+    unhealthy: "异常",
+    peersReady: "{ready}/{total} 对等就绪",
+    policyTrace: "策略追踪",
+    noPolicyTrace: "无策略追踪数据。",
+    policyEvents: "事件",
+    policyWatermarks: "水位",
+    policyThroughSeq: "已通过序号",
+    linkage: "房间关联",
+    noLinkage: "未找到房间关联。",
+    targetProfile: "目标",
+    linkStatus: "状态",
+    linkReady: "就绪",
+    linkUnavailable: "不可用",
+    linkNeedsReauth: "需重新授权",
+  },
+
   env: {
     changesNote: "更改会立即保存到磁盘。活跃会话将自动获取新密钥。",
     confirmClearMessage: "该变量的已存值将从 .env 文件中删除。无法在此界面撤销。",
@@ -477,6 +657,8 @@ export const zh: Translations = {
     copyCliCommand: "复制 CLI 命令（用于外部/备用方式）",
     connect: "连接",
     sessionExpires: "会话将在 {time} 后过期",
+    sessionExpiredNoError:
+      "登录已过期，且未能连接到提供方。这通常意味着登录页面在打开的标签页中卡住了（服务端问题）——请在该标签页完成登录，然后点击重试。如果仍然失败，请改用 API 密钥或 CLI。",
     initiatingLogin: "正在启动登录流程…",
     exchangingCode: "正在交换令牌…",
     connectedClosing: "已连接！正在关闭…",
@@ -1466,3 +1648,7 @@ export const zh: Translations = {
     uiRemoveShellHook: "移除 Shell Hook",
   },
 };
+
+// English fills any key zh.ts lacks (a missing optional key otherwise rendered blank), then the fork's
+// translations (zh-fork.ts) apply on top.
+export const zh: Translations = mergeTranslations<Translations>(defineLocale(zhUpstream), zhFork);

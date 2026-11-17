@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_default_hermes_root
+from hermes_cli.config_backend import (
+    config_exists,
+    config_version_or_none,
+    read_config_doc,
+    version_token,
+)
 
 
 @dataclass
@@ -42,21 +48,15 @@ def resolve_profile_home(profile_name: str) -> Path:
 
 
 def profile_config_mtime(profile_home: Path) -> float:
-    try:
-        return (profile_home / "config.yaml").stat().st_mtime
-    except OSError:
-        return 0.0
+    return version_token(config_version_or_none(profile_home / "config.yaml"))
 
 
 def load_profile_config(profile_home: Path) -> dict[str, Any]:
     config_path = profile_home / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return {}
     try:
-        import yaml
-
-        with config_path.open("r", encoding="utf-8") as fh:
-            loaded = yaml.safe_load(fh) or {}
+        loaded = read_config_doc(config_path) or {}
         return loaded if isinstance(loaded, dict) else {}
     except Exception:
         return {}

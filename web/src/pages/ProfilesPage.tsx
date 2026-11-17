@@ -16,6 +16,7 @@ import {
   MoreVertical,
   Pencil,
   Package,
+  Radio,
   Sparkles,
   Terminal,
   Trash2,
@@ -26,6 +27,11 @@ import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import {
+  profileBindingsApi,
+  type ProfileBindingSummary,
+} from "@/lib/api-profile-bindings";
+import { ProfileBindingEditor } from "@/components/ProfileBindingEditor";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -42,9 +48,12 @@ import {
   SelectOption,
 } from "@nous-research/ui/ui/components/select";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { useI18n } from "@/i18n";
+import { useI18n, type Translations } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
+import { ProfileCreationReceipt, type CreationReceipt } from "./ProfileCreationReceipt";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -253,12 +262,200 @@ function ProfileActionsMenu({
   );
 }
 
+interface ProfileBindingsProps {
+  summary: ProfileBindingSummary | undefined;
+  labels: {
+    boundSources: string;
+    boundStatic: string;
+    boundDynamic: string;
+    boundNone: string;
+    boundMore: string;
+  };
+}
+
+/**
+ * Read-only per-profile summary of what routes to this profile: static
+ * ``gateway.profile_routes`` and runtime ``/agent use`` bindings. Chat ids
+ * can be long/opaque (DingTalk conversation ids etc.), so they're shown
+ * monospace-truncated with the full value in a title tooltip. Capped to keep
+ * cards compact; the overflow count is surfaced as a "+N more" chip.
+ */
+function ProfileBindings({ summary, labels }: ProfileBindingsProps) {
+  const MAX = 4;
+  const staticRoutes = summary?.static ?? [];
+  const dynamic = summary?.dynamic ?? [];
+  const total = staticRoutes.length + dynamic.length;
+
+  // Merge into one display list, static first (declarative), then runtime.
+  const rows: Array<{
+    key: string;
+    kind: "static" | "dynamic";
+    platform: string;
+    label: string;
+  }> = [];
+  for (const r of staticRoutes) {
+    rows.push({
+      key: `s:${r.name}:${r.platform}:${r.chat_id ?? ""}`,
+      kind: "static",
+      platform: r.platform,
+      label: r.chat_id || r.guild_id || r.name,
+    });
+  }
+  for (const b of dynamic) {
+    rows.push({
+      key: `d:${b.source_binding_key}`,
+      kind: "dynamic",
+      platform: b.platform,
+      label: b.chat_id || b.source_binding_key,
+    });
+  }
+
+  const shown = rows.slice(0, MAX);
+  const overflow = total - shown.length;
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-border/50 pt-2 text-xs">
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        <Radio className="h-3 w-3" />
+        <span className="font-mondwest text-display tracking-wider">
+          {labels.boundSources}
+        </span>
+        {total > 0 && (
+          <span className="text-muted-foreground/70">({total})</span>
+        )}
+      </div>
+
+      {total === 0 ? (
+        <span className="text-muted-foreground/60 italic">
+          {labels.boundNone}
+        </span>
+      ) : (
+        <ul className="flex flex-col gap-0.5">
+          {shown.map((row) => (
+            <li key={row.key} className="flex items-center gap-1.5">
+              <Badge
+                tone={row.kind === "static" ? "secondary" : "outline"}
+                className="shrink-0"
+              >
+                {row.platform}
+              </Badge>
+              <span className="text-muted-foreground/60">
+                {row.kind === "static"
+                  ? labels.boundStatic
+                  : labels.boundDynamic}
+              </span>
+              <span
+                className="truncate font-mono text-muted-foreground"
+                title={row.label}
+              >
+                {row.label}
+              </span>
+            </li>
+          ))}
+          {overflow > 0 && (
+            <li className="text-muted-foreground/60">
+              {labels.boundMore.replace("{n}", String(overflow))}
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+type ProfilesPageStrings = NonNullable<Translations["profilesPageX"]>;
+
+function profileLabels(
+  p: Translations["profiles"],
+  s: ProfilesPageStrings,
+) {
+  const fallbacks = {
+    activeProfile: "Active profile",
+    activeBadge: "active",
+    setActive: "Set as active",
+    activeSet: "Active profile set",
+    gatewayRunning: "Gateway running",
+    gatewayStopped: "Gateway stopped",
+    gatewayRunningWarning: "This profile's gateway is running — it will be stopped.",
+    aliasBadge: "alias",
+    description: "Description",
+    descriptionPlaceholder: "What is this profile good at? Used to route kanban tasks by role.",
+    noDescription: "No description",
+    editDescription: "Edit description",
+    descriptionSaved: "Description saved",
+    reviewBadge: "review",
+    autoGenerate: "Auto-generate",
+    generating: "Generating…",
+    describeFailed: "Could not generate description",
+    distribution: "Distribution",
+    advancedOptions: "Advanced options",
+    cloneAll: "Clone everything (memories, sessions, skills, state)",
+    noSkillsOption: "Don't seed bundled skills",
+    descriptionOptional: "Description (optional)",
+    modelOptional: "Model (optional)",
+    modelInherit: "Inherit from clone / default",
+    modelLoading: "Loading models…",
+    modelNone: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
+    editModel: "Change model",
+    modelSaved: "Model updated",
+    modelSelect: "Select a model",
+    actions: "Actions",
+    manageSkills: s.manageSkills,
+    activeSetHint: s.activeSetHint,
+    boundSources: s.boundSources,
+    boundStatic: s.boundStatic,
+    boundDynamic: s.boundDynamic,
+    boundNone: s.boundNone,
+    boundMore: s.boundMore,
+  };
+  const labels = {} as Record<keyof typeof fallbacks, string>;
+  for (const key of Object.keys(fallbacks) as Array<keyof typeof fallbacks>) {
+    labels[key] = p[key] ?? fallbacks[key];
+  }
+  return labels;
+}
+
+type ProfileEditorKind = "model" | "desc" | "soul" | null;
+
+function profileEditorKind(
+  editingModelFor: string | null,
+  editingDescFor: string | null,
+  editingSoulFor: string | null,
+): ProfileEditorKind {
+  if (editingModelFor) return "model";
+  if (editingDescFor) return "desc";
+  if (editingSoulFor) return "soul";
+  return null;
+}
+
+function creationReceiptFor(
+  title: string,
+  warnings: string[] = [],
+  modelFailed = false,
+  modelNotSaved = "Profile created, but the model could not be saved — set it from the profile editor.",
+): CreationReceipt | null {
+  const messages = [
+    ...(modelFailed ? [modelNotSaved] : []),
+    ...warnings,
+  ];
+  return messages.length ? { title, messages } : null;
+}
+
+function useCreationFeedback() {
+  const { toast, showToast } = useToast();
+  const [creationReceipt, setCreationReceipt] = useState<CreationReceipt | null>(null);
+  return { toast, showToast, creationReceipt, setCreationReceipt };
+}
+
 export default function ProfilesPage() {
   const navigate = useNavigate();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [bindings, setBindings] = useState<
+    Record<string, ProfileBindingSummary>
+  >({});
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
-  const { toast, showToast } = useToast();
+  const { toast, showToast, creationReceipt, setCreationReceipt } = useCreationFeedback();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
   const { setProfile } = useProfileScope();
@@ -266,51 +463,8 @@ export default function ProfilesPage() {
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render
   // the English literal until translated.
-  const L = useMemo(() => {
-    const p = t.profiles;
-    return {
-      activeProfile: p.activeProfile ?? "Active profile",
-      activeBadge: p.activeBadge ?? "active",
-      setActive: p.setActive ?? "Set as active",
-      activeSet: p.activeSet ?? "Active profile set",
-      gatewayRunning: p.gatewayRunning ?? "Gateway running",
-      gatewayStopped: p.gatewayStopped ?? "Gateway stopped",
-      gatewayRunningWarning:
-        p.gatewayRunningWarning ??
-        "This profile's gateway is running — it will be stopped.",
-      aliasBadge: p.aliasBadge ?? "alias",
-      description: p.description ?? "Description",
-      descriptionPlaceholder:
-        p.descriptionPlaceholder ??
-        "What is this profile good at? Used to route kanban tasks by role.",
-      noDescription: p.noDescription ?? "No description",
-      editDescription: p.editDescription ?? "Edit description",
-      descriptionSaved: p.descriptionSaved ?? "Description saved",
-      reviewBadge: p.reviewBadge ?? "review",
-      autoGenerate: p.autoGenerate ?? "Auto-generate",
-      generating: p.generating ?? "Generating…",
-      describeFailed: p.describeFailed ?? "Could not generate description",
-      distribution: p.distribution ?? "Distribution",
-      advancedOptions: p.advancedOptions ?? "Advanced options",
-      cloneAll:
-        p.cloneAll ?? "Clone everything (memories, sessions, skills, state)",
-      noSkillsOption: p.noSkillsOption ?? "Don't seed bundled skills",
-      descriptionOptional: p.descriptionOptional ?? "Description (optional)",
-      modelOptional: p.modelOptional ?? "Model (optional)",
-      modelInherit: p.modelInherit ?? "Inherit from clone / default",
-      modelLoading: p.modelLoading ?? "Loading models…",
-      modelNone:
-        p.modelNone ?? "No authenticated providers — set a key first",
-      editModel: p.editModel ?? "Change model",
-      modelSaved: p.modelSaved ?? "Model updated",
-      modelSelect: p.modelSelect ?? "Select a model",
-      actions: p.actions ?? "Actions",
-      manageSkills: p.manageSkills ?? "Manage skills & tools",
-      activeSetHint:
-        p.activeSetHint ??
-        "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
-    };
-  }, [t.profiles]);
+  const s = useMemo(() => localeSection(t, "profilesPageX"), [t]);
+  const L = useMemo(() => profileLabels(t.profiles, s), [t.profiles, s]);
 
   // Create modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -399,8 +553,19 @@ export default function ProfilesPage() {
         setProfiles(res.profiles);
         setActiveInfo(active);
       })
-      .catch((e) => showToast(`${t.status.error}: ${e}`, "error"))
+      .catch((e) => showToast(`${t.status.error}: ${errorMessage(e)}`, "error"))
       .finally(() => setLoading(false));
+    // Bindings are a secondary, best-effort overlay: a failure here must not
+    // block the profile list from rendering, so it loads independently and
+    // swallows errors (the section simply stays empty).
+    profileBindingsApi
+      .summaries()
+      .then((res) => {
+        const map: Record<string, ProfileBindingSummary> = {};
+        for (const b of res.bindings) map[b.profile] = b;
+        setBindings(map);
+      })
+      .catch(() => setBindings({}));
   }, [showToast, t.status.error]);
 
   useEffect(() => {
@@ -447,13 +612,16 @@ export default function ProfilesPage() {
         provider: picked?.provider,
         model: picked?.model,
       });
-      showToast(`${t.profiles.created}: ${name}`, "success");
-      if (picked && res.model_set === false) {
-        showToast(
-          `Profile created, but the model could not be saved — set it from the profile editor.`,
-          "error",
-        );
-      }
+      const title = `${t.profiles.created}: ${name}`;
+      const receipt = creationReceiptFor(
+        title,
+        res.warnings,
+        Boolean(picked) && res.model_set === false,
+        s.modelNotSaved,
+      );
+      // Replaced only by a successful create: a failed retry keeps the last receipt.
+      setCreationReceipt(receipt);
+      if (!receipt) showToast(title, "success");
       setNewName("");
       setNewDescription("");
       setNoSkills(false);
@@ -463,7 +631,7 @@ export default function ProfilesPage() {
       setCreateModalOpen(false);
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -488,7 +656,7 @@ export default function ProfilesPage() {
       setRenameTo("");
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -507,7 +675,7 @@ export default function ProfilesPage() {
         prev ? { ...prev, active } : { active, current: active },
       );
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setSettingActive(null);
     }
@@ -542,7 +710,7 @@ export default function ProfilesPage() {
         }
       } catch (e) {
         if (activeSoulRequest.current === name) {
-          showToast(`${t.status.error}: ${e}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
         }
       }
     },
@@ -557,7 +725,7 @@ export default function ProfilesPage() {
       activeSoulRequest.current = null;
       setEditingSoulFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setSoulSaving(false);
     }
@@ -603,7 +771,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${e}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       }
     } finally {
       descSavingCount.current -= 1;
@@ -637,7 +805,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${e}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       }
     } finally {
       describingCount.current -= 1;
@@ -680,7 +848,7 @@ export default function ProfilesPage() {
       );
       setEditingModelFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setModelSaving(false);
     }
@@ -689,13 +857,7 @@ export default function ProfilesPage() {
   // Exactly one editor is open at a time; derive which profile + kind so a
   // single dialog can render the right body.
   const editorName = editingModelFor ?? editingDescFor ?? editingSoulFor;
-  const editorKind: "model" | "desc" | "soul" | null = editingModelFor
-    ? "model"
-    : editingDescFor
-      ? "desc"
-      : editingSoulFor
-        ? "soul"
-        : null;
+  const editorKind = profileEditorKind(editingModelFor, editingDescFor, editingSoulFor);
   const editorModalRef = useModalBehavior({
     open: editorName != null,
     onClose: closeEditor,
@@ -707,7 +869,7 @@ export default function ProfilesPage() {
       const res = await api.getProfileSetupCommand(name);
       cmd = res.command;
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       return;
     }
     if (await copyTextToClipboard(cmd)) {
@@ -725,7 +887,7 @@ export default function ProfilesPage() {
           showToast(`${t.profiles.deleted}: ${name}`, "success");
           load();
         } catch (e) {
-          showToast(`${t.status.error}: ${e}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -755,7 +917,7 @@ export default function ProfilesPage() {
           outlined
           onClick={() => navigate("/profiles/new")}
         >
-          Build
+          {s.build}
         </Button>
         <Button
           className="uppercase"
@@ -769,7 +931,7 @@ export default function ProfilesPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading, navigate]);
+  }, [setEnd, t.common.create, loading, navigate, s.build]);
 
   const cloning = cloneFrom !== null;
 
@@ -790,6 +952,7 @@ export default function ProfilesPage() {
   return (
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
+      <ProfileCreationReceipt receipt={creationReceipt} onDismiss={() => setCreationReceipt(null)} />
 
       <DeleteConfirmDialog
         open={profileDelete.isOpen}
@@ -823,7 +986,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1204,6 +1367,19 @@ export default function ProfilesPage() {
                         )}
                       </div>
 
+                      <ProfileBindings
+                        summary={bindings[p.name]}
+                        labels={{
+                          boundSources: L.boundSources,
+                          boundStatic: L.boundStatic,
+                          boundDynamic: L.boundDynamic,
+                          boundNone: L.boundNone,
+                          boundMore: L.boundMore,
+                        }}
+                      />
+                      <ProfileBindingEditor profile={p.name} summary={bindings[p.name]} onChanged={load}
+                        onError={(m) => showToast(`${t.status.error}: ${m}`, "error")} />
+
                       <div className="mt-auto flex flex-col gap-0.5 pt-1 text-xs text-muted-foreground">
                         {p.model && (
                           <span className="truncate">
@@ -1248,7 +1424,7 @@ export default function ProfilesPage() {
               size="icon"
               onClick={closeEditor}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>

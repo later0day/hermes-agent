@@ -1,217 +1,365 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Brain, Pencil, X, Save } from "lucide-react";
-import { api, getManagementProfile } from "@/lib/api";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
-import { Segmented, FilterGroup } from "@nous-research/ui/ui/components/segmented";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Brain, RotateCw, Save, Undo2, User } from "lucide-react";
+import { memoryApi, type MemoryDoc } from "@/lib/api-memory";
+import { loadErrorCopy } from "@/lib/load-error-copy";
+import { memoryCharCount, splitMemoryEntries } from "@/lib/memory-markdown";
+import { readMemoryDraft, writeMemoryDraft } from "@/lib/memory-draft";
+import { MemoryEntryList } from "@/components/memory/MemoryEntryList";
+import { MemoryUsageBar } from "@/components/memory/MemoryUsageBar";
+import { MemoryViewToggle, type MemoryView } from "@/components/memory/MemoryViewToggle";
+import { MemoryDocTabs } from "@/components/memory/MemoryDocTabs";
+import { useSplitScrollSync } from "@/hooks/useSplitScrollSync";
+import { useProfileScope } from "@/contexts/useProfileScope";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { useI18n, type Translations } from "@/i18n";
+import { localeSection } from "@/i18n/section";
+import { cn } from "@/lib/utils";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useI18n } from "@/i18n";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { Markdown } from "@/components/Markdown";
-import { PluginSlot } from "@/plugins";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Label } from "@nous-research/ui/ui/components/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@nous-research/ui/ui/components/card";
 
-type Tab = "memory" | "user" | "soul";
+/* ------------------------------------------------------------------ */
+/*  Memory documents                                                   */
+/* ------------------------------------------------------------------ */
 
-/**
- * Preprocess memory file content before Markdown rendering:
- * - Replace bare § lines with --- (horizontal rule)
- * - Ensure blank lines around each § so the block parser picks them up
- */
-function processMemoryContent(raw: string): string {
-  return raw
-    .split("\n")
-    .map((line) => (line.trim() === "§" ? "\n---\n" : line))
-    .join("\n");
+interface DocMeta {
+  doc: MemoryDoc;
+  icon: typeof Brain;
+  title: string;
+  // Fallback English strings; localized via the optional `memory` i18n section.
+  descriptionFallback: string;
+  placeholderFallback: string;
+  defaultLimit: number; // tools/memory_tool_store.py defaults, until the API reports the profile's own
 }
 
-const TABS: { id: Tab; labelKey: keyof NonNullable<ReturnType<typeof useI18n>["t"]["memory"]> }[] = [
-  { id: "memory", labelKey: "tabMemory" },
-  { id: "user", labelKey: "tabUser" },
-  { id: "soul", labelKey: "tabSoul" },
+const DOCS: DocMeta[] = [
+  {
+    doc: "MEMORY.md",
+    icon: Brain,
+    title: "MEMORY.md",
+    descriptionFallback: "The agent's own long-term notes and working memory.",
+    placeholderFallback: "# What this agent should remember…",
+    defaultLimit: 2200,
+  },
+  {
+    doc: "USER.md",
+    icon: User,
+    title: "USER.md",
+    descriptionFallback:
+      "What the agent knows about you (preferences, facts, context).",
+    placeholderFallback: "# What the agent knows about the user…",
+    defaultLimit: 1375,
+  },
 ];
 
-function useMemoryFile(tab: Tab) {
-  const [content, setContent] = useState<string>("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchContent = useCallback(() => {
-    const profile = getManagementProfile() || "default";
-    setLoading(true);
-    setError(null);
-
-    const promise =
-      tab === "soul"
-        ? api.getProfileSoul(profile).then((r) => r.content ?? "")
-        : api
-            .getProfileMemoryFile(profile, tab === "memory" ? "MEMORY.md" : "USER.md")
-            .then((r) => r.content ?? "");
-
-    promise
-      .then((c) => setContent(c))
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }, [tab]);
-
-  useEffect(() => {
-    fetchContent();
-  }, [fetchContent]);
-
-  return { content, setContent, loading, error, refresh: fetchContent };
+/** Localized copy for one document. ``memory`` is an optional i18n section, so a locale that omits
+ *  it falls back to the English literals (the per-doc ones baked into DocMeta). */
+function memoryDocCopy(mem: Translations["memory"], meta: DocMeta) {
+  const user = meta.doc === "USER.md";
+  const fill = (template: string) => template.replace("{doc}", meta.doc);
+  return {
+    description: mem ? (user ? mem.userDescription : mem.memoryDescription) : meta.descriptionFallback,
+    placeholder: mem ? (user ? mem.userPlaceholder : mem.memoryPlaceholder) : meta.placeholderFallback,
+    emptyLabel: mem?.empty ?? "(empty)",
+    unsavedLabel: mem?.unsavedChanges ?? "Unsaved changes",
+    savedMsg: fill(mem?.saved ?? "{doc} saved"),
+    failedMsg: fill(mem?.failedToSave ?? "Failed to save {doc}"),
+  };
 }
 
-export default function MemoryPage() {
+// v2: split became the default for everyone (2026-10-15); a choice made after that is remembered.
+const VIEW_KEY = "hermes-memory-view.v2";
+const DOC_KEY = "hermes-memory-doc";
+
+interface DocStatus {
+  ratio: number | null;
+  dirty: boolean;
+}
+
+function initialView(): MemoryView {
+  const stored = localStorage.getItem(VIEW_KEY);
+  if (stored === "edit" || stored === "preview" || stored === "split") return stored;
+  return "split";
+}
+
+/* ------------------------------------------------------------------ */
+/*  Single memory-document card                                        */
+/* ------------------------------------------------------------------ */
+
+function useMemoryDoc(profile: string, doc: MemoryDoc, onLoadError: () => void) {
+  const [text, setText] = useState("");
+  const [original, setOriginal] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [exists, setExists] = useState(false);
+  const [limit, setLimit] = useState<number | null>(null);
+  const [draftRestored, setDraftRestored] = useState(false);
+
+  const load = useCallback((keepDraft: boolean) => {
+    let cancelled = false;
+    memoryApi
+      .get(profile, doc)
+      .then((res) => {
+        if (cancelled) return;
+        const draft = keepDraft ? readMemoryDraft(profile, doc) : null;
+        if (!keepDraft) writeMemoryDraft(profile, doc, null);
+        setOriginal(res.content);
+        setText(draft ?? res.content);
+        setDraftRestored(draft !== null && draft !== res.content);
+        setExists(res.exists);
+        setLimit(res.char_limit ?? null);
+      })
+      .catch(() => !cancelled && onLoadError())
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, doc, onLoadError]);
+
+  useEffect(() => load(true), [load]);
+
+  const edit = (next: string) => {
+    setText(next);
+    writeMemoryDraft(profile, doc, next === original ? null : next);
+  };
+  const reload = () => {
+    setLoading(true);
+    load(false);
+  };
+  const markSaved = () => {
+    setOriginal(text);
+    setExists(true);
+    setDraftRestored(false);
+    writeMemoryDraft(profile, doc, null);
+  };
+  return { text, original, loading, exists, limit, draftRestored, reload, edit, markSaved };
+}
+
+function EditorActions({ dirty, saving, onDiscard, onSave, labels }: {
+  dirty: boolean;
+  saving: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+  labels: { unsaved: string; discard: string; save: string };
+}) {
+  return (
+    <div className="flex items-center justify-end gap-2">
+      {dirty && <span className="text-xs text-warning">{labels.unsaved}</span>}
+      {dirty && <Button ghost size="sm" prefix={<Undo2 />} onClick={onDiscard} disabled={saving}>{labels.discard}</Button>}
+      <Button size="sm" className="uppercase" prefix={<Save />} onClick={onSave} disabled={saving || !dirty}>
+        {labels.save}
+      </Button>
+    </div>
+  );
+}
+
+function MemoryEditor({
+  meta,
+  profile,
+  view,
+  active,
+  onStatus,
+  showToast,
+}: {
+  meta: DocMeta;
+  profile: string;
+  view: MemoryView;
+  active: boolean;
+  onStatus: (doc: MemoryDoc, status: DocStatus) => void;
+  showToast: (msg: string, kind: "success" | "error") => void;
+}) {
   const { t } = useI18n();
-  const { setAfterTitle } = usePageHeader();
-  const { toast, showToast } = useToast();
-
-  const [tab, setTab] = useState<Tab>("memory");
-  const { content, setContent, loading, error } = useMemoryFile(tab);
-
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
+  const ui = useMemo(() => localeSection(t, "memoryUi"), [t]);
+  const copy = memoryDocCopy(t.memory, meta);
+  const onLoadError = useCallback(
+    () => showToast(loadErrorCopy(t.common, meta.doc).title, "error"), [showToast, t, meta.doc]);
+  const state = useMemoryDoc(profile, meta.doc, onLoadError);
   const [saving, setSaving] = useState(false);
+  const { text, loading } = state;
+  const dirty = text !== state.original;
+  const entries = useMemo(() => splitMemoryEntries(text), [text]);
+  const used = useMemo(() => memoryCharCount(text), [text]);
+  const limit = state.limit ?? meta.defaultLimit;
 
-  // When tab changes, exit edit mode
   useEffect(() => {
-    setEditing(false);
-    setDraft("");
-  }, [tab]);
+    onStatus(meta.doc, { ratio: loading ? null : used / limit, dirty });
+  }, [onStatus, meta.doc, loading, used, limit, dirty]);
 
-  const startEdit = useCallback(() => {
-    setDraft(content);
-    setEditing(true);
-  }, [content]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
-  const cancelEdit = useCallback(() => {
-    setEditing(false);
-    setDraft("");
-  }, []);
-
-  const saveEdit = useCallback(async () => {
-    const profile = getManagementProfile() || "default";
+  const handleSave = async () => {
     setSaving(true);
     try {
-      if (tab === "soul") {
-        await api.updateProfileSoul(profile, draft);
-      } else {
-        await api.updateProfileMemoryFile(profile, tab === "memory" ? "MEMORY.md" : "USER.md", draft);
-      }
-      setContent(draft);
-      setEditing(false);
-      setDraft("");
-      showToast(t.memory?.saveSuccess ?? "Saved ✓", "success");
-    } catch (e) {
-      showToast(`${t.memory?.saveFailed ?? "Save failed"}: ${e}`, "error");
+      await memoryApi.update(profile, meta.doc, text);
+      state.markSaved();
+      showToast(copy.savedMsg, "success");
+    } catch {
+      showToast(copy.failedMsg, "error");
     } finally {
       setSaving(false);
     }
-  }, [tab, draft, setContent, showToast, t.memory]);
+  };
+
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  useSplitScrollSync(editorRef, previewRef, text, view === "split" && active && !loading);
+
+  const editor = (
+    <div className="space-y-1">
+      <Label htmlFor={`memory-editor-${meta.doc}`} className="sr-only">{meta.title}</Label>
+      <textarea
+        id={`memory-editor-${meta.doc}`}
+        className={cn(
+          "flex w-full border border-input bg-transparent px-3 py-2 text-sm font-mono leading-relaxed shadow-sm",
+          "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          view === "split" ? "h-[65vh] min-h-[360px] resize-none" : "min-h-[320px] resize-y",
+        )}
+        placeholder={copy.placeholder}
+        ref={editorRef}
+        value={text}
+        onChange={(e) => state.edit(e.target.value)}
+        spellCheck={false}
+      />
+    </div>
+  );
+  const preview = (
+    <div ref={previewRef} className={cn(view === "split" && "h-[65vh] min-h-[360px] overflow-y-auto pr-1")}>
+      <MemoryEntryList entries={entries} emptyLabel={copy.emptyLabel} charsLabel={ui.entryChars} />
+    </div>
+  );
+
+  return (
+    <Card className={cn("rounded-none", !active && "hidden")} role="tabpanel" id={`memory-panel-${meta.doc}`}
+      aria-labelledby={`memory-tab-${meta.doc}`}>
+      <CardHeader className="space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            {/* The tab above names the document; keep the title for screen readers only. */}
+            <CardTitle className="sr-only">{meta.title}</CardTitle>
+            <CardDescription className="flex items-center gap-2 text-xs">
+              {copy.description}
+              {!loading && !state.exists && <span className="text-muted-foreground">{copy.emptyLabel}</span>}
+            </CardDescription>
+          </div>
+          <Button ghost size="xs" className="shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={state.reload} disabled={loading || saving} title={ui.refresh} aria-label={ui.refresh}>
+            <RotateCw />
+          </Button>
+        </div>
+        {!loading && (
+          <MemoryUsageBar used={used} limit={limit} entries={entries.length} copy={ui} />
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <div className="flex min-h-[320px] items-center justify-center"><Spinner /></div>
+        ) : (
+          <>
+            {state.draftRestored && dirty && <p className="text-xs text-warning">{ui.draftRestored}</p>}
+            <div className={cn(view === "split" && "grid gap-3 lg:grid-cols-2")}>
+              {view !== "preview" && editor}
+              {view !== "edit" && preview}
+            </div>
+            {(view !== "preview" || dirty) && (
+              <EditorActions dirty={dirty} saving={saving} onDiscard={() => state.edit(state.original)} onSave={handleSave}
+                labels={{ unsaved: copy.unsavedLabel, discard: ui.discard, save: saving ? t.common.saving : t.common.save }} />
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  MemoryPage — MEMORY.md + USER.md editors for the scoped profile    */
+/* ------------------------------------------------------------------ */
+
+export default function MemoryPage() {
+  const { t } = useI18n();
+  const ui = useMemo(() => localeSection(t, "memoryUi"), [t]);
+  const { toast, showToast } = useToast();
+  const { setAfterTitle, setEnd } = usePageHeader();
+  const { profile: selectedProfile } = useProfileScope();
+  const [view, setView] = useState<MemoryView>(initialView);
+  const [activeDoc, setActiveDoc] = useState<string>(() => {
+    const stored = localStorage.getItem(DOC_KEY);
+    return DOCS.some((meta) => meta.doc === stored) ? stored! : DOCS[0].doc;
+  });
+  const [status, setStatus] = useState<Record<string, DocStatus>>({});
+  const onStatus = useCallback((doc: MemoryDoc, next: DocStatus) => {
+    setStatus((prev) => (prev[doc]?.ratio === next.ratio && prev[doc]?.dirty === next.dirty ? prev : { ...prev, [doc]: next }));
+  }, []);
+  const selectDoc = useCallback((doc: string) => {
+    setActiveDoc(doc);
+    localStorage.setItem(DOC_KEY, doc);
+  }, []);
+
+  const scopeLabel = selectedProfile || "default";
+
+  const chooseView = useCallback((next: MemoryView) => {
+    setView(next);
+    localStorage.setItem(VIEW_KEY, next);
+  }, []);
 
   useLayoutEffect(() => {
     setAfterTitle(
-      editing ? (
-        <span className="flex items-center gap-1.5">
-          <Button
-            ghost
-            size="sm"
-            onClick={cancelEdit}
-            className="text-muted-foreground hover:text-foreground gap-1"
-          >
-            <X className="h-3.5 w-3.5" />
-            {t.memory?.cancel ?? "Cancel"}
-          </Button>
-          <Button
-            size="sm"
-            onClick={saveEdit}
-            disabled={saving}
-            className="gap-1"
-          >
-            {saving ? <Spinner /> : <Save className="h-3.5 w-3.5" />}
-            {t.memory?.save ?? "Save"}
-          </Button>
-        </span>
-      ) : (
-        <Button
-          ghost
-          size="sm"
-          onClick={startEdit}
-          disabled={loading}
-          className="gap-1 text-muted-foreground hover:text-foreground"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          {t.memory?.edit ?? "Edit"}
-        </Button>
-      ),
+      <span className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
+        {scopeLabel}
+      </span>,
     );
-    return () => setAfterTitle(null);
-  }, [editing, loading, saving, startEdit, cancelEdit, saveEdit, setAfterTitle, t.memory]);
-
-  const tabOptions = TABS.map((tb) => ({
-    value: tb.id,
-    label: t.memory?.[tb.labelKey] ?? tb.id,
-  }));
+    return () => {
+      setAfterTitle(null);
+      setEnd(null);
+    };
+  }, [scopeLabel, setAfterTitle, setEnd]);
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-4">
-      <PluginSlot name="memory:top" />
-      <Toast toast={toast} />
-
-      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-3">
-        <FilterGroup
-          label=""
-          className="flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:flex-row sm:items-center"
-        >
-          <Segmented
-            className="w-fit max-w-full flex-wrap justify-start self-start"
-            value={tab}
-            onChange={(v) => setTab(v as Tab)}
-            options={tabOptions}
-          />
-        </FilterGroup>
+    <div className={cn("mx-auto w-full space-y-3 p-4", view === "split" ? "max-w-6xl" : "max-w-4xl")}>
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <MemoryDocTabs
+          tabs={DOCS.map((meta) => ({ id: meta.doc, title: meta.title, icon: meta.icon,
+            ratio: status[meta.doc]?.ratio ?? null, dirty: status[meta.doc]?.dirty ?? false }))}
+          active={activeDoc}
+          onSelect={selectDoc}
+          label={ui.docsLabel}
+          unsavedLabel={t.memory?.unsavedChanges ?? "Unsaved changes"}
+        />
+        <div className="pb-1"><MemoryViewToggle value={view} onChange={chooseView} copy={ui} /></div>
       </div>
-
-      <Card className="min-w-0 max-w-full overflow-hidden">
-        <CardHeader className="py-3 px-4">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Brain className="h-4 w-4" />
-            {tab === "memory" ? "MEMORY.md" : tab === "user" ? "USER.md" : "SOUL.md"}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {error && (
-            <div className="bg-destructive/10 border-b border-destructive/20 p-3">
-              <p className="text-sm text-destructive">{error}</p>
-            </div>
-          )}
-
-          {loading ? (
-            <div className="flex items-center justify-center py-16">
-              <Spinner className="text-xl text-primary" />
-            </div>
-          ) : editing ? (
-            <textarea
-              className="w-full min-h-[60vh] resize-y p-4 font-mono-ui text-sm leading-6 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder={t.memory?.empty ?? "No content yet. Start typing to add content."}
-              autoFocus
-            />
-          ) : content ? (
-            <div className="memory-prose p-5 min-h-[200px]">
-              <Markdown content={processMemoryContent(content)} />
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-center py-16 text-sm">
-              {t.memory?.empty ?? "No content yet."}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <PluginSlot name="memory:bottom" />
+      {DOCS.map((meta) => (
+        <MemoryEditor
+          // Remount per profile so state resets; an unsaved edit comes back from its session draft.
+          key={`${scopeLabel}:${meta.doc}`}
+          meta={meta}
+          profile={scopeLabel}
+          view={view}
+          active={activeDoc === meta.doc}
+          onStatus={onStatus}
+          showToast={showToast}
+        />
+      ))}
+      <Toast toast={toast} />
     </div>
   );
 }

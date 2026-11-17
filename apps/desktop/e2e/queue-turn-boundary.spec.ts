@@ -7,10 +7,10 @@
  * held turn completes.
  */
 
-import { expect, test, type Page } from './test'
+import { MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { MOCK_REPLY } from './mock-server'
+import { expect, type Page, test } from './test'
 
 const ACTIVE_PROMPT = 'E2E_QUEUE_TURN_BOUNDARY_ACTIVE'
 const QUEUED_PROMPT = 'E2E_QUEUE_TURN_BOUNDARY_QUEUED'
@@ -43,7 +43,8 @@ async function queue(page: Page, text: string): Promise<void> {
 async function transcriptMessageOrder(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-    if (!viewport) return []
+
+    if (!viewport) {return []}
 
     return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="user"], [data-role="assistant"]'))
       .map(message => message.textContent?.trim() ?? '')
@@ -53,9 +54,11 @@ async function transcriptMessageOrder(page: Page): Promise<string[]> {
 
 function steerTurnOrder(messages: string[]): string[] {
   return messages.flatMap(message => {
-    if (message.includes(ACTIVE_PROMPT)) return [ACTIVE_PROMPT]
-    if (message.includes(STEER_PROMPT)) return [STEER_PROMPT]
-    if (message.includes(MOCK_REPLY)) return [MOCK_REPLY]
+    if (message.includes(ACTIVE_PROMPT)) {return [ACTIVE_PROMPT]}
+
+    if (message.includes(STEER_PROMPT)) {return [STEER_PROMPT]}
+
+    if (message.includes(MOCK_REPLY)) {return [MOCK_REPLY]}
 
     return []
   })

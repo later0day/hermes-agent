@@ -14,7 +14,9 @@ import queue
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+
+from agent.i18n import t
 
 logger = logging.getLogger("gateway.turn_status_card")
 
@@ -309,15 +311,15 @@ class TurnStatusCardCoordinator:
         *,
         adapter: Any,
         chat_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         config: Optional[TurnStatusCardConfig] = None,
     ) -> None:
         self.adapter = adapter
         self.chat_id = chat_id
         self.metadata = dict(metadata or {})
         self.config = config or TurnStatusCardConfig()
-        self._queue: "queue.Queue[Any]" = queue.Queue()
-        self._tools: Dict[str, ToolStatusEntry] = {}
+        self._queue: queue.Queue[Any] = queue.Queue()
+        self._tools: dict[str, ToolStatusEntry] = {}
         self._tool_order: list[str] = []
         self._assistant_text = ""
         self._commentary = ""
@@ -455,7 +457,7 @@ class TurnStatusCardCoordinator:
         tool_name: Optional[str],
         preview: Optional[str],
         args: Optional[dict],
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> None:
         if event_type == "tool.started":
             if not tool_name:
@@ -514,14 +516,14 @@ class TurnStatusCardCoordinator:
                 self._streaming_only_activation = False
                 self._dirty = True
 
-    def _tool_key(self, tool_name: str, kwargs: Dict[str, Any]) -> str:
+    def _tool_key(self, tool_name: str, kwargs: dict[str, Any]) -> str:
         key = self._identity_tool_key(kwargs)
         if key is not None:
             return key
         self._fallback_counter += 1
         return f"fallback:{self._fallback_counter}:{tool_name}"
 
-    def _identity_tool_key(self, kwargs: Dict[str, Any]) -> Optional[str]:
+    def _identity_tool_key(self, kwargs: dict[str, Any]) -> Optional[str]:
         scope = kwargs.get("subagent_id") or kwargs.get("child_session_id") or ""
         scope_prefix = f"{scope}:" if scope else ""
         call_id = kwargs.get("tool_call_id") or kwargs.get("call_id")
@@ -532,7 +534,7 @@ class TurnStatusCardCoordinator:
             return f"{scope_prefix}idx:{index}"
         return None
 
-    def _find_tool_key(self, tool_name: str, kwargs: Dict[str, Any]) -> Optional[str]:
+    def _find_tool_key(self, tool_name: str, kwargs: dict[str, Any]) -> Optional[str]:
         key = self._identity_tool_key(kwargs)
         if key is not None and key in self._tools:
             return key
@@ -568,7 +570,7 @@ class TurnStatusCardCoordinator:
                         err = parsed.get("error") or parsed.get("message") or ""
                         if err:
                             text = str(err)
-                except Exception:
+                except ValueError:
                     text = stripped
             if not text:
                 text = stripped
@@ -609,7 +611,7 @@ class TurnStatusCardCoordinator:
         now = time.monotonic()
 
         lines: list[str] = []
-        lines.append("**进度**")
+        lines.append(f"**{t('gateway.status_card.heading')}**")
         lines.append(self._status_line())
 
         if self._tool_order:
@@ -619,11 +621,11 @@ class TurnStatusCardCoordinator:
                 self._tools[k].status == "running" for k in self._tool_order
             )
             header_spinner = f" {self._SPINNER[self._frame]}" if running_any else ""
-            lines.append(f"**🛠 工具**{header_spinner}")
+            lines.append(f"**🛠 {t('gateway.status_card.tools_heading')}**{header_spinner}")
             order = self._tool_order[-max(1, int(self.config.max_tools or 12)):]
             hidden = max(0, len(self._tool_order) - len(order))
             if hidden:
-                lines.append(f"- … 省略较早的 {hidden} 个工具")
+                lines.append(f"- {t('gateway.status_card.tools_hidden', count=hidden)}")
             for key in order:
                 lines.append(self._render_tool_line(self._tools[key], self._frame, now))
         return "\n".join(lines).strip()
@@ -644,27 +646,16 @@ class TurnStatusCardCoordinator:
         Lazy import keeps this module importable in non-CLI / non-gateway
         contexts.
         """
-        try:
-            from agent.display import _get_skin
-            skin = _get_skin()
-            if skin and getattr(skin, "tool_emojis", None):
-                override = skin.tool_emojis.get(entry.name)
-                if override:
-                    return override
-        except Exception:  # noqa: BLE001 - presentation must never raise
-            pass
+        from agent.display import _get_skin, get_tool_emoji
+
+        skin = _get_skin()
+        if skin and skin.tool_emojis and skin.tool_emojis.get(entry.name):
+            return skin.tool_emojis[entry.name]
         if entry.name == "terminal":
             return _terminal_emoji_for_command(entry.preview)
         if entry.name == "read_file":
             return _read_file_emoji_for_path(entry.preview)
-        try:
-            from tools.registry import registry
-            emoji = registry.get_emoji(entry.name, default="")
-            if emoji:
-                return emoji
-        except Exception:  # noqa: BLE001
-            pass
-        return "⚡"
+        return get_tool_emoji(entry.name)
 
     @classmethod
     def _render_tool_line(
@@ -707,12 +698,12 @@ class TurnStatusCardCoordinator:
         # full content. Showing it twice is the duplication the user
         # called out as "reading difficulty".
         if self._streaming_only_activation and not self._tool_order:
-            return "⌛ 正在生成回答..."
+            return t("gateway.status_card.generating")
         if self._assistant_text:
             return self._compact_text(
                 self._assistant_text, self.config.assistant_preview_max_len,
             )
-        return "工作中..."
+        return t("gateway.status_card.working")
 
     def _final_summary_line(self) -> str:
         n_tools = len(self._tool_order)
@@ -720,7 +711,7 @@ class TurnStatusCardCoordinator:
             1 for entry in self._tools.values() if entry.status == "failed"
         )
         if n_tools == 0:
-            return "✅ 答案见下方"
+            return f"✅ {t('gateway.status_card.answer_below')}"
         total_duration = 0.0
         for entry in self._tools.values():
             if entry.duration is not None:
@@ -728,12 +719,12 @@ class TurnStatusCardCoordinator:
         # Prefix reflects the worst tool outcome; the card body still
         # lists each tool's status individually.
         prefix = "⚠️" if n_failed else "✅"
-        bits = [f"{n_tools} 工具"]
+        bits = [t("gateway.status_card.tools", count=n_tools)]
         if n_failed:
-            bits.append(f"{n_failed} 失败")
+            bits.append(t("gateway.status_card.failed", count=n_failed))
         if total_duration > 0:
             bits.append(f"{total_duration:.1f}s")
-        bits.append("答案见下方")
+        bits.append(t("gateway.status_card.answer_below"))
         return f"{prefix} {' · '.join(bits)}"
 
     def _should_flush(self, *, immediate: bool = False) -> bool:
@@ -827,3 +818,138 @@ __all__ = [
     "TurnStatusCardConfig",
     "TurnStatusCardCoordinator",
 ]
+
+
+def maybe_start_turn_status_card(runner: Any, turn_ctx: Any, disp: Any, source: Any) -> None:
+    """Put a ``TurnStatusCardCoordinator`` in ``turn_ctx.turn_status_card_holder`` when the
+    delivering adapter supports one (``SUPPORTS_TURN_STATUS_CARD``) and at least one progress
+    surface — tool progress, thinking, interim messages or streaming — is on for the turn. The card
+    then replaces those bubbles with one editable AI Card (tool lifecycle, commentary, answer)."""
+    adapter = runner._delivery_adapter_for(source)
+    if adapter is None or getattr(adapter, "SUPPORTS_TURN_STATUS_CARD", False) is not True:
+        return
+    from gateway.config import StreamingConfig
+    streaming = (getattr(runner.config, "streaming", None) or StreamingConfig()).enabled_for(
+        disp.resolve_display_setting(disp.user_config, disp.platform_key, "streaming"))
+    if not (disp.tool_progress_enabled or disp._thinking_enabled
+            or disp.interim_assistant_messages_enabled or streaming):
+        return
+    preview_len = disp.resolve_display_setting(disp.user_config, disp.platform_key, "tool_preview_length", 0)
+    try:
+        preview_len = int(preview_len or 40)
+    except (TypeError, ValueError):
+        preview_len = 40
+    turn_ctx.turn_status_card_holder[0] = TurnStatusCardCoordinator(
+        adapter=adapter,
+        chat_id=source.chat_id,
+        metadata=turn_ctx._progress_metadata,
+        config=TurnStatusCardConfig(edit_interval=0.5, preview_max_len=preview_len if preview_len > 0 else 40),
+    )
+
+
+async def finish_turn_status_card(card: Optional[TurnStatusCardCoordinator], task: Any) -> None:
+    """Finalize the turn's card and drain its edit loop so the closing edit lands before cleanup."""
+    import asyncio
+    from contextlib import suppress
+
+    if card is not None:
+        try:
+            card.finish()
+        except Exception:
+            logger.debug("turn status card finish failed", exc_info=True)
+    if task:
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (TimeoutError, asyncio.CancelledError):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+def record_turn_outcome(adapter: Any, source: Any, response: Any, *, interrupted: bool) -> None:
+    """Tell an adapter with outcome reactions (``set_pending_reply_state``) how the turn ended, so its
+    final reaction shows done / error / interrupted."""
+    if adapter is None or not hasattr(adapter, "set_pending_reply_state"):
+        return
+    failed = isinstance(response, dict) and response.get("completed") is False
+    adapter.set_pending_reply_state(
+        source.chat_id, "interrupted" if interrupted else "error" if failed else "success")
+
+
+_SUBAGENT_TOOL_EVENTS = {"subagent.tool": "tool.started", "subagent.tool.completed": "tool.completed"}
+_SUBAGENT_TEXT_EVENTS = frozenset({"subagent.start", "subagent.progress", "subagent.thinking"})
+
+
+def _notify_tool_stage(turn: Any, event_type: str, tool_name: Optional[str], preview: Optional[str]) -> None:
+    """Stage-aware reaction on the user's message (adapters with ``notify_tool_started``), whatever
+    the progress surface: it updates even with tool progress off and no card."""
+    if event_type not in {"tool.started", "subagent.tool"} or not tool_name:
+        return
+    adapter = turn._runner._delivery_adapter_for(turn._ctx.source)
+    if adapter is None or not hasattr(adapter, "notify_tool_started"):
+        return
+    try:
+        adapter.notify_tool_started(turn._ctx.source.chat_id, tool_name, preview=preview)
+    except Exception:
+        logger.debug("notify_tool_started failed for %s", tool_name, exc_info=True)
+
+
+def _card_tool_event(turn: Any, card: TurnStatusCardCoordinator, event_type: str, tool_name: Optional[str],
+                     preview: Optional[str], args: Any, kwargs: dict) -> None:
+    """Tool lifecycle on the card. The card renders progress itself (even with tool progress off),
+    except a clarify prompt (send_clarify is its rendering) and calls fired after a stop."""
+    ctx = turn._ctx
+    if ctx._native_slack_task_cards:
+        return
+    if event_type == "tool.completed":
+        card.on_tool_progress(event_type, tool_name, preview, args, **kwargs)
+        if not ctx.long_tool_hint_fired[0]:
+            turn._progress_onboarding_hint(kwargs)
+    elif event_type == "tool.started" and tool_name != "clarify" and not turn._agent_interrupted():
+        card.on_tool_progress(event_type, tool_name, preview, args, **kwargs)
+
+
+def turn_card(ctx: Any) -> Any:
+    """The turn's status card, or None. These hooks sit in upstream's turn path, which also builds lean
+    contexts without the fork's holder (local-viewer turns, their tests): no holder means no card."""
+    holder = getattr(ctx, "turn_status_card_holder", None)
+    return holder[0] if holder else None
+
+
+def route_progress_event(turn: Any, event_type: str, tool_name: Optional[str], preview: Optional[str],
+                         args: Any, kwargs: dict) -> bool:
+    """``TurnRunner.progress_callback`` hook. Fires stage reactions, then — when the turn has a status
+    card — renders the event on the card and returns True: the card replaces progress bubbles, and
+    subagent tool/commentary events show only there. False hands the event to the normal path."""
+    ctx = turn._ctx
+    if not ctx._run_still_current():
+        return False
+    _notify_tool_stage(turn, event_type, tool_name, preview)
+    card = turn_card(ctx)
+    if card is None:
+        return False
+    if event_type in _SUBAGENT_TOOL_EVENTS:
+        card.on_tool_progress(_SUBAGENT_TOOL_EVENTS[event_type], tool_name, preview, args, **kwargs)
+    elif event_type in _SUBAGENT_TEXT_EVENTS:
+        text = preview or tool_name or ""
+        if text:  # delegate_tool_progress already prefixes its batch lines with 🔀
+            card.on_commentary(text if text.startswith("🔀") else f"🔀 {text}")
+    elif event_type == "_thinking" or tool_name == "_thinking":
+        thinking = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
+        if thinking:
+            card.on_tool_progress(event_type, tool_name, f"💬 {thinking}", args, **kwargs)
+    else:
+        _card_tool_event(turn, card, event_type, tool_name, preview, args, kwargs)
+    return True
+
+
+def card_takes_interim(ctx: Any, text: str, already_streamed: bool) -> bool:
+    """Interim assistant commentary renders in the turn's status card, not as separate status text."""
+    card = turn_card(ctx)
+    if card is None:
+        return False
+    if already_streamed:
+        card.on_delta(None)
+    else:
+        card.on_commentary(text)
+    return True

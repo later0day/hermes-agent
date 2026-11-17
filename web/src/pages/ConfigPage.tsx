@@ -49,15 +49,10 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
-import {
-  formatConfigCategoryName,
-  formatConfigDescription,
-  formatConfigFieldLabel,
-  formatConfigSectionName,
-} from "@/lib/configLabels";
+import { getConfigFieldLabel, getConfigSectionLabel } from "@/i18n/config-labels";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
-import { ChannelOverridesEditor, KeyValueEditor } from "@/components/ConfigEditors";
+import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -81,7 +76,6 @@ const CATEGORY_ICONS: Record<
   stt: Ear,
   logging: ClipboardList,
   discord: MessageCircle,
-  dingtalk: MessageCircle,
   auxiliary: Wrench,
   bedrock: Cloud,
   curator: Sparkles,
@@ -164,7 +158,15 @@ export default function ConfigPage() {
   }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
-    return formatConfigCategoryName(cat, t, locale);
+    const key = cat as keyof typeof t.config.categories;
+    if (t.config.categories[key]) return t.config.categories[key];
+    const localized = getConfigSectionLabel(locale, cat);
+    if (localized) return localized;
+    // Categories added after the localized set (gateway, kanban, wake_word,
+    // tool_loop_guardrails, …) have no translation yet — humanize the raw key
+    // (underscores → spaced Title Case) so they read as "Wake Word" rather than
+    // "Wake_word". Applies uniformly across every locale.
+    return cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   useEffect(() => {
@@ -260,19 +262,16 @@ export default function ConfigPage() {
     return Object.entries(schema).filter(([key, s]) => {
       const label = key.split(".").pop() ?? key;
       const humanLabel = label.replace(/_/g, " ");
-      const translatedLabel = formatConfigFieldLabel(key, locale);
-      const translatedDescription = formatConfigDescription(key, s, locale);
-      const translatedCategory = formatConfigCategoryName(
-        String(s.category ?? "general"),
-        t,
+      const localized = getConfigFieldLabel(
         locale,
+        key,
+        s.description === undefined ? undefined : String(s.description),
       );
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
-        translatedLabel.toLowerCase().includes(lowerSearch) ||
-        translatedDescription.toLowerCase().includes(lowerSearch) ||
-        translatedCategory.toLowerCase().includes(lowerSearch) ||
+        !!localized?.label?.toLowerCase().includes(lowerSearch) ||
+        !!localized?.description?.toLowerCase().includes(lowerSearch) ||
         String(s.category ?? "")
           .toLowerCase()
           .includes(lowerSearch) ||
@@ -281,7 +280,7 @@ export default function ConfigPage() {
           .includes(lowerSearch)
       );
     });
-  }, [isSearching, locale, lowerSearch, schema, t]);
+  }, [isSearching, locale, lowerSearch, schema]);
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
@@ -299,7 +298,7 @@ export default function ConfigPage() {
       await api.saveConfig(config);
       showToast(t.config.configSaved, "success");
     } catch (e) {
-      showToast(`${t.config.failedToSave}: ${e}`, "error");
+      showToast(`${t.config.failedToSave}: ${errorMessage(e)}`, "error");
     } finally {
       setSaving(false);
     }
@@ -315,7 +314,7 @@ export default function ConfigPage() {
         .then(setConfig)
         .catch(() => {});
     } catch (e) {
-      showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
+      showToast(`${t.config.failedToSaveYaml}: ${errorMessage(e)}`, "error");
     } finally {
       setYamlSaving(false);
     }
@@ -428,44 +427,19 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {formatConfigSectionName(section, locale)}
+                {getConfigSectionLabel(locale, section) ??
+                  section.replace(/_/g, " ")}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>
           )}
           <div className="py-1">
-            {key.endsWith(".channel_overrides") ? (
-              <div className="grid gap-3 border border-border p-3">
-                <div className="text-xs font-medium">{formatConfigFieldLabel(key, locale)}</div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
-                </div>
-                <ChannelOverridesEditor
-                  value={getNestedValue(config, key) as Record<string, Record<string, string>>}
-                  onChange={(v) => setConfig(setNestedValue(config, key, v))}
-                />
-              </div>
-            ) : key.endsWith(".extra_headers") || key.endsWith(".model_routes") ? (
-              <div className="grid gap-3 border border-border p-3">
-                <div className="text-xs font-medium">{formatConfigFieldLabel(key, locale)}</div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-xs text-text-secondary">{String(s.description || "")}</span>
-                </div>
-                <KeyValueEditor
-                  value={getNestedValue(config, key) as Record<string, string>}
-                  onChange={(v) => setConfig(setNestedValue(config, key, v))}
-                  keyPlaceholder={key.endsWith(".extra_headers") ? "Header-Name" : "Client Key"}
-                  valPlaceholder={key.endsWith(".extra_headers") ? "Value" : "Model ID"}
-                />
-              </div>
-            ) : (
-              <AutoField
-                schemaKey={key}
-                schema={s}
-                value={getNestedValue(config, key)}
-                onChange={(v) => setConfig(setNestedValue(config, key, v))}
-              />
-            )}
+            <AutoField
+              schemaKey={key}
+              schema={s}
+              value={getNestedValue(config, key)}
+              onChange={(v) => setConfig(setNestedValue(config, key, v))}
+            />
           </div>
         </div>
       );
@@ -710,16 +684,9 @@ export default function ConfigPage() {
             ? t.config.searchResults
             : prettyCategoryName(activeCategory),
         )}
-        description={
-          t.config.resetScopeDescription
-            ? t.config.resetScopeDescription.replace(
-                "{count}",
-                String((isSearching ? searchMatchedFields : activeFields).length),
-              )
-            : `This will reset ${
-                (isSearching ? searchMatchedFields : activeFields).length
-              } field(s) to their default values.`
-        }
+        description={`This will reset ${
+          (isSearching ? searchMatchedFields : activeFields).length
+        } field(s) to their default values.`}
         destructive
         confirmLabel={t.config.resetDefaults}
       />

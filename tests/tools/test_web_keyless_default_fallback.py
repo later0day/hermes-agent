@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 import agent.web_search_registry as reg
-import hermes_cli.plugins as plugins
+from hermes_cli import plugins
 from tools import web_tools
 
 

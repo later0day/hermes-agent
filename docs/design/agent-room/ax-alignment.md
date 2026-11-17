@@ -248,6 +248,7 @@ router.py 在三处检查 `store.is_fenced()`：observer 后（L808）、member 
 2. **改造 2**（silent 出口）—— 小、低风险、复用 `is_no_match`。
 3. **改造 3**（inbox pull）—— 并入 M3 投影层。
 
+<!-- no-tmp: ok — historical record of the test command used at the time -->
 每项动代码前：先补/改设计 → `scripts/run_tests.sh`（HERMES_PYTHON=/tmp/hermes-test-venv/bin/python）
 → 改到 DingTalk adapter 等线上路径后重启 xcx 网关并线上验证（重启前先确认无活跃会话被打断）。
 

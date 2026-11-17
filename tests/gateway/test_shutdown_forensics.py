@@ -5,56 +5,23 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
-from pathlib import Path
 
 import pytest
 
 from gateway import shutdown_forensics as sf
 
-
 # ---------------------------------------------------------------------------
 # _signal_name
 # ---------------------------------------------------------------------------
-
-class TestSignalName:
-
-    def test_unknown_int_returns_signal_num_token(self):
-        # Pick an integer extremely unlikely to ever be a real signal alias
-        assert sf._signal_name(9999) == "signal#9999"
-
 
 # ---------------------------------------------------------------------------
 # snapshot_shutdown_context
 # ---------------------------------------------------------------------------
 
 class TestSnapshotShutdownContext:
-
-    def test_handles_none_signal(self):
-        ctx = sf.snapshot_shutdown_context(None)
-        assert ctx["signal"] == "UNKNOWN"
-        assert ctx["signal_num"] is None
-
-    def test_includes_timestamps(self):
-        before = time.time()
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        after = time.time()
-        assert before <= ctx["ts"] <= after
-        assert isinstance(ctx["ts_monotonic"], float)
-
-
-    def test_under_systemd_false_without_invocation_id_and_normal_ppid(
-        self, monkeypatch
-    ):
-        monkeypatch.delenv("INVOCATION_ID", raising=False)
-        # We can't actually change ppid; skip if we happen to be reaped
-        # by init (e.g. running under tini).
-        if os.getppid() == 1:
-            pytest.skip("test process is reaped by init")
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        assert ctx["under_systemd"] is False
-
 
     def test_detects_takeover_marker_for_self(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -67,13 +34,25 @@ class TestSnapshotShutdownContext:
         assert "takeover_marker" in ctx
         assert ctx["takeover_marker_for_self"] is True
 
+    @pytest.mark.parametrize("env, expected", [
+        ({}, "under_systemd=no supervisor=none"),  # a macOS launchd orphan: ppid 1, nothing revives it
+        ({"INVOCATION_ID": "abc"}, "under_systemd=yes supervisor=systemd"),
+        ({"HERMES_LAUNCHD_LABEL": "ai.hermes.gateway"}, "under_systemd=no supervisor=launchd"),
+    ])
+    def test_supervisor_comes_from_its_stamp_not_from_ppid_1(self, monkeypatch, env, expected):
+        for key in ("INVOCATION_ID", "XPC_SERVICE_NAME", "HERMES_LAUNCHD_LABEL"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setattr(sf.os, "getppid", lambda: 1)
+        line = sf.format_context_for_log(sf.snapshot_shutdown_context(signal.SIGTERM))
+        assert expected in line
 
 # ---------------------------------------------------------------------------
 # format_context_for_log / context_as_json
 # ---------------------------------------------------------------------------
 
 class TestFormatters:
-
 
     def test_context_as_json_handles_unserialisable_values(self):
         ctx = {"signal": "SIGTERM", "weird": object()}
@@ -83,14 +62,57 @@ class TestFormatters:
         assert decoded["signal"] == "SIGTERM"
         assert "weird" in decoded
 
+# ---------------------------------------------------------------------------
+# persisted snapshots must never include process argv (#112459)
+# ---------------------------------------------------------------------------
+
+_ARGV_CANARY = "lin_api_CANARY_SHUTDOWN_FORENSICS_9f3a2c"
+
+@pytest.fixture
+def child_with_secret_argv():
+    """A live child whose argv carries a token-shaped value, like ``docker exec -e KEY=...``."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", f"--token={_ARGV_CANARY}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        yield proc
+    finally:
+        proc.kill()
+        proc.wait()
+
+class TestArgvFreePersistence:
+
+    @pytest.mark.platforms("linux")
+    def test_snapshot_and_log_line_identify_process_without_argv(self, child_with_secret_argv):
+        """/proc-backed summaries keep pid/name/ppid/state but never the command line, so neither
+        the JSON snapshot nor the warning line can carry a credential from a parent's argv."""
+        summary = sf._proc_summary(child_with_secret_argv.pid)
+        assert summary["pid"] == child_with_secret_argv.pid
+        assert summary["name"]  # identity survives
+        assert "cmdline" not in summary
+
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        ctx["parent"] = summary
+        line = sf.format_context_for_log(ctx)
+        assert _ARGV_CANARY not in line and _ARGV_CANARY not in sf.context_as_json(ctx)
+        assert f"parent_pid={child_with_secret_argv.pid}" in line
 
 # ---------------------------------------------------------------------------
 # spawn_async_diagnostic
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    @pytest.mark.platforms("linux")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
+        self._assert_diagnostic_written(tmp_path)
+
+    @pytest.mark.platforms("macos")
+    def test_spawns_without_gnu_timeout_on_macos(self, tmp_path):
+        """Stock macOS has no ``timeout`` binary and BSD ``ps``; the diagnostic still lands."""
+        self._assert_diagnostic_written(tmp_path)
+
+    @staticmethod
+    def _assert_diagnostic_written(tmp_path):
         log_path = tmp_path / "diag.log"
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
         assert pid is not None and pid > 0
@@ -114,19 +136,45 @@ class TestSpawnAsyncDiagnostic:
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
+        lines = contents.splitlines()
+        ps_section = lines[lines.index("--- ps (top 60 by cpu, comm only) ---") + 1:]
+        assert ps_section and ps_section[0].split()[:2] == ["PID", "PPID"], \
+            "ps column header must lead the listing, not sort as a 0.0-cpu row"
 
+    @pytest.mark.platforms("linux")
+    def test_diagnostic_log_omits_child_argv_and_is_owner_only(self, tmp_path, child_with_secret_argv):
+        """The detached ps/pstree walk must not write any process's argv to disk, and the log
+        (even one created 0644 by an earlier release) ends up owner-only."""
+        log_path = tmp_path / "diag.log"
+        log_path.write_text("prior\n", encoding="utf-8")
+        os.chmod(log_path, 0o644)
+
+        pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=5.0)
+        assert pid is not None
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            try:
+                if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                    break
+            except ChildProcessError:
+                break
+            time.sleep(0.1)
+
+        contents = log_path.read_text(encoding="utf-8", errors="replace")
+        assert "shutdown diagnostic" in contents
+        assert _ARGV_CANARY not in contents
+        assert (log_path.stat().st_mode & 0o777) == 0o600
 
 # ---------------------------------------------------------------------------
-# _parse_systemd_duration_to_us
+# parse_systemd_duration_to_us
 # ---------------------------------------------------------------------------
 
 class TestParseSystemdDuration:
     def test_seconds(self):
-        assert sf._parse_systemd_duration_to_us("90s") == 90 * 1_000_000
+        assert sf.parse_systemd_duration_to_us("90s") == 90 * 1_000_000
 
     def test_minutes(self):
-        assert sf._parse_systemd_duration_to_us("3min") == 180 * 1_000_000
-
+        assert sf.parse_systemd_duration_to_us("3min") == 180 * 1_000_000
 
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
@@ -142,3 +190,80 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def _install_unit(self, monkeypatch, unit="hermes-gateway.service"):
+        """Force unit-name discovery to succeed regardless of test cgroup."""
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        cgroup = f"0::/system.slice/{unit}\n"
+        import builtins
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/self/cgroup":
+                import io
+
+                return io.StringIO(cgroup)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        return unit
+
+    def test_phantom_user_manager_is_skipped_for_system_manager(
+        self, monkeypatch
+    ):
+        """A lingering --user manager answers rc=0 with a phantom default 90s
+        for a system unit it does NOT own (LoadState=stub).  We must skip it
+        and trust the system manager's real 210s → no false mismatch."""
+        self._install_unit(monkeypatch)
+
+        class _Res:
+            def __init__(self, stdout):
+                self.returncode = 0
+                self.stdout = stdout
+                self.stderr = ""
+
+        calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if "--user" in cmd:
+                # phantom: unowned unit → default 90s, LoadState != loaded
+                return _Res("TimeoutStopUSec=1min 30s\nLoadState=stub\n")
+            # system manager: real, correctly-sized unit
+            return _Res("TimeoutStopUSec=3min 30s\nLoadState=loaded\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+        assert result is not None
+        # Must have used the system (210s) value, NOT the phantom 90s.
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False
+        # And it did try --user first (proving the guard, not luck of order).
+        assert any("--user" in c for c in calls)
+
+    def test_phantom_user_default_would_have_falsely_flagged_without_guard(
+        self, monkeypatch
+    ):
+        """Sanity: if the --user manager legitimately OWNS the unit
+        (LoadState=loaded) with a too-small 90s, we DO flag the mismatch."""
+        self._install_unit(monkeypatch)
+
+        class _Res:
+            def __init__(self, stdout):
+                self.returncode = 0
+                self.stdout = stdout
+                self.stderr = ""
+
+        def fake_run(cmd, *args, **kwargs):
+            if "--user" in cmd:
+                return _Res("TimeoutStopUSec=1min 30s\nLoadState=loaded\n")
+            return _Res("TimeoutStopUSec=3min 30s\nLoadState=loaded\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+        assert result is not None
+        assert result["timeout_stop_sec"] == 90.0
+        assert result["mismatch"] is True

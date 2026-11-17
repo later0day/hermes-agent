@@ -1,4 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
+import os
+import stat
 
 import pytest
 
@@ -83,6 +85,53 @@ def test_source_binding_key_thread_can_isolate_user():
         thread_sessions_per_user=True,
     )
 
+
+
+def test_source_binding_key_includes_slack_workspace_scope():
+    first = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="group",
+        user_id="U1",
+        scope_id="T1",
+    )
+    second = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="group",
+        user_id="U1",
+        scope_id="T2",
+    )
+
+    assert build_source_binding_key(first) == "source:slack:group:T1:C123:U1"
+    assert build_source_binding_key(first) != build_source_binding_key(second)
+
+
+def test_source_binding_key_dm_without_chat_id_falls_back_to_participant():
+    alice = _source(chat_id=None, chat_type="dm", user_id="alice")
+    bob = _source(chat_id=None, chat_type="dm", user_id="bob")
+
+    assert build_source_binding_key(alice) == "source:dingtalk:dm:alice"
+    assert build_source_binding_key(alice) != build_source_binding_key(bob)
+
+
+def test_source_binding_key_prospective_thread_matches_followup_thread():
+    initiating = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="channel-1",
+        chat_type="group",
+        user_id="alice",
+        prospective_thread_id="thread-1",
+    )
+    followup = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="channel-1",
+        chat_type="thread",
+        user_id="bob",
+        thread_id="thread-1",
+    )
+
+    assert build_source_binding_key(initiating) == build_source_binding_key(followup)
 
 def test_source_agent_binding_store_crud(tmp_path):
     store = SourceAgentBindingStore(tmp_path / "bindings.sqlite")
@@ -178,5 +227,30 @@ def test_source_agent_binding_store_deletes_bindings_for_profile(tmp_path):
         assert store.delete_bindings_for_profile("worker") == 2
         assert store.list_bindings(profile_name="worker") == []
         assert len(store.list_bindings(profile_name="other")) == 1
+    finally:
+        store.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+def test_source_agent_binding_store_is_private(tmp_path):
+    db_path = tmp_path / "bindings.sqlite"
+    store = SourceAgentBindingStore(db_path)
+    try:
+        store.set_binding(
+            "source:dingtalk:dm:secret",
+            "default",
+            fallback_extra={"session_webhook": "https://example.test/secret"},
+        )
+        state_files = [
+            path
+            for path in (
+                db_path,
+                db_path.with_name(db_path.name + "-wal"),
+                db_path.with_name(db_path.name + "-shm"),
+            )
+            if path.exists()
+        ]
+        assert state_files
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in state_files)
     finally:
         store.close()

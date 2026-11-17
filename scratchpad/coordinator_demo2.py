@@ -42,7 +42,7 @@ async def _call(messages, **kw):
             return await client.chat.completions.create(
                 model=MODEL, messages=messages, timeout=60, **kw
             )
-        except Exception as exc:
+        except Exception:
             if attempt == 2:
                 raise
             await asyncio.sleep(2)

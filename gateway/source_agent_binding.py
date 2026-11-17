@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import threading
 import time
@@ -12,10 +14,12 @@ from typing import Any, Iterable
 
 from hermes_constants import get_default_hermes_root
 
+logger = logging.getLogger(__name__)
 
-DEFAULT_SOURCE_AGENT_BINDINGS_DB = (
-    get_default_hermes_root() / "gateway_source_agent_bindings.sqlite"
-)
+
+def source_agent_bindings_db_path() -> Path:
+    """The root-global bindings store; resolved per call, never frozen at import time."""
+    return get_default_hermes_root() / "gateway_source_agent_bindings.sqlite"
 _SQLITE_INIT_LOCK = threading.RLock()
 
 
@@ -68,7 +72,7 @@ class SourceAgentBindingStore:
         self.db_path = (
             Path(db_path)
             if db_path is not None
-            else DEFAULT_SOURCE_AGENT_BINDINGS_DB
+            else source_agent_bindings_db_path()
         )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -82,6 +86,17 @@ class SourceAgentBindingStore:
             self._conn.execute("PRAGMA busy_timeout=5000")
             _execute_sqlite_init(self._conn, "PRAGMA journal_mode=WAL")
             self._ensure_schema()
+        self._secure_files()
+
+    def _secure_files(self) -> None:
+        """Keep the DB and live WAL sidecars private (webhooks are secrets)."""
+        if os.name != "posix":
+            return
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(f"{self.db_path}{suffix}").chmod(0o600)
+            except OSError:
+                pass
 
     def close(self) -> None:
         with self._lock:
@@ -215,6 +230,7 @@ class SourceAgentBindingStore:
                 ),
             )
             self._conn.commit()
+            self._secure_files()
             binding = self.get_binding(key)
             if binding is None:
                 raise RuntimeError("failed to read stored source-agent binding")
@@ -230,6 +246,7 @@ class SourceAgentBindingStore:
                 (key,),
             )
             self._conn.commit()
+            self._secure_files()
             return cur.rowcount > 0
 
     def delete_bindings_for_profile(self, profile_name: str) -> int:
@@ -238,10 +255,24 @@ class SourceAgentBindingStore:
             return 0
         with self._lock:
             cur = self._conn.execute(
-                "DELETE FROM source_agent_bindings WHERE profile_name = ?",
+                "DELETE FROM source_agent_bindings "
+                "WHERE profile_name = ? COLLATE NOCASE",
                 (profile,),
             )
             self._conn.commit()
+            self._secure_files()
+            return int(cur.rowcount or 0)
+
+    def rename_profile(self, old_profile: str, new_profile: str) -> int:
+        """Re-point every binding of ``old_profile`` at ``new_profile``; returns the row count."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE source_agent_bindings SET profile_name = ?, updated_at = ? "
+                "WHERE profile_name = ? COLLATE NOCASE",
+                (new_profile, time.time(), old_profile),
+            )
+            self._conn.commit()
+            self._secure_files()
             return int(cur.rowcount or 0)
 
     def list_bindings(self, *, profile_name: str | None = None) -> list[SourceAgentBinding]:
@@ -261,3 +292,112 @@ class SourceAgentBindingStore:
                 for row in rows
                 if (binding := self._binding_from_row(row)) is not None
             ]
+
+
+def settle_profile_bindings(old_profile: str, new_profile: str | None = None) -> int:
+    """Follow a profile through its lifecycle: re-point its ``/agent use`` bindings on a rename,
+    drop them on a delete (``new_profile=None``). Otherwise a deleted profile's bindings would hand
+    its chats — and the cron delivery they authorize — to any later profile of the same name, and
+    a renamed profile's chats would silently fall back to the default profile. The store is
+    root-global; resolved at call time. Returns the number of bindings changed."""
+    db_path = source_agent_bindings_db_path()
+    if not db_path.exists():
+        return 0
+    store = SourceAgentBindingStore(db_path=db_path)
+    try:
+        if new_profile:
+            return store.rename_profile(old_profile, new_profile)
+        return store.delete_bindings_for_profile(old_profile)
+    finally:
+        store.close()
+
+
+def bind_chat_to_profile(profile_name: str, *, platform: str, chat_id: str, chat_type: str,
+                         chat_name: str = "", actor_user_name: str = "dashboard") -> str:
+    """Bind a whole chat to *profile_name* from outside the chat (dashboard): the chat-level key that
+    ``/agent use`` also writes for a group, so every member routes to the profile. Returns the key. The
+    gateway reads the store per message, so the binding applies to the next message without a restart."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_source_binding_key
+
+    source = SessionSource(platform=Platform(platform), chat_id=str(chat_id), chat_type=chat_type,
+                           chat_name=chat_name or None)
+    key = build_source_binding_key(source, group_sessions_per_user=False)
+    store = SourceAgentBindingStore()
+    try:
+        store.set_binding(key, profile_name, agent_id=profile_name, fallback_target=source.to_dict(),
+                          actor_user_name=actor_user_name)
+    finally:
+        store.close()
+    return key
+
+
+def unbind_source(source_binding_key: str) -> bool:
+    """Remove one binding row (dashboard unbind); the chat falls back to profile routes / the default."""
+    store = SourceAgentBindingStore()
+    try:
+        return store.delete_binding(source_binding_key)
+    finally:
+        store.close()
+
+
+def bound_chats_for_profile(profile_name: str) -> list[dict[str, Any]]:
+    """The distinct chats (``fallback_target`` dicts) bound to *profile_name*, read before a delete
+    settles them away so the caller can tell each one it was unbound."""
+    db_path = source_agent_bindings_db_path()
+    if not db_path.exists():
+        return []
+    store = SourceAgentBindingStore(db_path=db_path)
+    try:
+        targets: dict[tuple, dict[str, Any]] = {}
+        for binding in store.list_bindings(profile_name=profile_name):
+            target = binding.fallback_target or {}
+            if target.get("platform") and target.get("chat_id"):
+                targets.setdefault((target["platform"], target["chat_id"]), target)
+        return list(targets.values())
+    finally:
+        store.close()
+
+
+async def notify_unbound_chats(profile_name: str, targets: list[dict[str, Any]]) -> int:
+    """Out-of-process ``/agent delete`` notice for a profile deleted outside the gateway (dashboard):
+    each bound chat hears it was unbound, through its platform's standalone sender with the primary
+    bot's config (bindings are made on the primary bot). Best-effort; returns the number delivered."""
+    from agent.i18n import t
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platform_registry import platform_registry
+
+    if not targets:
+        return 0
+    platforms = load_gateway_config().platforms
+    text = t("gateway.agent.deleted_unbound", profile=profile_name)
+    delivered = 0
+    for target in targets:
+        try:
+            entry = platform_registry.get(target["platform"])
+            sender = getattr(entry, "standalone_sender_fn", None)
+            pconfig = platforms.get(Platform(target["platform"]))
+            if sender is None or pconfig is None:
+                continue
+            result = await sender(pconfig, str(target["chat_id"]), text)
+            if isinstance(result, dict) and result.get("success"):
+                delivered += 1
+            else:
+                logger.warning("Profile %s deleted: could not notify bound chat %s: %s", profile_name,
+                               target["chat_id"], (result or {}).get("error") if isinstance(result, dict) else result)
+        except Exception:  # health: allow BLE001 -- a notice must never fail the delete that already happened
+            logger.warning("Profile %s deleted: notifying bound chat %s failed", profile_name,
+                           target.get("chat_id"), exc_info=True)
+    return delivered
+
+
+def report_profile_binding_settlement(old_profile: str, new_profile: str | None) -> None:
+    """``settle_profile_bindings`` for ``hermes profile delete/rename``: prints the outcome, and a
+    store error is reported, never allowed to fail a delete/rename that already happened."""
+    try:
+        changed = settle_profile_bindings(old_profile, new_profile)
+    except (sqlite3.Error, OSError) as exc:
+        print(f"⚠ Could not update /agent bindings for '{old_profile}': {exc}")
+        return
+    if changed:
+        print(f"✓ {'Re-pointed' if new_profile else 'Removed'} {changed} /agent binding(s)")

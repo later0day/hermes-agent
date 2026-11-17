@@ -21,8 +21,10 @@
 
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Brain } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useI18n } from "@/i18n";
+import { localeSection } from "@/i18n/section";
 import { api } from "@/lib/api";
 import {
   EFFORT_OPTIONS,
@@ -53,6 +55,18 @@ export function ReasoningPicker({
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const lastFetchKeyRef = useRef("");
+  const { t } = useI18n();
+  const s = useMemo(() => localeSection(t, "chatPageX"), [t]);
+  const effortLabels: Record<string, string> = {
+    none: s.effortNone,
+    minimal: s.effortMinimal,
+    low: s.effortLow,
+    medium: s.effortMedium,
+    high: s.effortHigh,
+    xhigh: s.effortXhigh,
+    max: s.effortMax,
+    ultra: s.effortUltra,
+  };
 
   useEffect(() => {
     const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
@@ -77,20 +91,12 @@ export function ReasoningPicker({
       const prev = effort;
       setEffort(next); // optimistic
       setSaving(true);
-      // Read-modify-write the whole config — the dashboard's single-key save
-      // pattern — so we never clobber sibling keys. `saveConfig` PUTs the full
-      // object the agent boots from.
+      // Sparse patch: PUT /api/config deep-merges onto disk, so sending only
+      // the edited key never clobbers sibling keys — and never echoes a
+      // default-expanded snapshot back over values another surface changed
+      // meanwhile (a CLI-pinned auxiliary slot would come back as "auto").
       void api
-        .getConfig(profile)
-        .then((cfg) => {
-          const base = (cfg ?? {}) as Record<string, unknown>;
-          const agent =
-            base.agent && typeof base.agent === "object"
-              ? { ...(base.agent as Record<string, unknown>) }
-              : {};
-          agent.reasoning_effort = next;
-          return api.saveConfig({ ...base, agent }, profile);
-        })
+        .saveConfig({ agent: { reasoning_effort: next } }, profile)
         .then(() => {
           onChanged?.(next);
         })
@@ -106,7 +112,7 @@ export function ReasoningPicker({
     <div className="flex items-center gap-2 px-3 py-2 text-xs">
       <div className="flex items-center gap-1.5 text-text-tertiary">
         <Brain className="h-3.5 w-3.5" />
-        <span className="text-display tracking-wider">reasoning</span>
+        <span className="text-display tracking-wider">{s.reasoningLabel}</span>
       </div>
       <Select
         className="ml-auto min-w-0"
@@ -116,7 +122,7 @@ export function ReasoningPicker({
       >
         {EFFORT_OPTIONS.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
-            {opt.label}
+            {effortLabels[opt.value] ?? opt.label}
           </SelectOption>
         ))}
       </Select>

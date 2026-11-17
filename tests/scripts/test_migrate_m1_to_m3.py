@@ -84,24 +84,24 @@ def _mk_rooms_db(path: Path, room_ids: list[str]) -> None:
 # ─── _classify_message ─────────────────────────────────────────────────
 
 def test_classify_observer_assistant():
-    room_id, kind, name = _classify_message("room_observer:room_abc", "assistant")
+    room_id, kind, _name = _classify_message("room_observer:room_abc", "assistant")
     assert room_id == "room_abc"
     assert kind == "observer"
 
 
 def test_classify_observer_user():
-    room_id, kind, _ = _classify_message("room_observer:room_abc", "user")
+    _room_id, kind, _ = _classify_message("room_observer:room_abc", "user")
     assert kind == "user"
 
 
 def test_classify_observer_tool():
-    room_id, kind, name = _classify_message("room_observer:room_abc", "tool")
+    _room_id, kind, name = _classify_message("room_observer:room_abc", "tool")
     assert kind == "tool_result"
     assert name == "route_to_member"
 
 
 def test_classify_member_assistant():
-    room_id, kind, name = _classify_message(
+    _room_id, kind, name = _classify_message(
         "room_member:room_abc:client_svc", "assistant"
     )
     assert kind == "member"
@@ -114,7 +114,7 @@ def test_classify_member_user():
 
 
 def test_classify_non_room_session_is_skip():
-    room_id, kind, name = _classify_message("cli:xyz", "assistant")
+    _room_id, kind, _name = _classify_message("cli:xyz", "assistant")
     assert kind == "skip"
 
 

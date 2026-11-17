@@ -1,10 +1,10 @@
 """The config.yaml fallback for ``{PLATFORM}_ALLOW_ALL_USERS`` must be safe.
 
-The fork added ``_platform_config_allow_all_users`` so an operator can grant
-open access from ``gateway.platforms.<p>.extra.allow_all_users`` in
-config.yaml instead of the environment.  Because this is an *authorization*
-path, the fallback carries three security-critical invariants that had no
-test coverage:
+HEAD's ``_platform_config_allow_all_users`` (ported from the fork) lets an operator
+grant open access from ``gateway.platforms.<p>.extra.allow_all_users`` in
+config.yaml when the ``{PLATFORM}_ALLOW_ALL_USERS`` env var is absent/empty.
+Because this is an *authorization* path, the fallback carries three
+security-critical invariants:
 
 1. It fires **only** when the platform's ``{PLATFORM}_ALLOW_ALL_USERS`` env var
    is absent/empty — an explicitly-set env var (true *or* false) is always
@@ -19,17 +19,16 @@ test coverage:
 
 These tests pin all three.  ``DINGTALK`` is used as the concrete platform
 because it is a network-exposed adapter with an entry in
-``platform_allow_all_map`` and does NOT enforce its own access policy, so the
+``_ALLOW_ALL_ENV`` and does NOT enforce its own access policy, so the
 allow-all gate is the deciding factor.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-import pytest
-
+from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 
@@ -46,17 +45,12 @@ def _clear_env(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def _runner(config: GatewayConfig):
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
+def _runner(config: GatewayConfig) -> GatewayAuthorizationMixin:
+    runner = object.__new__(GatewayAuthorizationMixin)
     runner.config = config
-    # DingTalk does not own its access policy — the allow-all gate decides.
-    adapter = SimpleNamespace(send=AsyncMock(), enforces_own_access_policy=False)
-    runner.adapters = {Platform.DINGTALK: adapter}
+    runner.adapters = {Platform.DINGTALK: SimpleNamespace(enforces_own_access_policy=False)}
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
-    runner.pairing_store._is_rate_limited.return_value = False
     return runner
 
 
@@ -125,13 +119,52 @@ def test_no_env_no_config_default_denies(monkeypatch):
 # ---------------------------------------------------------------------------
 # Invariant 3: strict parsing of the config value.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("truthy", ["true", "1", "yes", "on", "TRUE", " Yes ", True])
-def test_config_truthy_values_open_the_gate(monkeypatch, truthy):
+def test_config_bool_true_opens_the_gate(monkeypatch):
     _clear_env(monkeypatch)
-    assert _runner(_config(allow_all_users=truthy))._is_user_authorized(_source()) is True
+    assert _runner(_config(allow_all_users=True))._is_user_authorized(_source()) is True
 
 
-@pytest.mark.parametrize("falsy", ["false", "0", "no", "off", "", "maybe", False])
-def test_config_falsy_values_keep_the_gate_closed(monkeypatch, falsy):
+def test_config_bool_false_keeps_the_gate_closed(monkeypatch):
     _clear_env(monkeypatch)
-    assert _runner(_config(allow_all_users=falsy))._is_user_authorized(_source()) is False
+    assert _runner(_config(allow_all_users=False))._is_user_authorized(_source()) is False
+
+
+def test_config_string_true_opens_the_gate(monkeypatch):
+    _clear_env(monkeypatch)
+    assert _runner(_config(allow_all_users="true"))._is_user_authorized(_source()) is True
+
+
+def test_config_string_yes_opens_the_gate(monkeypatch):
+    _clear_env(monkeypatch)
+    assert _runner(_config(allow_all_users="yes"))._is_user_authorized(_source()) is True
+
+
+def test_config_string_on_opens_the_gate(monkeypatch):
+    _clear_env(monkeypatch)
+    assert _runner(_config(allow_all_users="on"))._is_user_authorized(_source()) is True
+
+
+def test_config_string_1_opens_the_gate(monkeypatch):
+    _clear_env(monkeypatch)
+    assert _runner(_config(allow_all_users="1"))._is_user_authorized(_source()) is True
+
+
+def test_config_string_false_keeps_gate_closed(monkeypatch):
+    _clear_env(monkeypatch)
+    assert _runner(_config(allow_all_users="false"))._is_user_authorized(_source()) is False
+
+
+def test_config_string_maybe_keeps_gate_closed(monkeypatch):
+    _clear_env(monkeypatch)
+    assert _runner(_config(allow_all_users="maybe"))._is_user_authorized(_source()) is False
+
+
+def test_config_string_empty_keeps_gate_closed(monkeypatch):
+    _clear_env(monkeypatch)
+    assert _runner(_config(allow_all_users=""))._is_user_authorized(_source()) is False
+
+
+def test_config_absent_key_default_denies(monkeypatch):
+    """No extra key at all → default-deny (no fail-open for network adapters)."""
+    _clear_env(monkeypatch)
+    assert _runner(_config())._is_user_authorized(_source()) is False

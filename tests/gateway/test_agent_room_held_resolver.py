@@ -269,8 +269,8 @@ class TestForcedPaths:
 class TestResumeAll:
     @pytest.mark.asyncio
     async def test_resume_drains_backlog_oldest_first(self, store):
-        h1 = _hold(store, payload="first", chat_id="c1")
-        h2 = _hold(store, payload="second", chat_id="c2")
+        _hold(store, payload="first", chat_id="c1")
+        _hold(store, payload="second", chat_id="c2")
         delivered_order: list[str] = []
 
         async def deliver(chat_id, payload):

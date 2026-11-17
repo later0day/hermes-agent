@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -118,7 +118,7 @@ def append_agent_audit_event(
         raise ValueError("action is required")
 
     event: dict[str, Any] = {
-        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "action": clean_action,
     }
     if actor_user_id is not None:
@@ -173,7 +173,7 @@ def list_agent_audit_events(
 
     events: list[dict[str, Any]] = []
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
     except OSError:
         return []
     scanned = 0

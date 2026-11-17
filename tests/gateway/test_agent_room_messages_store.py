@@ -68,7 +68,7 @@ def test_list_messages_limit(store):
 
 def test_tool_calls_roundtrip(store):
     tc = [{"id": "1", "function": {"name": "x", "arguments": "{}"}}]
-    m = store.append(
+    store.append(
         "r1", sender_kind="observer", sender_name="obs",
         content="", tool_calls=tc,
     )
@@ -77,7 +77,7 @@ def test_tool_calls_roundtrip(store):
 
 
 def test_tool_result_stored(store):
-    m = store.append(
+    store.append(
         "r1", sender_kind="tool_result", sender_name="route_to_member",
         content='{"member":"x"}', tool_call_id="call_1",
     )

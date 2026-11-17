@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 class TestAtomicRoundtripYamlSave:
@@ -119,6 +119,20 @@ class TestAtomicRoundtripYamlSave:
         assert "(=^･ω･^=)" in text
         assert "\\u4f60" not in text
         assert "\\u30CE" not in text
+
+    def test_preserves_long_double_quoted_scalar_with_backslash(self, config_path):
+        """A no-op save must not turn fold indentation after a backslash into data."""
+        value = "A" * 74 + r"D:\CentBrowserPortable " + "B" * 40
+        config_path.write_text(
+            'policy: "' + value.replace("\\", "\\\\") + '"\n',
+            encoding="utf-8",
+        )
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, {"policy": value})
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["policy"] == value
 
     def test_appends_new_keys(self, config_path):
         config_path.write_text(
@@ -248,7 +262,7 @@ class TestAtomicRoundtripYamlSave:
         from utils import atomic_roundtrip_yaml_save
 
         with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
-            with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+            with pytest.raises(RuntimeError, match="this change was not saved"):
                 atomic_roundtrip_yaml_save(config_path, {"model": {"default": "replacement"}})
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -263,7 +277,7 @@ class TestAtomicRoundtripYamlSave:
         config_path.write_text("model:\n  default: test-model\n", encoding="utf-8")
 
         chown_calls: list[tuple[Path, int, int]] = []
-        monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (345, 678))
+        monkeypatch.setattr("utils.preserve_file_owner", lambda _path: (345, 678))
         monkeypatch.setattr(
             "utils.os.chown",
             lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),

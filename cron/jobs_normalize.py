@@ -1,0 +1,52 @@
+"""Text and id-list normalizers for ``create_job`` / ``update_job`` fields (moved from cron/jobs.py unchanged)."""
+from typing import Any, Optional
+
+
+def _normalize_job_optional_text(
+    value: Any, *, strip_trailing_slash: bool = False
+) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    return (value.strip().rstrip("/") if strip_trailing_slash else value.strip()) or None
+
+
+def _normalize_base_url(value: Any) -> Optional[str]:
+    return _normalize_job_optional_text(value, strip_trailing_slash=True)
+
+
+def _normalize_profile(profile: Optional[str]) -> Optional[str]:
+    """Canonicalize a profile id and reject profiles that cannot own a run."""
+    raw = str(profile or "").strip()
+    if not raw:
+        return None
+
+    from hermes_cli.profiles import (
+        normalize_profile_name, profile_exists, validate_profile_name,
+    )
+
+    normalized = normalize_profile_name(raw)
+    validate_profile_name(normalized)
+    if not profile_exists(normalized):
+        raise FileNotFoundError(f"Hermes profile not found: {normalized}")
+    return normalized
+
+
+def _normalize_str_list(items: Any) -> Optional[list[str]]:
+    """Non-blank stripped items of *items*, or None when nothing remains."""
+    return [str(j).strip() for j in items if str(j).strip()] or None
+
+
+def _normalize_context_from(value: Any) -> Optional[list[str]]:
+    """Accept a job id or a list of ids; anything else is None."""
+    if isinstance(value, str):
+        value = [value]
+    return _normalize_str_list(value) if isinstance(value, list) else None
+
+
+def _normalize_failure_deliver(value: Any) -> Optional[str]:
+    """failure_deliver shares deliver's value grammar; flatten str/list like the tool layer's
+    _normalize_deliver_param for direct create_job callers. Semantic validation happens at
+    resolution time via the shared deliver path."""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(p).strip() for p in value if str(p).strip()) or None
+    return _normalize_job_optional_text(value)

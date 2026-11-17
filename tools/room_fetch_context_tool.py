@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Bound by the gateway around a member's turn. Holds everything the handler
 # needs to serve reads scoped to THIS member in THIS room.
-_ROOM_CONTEXT: contextvars.ContextVar[Optional["RoomContext"]] = (
+_ROOM_CONTEXT: contextvars.ContextVar[Optional[RoomContext]] = (
     contextvars.ContextVar("agent_room_fetch_context", default=None)
 )
 
@@ -69,7 +69,7 @@ class _BoundToken:
     def reset(self) -> None:
         try:
             _ROOM_CONTEXT.reset(self._token)
-        except Exception:  # noqa: BLE001 — reset must never crash teardown
+        except Exception:
             pass
 
 
@@ -133,7 +133,7 @@ def room_fetch_context(
     store = ctx.messages_store
     try:
         all_rows = store.list_messages(ctx.room_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("room_fetch_context: list_messages failed: %s", exc)
         return _err(f"failed to read room history: {exc}")
 

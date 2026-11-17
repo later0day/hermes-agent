@@ -1,379 +1,322 @@
-"""Keyless Parallel search via the free hosted Search MCP.
+"""Keyless Parallel search/extract through the shared MCP transport and failover ring.
 
-Covers the transport added in ``plugins/web/parallel/provider.py`` that lets
-``web_search`` work with no ``PARALLEL_API_KEY``:
-
-- ``_mcp_headers``  — Bearer attached only when a key is held
-- ``_decode_mcp_envelope`` — plain-JSON and SSE (``data:``) response bodies
-- ``_mcp_payload`` — structuredContent preferred, text-block JSON fallback, errors
-- ``_mcp_web_search`` — full handshake (mocked transport) → standard search shape
-- ``ParallelWebSearchProvider.search`` — keyless path routes to the MCP
+The implementation lives in :mod:`plugins.web.keyless_mcp`; the Parallel provider
+only chooses keyless versus keyed dispatch and owns the current Beta SDK path.
+All HTTP transports are mocked.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import requests
 
-import plugins.web.parallel.provider as pp
-
-
-# ─── _mcp_headers ──────────────────────────────────────────────────────────
-
-class TestMcpHeaders:
-    def test_anonymous_has_no_authorization(self):
-        h = pp._mcp_headers(session_id=None, api_key=None)
-        assert "Authorization" not in h
-        assert h["Accept"] == "application/json, text/event-stream"
-        assert "Mcp-Session-Id" not in h
-
-    def test_user_agent_is_generic_not_hermes(self):
-        # Telemetry policy: no third-party usage attribution without opt-in.
-        # The UA must be set (not python-httpx default) but must not name
-        # hermes, on both the anonymous and keyed paths.
-        for ua in (
-            pp._mcp_headers(session_id=None, api_key=None)["User-Agent"],
-            pp._mcp_headers(session_id="sid", api_key="pk-live")["User-Agent"],
-        ):
-            assert ua == f"{pp._MCP_CLIENT_NAME}/{pp._MCP_CLIENT_VERSION}"
-            assert "hermes" not in ua.lower()
-
-    def test_session_id_and_bearer_when_present(self):
-        h = pp._mcp_headers(session_id="sid-123", api_key="pk-live")
-        assert h["Mcp-Session-Id"] == "sid-123"
-        assert h["Authorization"] == "Bearer pk-live"
+from plugins.web import keyless_mcp as km
+from plugins.web.parallel import provider as pp
 
 
-# ─── SSE / JSON-RPC parsing ──────────────────────────────────────────────────
+def _response(body: str, *, status: int = 200, content_type: str = "application/json") -> requests.Response:
+    response = requests.Response()
+    response.status_code = status
+    response.headers["Content-Type"] = content_type
+    response._content = body.encode()
+    return response
 
-class TestMcpResponseParsing:
-    def test_plain_json_matched_by_id(self):
-        body = '{"jsonrpc":"2.0","id":"abc","result":{"ok":true}}'
-        assert pp._mcp_response_envelope(body, "abc")["result"]["ok"] is True
 
-    def test_sse_selects_response_for_request_id_skipping_notifications(self):
-        # A progress notification (no id) precedes the real result; an unrelated
-        # response id is also present. We must pick the one matching our id.
+def _envelope(payload: dict) -> str:
+    return json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"content": [{"type": "text", "text": json.dumps(payload)}]},
+    })
+
+
+class TestMcpTransport:
+    def test_posts_single_anonymous_tools_call(self):
+        body = _envelope({"results": []})
+        with patch("requests.post", return_value=_response(body)) as post:
+            text = km.mcp_call(km.PARALLEL_MCP_URL, "web_search", {"objective": "q"}, timeout=9)
+
+        assert json.loads(text) == {"results": []}
+        post.assert_called_once()
+        args, kwargs = post.call_args
+        assert args == (km.PARALLEL_MCP_URL,)
+        assert kwargs["timeout"] == 9
+        assert kwargs["json"] == {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "web_search", "arguments": {"objective": "q"}},
+        }
+        assert kwargs["headers"]["Accept"] == "application/json, text/event-stream"
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+        assert kwargs["headers"]["User-Agent"] == "hermes-agent"
+        assert "Authorization" not in kwargs["headers"]
+        assert "Mcp-Session-Id" not in kwargs["headers"]
+
+    def test_plain_json_text_content(self):
+        body = json.dumps({"result": {"content": [{"type": "text", "text": "hello"}]}})
+        assert km._parse_mcp_body(body) == "hello"
+
+    def test_sse_skips_notifications_and_returns_result_text(self):
         body = (
-            'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress","params":{"p":1}}\n\n'
-            'event: message\ndata: {"jsonrpc":"2.0","id":"other","result":{"ok":false}}\n\n'
-            'event: message\ndata: {"jsonrpc":"2.0","id":"req-1","result":{"ok":true}}\n\n'
+            'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'
+            'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":'
+            '{"content":[{"type":"text","text":"from SSE"}]}}\n\n'
         )
-        env = pp._mcp_response_envelope(body, "req-1")
-        assert env["result"]["ok"] is True
+        assert km._parse_mcp_body(body) == "from SSE"
 
-    def test_sse_multiline_data_concatenated(self):
-        body = 'data: {"jsonrpc":"2.0","id":"x",\ndata: "result":{"n":42}}\n\n'
-        assert pp._mcp_response_envelope(body, "x")["result"]["n"] == 42
+    def test_jsonrpc_error_raises(self):
+        body = json.dumps({"error": {"code": -32000, "message": "rate limit"}})
+        with pytest.raises(km.KeylessMCPError, match="rate limit"):
+            km._parse_mcp_body(body)
 
-    def test_falls_back_to_last_result_when_id_absent(self):
-        body = '{"jsonrpc":"2.0","id":"server-chose","result":{"ok":true}}'
-        # request id doesn't match, but there's a single result → use it
-        assert pp._mcp_response_envelope(body, "mismatch")["result"]["ok"] is True
+    def test_tool_error_raises_with_vendor_text(self):
+        body = json.dumps({
+            "result": {"isError": True, "content": [{"type": "text", "text": "quota exceeded"}]},
+        })
+        with pytest.raises(km.KeylessMCPError, match="quota exceeded"):
+            km._parse_mcp_body(body)
 
-    def test_empty_body(self):
-        assert pp._mcp_response_envelope("", "x") == {}
-        assert pp._mcp_response_envelope("   ", "x") == {}
+    def test_tool_error_without_text_has_explicit_fallback(self):
+        with pytest.raises(km.KeylessMCPError, match="MCP tool call failed"):
+            km._parse_mcp_body('{"result":{"isError":true,"content":[]}}')
 
-    def test_batched_json_array_flattened(self):
-        # Streamable HTTP may batch messages into a JSON array.
-        body = ('[{"jsonrpc":"2.0","method":"notifications/progress"},'
-                '{"jsonrpc":"2.0","id":"req-9","result":{"ok":true}}]')
-        assert pp._mcp_response_envelope(body, "req-9")["result"]["ok"] is True
+    def test_envelope_without_text_is_an_error(self):
+        with pytest.raises(km.KeylessMCPError, match="no text content"):
+            km._parse_mcp_body('{"result":{"content":[]}}')
 
-    def test_batched_sse_data_array_flattened(self):
-        body = 'data: [{"jsonrpc":"2.0","id":"a","result":{"n":1}}]\n\n'
-        assert pp._mcp_response_envelope(body, "a")["result"]["n"] == 1
+    def test_unrecognized_body_is_an_error(self):
+        with pytest.raises(km.KeylessMCPError, match="Unrecognized MCP response shape"):
+            km._parse_mcp_body("<html>not MCP</html>")
 
+    def test_http_error_preserves_status_and_body(self):
+        with patch("requests.post", return_value=_response("quota exceeded", status=429)):
+            with pytest.raises(km.KeylessMCPError, match="HTTP 429: quota exceeded"):
+                km.mcp_call(km.PARALLEL_MCP_URL, "web_search", {})
 
-# ─── _mcp_payload ────────────────────────────────────────────────────────────
-
-class TestMcpPayload:
-    def test_prefers_structured_content(self):
-        env = {"result": {"structuredContent": {"results": [{"url": "u"}]},
-                          "content": [{"type": "text", "text": "ignored"}]}}
-        assert pp._mcp_payload(env) == {"results": [{"url": "u"}]}
-
-    def test_parses_text_block_json(self):
-        inner = {"search_id": "s1", "results": [{"url": "u", "title": "t"}]}
-        env = {"result": {"content": [{"type": "text", "text": json.dumps(inner)}]}}
-        assert pp._mcp_payload(env)["search_id"] == "s1"
-
-    def test_raises_on_jsonrpc_error(self):
-        with pytest.raises(RuntimeError, match="Parallel MCP error"):
-            pp._mcp_payload({"error": {"code": -32000, "message": "boom"}})
-
-    def test_raises_on_tool_iserror(self):
-        with pytest.raises(RuntimeError, match="Parallel MCP tool error"):
-            pp._mcp_payload({"result": {"isError": True, "content": []}})
+    def test_request_failure_is_wrapped(self):
+        with patch("requests.post", side_effect=requests.ConnectionError("offline")):
+            with pytest.raises(km.KeylessMCPError, match="request failed: offline"):
+                km.mcp_call(km.PARALLEL_MCP_URL, "web_search", {})
 
 
-# ─── _mcp_web_search (mocked transport) ──────────────────────────────────────
+class TestParallelKeylessSearch:
+    @staticmethod
+    def _payload(count: int) -> str:
+        return json.dumps({"results": [
+            {"url": f"https://example.test/{i}", "title": f"Title {i}", "excerpts": [f"a{i}", f"b{i}"]}
+            for i in range(count)
+        ]})
 
-class _FakeResponse:
-    def __init__(self, *, text="", headers=None):
-        self.text = text
-        self.headers = headers or {}
+    def test_maps_standard_results_and_request_arguments(self):
+        with patch.object(km, "mcp_call", return_value=self._payload(2)) as call:
+            out = km.parallel_search_keyless("kittens", limit=5)
 
-    def raise_for_status(self):
-        return None
-
-
-class _FakeClient:
-    """Stands in for httpx.Client: replays init → ack → tools/call."""
-
-    def __init__(self, search_payload, init_session_id="server-sid"):
-        self._search_payload = search_payload
-        self._init_session_id = init_session_id
-        self.calls = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def post(self, url, headers=None, json=None):
-        self.calls.append({"headers": headers, "json": json})
-        req = json or {}
-        method = req.get("method")
-        req_id = req.get("id")
-        if method == "initialize":
-            # Echo the request id, as the real server does.
-            return _FakeResponse(
-                text=json_dumps({"jsonrpc": "2.0", "id": req_id,
-                                 "result": {"protocolVersion": "2099-01-01"}}),
-                headers=(
-                    {"mcp-session-id": self._init_session_id}
-                    if self._init_session_id is not None
-                    else {}
-                ),
-            )
-        if method == "notifications/initialized":
-            return _FakeResponse(text="")
-        # tools/call
-        envelope = {"jsonrpc": "2.0", "id": req_id, "result": {
-            "content": [{"type": "text", "text": json_dumps(self._search_payload)}],
-        }}
-        return _FakeResponse(text=json_dumps(envelope))
-
-
-def json_dumps(obj):
-    return json.dumps(obj)
-
-
-class TestMcpWebSearch:
-    def _payload(self, n):
-        return {"search_id": "s", "results": [
-            {"url": f"https://ex/{i}", "title": f"t{i}",
-             "excerpts": [f"a{i}", f"b{i}"]}
-            for i in range(n)
-        ]}
-
-    def test_returns_standard_shape_and_handshake(self):
-        fake = _FakeClient(self._payload(3))
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            out = pp._mcp_web_search("hello", limit=5, api_key=None)
-
-        assert out["success"] is True
-        # Free-tier results credit Parallel.
-        assert "Parallel" in out["attribution"]
-        web = out["data"]["web"]
-        assert [r["position"] for r in web] == [1, 2, 3]
-        assert web[0]["url"] == "https://ex/0"
-        assert web[0]["description"] == "a0 b0"  # excerpts joined
-        # handshake order
-        methods = [c["json"].get("method") for c in fake.calls]
-        assert methods == ["initialize", "notifications/initialized", "tools/call"]
-        # session id from the initialize response header is reused
-        assert fake.calls[-1]["headers"]["Mcp-Session-Id"] == "server-sid"
-
-    def test_stateless_server_no_session_header_not_invented(self):
-        # A stateless Streamable-HTTP server may omit mcp-session-id on
-        # initialize; we must NOT invent one (sending an unissued session id can
-        # get follow-up requests rejected). The follow-ups carry no header.
-        fake = _FakeClient(self._payload(1), init_session_id=None)
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            out = pp._mcp_web_search("hello", limit=5, api_key=None)
-        assert out["success"] is True
-        follow_ups = [c for c in fake.calls if c["json"].get("method") != "initialize"]
-        assert follow_ups, "expected notifications/initialized + tools/call"
-        assert all("Mcp-Session-Id" not in c["headers"] for c in follow_ups)
-        # anonymous → no Authorization on any call
-        assert all("Authorization" not in c["headers"] for c in fake.calls)
-        # tools/call mirrors query into objective + search_queries
-        args = fake.calls[-1]["json"]["params"]["arguments"]
-        assert args["objective"] == "hello"
-        assert args["search_queries"] == ["hello"]
+        assert out == {
+            "success": True,
+            "data": {"web": [
+                {"url": "https://example.test/0", "title": "Title 0", "description": "a0 b0", "position": 1},
+                {"url": "https://example.test/1", "title": "Title 1", "description": "a1 b1", "position": 2},
+            ]},
+        }
+        call.assert_called_once_with(km.PARALLEL_MCP_URL, "web_search", {
+            "objective": "kittens",
+            "search_queries": ["kittens"],
+            "session_id": km._SESSION_ID,
+        })
+        arguments = call.call_args.args[2]
+        assert "model_name" not in arguments  # optional analytics are deliberately omitted
+        assert "api_key" not in arguments
 
     def test_limit_is_applied_client_side(self):
-        fake = _FakeClient(self._payload(10))
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            out = pp._mcp_web_search("q", limit=2, api_key=None)
+        with patch.object(km, "mcp_call", return_value=self._payload(10)):
+            out = km.parallel_search_keyless("q", limit=2)
         assert len(out["data"]["web"]) == 2
+        assert [row["position"] for row in out["data"]["web"]] == [1, 2]
 
-    def test_bearer_attached_when_key_present(self):
-        fake = _FakeClient(self._payload(1))
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            pp._mcp_web_search("q", limit=1, api_key="pk-live")
-        assert all(c["headers"]["Authorization"] == "Bearer pk-live" for c in fake.calls)
+    def test_zero_limit_returns_the_full_vendor_batch(self):
+        with patch.object(km, "mcp_call", return_value=self._payload(3)):
+            out = km.parallel_search_keyless("q", limit=0)
+        assert len(out["data"]["web"]) == 3
 
-    def test_negotiated_protocol_version_echoed_post_init(self):
-        fake = _FakeClient(self._payload(1))
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            pp._mcp_web_search("q", limit=1, api_key=None)
-        # initialize request doesn't carry the (not-yet-negotiated) version...
-        assert "MCP-Protocol-Version" not in fake.calls[0]["headers"]
-        # ...but notifications/initialized and tools/call echo the negotiated one.
-        assert fake.calls[1]["headers"]["MCP-Protocol-Version"] == "2099-01-01"
-        assert fake.calls[-1]["headers"]["MCP-Protocol-Version"] == "2099-01-01"
+    def test_transport_failure_is_soft_error_with_key_setup_hint(self):
+        with patch.object(km, "mcp_call", side_effect=km.KeylessMCPError("rate limit")):
+            out = km.parallel_search_keyless("q")
+        assert out["success"] is False
+        assert "Keyless Parallel search failed: rate limit" in out["error"]
+        assert "PARALLEL_API_KEY" in out["error"]
+        assert "hermes tools" in out["error"]
 
-
-# ─── provider.search keyless routing ─────────────────────────────────────────
-
-class TestProviderKeylessSearch:
-    def test_search_without_key_uses_mcp(self, monkeypatch):
-        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
-        captured = {}
-
-        def _fake(query, limit, api_key):
-            captured.update(query=query, limit=limit, api_key=api_key)
-            return {"success": True, "data": {"web": []}}
-
-        monkeypatch.setattr(pp, "_mcp_web_search", _fake)
-        out = pp.ParallelWebSearchProvider().search("kittens", limit=4)
-        assert out["success"] is True
-        assert captured == {"query": "kittens", "limit": 4, "api_key": None}
-
-    def test_is_available_reflects_key(self, monkeypatch):
-        # is_available() gates the registry's active-provider walk + picker, so
-        # it's key-based (keyless dispatch is handled by _get_backend, not this).
-        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
-        assert pp.ParallelWebSearchProvider().is_available() is False
-        monkeypatch.setenv("PARALLEL_API_KEY", "k")
-        assert pp.ParallelWebSearchProvider().is_available() is True
+    def test_malformed_vendor_payload_is_soft_error(self):
+        with patch.object(km, "mcp_call", return_value="not-json"):
+            out = km.parallel_search_keyless("q")
+        assert out["success"] is False
+        assert "unexpected payload" in out["error"]
 
 
-# ─── web_fetch (keyless extract) ─────────────────────────────────────────────
-
-class TestMcpWebFetch:
-    def _payload(self, urls):
-        return {"extract_id": "e1", "results": [
-            {"url": u, "title": f"T{i}", "publish_date": None,
-             "excerpts": [f"chunk-a-{i}", f"chunk-b-{i}"]}
-            for i, u in enumerate(urls)
-        ]}
-
-    def test_maps_to_extract_shape(self):
+class TestParallelKeylessExtract:
+    def test_maps_documents_and_fetch_arguments(self):
+        payload = json.dumps({"results": [
+            {"url": "https://a.test", "title": "A", "excerpts": ["chunk-a", "chunk-b"]},
+            {"url": "https://b.test", "title": "B", "full_content": "entire page", "excerpts": ["ignored"]},
+        ]})
         urls = ["https://a.test", "https://b.test"]
-        fake = _FakeClient(self._payload(urls))
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            out = pp._mcp_web_fetch(urls, api_key=None)
-        assert [r["url"] for r in out] == urls
-        assert out[0]["content"] == "chunk-a-0\n\nchunk-b-0"
-        assert out[0]["raw_content"] == out[0]["content"]
-        assert out[0]["metadata"] == {"sourceURL": "https://a.test", "title": "T0"}
-        # tools/call targeted web_fetch, requesting full page bodies.
-        args = fake.calls[-1]["json"]["params"]
-        assert args["name"] == "web_fetch"
-        assert args["arguments"]["urls"] == urls
-        assert args["arguments"]["full_content"] is True
-        assert args["arguments"]["session_id"].startswith(f"{pp._MCP_CLIENT_NAME}-")
+        with patch.object(km, "mcp_call", return_value=payload) as call:
+            out = km.parallel_extract_keyless(urls)
 
-    def test_prefers_full_content_over_excerpts(self):
-        payload = {"results": [
-            {"url": "https://a.test", "title": "T",
-             "excerpts": ["snippet"], "full_content": "the entire page body"},
-        ]}
-        fake = _FakeClient(payload)
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            out = pp._mcp_web_fetch(["https://a.test"], api_key=None)
-        assert out[0]["content"] == "the entire page body"
+        assert out[0] == {
+            "url": "https://a.test",
+            "title": "A",
+            "content": "chunk-a\n\nchunk-b",
+            "raw_content": "chunk-a\n\nchunk-b",
+            "metadata": {"sourceURL": "https://a.test", "title": "A"},
+        }
+        assert out[1]["content"] == "entire page"
+        call.assert_called_once_with(km.PARALLEL_MCP_URL, "web_fetch", {
+            "urls": urls,
+            "objective": "Full page content",
+            "session_id": km._SESSION_ID,
+        })
 
     def test_missing_url_becomes_error_entry(self):
-        # Server returns only one of the two requested URLs.
-        fake = _FakeClient(self._payload(["https://a.test"]))
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            out = pp._mcp_web_fetch(["https://a.test", "https://missing.test"], api_key=None)
-        assert len(out) == 2
-        missing = [r for r in out if r["url"] == "https://missing.test"][0]
-        assert "error" in missing
+        payload = json.dumps({"results": [{"url": "https://a.test", "title": "A", "excerpts": ["body"]}]})
+        with patch.object(km, "mcp_call", return_value=payload):
+            out = km.parallel_extract_keyless(["https://a.test", "https://missing.test"])
+        missing = next(row for row in out if row["url"] == "https://missing.test")
+        assert missing["error"] == "no content returned"
         assert missing["content"] == ""
 
-    def test_preserves_order_and_duplicate_inputs(self):
-        # MCP returns each unique URL once; output must still be one row per
-        # input, in order, including the duplicate.
-        fake = _FakeClient(self._payload(["https://a.test", "https://b.test"]))
-        urls = ["https://b.test", "https://a.test", "https://b.test"]
-        with patch.object(pp.httpx, "Client", return_value=fake):
-            out = pp._mcp_web_fetch(urls, api_key=None)
-        assert [r["url"] for r in out] == urls  # one row per input, in order
-        assert all("error" not in r for r in out)  # all three resolved
+    def test_vendor_origin_error_preserves_status_and_body(self):
+        payload = json.dumps({"errors": [{
+            "url": "https://blocked.test",
+            "http_status_code": 403,
+            "error_type": "http_error",
+            "content": "access denied",
+        }]})
+        with patch.object(km, "mcp_call", return_value=payload):
+            out = km.parallel_extract_keyless(["https://blocked.test"])
+        assert out[0]["error"] == "HTTP 403 from origin"
+        assert out[0]["content"] == "access denied"
+        assert out[0]["metadata"] == {"sourceURL": "https://blocked.test"}
 
-    def test_extract_without_key_uses_web_fetch(self, monkeypatch):
-        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+    def test_transport_failure_returns_one_error_per_requested_url(self):
+        urls = ["https://a.test", "https://b.test"]
+        with patch.object(km, "mcp_call", side_effect=km.KeylessMCPError("HTTP 503: unavailable")):
+            out = km.parallel_extract_keyless(urls)
+        assert [row["url"] for row in out] == urls
+        assert all("HTTP 503: unavailable" in row["error"] for row in out)
+        assert all("PARALLEL_API_KEY" in row["error"] for row in out)
+
+
+class TestProviderRouting:
+    def test_search_without_key_uses_shared_failover(self, monkeypatch):
+        monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda _name: "")
+        monkeypatch.setattr(km, "provider_tier", lambda _name: "auto")
+        monkeypatch.setattr(km, "keyless_enabled", lambda: True)
         captured = {}
 
-        def _fake(urls, api_key):
-            captured.update(urls=list(urls), api_key=api_key)
-            return [{"url": urls[0], "title": "", "content": "x",
-                     "raw_content": "x", "metadata": {}}]
+        def _keyless(display, name, query, limit, logger):
+            captured.update(display=display, name=name, query=query, limit=limit, logger=logger)
+            return {"success": True, "data": {"web": []}}
 
-        monkeypatch.setattr(pp, "_mcp_web_fetch", _fake)
-        out = asyncio.run(pp.ParallelWebSearchProvider().extract(["https://x.test"]))
-        assert out[0]["content"] == "x"
-        assert captured == {"urls": ["https://x.test"], "api_key": None}
+        monkeypatch.setattr(pp, "keyless_search", _keyless)
+        out = pp.ParallelWebSearchProvider().search("kittens", limit=4)
+        assert out["success"] is True
+        assert captured == {
+            "display": "Parallel", "name": "parallel", "query": "kittens", "limit": 4, "logger": pp.logger,
+        }
 
-
-# ─── keyed v1 REST search ────────────────────────────────────────────────────
-
-class TestKeyedV1Search:
-    def test_passes_max_results_and_omits_branding(self, monkeypatch):
-        monkeypatch.setenv("PARALLEL_API_KEY", "pk-live")
+    def test_keyed_search_uses_beta_sdk_and_skips_keyless(self, monkeypatch):
+        monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda _name: "pk-live")
+        monkeypatch.setattr(km, "provider_tier", lambda _name: "auto")
         monkeypatch.delenv("PARALLEL_SEARCH_MODE", raising=False)
         captured = {}
+        client = SimpleNamespace()
+        client.beta = SimpleNamespace(search=lambda **kwargs: captured.update(kwargs) or SimpleNamespace(results=[
+            SimpleNamespace(url="https://r.test", title="R", excerpts=["x", "y"]),
+        ]))
+        monkeypatch.setattr(pp, "_get_sync_client", lambda: client)
+        with patch.object(pp, "keyless_search") as keyless:
+            out = pp.ParallelWebSearchProvider().search("q", limit=7)
 
-        class _Res:
-            def __init__(self, url):
-                self.url, self.title, self.excerpts = url, "T", ["x"]
+        keyless.assert_not_called()
+        assert captured == {
+            "search_queries": ["q"], "objective": "q", "mode": "agentic", "max_results": 7,
+        }
+        assert out == {
+            "success": True,
+            "data": {"web": [{"url": "https://r.test", "title": "R", "description": "x y", "position": 1}]},
+        }
 
-        class _Resp:
-            results = [_Res(f"https://r/{i}") for i in range(10)]
+    def test_sdk_result_limit_is_capped(self, monkeypatch):
+        monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda _name: "pk-live")
+        captured = {}
+        client = SimpleNamespace(beta=SimpleNamespace(
+            search=lambda **kwargs: captured.update(kwargs) or SimpleNamespace(results=[]),
+        ))
+        monkeypatch.setattr(pp, "_get_sync_client", lambda: client)
+        pp.ParallelWebSearchProvider().search("q", limit=100)
+        assert captured["max_results"] == pp.SEARCH_LIMIT_CAP
 
-        class _Client:
-            def search(self, **kw):
-                captured.update(kw)
-                return _Resp()
+    def test_is_available_reflects_only_the_key(self, monkeypatch):
+        values = {"PARALLEL_API_KEY": ""}
+        monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda name: values[name])
+        provider = pp.ParallelWebSearchProvider()
+        assert provider.is_available() is False
+        values["PARALLEL_API_KEY"] = "pk-live"
+        assert provider.is_available() is True
 
-        monkeypatch.setattr(pp, "_get_sync_client", lambda: _Client())
-        out = pp.ParallelWebSearchProvider().search("q", limit=7)
+    @pytest.mark.asyncio
+    async def test_extract_without_key_uses_shared_failover_off_event_loop(self, monkeypatch):
+        monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda _name: "")
+        monkeypatch.setattr(km, "provider_tier", lambda _name: "auto")
+        monkeypatch.setattr(km, "keyless_enabled", lambda: True)
+        captured = {}
 
-        assert out["success"] is True
-        # honors the caller's limit via advanced_settings.max_results
-        assert captured["advanced_settings"] == {"max_results": 7}
-        assert captured["mode"] == "advanced"            # v1 default
-        assert captured["session_id"].startswith(f"{pp._MCP_CLIENT_NAME}-")  # per-call id
-        assert len(out["data"]["web"]) == 7              # client-side slice
-        # paid path: no free-tier attribution, no [Parallel] label signal
-        assert "attribution" not in out
-        assert "provider" not in out
+        def _keyless(display, name, urls, logger):
+            captured.update(display=display, name=name, urls=urls, logger=logger)
+            return [{"url": urls[0], "title": "", "content": "x"}]
 
+        monkeypatch.setattr(pp, "keyless_extract", _keyless)
+        out = await pp.ParallelWebSearchProvider().extract(["https://x.test"])
+        assert out[0]["content"] == "x"
+        assert captured == {
+            "display": "Parallel", "name": "parallel", "urls": ["https://x.test"], "logger": pp.logger,
+        }
 
-# ─── v1 search mode mapping ──────────────────────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_keyed_extract_uses_async_beta_sdk(self, monkeypatch):
+        monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda _name: "pk-live")
+        captured = {}
+
+        class _Beta:
+            async def extract(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(results=[
+                    SimpleNamespace(url="https://a.test", title="A", full_content="body", excerpts=[]),
+                ], errors=[])
+
+        monkeypatch.setattr(pp, "_get_async_client", lambda: SimpleNamespace(beta=_Beta()))
+        with patch.object(pp, "keyless_extract") as keyless:
+            out = await pp.ParallelWebSearchProvider().extract(["https://a.test"])
+        keyless.assert_not_called()
+        assert captured == {"urls": ["https://a.test"], "full_content": True}
+        assert out[0]["content"] == "body"
+
 
 class TestResolveSearchMode:
     @pytest.mark.parametrize("env,expected", [
-        (None, "advanced"),        # default
-        ("advanced", "advanced"),
-        ("basic", "basic"),
-        ("fast", "basic"),         # legacy → basic
-        ("one-shot", "basic"),     # legacy → basic
-        ("agentic", "advanced"),   # legacy → advanced
-        ("garbage", "advanced"),   # invalid → default
-        ("BASIC", "basic"),        # case-insensitive
+        (None, "agentic"),
+        ("agentic", "agentic"),
+        ("fast", "fast"),
+        ("one-shot", "one-shot"),
+        ("garbage", "agentic"),
+        ("FAST", "fast"),
+        (" one-shot ", "one-shot"),
     ])
     def test_mode_mapping(self, monkeypatch, env, expected):
         if env is None:
@@ -381,3 +324,40 @@ class TestResolveSearchMode:
         else:
             monkeypatch.setenv("PARALLEL_SEARCH_MODE", env)
         assert pp._resolve_search_mode() == expected
+
+
+class TestParallelFailover:
+    def test_rate_limit_advances_to_next_ring_vendor(self, monkeypatch):
+        monkeypatch.setattr(km, "_vendor_pinned", lambda name: name == "parallel")
+        calls = []
+
+        def _parallel(query, limit):
+            calls.append(("parallel", query, limit))
+            return {"success": False, "error": "Keyless Parallel search failed: HTTP 429: rate limit"}
+
+        def _firecrawl(query, limit):
+            calls.append(("firecrawl", query, limit))
+            return {"success": True, "data": {"web": []}}
+
+        def _unexpected(name):
+            return lambda *_args: (_ for _ in ()).throw(AssertionError(f"unexpected call to {name}"))
+
+        searchers = {name: _unexpected(name) for name in km._KEYLESS_RING}
+        searchers.update(parallel=_parallel, firecrawl=_firecrawl)
+        with patch.dict(km._KEYLESS_SEARCHERS, searchers, clear=True):
+            out = km.search_with_failover("parallel", "q", 3)
+        assert calls == [("parallel", "q", 3), ("firecrawl", "q", 3)]
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "firecrawl"
+
+    def test_terminal_query_error_does_not_fail_over(self, monkeypatch):
+        monkeypatch.setattr(km, "_vendor_pinned", lambda name: name == "parallel")
+
+        def _unexpected(*_args):
+            raise AssertionError("terminal errors must stop the ring")
+
+        searchers = {name: _unexpected for name in km._KEYLESS_RING}
+        searchers["parallel"] = lambda *_args: {"success": False, "error": "HTTP 400: invalid query"}
+        with patch.dict(km._KEYLESS_SEARCHERS, searchers, clear=True):
+            out = km.search_with_failover("parallel", "q", 3)
+        assert out == {"success": False, "error": "HTTP 400: invalid query"}

@@ -793,8 +793,6 @@ async def test_m3_concurrent_dedupes_and_filters_invalid_members(
 async def test_m3_one_member_failure_does_not_sink_others(router, mocks, room):
     """M3-B4: per-member turn failure is isolated — surviving members
     still deliver replies."""
-    call_count = {"n": 0}
-
     async def _one_fails(member, sid, src, hist, msg):
         if member == "finance":
             raise RuntimeError("simulated finance turn crash")

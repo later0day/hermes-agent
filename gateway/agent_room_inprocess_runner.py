@@ -57,11 +57,11 @@ def _default_home_model() -> str:
     """
     try:
         from hermes_constants import get_default_hermes_root
-        import yaml
+        from hermes_cli.config_backend import config_exists, read_config_doc
         cfg_path = Path(get_default_hermes_root()) / "config.yaml"
-        if not cfg_path.is_file():
+        if not config_exists(cfg_path):
             return ""
-        data = yaml.safe_load(cfg_path.read_text()) or {}
+        data = read_config_doc(cfg_path) or {}
         model_cfg = data.get("model") or {}
         if isinstance(model_cfg, str):
             return model_cfg
@@ -132,8 +132,8 @@ def _lock_agent_tools(agent: Any, toolsets: list[str]) -> None:
     """
     # Force the room tool modules to register (idempotent import).
     try:
-        import tools.room_router_tool  # noqa: F401
-        import tools.room_decompose_tool  # noqa: F401
+        import tools.room_router_tool
+        import tools.room_decompose_tool
     except Exception as exc:
         logger.warning("inproc: room tool import failed: %s", exc)
 
@@ -160,7 +160,7 @@ def _lock_agent_tools(agent: Any, toolsets: list[str]) -> None:
         )
 
     class _LockedTools(list):
-        def append(self, item):  # noqa: D401 — silently reject
+        def append(self, item):
             pass
 
         def extend(self, items):
@@ -214,7 +214,7 @@ def _lock_agent_tools_to_none(agent: Any) -> None:
     the wire, the model can only answer in prose."""
 
     class _NoTools(list):
-        def append(self, item):  # noqa: D401 — silently reject re-adds
+        def append(self, item):
             pass
 
         def extend(self, items):
@@ -425,7 +425,7 @@ class InProcessRoomRunner:
             projected_hist = [p.to_openai() for p in projected]
 
             soul_path = _profile_home(observer_profile) / "SOUL.md"
-            soul = soul_path.read_text() if soul_path.is_file() else ""
+            soul = soul_path.read_text(encoding="utf-8-sig") if soul_path.is_file() else ""
 
             run_result = await loop.run_in_executor(
                 None,
@@ -588,7 +588,7 @@ class InProcessRoomRunner:
                 self._persist_firsthop_route(
                     room_arg.room_id, observer_profile, hop_result, default_member,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("inproc: first-hop route persist failed: %s", exc)
             return hop_result
 

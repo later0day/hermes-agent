@@ -30,7 +30,7 @@ from typing import Dict, Iterator, Mapping, Optional
 # None => no scoped overlay active; read straight from os.environ (legacy
 # single-profile behavior). A dict => the scoped profile's resolved TERMINAL_*
 # values take precedence over os.environ.
-_terminal_env_overlay: ContextVar[Optional[Dict[str, str]]] = ContextVar(
+_terminal_env_overlay: ContextVar[Optional[dict[str, str]]] = ContextVar(
     "terminal_env_overlay", default=None
 )
 
@@ -50,7 +50,7 @@ def reset_terminal_env_overlay(token: Token) -> None:
     _terminal_env_overlay.reset(token)
 
 
-def get_terminal_env_overlay() -> Optional[Dict[str, str]]:
+def get_terminal_env_overlay() -> Optional[dict[str, str]]:
     """Return the active overlay dict (or ``None`` when unscoped)."""
     return _terminal_env_overlay.get()
 
@@ -80,7 +80,7 @@ def terminal_env_scope(mapping: Optional[Mapping[str, str]]) -> Iterator[None]:
         reset_terminal_env_overlay(token)
 
 
-def build_scoped_terminal_env() -> Dict[str, str]:
+def build_scoped_terminal_env() -> dict[str, str]:
     """Resolve the current profile scope's full ``TERMINAL_*`` map.
 
     Must be called while the profile's ``HERMES_HOME`` override is active (e.g.

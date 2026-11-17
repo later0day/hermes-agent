@@ -271,8 +271,8 @@ def test_registered_in_tool_registry():
     show up in the observer's tool definitions at all."""
     from tools.registry import registry as _reg_singleton
     from toolsets import resolve_toolset
-    import tools.room_decompose_tool  # noqa: F401 — module import only; registration is commented out
-    import tools.room_router_tool  # noqa: F401 — sibling tool in the same toolset
+    import tools.room_decompose_tool
+    import tools.room_router_tool
 
     tool_names = set(resolve_toolset("room_observer"))
     defs = _reg_singleton.get_definitions(tool_names, quiet=True)

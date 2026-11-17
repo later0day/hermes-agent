@@ -80,7 +80,6 @@ class OrchestratorError(Exception):
     """Raised for structural DAG problems (cycles, unknown assignees).
     Runtime failures during a subtask are captured as SubtaskResult,
     not raised."""
-    pass
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -401,7 +400,7 @@ async def orchestrate(
                     status="success",
                     reply=reply or "",
                 )
-            except Exception as exc:  # noqa: BLE001 — per-subtask isolation
+            except Exception as exc:
                 logger.warning(
                     "orchestrator: room=%s subtask idx=%d (%s) failed: %s",
                     room_id, task.index, task.assignee, exc,
@@ -466,9 +465,8 @@ def render_subtask_results_for_synthesis(result: OrchestrationResult) -> str:
         elif r.status == "failed" and r.error:
             lines.append(f"    error: {r.error}")
         elif r.status == "skipped_parent_failed":
-            missing = ", ".join(str(p) for p in ())
-            lines.append(f"    (skipped because parent subtask did not succeed)")
+            lines.append("    (skipped because parent subtask did not succeed)")
         elif r.status == "fenced":
-            lines.append(f"    (skipped because room state changed mid-flight)")
+            lines.append("    (skipped because room state changed mid-flight)")
         lines.append("")
     return "\n".join(lines).rstrip()

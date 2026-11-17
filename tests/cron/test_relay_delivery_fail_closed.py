@@ -2,15 +2,15 @@
 
 Relay owns the logical destination and its connector owns the platform
 credential, so a native retry could double-deliver and cannot be
-authenticated correctly.  ``_deliver_result`` therefore stops at the relay
-branch instead of falling through to the standalone ``_send_to_platform``
-path.
+authenticated correctly. ``_deliver_standalone`` therefore stops at the relay
+guard before either the native ``_send_to_platform`` path or the DingTalk
+session-webhook fallback.
 
-Upstream documents this in a comment above the branch; the fork's diff
+Upstream documents this in a comment above the guard; the fork's diff
 dropped that comment while keeping the code, so nothing explained (or
-guarded) the invariant.  These tests pin the behaviour, including the fork's
-own DingTalk session-webhook fallback, which is inserted *before* the relay
-branch and so has to be checked for a bypass.
+guarded) the invariant. These tests pin the behaviour, including the fork's
+own DingTalk session-webhook fallback, which is reached only *after* the
+relay guard and so has to be checked for a bypass.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from cron.scheduler import _deliver_result
+from cron.scheduler_delivery import _deliver_result
 
 
 def _fake_run_coro(coro, _loop):
@@ -28,7 +28,7 @@ def _fake_run_coro(coro, _loop):
     future: Future = Future()
     try:
         future.set_result(_asyncio.run(coro))
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         future.set_exception(exc)
     return future
 
@@ -127,8 +127,8 @@ def test_relay_fronted_dingtalk_does_not_bypass_via_session_webhook(monkeypatch)
     """The fork's DingTalk webhook fallback must not undercut fail-closed.
 
     ``_resolve_dingtalk_origin_session_webhook_status`` keys off the job's
-    ORIGIN, not the transport, and its fallback block sits *above* the relay
-    branch in ``_deliver_result``.  A relay-fronted DingTalk job whose relay
+    ORIGIN, not the transport, and its fallback block sits *after* the relay
+    guard in ``_deliver_standalone``. A relay-fronted DingTalk job whose relay
     send fails must therefore still fail closed rather than re-delivering
     through a captured session webhook the connector doesn't own.
     """
@@ -153,10 +153,10 @@ def test_relay_fronted_dingtalk_does_not_bypass_via_session_webhook(monkeypatch)
         patch("asyncio.run_coroutine_threadsafe", side_effect=_fake_run_coro),
         patch("tools.send_message_tool._send_to_platform", new=standalone_send),
         patch(
-            "cron.scheduler._resolve_dingtalk_origin_session_webhook_status",
+            "cron.scheduler_delivery_origin._resolve_dingtalk_origin_session_webhook_status",
             return_value=("https://oapi.dingtalk.com/robot/sendBySession?x=1", None),
         ),
-        patch("cron.scheduler._send_dingtalk_session_webhook", new=webhook_send),
+        patch("cron.scheduler_delivery_origin._send_dingtalk_session_webhook", new=webhook_send),
     ):
         result = _deliver_result(
             job,
@@ -211,10 +211,10 @@ def test_native_dingtalk_still_uses_the_session_webhook_fallback(monkeypatch):
         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
         patch("tools.send_message_tool._send_to_platform", new=standalone_send),
         patch(
-            "cron.scheduler._resolve_dingtalk_origin_session_webhook_status",
+            "cron.scheduler_delivery_origin._resolve_dingtalk_origin_session_webhook_status",
             return_value=("https://oapi.dingtalk.com/robot/sendBySession?x=1", None),
         ),
-        patch("cron.scheduler._send_dingtalk_session_webhook", new=webhook_send),
+        patch("cron.scheduler_delivery_origin._send_dingtalk_session_webhook", new=webhook_send),
     ):
         result = _deliver_result(job, "scheduled result", adapters=None, loop=None)
 
@@ -229,14 +229,14 @@ def test_relay_fail_closed_comment_documents_the_invariant():
     """The upstream rationale comment must stay next to the branch it explains."""
     import inspect
 
-    import cron.scheduler as scheduler
+    from cron import scheduler_delivery
 
-    src = inspect.getsource(scheduler._deliver_result)
-    idx = src.index('f"relay delivery to {platform_name}:{chat_id} failed"')
+    src = inspect.getsource(scheduler_delivery._deliver_standalone)
+    idx = src.index('f"relay delivery to {t.where} failed"')
     preamble = src[:idx]
-    branch = preamble[preamble.rindex("if transport is not None and transport.is_relay:") :]
+    branch = preamble[preamble.rindex("if t.is_relay:") :]
     assert "fail closed" in branch, (
         "the relay fail-closed rationale comment was dropped; without it the "
-        "next reader sees an unexplained early `continue` and may 'fix' it into "
+        "next reader sees an unexplained early return and may 'fix' it into "
         "a native retry"
     )

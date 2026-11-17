@@ -62,7 +62,7 @@ async def test_plan_unactionable_returns_422(tmp_path):
 @pytest.mark.asyncio
 async def test_plan_stores_pending():
     """Plan stored in _pending_room_plans under the session token key."""
-    from hermes_cli import web_server as ws
+    from hermes_cli.web_routers import rooms as ws
     ws._pending_room_plans.clear()
 
     with patch("hermes_cli.profiles.list_profiles", return_value=[]), \
@@ -79,7 +79,7 @@ async def test_plan_stores_pending():
 
 @pytest.mark.asyncio
 async def test_confirm_no_pending_plan():
-    from hermes_cli import web_server as ws
+    from hermes_cli.web_routers import rooms as ws
     ws._pending_room_plans.clear()
     async with await _client() as c:
         r = await c.post("/api/rooms/plan/confirm", json={})
@@ -88,7 +88,7 @@ async def test_confirm_no_pending_plan():
 
 @pytest.mark.asyncio
 async def test_confirm_creates_room(tmp_path):
-    from hermes_cli import web_server as ws
+    from hermes_cli.web_routers import rooms as ws
     from gateway.agent_room_store import AgentRoomStore
 
     ws._pending_room_plans.clear()
@@ -105,9 +105,9 @@ async def test_confirm_creates_room(tmp_path):
         async with await _client() as c:
             await c.post("/api/rooms/plan", json={"requirement": "test"})
 
-    with patch("hermes_cli.web_server._room_store", return_value=store), \
+    with patch("hermes_cli.web_routers.rooms._room_store", return_value=store), \
          patch("hermes_cli.profiles.profile_exists", return_value=False), \
-         patch("hermes_cli.profiles.create_profile", return_value=tmp_path / "x"), \
+         patch("hermes_cli.profile_provision.provision_profile", return_value=tmp_path / "x"), \
          patch("hermes_cli.profiles.write_profile_meta"), \
          patch("hermes_cli.profiles.get_profile_dir", return_value=obs_dir), \
          patch("gateway.agent_room_bootstrapper.build_observer_profile", return_value=obs_dir):
@@ -125,7 +125,7 @@ async def test_confirm_creates_room(tmp_path):
 @pytest.mark.asyncio
 async def test_confirm_clears_pending():
     """Second confirm returns 404 after first succeeds."""
-    from hermes_cli import web_server as ws
+    from hermes_cli.web_routers import rooms as ws
 
     ws._pending_room_plans.clear()
 
@@ -143,14 +143,14 @@ async def test_confirm_clears_pending():
     import tempfile, pathlib
     with tempfile.TemporaryDirectory() as td:
         store = AgentRoomStore(pathlib.Path(td) / "r.sqlite")
-        with patch("hermes_cli.web_server._room_store", return_value=store), \
+        with patch("hermes_cli.web_routers.rooms._room_store", return_value=store), \
              patch("hermes_cli.profiles.profile_exists", return_value=False), \
-             patch("hermes_cli.profiles.create_profile"), \
+             patch("hermes_cli.profile_provision.provision_profile"), \
              patch("hermes_cli.profiles.write_profile_meta"), \
              patch("hermes_cli.profiles.get_profile_dir"), \
              patch("gateway.agent_room_bootstrapper.build_observer_profile"):
             async with await _client() as c:
-                r1 = await c.post("/api/rooms/plan/confirm", json={})
+                await c.post("/api/rooms/plan/confirm", json={})
             async with await _client() as c:
                 r2 = await c.post("/api/rooms/plan/confirm", json={})
         store.close()
@@ -158,10 +158,13 @@ async def test_confirm_clears_pending():
     assert r2.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_plan_route_registered():
-    import inspect
-    from hermes_cli import web_server
-    src = inspect.getsource(web_server)
-    assert '"/api/rooms/plan"' in src
-    assert '"/api/rooms/plan/confirm"' in src
+def test_plan_route_registered():
+    from hermes_cli.web_server import app
+
+    routes = {
+        (route.path, method)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
+    assert ("/api/rooms/plan", "POST") in routes
+    assert ("/api/rooms/plan/confirm", "POST") in routes

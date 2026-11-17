@@ -45,6 +45,8 @@ def create_delegated_kanban_task(
 ) -> DelegatedKanbanTask:
     """Create a Kanban task and optionally subscribe an IM source."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
     from hermes_cli.kanban import _parse_duration, _parse_workspace_flag
     from hermes_cli.profiles import normalize_profile_name, profile_exists
 
@@ -82,7 +84,7 @@ def create_delegated_kanban_task(
         raise DelegateTaskError(f"Invalid delegate option: {exc}") from exc
 
     skill_list = [str(skill).strip() for skill in (skills or []) if str(skill).strip()]
-    conn = kb.connect(board=board_slug)
+    conn = kbc.connect(board=board_slug)
     subscribed = False
     try:
         task_id = kb.create_task(
@@ -101,7 +103,7 @@ def create_delegated_kanban_task(
             board=board_slug,
         )
         if source and source.platform and source.chat_id:
-            kb.add_notify_sub(
+            kbn.add_notify_sub(
                 conn,
                 task_id=task_id,
                 platform=source.platform.value,

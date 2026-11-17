@@ -375,7 +375,7 @@ def test_update_members_persists_description():
     with tempfile.TemporaryDirectory() as td:
         store = AgentRoomStore(Path(td) / "rooms.sqlite")
         try:
-            room = store.create_room(
+            store.create_room(
                 "r1", "Test", observer_profile="obs",
                 members=["a"], description="original",
             )

@@ -33,30 +33,30 @@ def isolated_cron_profile_home(tmp_path, monkeypatch):
 
 class TestNormalizeProfile:
     def test_none_and_empty_return_none(self, isolated_cron_profile_home):
-        from cron.jobs import _normalize_profile
+        from cron.jobs_normalize import _normalize_profile
 
         assert _normalize_profile(None) is None
         assert _normalize_profile("") is None
         assert _normalize_profile("   ") is None
 
     def test_default_profile_is_valid_and_normalized(self, isolated_cron_profile_home):
-        from cron.jobs import _normalize_profile
+        from cron.jobs_normalize import _normalize_profile
 
         assert _normalize_profile("Default") == "default"
 
     def test_named_profile_must_exist_and_is_normalized(self, isolated_cron_profile_home):
-        from cron.jobs import _normalize_profile
+        from cron.jobs_normalize import _normalize_profile
 
         assert _normalize_profile("Support") == "support"
 
     def test_invalid_profile_name_is_rejected(self, isolated_cron_profile_home):
-        from cron.jobs import _normalize_profile
+        from cron.jobs_normalize import _normalize_profile
 
         with pytest.raises(ValueError):
             _normalize_profile("invalid!")
 
     def test_missing_named_profile_is_rejected(self, isolated_cron_profile_home):
-        from cron.jobs import _normalize_profile
+        from cron.jobs_normalize import _normalize_profile
 
         with pytest.raises(FileNotFoundError):
             _normalize_profile("missing")
@@ -216,7 +216,7 @@ class TestRunJobProfileContext:
         fake_mod.AIAgent = FakeAgent
         monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
 
-        from hermes_cli import runtime_provider as runtime_provider
+        from hermes_cli import runtime_provider
 
         monkeypatch.setattr(
             runtime_provider,
@@ -229,25 +229,31 @@ class TestRunJobProfileContext:
             },
         )
 
+        from cron import scheduler_delivery
+        from cron import scheduler_authority
+        from tests.cron.conftest import owner_execution_runner
+
+        monkeypatch.setattr(
+            scheduler_authority, "run_canonical_job", owner_execution_runner())
         monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, **_: "hi")
-        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(scheduler_delivery, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
         monkeypatch.setattr(sched, "_hermes_home", None)
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
 
-        import hermes_cli.env_loader as env_loader
+        from hermes_cli import env_loader
 
-        def fake_load_dotenv(dotenv_path=None, *_a, **_kw):
-            observed.setdefault("dotenv_paths", []).append(str(dotenv_path))
-            return True
+        def fake_load_hermes_dotenv(*, hermes_home=None, **_kw):
+            from pathlib import Path
 
-        # The scheduler loads a profile's env via
-        # ``env_loader.load_hermes_dotenv(hermes_home=<profile home>)``, which
-        # binds ``load_dotenv`` at import time. Patch the module-local name so
-        # the fake is actually reached (patching ``dotenv.load_dotenv`` would
-        # not affect env_loader's already-bound reference).
-        monkeypatch.setattr(env_loader, "load_dotenv", fake_load_dotenv)
+            observed.setdefault("dotenv_paths", []).append(
+                str(Path(hermes_home) / ".env"))
+            return [Path(hermes_home) / ".env"]
+
+        # The scheduler late-imports this public loader for each run, so patch
+        # its defining module rather than the parser's former private alias.
+        monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
 
     def test_run_job_sets_and_restores_profile_home(
         self, isolated_cron_profile_home, monkeypatch
@@ -268,7 +274,9 @@ class TestRunJobProfileContext:
         success, _output, response, error = sched.run_job(job)
 
         assert success is True, f"run_job failed: error={error!r} response={response!r}"
-        assert observed["dotenv_paths"] == [str(profile_home / ".env")]
+        # Canonical admission may load the launch home once before the owning
+        # execution starts; the job's own reload must be its selected profile.
+        assert observed["dotenv_paths"][-1] == str(profile_home / ".env")
         assert observed["env_home_during_init"] == str(root)
         assert observed["env_home_during_run"] == str(root)
         assert observed["hermes_home_during_init"] == str(profile_home.resolve())
@@ -306,7 +314,7 @@ class TestRunJobProfileContext:
     def test_profile_dotenv_environment_is_restored(
         self, isolated_cron_profile_home, monkeypatch
     ):
-        import hermes_cli.env_loader as env_loader
+        from hermes_cli import env_loader
         import cron.scheduler as sched
 
         root, profile_home = isolated_cron_profile_home
@@ -315,16 +323,18 @@ class TestRunJobProfileContext:
         monkeypatch.setenv("HERMES_PROFILE_TEST_SHARED", "outer")
         monkeypatch.delenv("HERMES_PROFILE_TEST_ONLY", raising=False)
 
-        def fake_load_dotenv(dotenv_path=None, *_a, **_kw):
-            observed.setdefault("dotenv_paths", []).append(str(dotenv_path))
+        def fake_load_hermes_dotenv(*, hermes_home=None, **_kw):
+            from pathlib import Path
+
+            env_path = Path(hermes_home) / ".env"
+            observed.setdefault("dotenv_paths", []).append(str(env_path))
             os.environ["HERMES_PROFILE_TEST_SHARED"] = "profile-value"
             os.environ["HERMES_PROFILE_TEST_ONLY"] = "profile-only"
             os.environ["HERMES_CRON_TIMEOUT"] = "123"
-            return True
+            return [env_path]
 
-        # Patch the module-local name env_loader actually calls (see
-        # _install_agent_stubs) rather than dotenv.load_dotenv.
-        monkeypatch.setattr(env_loader, "load_dotenv", fake_load_dotenv)
+        # Patch the public loader the scheduler imports at run time.
+        monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
 
         job = {
             "id": "env-profile",
@@ -346,6 +356,29 @@ class TestRunJobProfileContext:
         assert os.environ["HERMES_CRON_TIMEOUT"] == "0"
         assert os.environ["HERMES_HOME"] == str(root)
         assert sched._get_hermes_home() == root
+
+    def test_multiplex_profile_dotenv_stays_in_secret_scope(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        from agent.secret_scope import (
+            get_secret, reset_multiplex_context, set_multiplex_context,
+        )
+        from cron.scheduler_profile import _job_profile_context
+        from hermes_cli.env_loader import load_hermes_dotenv
+
+        _root, profile_home = isolated_cron_profile_home
+        (profile_home / ".env").write_text(
+            "OPENAI_API_KEY=profile-secret\n", encoding="utf-8")
+        monkeypatch.setenv("OPENAI_API_KEY", "launch-secret")
+        multiplex_token = set_multiplex_context(True)
+        try:
+            with _job_profile_context("multiplex-profile", "support"):
+                load_hermes_dotenv(hermes_home=profile_home)
+                assert get_secret("OPENAI_API_KEY") == "profile-secret"
+                assert os.environ["OPENAI_API_KEY"] == "launch-secret"
+        finally:
+            reset_multiplex_context(multiplex_token)
+        assert os.environ["OPENAI_API_KEY"] == "launch-secret"
 
     def test_no_agent_profile_uses_profile_scripts_dir_and_restores_env(
         self, isolated_cron_profile_home, monkeypatch
@@ -415,7 +448,7 @@ class TestRunJobProfileContext:
         }
 
         # Should succeed with fallback, not raise
-        success, _output, response, error = sched.run_job(job)
+        success, _output, _response, error = sched.run_job(job)
 
         assert success is True, f"run_job should fallback, not fail: error={error!r}"
         # Verify it used the default home, not the missing profile
@@ -464,7 +497,10 @@ class TestTickProfilePartition:
 
         calls: list[tuple[str, str]] = []
 
-        def fake_run_job(job, *, defer_agent_teardown=None, extra_prompt=None):
+        def fake_run_job(
+            job, *, defer_agent_teardown=None, extra_prompt=None,
+            cancel_event=None, execution_id=None,
+        ):
             calls.append((job["id"], threading.current_thread().name))
             return True, "output", "response", None
 
@@ -479,10 +515,8 @@ class TestTickProfilePartition:
         ids = [job_id for job_id, _thread_name in calls]
         assert ids.index("a") < ids.index("b")
         # Profile jobs are dispatched to the persistent single-thread
-        # cron-seq pool (same as workdir jobs) — non-blocking, one at a
-        # time — NOT run inline on the ticker thread. See
-        # TestTickWorkdirPartition.test_workdir_jobs_run_sequentially for
-        # the equivalent workdir-job assertion.
+        # cron-seq pool — non-blocking, one at a time — not inline on the
+        # ticker thread.
         main_thread_name = threading.current_thread().name
         profile_thread_name = next(thread for job_id, thread in calls if job_id == "a")
         assert profile_thread_name != main_thread_name

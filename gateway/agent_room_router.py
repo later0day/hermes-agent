@@ -254,11 +254,11 @@ class AgentRoomRouter:
         ack_editor: AckEditor,
         classifier: Classifier,
         observer_runner: Optional[ObserverRunner] = None,
-        first_hop_runner: Optional["FirstHopRunner"] = None,
+        first_hop_runner: Optional[FirstHopRunner] = None,
         member_dispatcher: MemberDispatcher,
-        synthesis_runner: Optional["SynthesisRunner"] = None,
+        synthesis_runner: Optional[SynthesisRunner] = None,
         handoff_policy: Optional[HandoffPolicy] = None,
-        held_store: Optional["AgentRoomHeldStore"] = None,
+        held_store: Optional[AgentRoomHeldStore] = None,
         room_version_provider: Optional[Callable[[str], int]] = None,
         no_match_policy: str = "fallback",
     ) -> None:
@@ -432,7 +432,7 @@ class AgentRoomRouter:
         )
 
     @staticmethod
-    def _apply_no_match_prefix(message: str, decision: "RoutingDecision") -> str:
+    def _apply_no_match_prefix(message: str, decision: RoutingDecision) -> str:
         """2026-08-14 no-match escalation: when ``decision.is_no_match`` is
         True, the first-hop classifier judged this message out-of-scope
         for every roster member — ``decision.target_member`` is a FORCED
@@ -476,7 +476,7 @@ class AgentRoomRouter:
             return 0
         try:
             return int(self._room_version_provider(room_id) or 0)
-        except Exception as exc:  # noqa: BLE001 — never let versioning break routing
+        except Exception as exc:
             logger.debug("room %s: room_version_provider failed: %s", room_id, exc)
             return 0
 
@@ -525,7 +525,7 @@ class AgentRoomRouter:
                 chat_id=str(chat_id) if chat_id is not None else None,
             )
             return held.id
-        except Exception as exc:  # noqa: BLE001 — hold must never crash routing
+        except Exception as exc:
             logger.warning(
                 "room %s: failed to hold reply from member %s (%s); "
                 "falling back to legacy drop",
@@ -543,7 +543,7 @@ class AgentRoomRouter:
         source: Any,
         room: AgentRoom,
         observer_sid: str,
-        decision: "RoutingDecision",
+        decision: RoutingDecision,
     ) -> dict[str, Any]:
         """M4.4 · run the subtask DAG the observer emitted, then a
         synthesis turn that composes the final user-facing reply.
@@ -666,7 +666,7 @@ class AgentRoomRouter:
                 final_reply = await self._synthesis_runner(
                     room.observer_profile, observer_sid, source, rendered,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "room %s: synthesis turn failed (%s); using raw concatenation",
                     room_id, exc,
@@ -850,7 +850,7 @@ class AgentRoomRouter:
                         hop_reply = await self._member_dispatcher(
                             target, member_sid, source, history, handoff_msg,
                         )
-                    except Exception as exc:  # noqa: BLE001 — isolate one hop
+                    except Exception as exc:
                         logger.warning(
                             "room %s: handoff hop %s->%s failed: %s",
                             room.room_id, author, target, exc,
@@ -1128,7 +1128,7 @@ class AgentRoomRouter:
                         m, sid, source, history, scoped_input,
                     )
                     return (m, r or "")
-                except Exception as exc:  # noqa: BLE001 — per-member isolation
+                except Exception as exc:
                     logger.warning(
                         "room %s: member %s turn failed: %s", room_id, m, exc,
                     )

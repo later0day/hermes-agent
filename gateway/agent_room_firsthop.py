@@ -196,7 +196,7 @@ async def classify_first_hop(
     messages = build_classifier_messages(message, members, default_member)
     try:
         raw = await call_raw(messages)
-    except Exception as exc:  # noqa: BLE001 — routing must never crash the room
+    except Exception as exc:
         logger.warning(
             "first-hop classifier call failed (%s: %s); defaulting to %r",
             type(exc).__name__, exc, default_member,

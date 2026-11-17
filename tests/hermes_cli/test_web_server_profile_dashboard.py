@@ -6,12 +6,14 @@ import json
 
 import pytest
 
+from gateway.source_agent_binding import SourceAgentBindingStore
+from hermes_cli import web_models
+
 
 @pytest.fixture()
 def isolated_dashboard_profiles(tmp_path, monkeypatch):
-    from gateway import agent_audit
-    from gateway.source_agent_binding import SourceAgentBindingStore
-    from hermes_cli import profiles, web_server
+    from gateway import agent_audit, source_agent_binding
+    from hermes_cli import profiles
 
     default_home = tmp_path / ".hermes"
     worker_home = default_home / "profiles" / "worker_alpha"
@@ -35,9 +37,9 @@ def isolated_dashboard_profiles(tmp_path, monkeypatch):
 
     bindings_db = tmp_path / "bindings.sqlite"
     monkeypatch.setattr(
-        web_server,
-        "_source_binding_store",
-        lambda: SourceAgentBindingStore(bindings_db),
+        source_agent_binding,
+        "source_agent_bindings_db_path",
+        lambda: bindings_db,
     )
 
     return {"default": default_home, "worker_alpha": worker_home}
@@ -46,15 +48,17 @@ def isolated_dashboard_profiles(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_profile_details_includes_bindings_kanban_cron_and_health(isolated_dashboard_profiles):
     from hermes_cli import kanban_db as kb
-    from hermes_cli import web_server
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import web_server_cron
+    from hermes_cli.web_routers import profiles as profile_routes
 
-    await web_server.set_source_binding(
-        web_server.SourceBindingUpdate(
+    await profile_routes.set_source_binding(
+        web_models.SourceBindingUpdate(
             source_binding_key="source:dingtalk:group:chat1:user1",
             profile_name="worker_alpha",
         )
     )
-    web_server._call_cron_for_profile(
+    web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="worker cron",
@@ -68,7 +72,7 @@ async def test_profile_details_includes_bindings_kanban_cron_and_health(isolated
         encoding="utf-8",
     )
     (memory_dir / "USER.md").write_text("user memory", encoding="utf-8")
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.create_task(
             conn,
@@ -81,7 +85,7 @@ async def test_profile_details_includes_bindings_kanban_cron_and_health(isolated
     finally:
         conn.close()
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["profile"]["name"] == "worker_alpha"
     assert details["model"]["model"] == "nous/default"
@@ -121,9 +125,9 @@ async def test_profile_details_includes_bindings_kanban_cron_and_health(isolated
 
 @pytest.mark.asyncio
 async def test_profile_details_redacts_binding_webhook_secrets(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
-    store = web_server._source_binding_store()
+    store = SourceAgentBindingStore()
     try:
         store.set_binding(
             "source:dingtalk:group:chat1:user1",
@@ -146,7 +150,7 @@ async def test_profile_details_redacts_binding_webhook_secrets(isolated_dashboar
     finally:
         store.close()
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
     extra = details["bindings"][0]["fallback_extra"]
 
     assert "session_webhook" not in extra
@@ -169,16 +173,16 @@ async def test_profile_details_redacts_binding_webhook_secrets(isolated_dashboar
 
 @pytest.mark.asyncio
 async def test_profile_list_includes_agent_id_and_binding_count(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
-    await web_server.set_source_binding(
-        web_server.SourceBindingUpdate(
+    await profile_routes.set_source_binding(
+        web_models.SourceBindingUpdate(
             source_binding_key="source:dingtalk:group:chat1:user1",
             profile_name="worker_alpha",
         )
     )
 
-    result = await web_server.list_profiles_endpoint()
+    result = await profile_routes.list_profiles_endpoint()
     by_name = {profile["name"]: profile for profile in result["profiles"]}
 
     assert by_name["default"]["agent_id"] == "default"
@@ -196,7 +200,7 @@ async def test_profile_list_includes_agent_id_and_binding_count(isolated_dashboa
 
 @pytest.mark.asyncio
 async def test_profile_details_tolerates_invalid_profile_config(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     (worker_home / "config.yaml").write_text(
@@ -204,7 +208,7 @@ async def test_profile_details_tolerates_invalid_profile_config(isolated_dashboa
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["model"] == {"provider": "", "model": ""}
     assert details["health"]["status"] == "warning"
@@ -214,7 +218,7 @@ async def test_profile_details_tolerates_invalid_profile_config(isolated_dashboa
 
 @pytest.mark.asyncio
 async def test_profile_health_ignores_resolved_config_parse_warning(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     logs_dir = worker_home / "logs"
@@ -232,7 +236,7 @@ async def test_profile_health_ignores_resolved_config_parse_warning(isolated_das
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["health"]["status"] == "ok"
     assert details["health"]["config_error"] is None
@@ -240,12 +244,12 @@ async def test_profile_health_ignores_resolved_config_parse_warning(isolated_das
 
 
 @pytest.mark.asyncio
-async def test_dashboard_profile_clone_copies_config_but_no_env_or_skills(
+async def test_dashboard_profile_clone_copies_config_env_and_skills(
     isolated_dashboard_profiles,
     monkeypatch,
 ):
-    from hermes_cli import profiles, web_server
-    from hermes_cli.profiles import NO_BUNDLED_SKILLS_MARKER
+    from hermes_cli import profiles
+    from hermes_cli.web_routers import profiles as profile_routes
 
     default_home = isolated_dashboard_profiles["default"]
     (default_home / ".env").write_text("DASHSCOPE_API_KEY=secret\n", encoding="utf-8")
@@ -254,25 +258,24 @@ async def test_dashboard_profile_clone_copies_config_but_no_env_or_skills(
     monkeypatch.setattr(profiles, "check_alias_collision", lambda name: None)
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: None)
 
-    result = await web_server.create_profile_endpoint(
-        web_server.ProfileCreate(name="envless_clone", clone_from_default=True)
+    result = await profile_routes.create_profile_endpoint(
+        web_models.ProfileCreate(name="envless_clone", clone_from_default=True)
     )
 
     clone_home = default_home / "profiles" / "envless_clone"
     assert result["name"] == "envless_clone"
     assert (clone_home / "config.yaml").exists()
-    assert not (clone_home / "skills" / "demo" / "SKILL.md").exists()
-    assert (clone_home / NO_BUNDLED_SKILLS_MARKER).exists()
-    assert not (clone_home / ".env").exists()
+    assert (clone_home / "skills" / "demo" / "SKILL.md").exists()
+    assert (clone_home / ".env").read_text(encoding="utf-8") == "DASHSCOPE_API_KEY=secret\n"
 
 
 @pytest.mark.asyncio
-async def test_dashboard_profile_clone_from_template_copies_identity_but_no_env_or_skills(
+async def test_dashboard_profile_clone_from_template_copies_identity_env_and_skills(
     isolated_dashboard_profiles,
     monkeypatch,
 ):
-    from hermes_cli import profiles, web_server
-    from hermes_cli.profiles import NO_BUNDLED_SKILLS_MARKER
+    from hermes_cli import profiles
+    from hermes_cli.web_routers import profiles as profile_routes
 
     default_home = isolated_dashboard_profiles["default"]
     source_home = isolated_dashboard_profiles["worker_alpha"]
@@ -284,28 +287,27 @@ async def test_dashboard_profile_clone_from_template_copies_identity_but_no_env_
     monkeypatch.setattr(profiles, "check_alias_collision", lambda name: None)
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: None)
 
-    result = await web_server.create_profile_endpoint(
-        web_server.ProfileCreate(name="from_template", clone_from="worker_alpha")
+    result = await profile_routes.create_profile_endpoint(
+        web_models.ProfileCreate(name="from_template", clone_from="worker_alpha")
     )
 
     clone_home = default_home / "profiles" / "from_template"
     assert result["name"] == "from_template"
     assert (clone_home / "config.yaml").exists()
     assert (clone_home / "SOUL.md").read_text(encoding="utf-8") == "template soul\n"
-    assert not (clone_home / "skills" / "demo" / "SKILL.md").exists()
-    assert (clone_home / NO_BUNDLED_SKILLS_MARKER).exists()
-    assert not (clone_home / ".env").exists()
+    assert (clone_home / "skills" / "demo" / "SKILL.md").exists()
+    assert (clone_home / ".env").read_text(encoding="utf-8") == "DASHSCOPE_API_KEY=secret\n"
 
 
 @pytest.mark.asyncio
 async def test_profile_template_endpoint_updates_metadata(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
-    result = await web_server.set_profile_template(
+    result = await profile_routes.set_profile_template(
         "worker_alpha",
-        web_server.ProfileTemplateUpdate(template=True),
+        web_models.ProfileTemplateUpdate(template=True),
     )
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert result == {"ok": True, "name": "worker_alpha", "template": True}
     assert details["profile"]["template"] is True
@@ -313,7 +315,7 @@ async def test_profile_template_endpoint_updates_metadata(isolated_dashboard_pro
 
 @pytest.mark.asyncio
 async def test_copy_profile_skills_from_default(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     default_home = isolated_dashboard_profiles["default"]
     (default_home / "skills" / "default_demo").mkdir(parents=True)
@@ -322,11 +324,11 @@ async def test_copy_profile_skills_from_default(isolated_dashboard_profiles):
         encoding="utf-8",
     )
 
-    result = await web_server.copy_profile_skills(
+    result = await profile_routes.copy_profile_skills(
         "worker_alpha",
-        web_server.ProfileSkillsCopy(source_profile="default"),
+        web_models.ProfileSkillsCopy(source_profile="default"),
     )
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert result["ok"] is True
     assert result["copied_skills"] == ["default_demo"]
@@ -336,7 +338,7 @@ async def test_copy_profile_skills_from_default(isolated_dashboard_profiles):
 
 @pytest.mark.asyncio
 async def test_copy_selected_profile_skills_from_default(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     default_home = isolated_dashboard_profiles["default"]
     for skill in ("apple/notes", "devops/kanban-worker", "research/arxiv"):
@@ -344,14 +346,14 @@ async def test_copy_selected_profile_skills_from_default(isolated_dashboard_prof
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(f"name: {skill}\n", encoding="utf-8")
 
-    result = await web_server.copy_profile_skills(
+    result = await profile_routes.copy_profile_skills(
         "worker_alpha",
-        web_server.ProfileSkillsCopy(
+        web_models.ProfileSkillsCopy(
             source_profile="default",
             skills=["research/arxiv", "apple/notes"],
         ),
     )
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert result["ok"] is True
     assert result["copied_skills"] == ["apple/notes", "research/arxiv"]
@@ -362,12 +364,12 @@ async def test_copy_selected_profile_skills_from_default(isolated_dashboard_prof
 
 @pytest.mark.asyncio
 async def test_copy_selected_profile_skill_rejects_path_traversal(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     with pytest.raises(Exception) as excinfo:
-        await web_server.copy_profile_skills(
+        await profile_routes.copy_profile_skills(
             "worker_alpha",
-            web_server.ProfileSkillsCopy(source_profile="default", skills=["../secret"]),
+            web_models.ProfileSkillsCopy(source_profile="default", skills=["../secret"]),
         )
 
     assert getattr(excinfo.value, "status_code", None) == 400
@@ -375,7 +377,7 @@ async def test_copy_selected_profile_skill_rejects_path_traversal(isolated_dashb
 
 @pytest.mark.asyncio
 async def test_delete_profile_skill_removes_only_target_skill(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     for skill in ("apple/notes", "apple/reminders"):
@@ -383,8 +385,8 @@ async def test_delete_profile_skill_removes_only_target_skill(isolated_dashboard
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(f"name: {skill}\n", encoding="utf-8")
 
-    result = await web_server.delete_profile_skill("worker_alpha", "apple/notes")
-    details = await web_server.get_profile_details("worker_alpha")
+    result = await profile_routes.delete_profile_skill("worker_alpha", "apple/notes")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert result["ok"] is True
     assert result["deleted_skill"] == "apple/notes"
@@ -396,7 +398,7 @@ async def test_delete_profile_skill_removes_only_target_skill(isolated_dashboard
 
 @pytest.mark.asyncio
 async def test_delete_profile_skill_rejects_default_and_path_traversal(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     default_home = isolated_dashboard_profiles["default"]
     skill_dir = default_home / "skills" / "apple" / "notes"
@@ -404,9 +406,9 @@ async def test_delete_profile_skill_rejects_default_and_path_traversal(isolated_
     (skill_dir / "SKILL.md").write_text("name: notes\n", encoding="utf-8")
 
     with pytest.raises(Exception) as default_exc:
-        await web_server.delete_profile_skill("default", "apple/notes")
+        await profile_routes.delete_profile_skill("default", "apple/notes")
     with pytest.raises(Exception) as traversal_exc:
-        await web_server.delete_profile_skill("worker_alpha", "../secret")
+        await profile_routes.delete_profile_skill("worker_alpha", "../secret")
 
     assert getattr(default_exc.value, "status_code", None) == 400
     assert getattr(traversal_exc.value, "status_code", None) == 400
@@ -419,18 +421,18 @@ async def test_profile_memory_file_api_reads_writes_and_audits(
     monkeypatch,
 ):
     from gateway import agent_audit
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     audit_path = isolated_dashboard_profiles["default"] / "gateway_agent_audit.jsonl"
     monkeypatch.setattr(agent_audit, "DEFAULT_AGENT_AUDIT_LOG", audit_path)
 
-    missing = await web_server.get_profile_memory_file("worker_alpha", "MEMORY.md")
-    written = await web_server.update_profile_memory_file(
+    missing = await profile_routes.get_profile_memory("worker_alpha", "MEMORY.md")
+    written = await profile_routes.update_profile_memory(
         "worker_alpha",
         "MEMORY.md",
-        web_server.ProfileMemoryFileUpdate(content="remember this worker fact\n"),
+        web_models.ProfileMemoryUpdate(content="remember this worker fact\n"),
     )
-    loaded = await web_server.get_profile_memory_file("worker_alpha", "MEMORY.md")
+    loaded = await profile_routes.get_profile_memory("worker_alpha", "MEMORY.md")
     events = [
         json.loads(line)
         for line in audit_path.read_text(encoding="utf-8").splitlines()
@@ -447,19 +449,19 @@ async def test_profile_memory_file_api_reads_writes_and_audits(
 
 @pytest.mark.asyncio
 async def test_profile_memory_file_api_rejects_unmanaged_files(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     with pytest.raises(Exception) as traversal_exc:
-        await web_server.get_profile_memory_file("worker_alpha", "../config.yaml")
+        await profile_routes.get_profile_memory("worker_alpha", "../config.yaml")
     with pytest.raises(Exception) as unknown_exc:
-        await web_server.update_profile_memory_file(
+        await profile_routes.update_profile_memory(
             "worker_alpha",
             "NOTES.md",
-            web_server.ProfileMemoryFileUpdate(content="nope"),
+            web_models.ProfileMemoryUpdate(content="nope"),
         )
 
-    assert getattr(traversal_exc.value, "status_code", None) == 400
-    assert getattr(unknown_exc.value, "status_code", None) == 400
+    assert getattr(traversal_exc.value, "status_code", None) == 404
+    assert getattr(unknown_exc.value, "status_code", None) == 404
 
 
 @pytest.mark.asyncio
@@ -468,7 +470,7 @@ async def test_profile_skill_manifest_api_reads_writes_and_audits(
     monkeypatch,
 ):
     from gateway import agent_audit
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     audit_path = isolated_dashboard_profiles["default"] / "gateway_agent_audit.jsonl"
     monkeypatch.setattr(agent_audit, "DEFAULT_AGENT_AUDIT_LOG", audit_path)
@@ -477,11 +479,11 @@ async def test_profile_skill_manifest_api_reads_writes_and_audits(
     manifest = skill_dir / "SKILL.md"
     manifest.write_text("name: arxiv\ndescription: old\n", encoding="utf-8")
 
-    loaded = await web_server.get_profile_skill_manifest("worker_alpha", "research/arxiv")
-    updated = await web_server.update_profile_skill_manifest(
+    loaded = await profile_routes.get_profile_skill_manifest("worker_alpha", "research/arxiv")
+    updated = await profile_routes.update_profile_skill_manifest(
         "worker_alpha",
         "research/arxiv",
-        web_server.ProfileSkillManifestUpdate(
+        web_models.ProfileSkillManifestUpdate(
             content="name: arxiv\ndescription: updated\n",
         ),
     )
@@ -501,20 +503,20 @@ async def test_profile_skill_manifest_api_reads_writes_and_audits(
 async def test_profile_skill_manifest_api_rejects_default_and_path_traversal(
     isolated_dashboard_profiles,
 ):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     default_skill = isolated_dashboard_profiles["default"] / "skills" / "demo"
     default_skill.mkdir(parents=True)
     (default_skill / "SKILL.md").write_text("name: demo\n", encoding="utf-8")
 
     with pytest.raises(Exception) as default_exc:
-        await web_server.update_profile_skill_manifest(
+        await profile_routes.update_profile_skill_manifest(
             "default",
             "demo",
-            web_server.ProfileSkillManifestUpdate(content="name: demo\n"),
+            web_models.ProfileSkillManifestUpdate(content="name: demo\n"),
         )
     with pytest.raises(Exception) as traversal_exc:
-        await web_server.get_profile_skill_manifest("worker_alpha", "../secret")
+        await profile_routes.get_profile_skill_manifest("worker_alpha", "../secret")
 
     assert getattr(default_exc.value, "status_code", None) == 400
     assert getattr(traversal_exc.value, "status_code", None) == 400
@@ -522,7 +524,8 @@ async def test_profile_skill_manifest_api_rejects_default_and_path_traversal(
 
 @pytest.mark.asyncio
 async def test_profile_describe_endpoint_reuses_profile_describer(isolated_dashboard_profiles, monkeypatch):
-    from hermes_cli import profile_describer, web_server
+    from hermes_cli import profile_describer
+    from hermes_cli.web_routers import profiles as profile_routes
 
     observed = {}
 
@@ -538,9 +541,9 @@ async def test_profile_describe_endpoint_reuses_profile_describer(isolated_dashb
 
     monkeypatch.setattr(profile_describer, "describe_profile", fake_describe_profile)
 
-    result = await web_server.describe_profile_endpoint(
+    result = await profile_routes.describe_profile_endpoint(
         "worker_alpha",
-        web_server.ProfileDescribeRequest(overwrite=True),
+        web_models.ProfileDescribeAuto(overwrite=True),
     )
 
     assert observed == {"name": "worker_alpha", "overwrite": True}
@@ -555,7 +558,7 @@ async def test_profile_describe_endpoint_reuses_profile_describer(isolated_dashb
 @pytest.mark.asyncio
 async def test_agent_audit_endpoint_filters_profile(isolated_dashboard_profiles, monkeypatch):
     from gateway import agent_audit
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     audit_path = isolated_dashboard_profiles["default"] / "gateway_agent_audit.jsonl"
     monkeypatch.setattr(agent_audit, "DEFAULT_AGENT_AUDIT_LOG", audit_path)
@@ -577,7 +580,7 @@ async def test_agent_audit_endpoint_filters_profile(isolated_dashboard_profiles,
         encoding="utf-8",
     )
 
-    result = await web_server.list_agent_audit(profile="worker_alpha", limit=10)
+    result = await profile_routes.list_agent_audit(profile="worker_alpha", limit=10)
 
     assert [event["action"] for event in result["events"]] == ["agent.webhook"]
     assert result["events"][0]["after"]["webhook_url"] == "[REDACTED]"
@@ -586,7 +589,7 @@ async def test_agent_audit_endpoint_filters_profile(isolated_dashboard_profiles,
 @pytest.mark.asyncio
 async def test_agent_audit_endpoint_supports_offset_and_scan_cap(isolated_dashboard_profiles, monkeypatch):
     from gateway import agent_audit
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     audit_path = isolated_dashboard_profiles["default"] / "gateway_agent_audit.jsonl"
     monkeypatch.setattr(agent_audit, "DEFAULT_AGENT_AUDIT_LOG", audit_path)
@@ -599,7 +602,7 @@ async def test_agent_audit_endpoint_supports_offset_and_scan_cap(isolated_dashbo
         encoding="utf-8",
     )
 
-    page = await web_server.list_agent_audit(
+    page = await profile_routes.list_agent_audit(
         profile="worker_alpha",
         limit=2,
         offset=1,
@@ -614,18 +617,18 @@ async def test_agent_audit_endpoint_supports_offset_and_scan_cap(isolated_dashbo
 @pytest.mark.asyncio
 async def test_profile_template_toggle_writes_audit(isolated_dashboard_profiles, monkeypatch):
     from gateway import agent_audit
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     audit_path = isolated_dashboard_profiles["default"] / "gateway_agent_audit.jsonl"
     monkeypatch.setattr(agent_audit, "DEFAULT_AGENT_AUDIT_LOG", audit_path)
 
-    marked = await web_server.set_profile_template(
+    marked = await profile_routes.set_profile_template(
         "worker_alpha",
-        web_server.ProfileTemplateUpdate(template=True),
+        web_models.ProfileTemplateUpdate(template=True),
     )
-    unmarked = await web_server.set_profile_template(
+    unmarked = await profile_routes.set_profile_template(
         "worker_alpha",
-        web_server.ProfileTemplateUpdate(template=False),
+        web_models.ProfileTemplateUpdate(template=False),
     )
 
     events = [
@@ -648,14 +651,15 @@ async def test_profile_metadata_endpoint_updates_description_and_template(
     monkeypatch,
 ):
     from gateway import agent_audit
-    from hermes_cli import profiles, web_server
+    from hermes_cli import profiles
+    from hermes_cli.web_routers import profiles as profile_routes
 
     audit_path = isolated_dashboard_profiles["default"] / "gateway_agent_audit.jsonl"
     monkeypatch.setattr(agent_audit, "DEFAULT_AGENT_AUDIT_LOG", audit_path)
 
-    result = await web_server.update_profile_metadata(
+    result = await profile_routes.update_profile_metadata(
         "worker_alpha",
-        web_server.ProfileMetadataUpdate(
+        web_models.ProfileMetadataUpdate(
             description="Handles focused worker tasks.",
             description_auto=False,
             template=True,
@@ -668,7 +672,10 @@ async def test_profile_metadata_endpoint_updates_description_and_template(
     ]
 
     assert result["ok"] is True
-    assert result["metadata"] == {
+    assert {
+        key: result["metadata"][key]
+        for key in ("description", "description_auto", "template")
+    } == {
         "description": "Handles focused worker tasks.",
         "description_auto": False,
         "template": True,
@@ -680,7 +687,7 @@ async def test_profile_metadata_endpoint_updates_description_and_template(
 
 @pytest.mark.asyncio
 async def test_profile_health_ignores_title_generation_warning(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     logs_dir = worker_home / "logs"
@@ -693,7 +700,7 @@ async def test_profile_health_ignores_title_generation_warning(isolated_dashboar
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["health"]["status"] == "ok"
     assert details["health"]["recent_error"] is None
@@ -701,7 +708,7 @@ async def test_profile_health_ignores_title_generation_warning(isolated_dashboar
 
 @pytest.mark.asyncio
 async def test_profile_health_ignores_deleted_scratch_cwd_traceback(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     logs_dir = worker_home / "logs"
@@ -718,7 +725,7 @@ async def test_profile_health_ignores_deleted_scratch_cwd_traceback(isolated_das
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["health"]["status"] == "ok"
     assert details["health"]["recent_error"] is None
@@ -728,7 +735,7 @@ async def test_profile_health_ignores_deleted_scratch_cwd_traceback(isolated_das
 async def test_default_profile_health_ignores_gateway_transport_noise(
     isolated_dashboard_profiles,
 ):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     default_home = isolated_dashboard_profiles["default"]
     logs_dir = default_home / "logs"
@@ -746,7 +753,7 @@ async def test_default_profile_health_ignores_gateway_transport_noise(
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("default")
+    details = await profile_routes.get_profile_details("default")
 
     assert details["health"]["status"] == "ok"
     assert details["health"]["recent_error"] is None
@@ -756,7 +763,7 @@ async def test_default_profile_health_ignores_gateway_transport_noise(
 async def test_named_profile_health_ignores_global_gateway_transport_noise(
     isolated_dashboard_profiles,
 ):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     logs_dir = worker_home / "logs"
@@ -768,7 +775,7 @@ async def test_named_profile_health_ignores_global_gateway_transport_noise(
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["health"]["status"] == "ok"
     assert details["health"]["recent_error"] is None
@@ -776,7 +783,7 @@ async def test_named_profile_health_ignores_global_gateway_transport_noise(
 
 @pytest.mark.asyncio
 async def test_profile_health_keeps_real_error_before_title_warning(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     logs_dir = worker_home / "logs"
@@ -790,7 +797,7 @@ async def test_profile_health_keeps_real_error_before_title_warning(isolated_das
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["health"]["status"] == "warning"
     assert "real gateway issue" in details["health"]["recent_error"]
@@ -798,7 +805,7 @@ async def test_profile_health_keeps_real_error_before_title_warning(isolated_das
 
 @pytest.mark.asyncio
 async def test_profile_health_surfaces_warning_without_marking_unhealthy(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     worker_home = isolated_dashboard_profiles["worker_alpha"]
     logs_dir = worker_home / "logs"
@@ -809,21 +816,32 @@ async def test_profile_health_surfaces_warning_without_marking_unhealthy(isolate
         encoding="utf-8",
     )
 
-    details = await web_server.get_profile_details("worker_alpha")
+    details = await profile_routes.get_profile_details("worker_alpha")
 
     assert details["health"]["status"] == "ok"
     assert "Tool terminal returned error" in details["health"]["recent_error"]
 
 
 @pytest.mark.asyncio
-async def test_profile_model_endpoint_updates_profile_config(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+async def test_profile_model_endpoint_updates_profile_config(isolated_dashboard_profiles, monkeypatch):
+    from hermes_cli import model_assignment
+    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_cli.web_routers import profiles as profile_routes
 
-    result = await web_server.set_profile_model(
-        "worker_alpha",
-        web_server.ProfileModelUpdate(provider="anthropic", model="claude-test"),
+    monkeypatch.setattr(
+        model_assignment,
+        "validated_main_model_selection",
+        lambda _config, provider, model, _base_url: ModelSwitchResult(
+            success=True,
+            target_provider=provider,
+            new_model=model,
+        ),
     )
-    current = await web_server.get_profile_model("worker_alpha")
+    result = await profile_routes.set_profile_model(
+        "worker_alpha",
+        web_models.ProfileModelUpdate(provider="anthropic", model="claude-test"),
+    )
+    current = await profile_routes.get_profile_model("worker_alpha")
 
     assert result == {"ok": True, "provider": "anthropic", "model": "claude-test"}
     assert current == {"provider": "anthropic", "model": "claude-test"}
@@ -835,7 +853,8 @@ async def test_profile_model_endpoint_updates_profile_config(isolated_dashboard_
 @pytest.mark.asyncio
 async def test_source_binding_api_and_session_annotation(isolated_dashboard_profiles, monkeypatch):
     import hermes_state
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
+    from hermes_cli.web_routers import sessions as session_routes
 
     monkeypatch.setattr(
         hermes_state,
@@ -852,21 +871,21 @@ async def test_source_binding_api_and_session_annotation(isolated_dashboard_prof
     finally:
         db.close()
 
-    set_result = await web_server.set_source_binding(
-        web_server.SourceBindingUpdate(
+    set_result = await profile_routes.set_source_binding(
+        web_models.SourceBindingUpdate(
             source_binding_key="source:dingtalk:group:chat1:user1",
             profile_name="worker_alpha",
         )
     )
-    sessions = web_server.get_sessions(limit=10, offset=0)
+    sessions = session_routes.get_sessions(limit=10, offset=0)
 
     assert set_result["binding"]["profile_name"] == "worker_alpha"
     assert sessions["sessions"][0]["source_binding_key"] == "source:dingtalk:group:chat1:user1"
     assert sessions["sessions"][0]["bound_profile"] == "worker_alpha"
     assert sessions["sessions"][0]["session_profile"] == "worker_alpha"
 
-    cleared = await web_server.delete_source_binding("source:dingtalk:group:chat1:user1")
-    sessions_after = web_server.get_sessions(limit=10, offset=0)
+    cleared = await profile_routes.delete_source_binding("source:dingtalk:group:chat1:user1")
+    sessions_after = session_routes.get_sessions(limit=10, offset=0)
 
     assert cleared == {"ok": True, "deleted": True}
     assert sessions_after["sessions"][0]["bound_profile"] == "default"
@@ -877,10 +896,12 @@ async def test_source_binding_task_endpoint_creates_kanban_task_and_subscription
     isolated_dashboard_profiles,
 ):
     from hermes_cli import kanban_db as kb
-    from hermes_cli import web_server
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+    from hermes_cli.web_routers import profiles as profile_routes
 
     source_key = "source:dingtalk:group:chat1:user1"
-    store = web_server._source_binding_store()
+    store = SourceAgentBindingStore()
     try:
         store.set_binding(
             source_key,
@@ -897,18 +918,18 @@ async def test_source_binding_task_endpoint_creates_kanban_task_and_subscription
     finally:
         store.close()
 
-    result = await web_server.create_source_binding_task(
-        web_server.SourceBindingTaskCreate(
+    result = await profile_routes.create_source_binding_task(
+        web_models.SourceBindingTaskCreate(
             source_binding_key=source_key,
             profile_name="worker_alpha",
             task="review session handoff",
         )
     )
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, result["task_id"])
-        subs = kb.list_notify_subs(conn, result["task_id"])
+        subs = kbn.list_notify_subs(conn, result["task_id"])
     finally:
         conn.close()
 
@@ -937,18 +958,21 @@ async def test_dashboard_delete_profile_removes_source_bindings_and_audits(
     isolated_dashboard_profiles,
     monkeypatch,
 ):
-    from gateway import agent_audit
+    from gateway import agent_audit, source_agent_binding
     from hermes_cli import profiles as profiles_mod
-    from hermes_cli import web_server
+    from hermes_cli import web_server_cron
+    from hermes_cli.web_routers import cron as cron_routes
+    from hermes_cli.web_routers import profiles as profile_routes
 
     monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *args, **kwargs: None)
     sent_notifications = []
-    monkeypatch.setattr(
-        web_server,
-        "_send_dingtalk_session_webhook",
-        lambda webhook, text: sent_notifications.append((webhook, text)),
-    )
-    store = web_server._source_binding_store()
+
+    async def record_notification(profile_name, targets):
+        sent_notifications.append((profile_name, targets))
+        return len(targets)
+
+    monkeypatch.setattr(source_agent_binding, "notify_unbound_chats", record_notification)
+    store = SourceAgentBindingStore()
     try:
         store.set_binding(
             "source:dingtalk:group:delete:user",
@@ -962,22 +986,30 @@ async def test_dashboard_delete_profile_removes_source_bindings_and_audits(
         )
     finally:
         store.close()
-    cron_job = await web_server.create_cron_job(
-        web_server.CronJobCreate(
+    await cron_routes.create_cron_job(
+        web_models.CronJobCreate(
             prompt="worker cron",
             schedule="every 1h",
             name="delete-worker-cron",
         ),
         profile="worker_alpha",
     )
+    cron_removal_attempts = []
+    real_mutate = web_server_cron._mutate_cron_for_profile
 
-    result = await web_server.delete_profile_endpoint("worker_alpha")
-    store = web_server._source_binding_store()
+    def observe_cron_removal(profile_name, method, *args):
+        if method == "remove_job":
+            cron_removal_attempts.append((profile_name, args))
+        return real_mutate(profile_name, method, *args)
+
+    monkeypatch.setattr(web_server_cron, "_mutate_cron_for_profile", observe_cron_removal)
+
+    result = await profile_routes.delete_profile_endpoint("worker_alpha")
+    store = SourceAgentBindingStore()
     try:
         remaining = store.list_bindings(profile_name="worker_alpha")
     finally:
         store.close()
-    cron_jobs = web_server._call_cron_store("list_jobs", True)
     audit_events = [
         json.loads(line)
         for line in agent_audit.DEFAULT_AGENT_AUDIT_LOG.read_text(encoding="utf-8").splitlines()
@@ -986,20 +1018,16 @@ async def test_dashboard_delete_profile_removes_source_bindings_and_audits(
     assert result["ok"] is True
     assert not isolated_dashboard_profiles["worker_alpha"].exists()
     assert remaining == []
-    assert all(job["id"] != cron_job["id"] for job in cron_jobs)
-    assert len(sent_notifications) == 1
-    assert sent_notifications[0][0] == "https://api.dingtalk.com/robot/sendBySession?session=secret"
-    assert "worker_alpha" in sent_notifications[0][1]
-    assert "/agent use <profile>" in sent_notifications[0][1]
+    assert cron_removal_attempts == []
+    assert result["notified_chats"] == 1
+    assert sent_notifications == [(
+        "worker_alpha",
+        [{"platform": "dingtalk", "chat_id": "delete"}],
+    )]
     assert audit_events[-1]["action"] == "agent.delete"
     assert audit_events[-1]["extra"]["removed_bindings"] == 1
-    assert audit_events[-1]["extra"]["removed_cron_jobs"] == 1
-    assert audit_events[-1]["extra"]["notification"] == {
-        "attempted": 1,
-        "sent": 1,
-        "failed": 0,
-        "skipped": 0,
-    }
+    assert "removed_cron_jobs" not in audit_events[-1]["extra"]
+    assert audit_events[-1]["extra"]["notified_chats"] == 1
     assert "secret" not in json.dumps(audit_events[-1])
 
 
@@ -1008,17 +1036,17 @@ async def test_dashboard_delete_profile_notification_failure_does_not_block(
     isolated_dashboard_profiles,
     monkeypatch,
 ):
-    from gateway import agent_audit
+    from gateway import agent_audit, source_agent_binding
     from hermes_cli import profiles as profiles_mod
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import profiles as profile_routes
 
     monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *args, **kwargs: None)
 
-    def fail_send(webhook, text):
-        raise RuntimeError("send failed")
+    async def fail_notifications(profile_name, targets):
+        return 0
 
-    monkeypatch.setattr(web_server, "_send_dingtalk_session_webhook", fail_send)
-    store = web_server._source_binding_store()
+    monkeypatch.setattr(source_agent_binding, "notify_unbound_chats", fail_notifications)
+    store = SourceAgentBindingStore()
     try:
         store.set_binding(
             "source:dingtalk:group:delete:user",
@@ -1033,35 +1061,32 @@ async def test_dashboard_delete_profile_notification_failure_does_not_block(
     finally:
         store.close()
 
-    result = await web_server.delete_profile_endpoint("worker_alpha")
+    result = await profile_routes.delete_profile_endpoint("worker_alpha")
     audit_events = [
         json.loads(line)
         for line in agent_audit.DEFAULT_AGENT_AUDIT_LOG.read_text(encoding="utf-8").splitlines()
     ]
 
     assert result["ok"] is True
+    assert result["notified_chats"] == 0
     assert not isolated_dashboard_profiles["worker_alpha"].exists()
     assert audit_events[-1]["extra"]["removed_bindings"] == 1
-    assert audit_events[-1]["extra"]["notification"] == {
-        "attempted": 1,
-        "sent": 0,
-        "failed": 1,
-        "skipped": 0,
-    }
+    assert audit_events[-1]["extra"]["notified_chats"] == 0
 
 
 @pytest.mark.asyncio
 async def test_cron_owner_filter_remains_logical(isolated_dashboard_profiles):
-    from hermes_cli import web_server
+    from hermes_cli import web_server_cron
+    from hermes_cli.web_routers import cron as cron_routes
 
-    default_job = web_server._call_cron_for_profile(
+    default_job = web_server_cron._call_cron_for_profile(
         "default",
         "create_job",
         prompt="default cron",
         schedule="every 1h",
         name="default-cron",
     )
-    worker_job = web_server._call_cron_for_profile(
+    worker_job = web_server_cron._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="worker cron",
@@ -1069,8 +1094,8 @@ async def test_cron_owner_filter_remains_logical(isolated_dashboard_profiles):
         name="worker-cron",
     )
 
-    default_jobs = await web_server.list_cron_jobs(profile="default")
-    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+    default_jobs = await cron_routes.list_cron_jobs(profile="default")
+    worker_jobs = await cron_routes.list_cron_jobs(profile="worker_alpha")
 
     assert [job["id"] for job in default_jobs] == [default_job["id"]]
     assert [job["id"] for job in worker_jobs] == [worker_job["id"]]

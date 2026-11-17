@@ -1,31 +1,13 @@
-import { useEffect, useRef, useMemo, type ReactNode } from "react";
-import mermaid from "mermaid";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-let _mermaidInited = false;
-function ensureMermaid() {
-  if (_mermaidInited) return;
-  _mermaidInited = true;
-  mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
-}
-
-function MermaidBlock({ code }: { code: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    ensureMermaid();
-    if (!ref.current) return;
-    const id = `mermaid-${Math.random().toString(36).slice(2)}`;
-    mermaid
-      .render(id, code)
-      .then(({ svg }) => { if (ref.current) ref.current.innerHTML = svg; })
-      .catch(() => { if (ref.current) ref.current.textContent = code; });
-  }, [code]);
-  return <div ref={ref} className="my-4 flex justify-center overflow-x-auto" />;
-}
+import { parseBlocks, parseInline, type BlockNode, type InlineNode } from "@/lib/markdown-parse";
+import { mermaidThemeFor } from "@/lib/mermaid-theme";
+import { useTheme } from "@/themes/context";
 
 /**
  * Lightweight markdown renderer for LLM output.
- * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
- * NOT a full CommonMark parser — optimized for typical assistant message patterns.
+ * Handles code blocks (+ mermaid), headings, lists (nested, task items), blockquotes, GFM tables,
+ * rules, inline code, links, bold/italic/strikethrough — parsing lives in lib/markdown-parse.ts.
  *
  * `streaming` renders a blinking caret at the tail of the last block so it
  * appears to hug the final character instead of wrapping onto a new line
@@ -68,115 +50,156 @@ function StreamingCaret() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Types                                                              */
+/*  Mermaid diagrams                                                   */
 /* ------------------------------------------------------------------ */
 
-type BlockNode =
-  | { type: "code"; lang: string; content: string }
-  | { type: "heading"; level: number; content: string }
-  | { type: "hr" }
-  | { type: "list"; ordered: boolean; items: string[] }
-  | { type: "paragraph"; content: string };
+type MermaidApi = typeof import("mermaid")["default"];
 
-/* ------------------------------------------------------------------ */
-/*  Block parser                                                       */
-/* ------------------------------------------------------------------ */
+let mermaidPromise: Promise<MermaidApi> | null = null;
 
-function parseBlocks(text: string): BlockNode[] {
-  const lines = text.split("\n");
-  const blocks: BlockNode[] = [];
-  let i = 0;
+/**
+ * Load + initialize mermaid on first use only. Mermaid is a large dependency
+ * (~900 KB gzip), so it is dynamically imported the first time a diagram
+ * actually needs to render instead of being pulled into the main chat bundle.
+ */
+function loadMermaid(): Promise<MermaidApi> {
+  if (!mermaidPromise) {
+    mermaidPromise = import("mermaid").then(({ default: mermaid }) => mermaid);
+  }
+  return mermaidPromise;
+}
 
-  while (i < lines.length) {
-    const line = lines[i];
+let mermaidSeq = 0;
 
-    // Fenced code block
-    const fenceMatch = line.match(/^```(\w*)/);
-    if (fenceMatch) {
-      const lang = fenceMatch[1] || "";
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith("```")) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip closing ```
-      blocks.push({ type: "code", lang, content: codeLines.join("\n") });
-      continue;
-    }
+/**
+ * Renders a ```mermaid fenced block as an SVG diagram. While a message is
+ * still streaming the fence body is often syntactically incomplete, so a
+ * failed render silently falls back to showing the raw source in a <pre>
+ * rather than throwing / flashing an error box.
+ */
+function MermaidBlock({ code }: { code: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [failed, setFailed] = useState(false);
+  const diagramTheme = mermaidThemeFor(useTheme().theme.palette.background.hex);
 
-    // Heading
-    const headingMatch = line.match(/^(#{1,4})\s+(.+)/);
-    if (headingMatch) {
-      blocks.push({
-        type: "heading",
-        level: headingMatch[1].length,
-        content: headingMatch[2],
+  useEffect(() => {
+    let cancelled = false;
+    const el = ref.current;
+    if (!el) return;
+    const source = code.trim();
+    if (!source) return;
+
+    const id = `mermaid-${mermaidSeq++}`;
+    loadMermaid()
+      .then((mermaid) => {
+        // initialize() is global; set the theme for this render so a theme switch redraws in it.
+        mermaid.initialize({ startOnLoad: false, theme: diagramTheme, securityLevel: "strict" });
+        return mermaid.render(id, source);
+      })
+      .then(({ svg }) => {
+        if (cancelled || !ref.current) return;
+        ref.current.innerHTML = svg;
+        setFailed(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFailed(true);
       });
-      i++;
-      continue;
-    }
 
-    // Horizontal rule
-    if (/^[-*_]{3,}\s*$/.test(line)) {
-      blocks.push({ type: "hr" });
-      i++;
-      continue;
-    }
+    return () => {
+      cancelled = true;
+    };
+  }, [code, diagramTheme]);
 
-    // Unordered list
-    if (/^[-*+]\s/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^[-*+]\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^[-*+]\s/, ""));
-        i++;
-      }
-      blocks.push({ type: "list", ordered: false, items });
-      continue;
-    }
-
-    // Ordered list
-    if (/^\d+[.)]\s/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\d+[.)]\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+[.)]\s/, ""));
-        i++;
-      }
-      blocks.push({ type: "list", ordered: true, items });
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === "") {
-      i++;
-      continue;
-    }
-
-    // Paragraph — collect consecutive non-empty, non-special lines
-    const paraLines: string[] = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() !== "" &&
-      !lines[i].match(/^```/) &&
-      !lines[i].match(/^#{1,4}\s/) &&
-      !lines[i].match(/^[-*+]\s/) &&
-      !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
-    ) {
-      paraLines.push(lines[i]);
-      i++;
-    }
-    if (paraLines.length > 0) {
-      blocks.push({ type: "paragraph", content: paraLines.join("\n") });
-    }
+  if (failed) {
+    return (
+      <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+        <code>{code}</code>
+      </pre>
+    );
   }
 
-  return blocks;
+  return (
+    <div
+      ref={ref}
+      className="mermaid-diagram flex justify-center overflow-x-auto py-2"
+    />
+  );
 }
 
 /* ------------------------------------------------------------------ */
 /*  Block renderer                                                     */
 /* ------------------------------------------------------------------ */
+
+const HEADING_SIZES = ["text-base font-bold", "text-sm font-bold", "text-sm font-semibold", "text-sm font-medium",
+  "text-sm font-medium text-muted-foreground", "text-xs font-medium uppercase tracking-wide text-muted-foreground"];
+const ALIGN_CLASS = { left: "text-left", center: "text-center", right: "text-right" } as const;
+
+function Blocks({ blocks, highlightTerms }: { blocks: BlockNode[]; highlightTerms?: string[] }) {
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, i) => <Block key={i} block={block} highlightTerms={highlightTerms} />)}
+    </div>
+  );
+}
+
+function ListBlock({ block, highlightTerms, caret }: {
+  block: Extract<BlockNode, { type: "list" }>; highlightTerms?: string[]; caret?: ReactNode;
+}) {
+  const Tag = block.ordered ? "ol" : "ul";
+  const last = block.items.length - 1;
+  const tasks = block.items.some((item) => item.checked !== null);
+  return (
+    <Tag start={block.ordered && block.start !== 1 ? block.start : undefined}
+      className={`space-y-0.5 pl-5 text-sm ${block.ordered ? "list-decimal" : tasks ? "list-none -ml-5" : "list-disc"}`}>
+      {block.items.map((item, i) => (
+        <li key={i}>
+          {item.checked !== null && (
+            <span aria-hidden className={`mr-1.5 inline-block w-4 text-center ${item.checked ? "text-success" : "text-muted-foreground"}`}>
+              {item.checked ? "☑" : "☐"}
+            </span>
+          )}
+          <span className={item.checked ? "text-muted-foreground line-through" : undefined}>
+            <InlineContent text={item.content} highlightTerms={highlightTerms} />
+          </span>
+          {item.children.length > 0 && (
+            <div className="mt-1"><Blocks blocks={item.children} highlightTerms={highlightTerms} /></div>
+          )}
+          {i === last ? caret : null}
+        </li>
+      ))}
+    </Tag>
+  );
+}
+
+function TableBlock({ block, highlightTerms }: {
+  block: Extract<BlockNode, { type: "table" }>; highlightTerms?: string[];
+}) {
+  const cell = (text: string, k: number) => (
+    <InlineContent key={k} text={text} highlightTerms={highlightTerms} />
+  );
+  const alignOf = (k: number) => (block.align[k] ? ALIGN_CLASS[block.align[k]!] : "text-left");
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-xs">
+        <thead>
+          <tr className="border-b border-border">
+            {block.header.map((h, k) => (
+              <th key={k} className={`px-2 py-1.5 font-semibold ${alignOf(k)}`}>{cell(h, k)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {block.rows.map((row, r) => (
+            <tr key={r} className="border-b border-border/50 last:border-0">
+              {row.map((c, k) => <td key={k} className={`px-2 py-1.5 align-top ${alignOf(k)}`}>{cell(c, k)}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function Block({
   block,
@@ -189,7 +212,9 @@ function Block({
 }) {
   switch (block.type) {
     case "code":
-      if (block.lang === "mermaid") return <MermaidBlock key={block.content} code={block.content} />;
+      if (block.lang === "mermaid") {
+        return <MermaidBlock code={block.content} />;
+      }
       return (
         <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
           <code>
@@ -200,15 +225,9 @@ function Block({
       );
 
     case "heading": {
-      const Tag = `h${Math.min(block.level, 4)}` as "h1" | "h2" | "h3" | "h4";
-      const sizes: Record<string, string> = {
-        h1: "text-base font-bold",
-        h2: "text-sm font-bold",
-        h3: "text-sm font-semibold",
-        h4: "text-sm font-medium",
-      };
+      const Tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
       return (
-        <Tag className={sizes[Tag]}>
+        <Tag className={HEADING_SIZES[block.level - 1]}>
           <InlineContent text={block.content} highlightTerms={highlightTerms} />
           {caret}
         </Tag>
@@ -223,22 +242,24 @@ function Block({
         </>
       );
 
-    case "list": {
-      const Tag = block.ordered ? "ol" : "ul";
-      const last = block.items.length - 1;
+    case "list":
+      return <ListBlock block={block} highlightTerms={highlightTerms} caret={caret} />;
+
+    case "blockquote":
       return (
-        <Tag
-          className={`space-y-0.5 ${block.ordered ? "list-decimal" : "list-disc"} pl-5 text-sm`}
-        >
-          {block.items.map((item, i) => (
-            <li key={i}>
-              <InlineContent text={item} highlightTerms={highlightTerms} />
-              {i === last ? caret : null}
-            </li>
-          ))}
-        </Tag>
+        <blockquote className="border-l-2 border-primary/40 pl-3 text-muted-foreground">
+          <Blocks blocks={block.children} highlightTerms={highlightTerms} />
+          {caret}
+        </blockquote>
       );
-    }
+
+    case "table":
+      return (
+        <>
+          <TableBlock block={block} highlightTerms={highlightTerms} />
+          {caret}
+        </>
+      );
 
     case "paragraph":
       return (
@@ -251,69 +272,13 @@ function Block({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Inline parser + renderer                                           */
+/*  Inline renderer                                                    */
 /* ------------------------------------------------------------------ */
 
-type InlineNode =
-  | { type: "text"; content: string }
-  | { type: "code"; content: string }
-  | { type: "bold"; content: string }
-  | { type: "italic"; content: string }
-  | { type: "link"; text: string; href: string }
-  | { type: "br" };
+const EMPHASIS_TAGS = { bold: "strong", italic: "em", strike: "del" } as const;
+const EMPHASIS_CLASS = { bold: "font-semibold", italic: undefined, strike: "text-muted-foreground" } as const;
 
-function parseInline(text: string): InlineNode[] {
-  const nodes: InlineNode[] = [];
-  // Pattern priority: code > link > bold > italic > bare URL > line break
-  const pattern =
-    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push({ type: "text", content: text.slice(lastIndex, match.index) });
-    }
-
-    if (match[1]) {
-      // Inline code
-      nodes.push({ type: "code", content: match[1].slice(1, -1) });
-    } else if (match[2]) {
-      // [text](url) link
-      nodes.push({ type: "link", text: match[3], href: match[4] });
-    } else if (match[5]) {
-      // **bold**
-      nodes.push({ type: "bold", content: match[6] });
-    } else if (match[7]) {
-      // *italic*
-      nodes.push({ type: "italic", content: match[8] });
-    } else if (match[9]) {
-      // Bare URL
-      nodes.push({ type: "link", text: match[9], href: match[9] });
-    } else if (match[10]) {
-      // Line break within paragraph
-      nodes.push({ type: "br" });
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push({ type: "text", content: text.slice(lastIndex) });
-  }
-
-  return nodes;
-}
-
-function InlineContent({
-  text,
-  highlightTerms,
-}: {
-  text: string;
-  highlightTerms?: string[];
-}) {
-  const nodes = useMemo(() => parseInline(text), [text]);
-
+function InlineNodes({ nodes, highlightTerms }: { nodes: InlineNode[]; highlightTerms?: string[] }) {
   return (
     <>
       {nodes.map((node, i) => {
@@ -336,17 +301,15 @@ function InlineContent({
               </code>
             );
           case "bold":
-            return (
-              <strong key={i} className="font-semibold">
-                <HighlightedText text={node.content} terms={highlightTerms} />
-              </strong>
-            );
           case "italic":
+          case "strike": {
+            const Tag = EMPHASIS_TAGS[node.type];
             return (
-              <em key={i}>
-                <HighlightedText text={node.content} terms={highlightTerms} />
-              </em>
+              <Tag key={i} className={EMPHASIS_CLASS[node.type]}>
+                <InlineNodes nodes={node.children} highlightTerms={highlightTerms} />
+              </Tag>
             );
+          }
           case "link": {
             // Security: only render http(s)/mailto links. Other schemes
             // (javascript:, data:, vbscript:) are dropped to plain text so a
@@ -379,6 +342,17 @@ function InlineContent({
       })}
     </>
   );
+}
+
+function InlineContent({
+  text,
+  highlightTerms,
+}: {
+  text: string;
+  highlightTerms?: string[];
+}) {
+  const nodes = useMemo(() => parseInline(text), [text]);
+  return <InlineNodes nodes={nodes} highlightTerms={highlightTerms} />;
 }
 
 /** Highlight search terms within a plain text string. */

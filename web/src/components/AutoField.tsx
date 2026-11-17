@@ -1,30 +1,32 @@
+import { useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
+import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
-import {
-  formatConfigDescription,
-  formatConfigFieldLabel,
-  formatConfigPathLabel,
-} from "@/lib/configLabels";
+import { getConfigFieldLabel } from "@/i18n/config-labels";
 
-function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
-  const { locale } = useI18n();
-  const keyPath = schemaKey.includes(".")
-    ? locale === "zh"
-      ? formatConfigPathLabel(schemaKey, locale)
-      : schemaKey
-    : "";
-  const description = formatConfigDescription(schemaKey, schema, locale);
-  const showDescription = description && description !== keyPath;
+function FieldHint({
+  schema,
+  schemaKey,
+  description: descriptionOverride,
+}: {
+  schema: Record<string, unknown>;
+  schemaKey: string;
+  description?: string;
+}) {
+  const keyPath = schemaKey.includes(".") ? schemaKey : "";
+  const description =
+    descriptionOverride ?? (schema.description ? String(schema.description) : "");
 
   if (!keyPath && !description) return null;
 
   return (
     <div className="flex flex-col gap-0.5">
       {keyPath && <span className="text-xs font-mono text-text-tertiary">{keyPath}</span>}
-      {showDescription && <span className="text-xs text-text-secondary">{description}</span>}
+      {description && <span className="text-xs text-text-secondary">{description}</span>}
     </div>
   );
 }
@@ -40,6 +42,89 @@ function formatScalar(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function ObjectEditor({
+  fieldKey,
+  value,
+  onChange,
+}: {
+  fieldKey: string;
+  value: Record<string, unknown>;
+  onChange: (v: unknown) => void;
+}) {
+  const [newKey, setNewKey] = useState("");
+  const entries = Object.entries(value);
+
+  const addKey = () => {
+    const k = newKey.trim();
+    // Ignore blank names and refuse to clobber an existing key (silent no-op
+    // rather than overwriting the user's current value for that key).
+    if (!k || Object.prototype.hasOwnProperty.call(value, k)) return;
+    onChange({ ...value, [k]: "" });
+    setNewKey("");
+  };
+
+  const removeKey = (k: string) => {
+    const next = { ...value };
+    delete next[k];
+    onChange(next);
+  };
+
+  return (
+    <div className="grid gap-2 border border-border p-2">
+      {entries.map(([subKey, subVal]) => (
+        <div key={subKey} className="grid gap-1">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs text-muted-foreground">{subKey}</Label>
+            <Button
+              type="button"
+              ghost
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-destructive"
+              onClick={() => removeKey(subKey)}
+              aria-label={`Remove ${subKey}`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <NestedValueEditor
+            fieldKey={`${fieldKey}.${subKey}`}
+            value={subVal}
+            onChange={(next) => onChange({ ...value, [subKey]: next })}
+          />
+        </div>
+      ))}
+      <div className="flex items-center gap-1">
+        <Input
+          value={newKey}
+          onChange={(e) => setNewKey(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addKey();
+            }
+          }}
+          placeholder="new key"
+          className="h-7 text-xs"
+        />
+        <Button
+          type="button"
+          outlined
+          size="sm"
+          className="h-7 gap-1 text-xs"
+          onClick={addKey}
+          disabled={
+            !newKey.trim() ||
+            Object.prototype.hasOwnProperty.call(value, newKey.trim())
+          }
+          prefix={<Plus className="h-3.5 w-3.5" />}
+        >
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function NestedValueEditor({
   fieldKey,
   value,
@@ -50,28 +135,36 @@ function NestedValueEditor({
   onChange: (v: unknown) => void;
 }) {
   if (isRecord(value)) {
-    return (
-      <div className="grid gap-2 border border-border p-2">
-        {Object.entries(value).map(([subKey, subVal]) => (
-          <div key={subKey} className="grid gap-1">
-            <Label className="text-xs text-muted-foreground">{subKey}</Label>
-            <NestedValueEditor
-              fieldKey={`${fieldKey}.${subKey}`}
-              value={subVal}
-              onChange={(next) => onChange({ ...value, [subKey]: next })}
-            />
-          </div>
-        ))}
-      </div>
-    );
+    return <ObjectEditor fieldKey={fieldKey} value={value} onChange={onChange} />;
   }
 
   if (Array.isArray(value)) {
+    // Preserve the element shape when appending: mirror the last item's type
+    // (object → {}, array → [], otherwise empty string) so a new entry renders
+    // with the same editor the existing items use.
+    const seed = (): unknown => {
+      const last = value[value.length - 1];
+      if (isRecord(last)) return {};
+      if (Array.isArray(last)) return [];
+      return "";
+    };
     return (
       <div className="grid gap-2">
         {value.map((item, index) => (
           <div key={`${fieldKey}.${index}`} className="grid gap-1">
-            <Label className="text-xs text-muted-foreground">Item {index + 1}</Label>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs text-muted-foreground">Item {index + 1}</Label>
+              <Button
+                type="button"
+                ghost
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                onClick={() => onChange(value.filter((_, i) => i !== index))}
+                aria-label={`Remove item ${index + 1}`}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
             <NestedValueEditor
               fieldKey={`${fieldKey}.${index}`}
               value={item}
@@ -81,6 +174,16 @@ function NestedValueEditor({
             />
           </div>
         ))}
+        <Button
+          type="button"
+          outlined
+          size="sm"
+          className="h-7 justify-start gap-1 text-xs"
+          onClick={() => onChange([...value, seed()])}
+          prefix={<Plus className="h-3.5 w-3.5" />}
+        >
+          Add item
+        </Button>
       </div>
     );
   }
@@ -101,15 +204,22 @@ export function AutoField({
   onChange,
 }: AutoFieldProps) {
   const { locale } = useI18n();
-  const label = formatConfigFieldLabel(schemaKey, locale);
-  const emptyOption = locale === "zh" ? "（无）" : "(none)";
-  const commaSeparatedPlaceholder = locale === "zh" ? "多个值用逗号分隔" : "comma-separated values";
+  const override = getConfigFieldLabel(
+    locale,
+    schemaKey,
+    schema.description === undefined ? undefined : String(schema.description),
+  );
+  const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
+  const label =
+    override?.label ??
+    rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const description = override?.description;
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
       <div className="grid gap-3 border border-border p-3">
         <Label className="text-xs font-medium">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} description={description} />
         <NestedValueEditor fieldKey={schemaKey} value={value} onChange={onChange} />
       </div>
     );
@@ -120,7 +230,7 @@ export function AutoField({
       <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-0.5">
           <Label className="text-sm">{label}</Label>
-          <FieldHint schema={schema} schemaKey={schemaKey} />
+          <FieldHint schema={schema} schemaKey={schemaKey} description={description} />
         </div>
         <Switch checked={!!value} onCheckedChange={onChange} />
       </div>
@@ -132,11 +242,11 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} description={description} />
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
-              {opt || emptyOption}
+              {opt || "(none)"}
             </SelectOption>
           ))}
         </Select>
@@ -148,7 +258,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} description={description} />
         <Input
           type="number"
           value={value === undefined || value === null ? "" : String(value)}
@@ -172,7 +282,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} description={description} />
         <textarea
           className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={String(value ?? "")}
@@ -186,7 +296,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} description={description} />
         <Input
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
           onChange={(e) =>
@@ -197,7 +307,7 @@ export function AutoField({
                 .filter(Boolean),
             )
           }
-          placeholder={commaSeparatedPlaceholder}
+          placeholder="comma-separated values"
         />
       </div>
     );
@@ -206,7 +316,7 @@ export function AutoField({
   return (
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
-      <FieldHint schema={schema} schemaKey={schemaKey} />
+      <FieldHint schema={schema} schemaKey={schemaKey} description={description} />
       <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
     </div>
   );

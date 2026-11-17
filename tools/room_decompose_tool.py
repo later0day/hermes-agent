@@ -150,7 +150,7 @@ def decompose_and_route(
                 "decompose_and_route: no active parent agent bound in "
                 "ContextVar; observer loop will not be terminated."
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "decompose_and_route: hard-interrupt raised %s (%s); "
             "returning decomposition anyway",

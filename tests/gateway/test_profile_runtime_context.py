@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import os
-import sys
-import types
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.session import (
     SessionSource,
     SessionStore,
     build_session_key,
+    build_source_binding_key,
     profile_scoped_session_key,
 )
 from gateway.source_agent_binding import SourceAgentBindingStore
@@ -31,17 +30,21 @@ def _make_source() -> SessionSource:
     )
 
 
-def _make_runner(tmp_path, root):
+def _make_runner(tmp_path, root, monkeypatch):
+    import hermes_state
+
+    # The hermetic fixture's fixed DB path would override the per-profile resolution under test.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
         sessions_dir=root / "sessions",
         group_sessions_per_user=True,
         thread_sessions_per_user=False,
+        multiplex_profiles=True,
     )
     runner.session_store = SessionStore(
         root / "sessions",
         runner.config,
-        state_db_path=root / "state.db",
     )
     runner._session_db = runner.session_store._db
     runner._source_agent_binding_store = SourceAgentBindingStore(
@@ -71,78 +74,90 @@ def test_profile_scoped_session_key_keeps_default_backward_compatible():
     assert profile_scoped_session_key(base_key, "worker").startswith("agent:worker:")
 
 
-def test_bound_profile_runtime_context_uses_profile_paths(tmp_path, monkeypatch):
+def _bind_source(runner, source, profile="worker"):
+    runner._source_agent_binding_store.set_binding(
+        build_source_binding_key(source), profile,
+    )
+    source.profile = runner._profile_name_for_source(source)
+    return source
+
+
+def test_bound_profile_runtime_uses_profile_home_and_session_namespace(tmp_path, monkeypatch):
     root = tmp_path / "hermes-home"
     root.mkdir()
     profile_dir = _seed_profile(root, "worker")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    runner = _make_runner(tmp_path, root)
-    source = _make_source()
-    source_key = runner._agent_source_binding_key(source)
-    runner._source_agent_binding_store.set_binding(source_key, "worker")
+    runner = _make_runner(tmp_path, root, monkeypatch)
+    source = _bind_source(runner, _make_source())
     before_home = os.environ.get("HERMES_HOME")
 
-    context = runner._resolve_profile_runtime_context(source)
+    session_key = build_session_key(source, profile=source.profile)
 
+    assert source.profile == "worker"
+    assert runner._resolve_profile_home_for_source(source) == profile_dir
+    assert session_key.startswith("agent:worker:")
+    with runner._profile_scope_for_source(source):
+        from hermes_constants import get_hermes_home
+
+        assert get_hermes_home() == profile_dir
+        assert runner.session_store._db.db_path == profile_dir / "state.db"
+        assert gateway_run._load_gateway_config()["model"]["default"] == "worker-model"
     assert os.environ.get("HERMES_HOME") == before_home
-    assert context.profile_name == "worker"
-    assert context.agent_id == "worker"
-    assert context.profile_home == profile_dir
-    assert context.session_key.startswith("agent:worker:")
-    assert context.session_store.sessions_dir == profile_dir / "sessions"
-    assert context.session_db.db_path == profile_dir / "state.db"
-    assert context.config["model"]["default"] == "worker-model"
-    assert context.workspace_cwd == profile_dir / "workspace"
 
 
-def test_named_profile_workspace_ignores_cloned_global_terminal_cwd(tmp_path, monkeypatch):
+def test_named_profile_scope_does_not_inherit_launch_terminal_cwd(tmp_path, monkeypatch):
     root = tmp_path / "hermes-home"
     root.mkdir()
-    profile_dir = _seed_profile(root, "worker")
-    (profile_dir / "config.yaml").write_text(
-        "model:\n  provider: openrouter\n  default: worker-model\n"
-        "terminal:\n  cwd: /shared/project\n",
+    _seed_profile(root, "worker")
+    (root / "config.yaml").write_text(
+        "terminal:\n  cwd: /default/project\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    runner = _make_runner(tmp_path, root)
-    source = _make_source()
-    runner._source_agent_binding_store.set_binding(
-        runner._agent_source_binding_key(source),
-        "worker",
-    )
+    monkeypatch.setenv("TERMINAL_CWD", "/launch/project")
+    runner = _make_runner(tmp_path, root, monkeypatch)
+    source = _bind_source(runner, _make_source())
 
-    context = runner._resolve_profile_runtime_context(source)
+    with runner._profile_scope_for_source(source):
+        from tools.terminal_scope import terminal_env
 
-    assert context.workspace_cwd == profile_dir / "workspace"
+        assert terminal_env("TERMINAL_CWD") == str(Path.home())
+    assert os.environ["TERMINAL_CWD"] == "/launch/project"
 
 
-def test_profile_runtime_context_config_cache_invalidates_without_rebuilding_store(
-    tmp_path,
-    monkeypatch,
-):
+def test_profile_config_reload_reuses_store_and_scoped_db_handle(tmp_path, monkeypatch):
     root = tmp_path / "hermes-home"
     root.mkdir()
     profile_dir = _seed_profile(root, "worker", model="first-model")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    runner = _make_runner(tmp_path, root)
+    runner = _make_runner(tmp_path, root, monkeypatch)
+    source = _bind_source(runner, _make_source())
+    store = runner.session_store
 
-    first = runner._get_profile_runtime_components("worker")
-    store = first["session_store"]
+    with runner._profile_scope_for_source(source):
+        first_config = gateway_run._load_gateway_config()
+        first_db = store._db
+
     config_path = profile_dir / "config.yaml"
     config_path.write_text(
         "model:\n  provider: openrouter\n  default: second-model\n",
         encoding="utf-8",
     )
-    os.utime(config_path, (first["config_mtime"] + 5, first["config_mtime"] + 5))
+    mtime = config_path.stat().st_mtime
+    os.utime(config_path, (mtime + 5, mtime + 5))
 
-    second = runner._get_profile_runtime_components("worker")
+    with runner._profile_scope_for_source(source):
+        second_config = gateway_run._load_gateway_config()
+        second_db = store._db
 
-    assert second["config"]["model"]["default"] == "second-model"
-    assert second["session_store"] is store
+    assert first_config["model"]["default"] == "first-model"
+    assert second_config["model"]["default"] == "second-model"
+    assert runner.session_store is store
+    assert second_db is first_db
+    assert second_db.db_path == profile_dir / "state.db"
 
 
 def test_session_model_override_takes_priority_over_bound_profile_model(
@@ -154,11 +169,9 @@ def test_session_model_override_takes_priority_over_bound_profile_model(
     _seed_profile(root, "worker", model="profile-model")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    runner = _make_runner(tmp_path, root)
-    source = _make_source()
-    source_key = runner._agent_source_binding_key(source)
-    runner._source_agent_binding_store.set_binding(source_key, "worker")
-    context = runner._resolve_profile_runtime_context(source)
+    runner = _make_runner(tmp_path, root, monkeypatch)
+    source = _bind_source(runner, _make_source())
+    session_key = build_session_key(source, profile=source.profile)
 
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs",
@@ -169,23 +182,25 @@ def test_session_model_override_takes_priority_over_bound_profile_model(
             "api_mode": "chat_completions",
         },
     )
-    model, runtime = runner._resolve_session_agent_runtime(
-        source=source,
-        session_key=context.session_key,
-        user_config=context.config,
-    )
-    assert model == "profile-model"
-    assert runtime["provider"] == "openrouter"
+    with runner._profile_scope_for_source(source):
+        user_config = gateway_run._load_gateway_config()
+        model, runtime = runner._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+            user_config=user_config,
+        )
+        assert model == "profile-model"
+        assert runtime["provider"] == "openrouter"
 
-    runner._session_model_overrides[context.session_key] = {
-        "model": "override-model",
-        "provider": "openrouter",
-    }
-    model, _runtime = runner._resolve_session_agent_runtime(
-        source=source,
-        session_key=context.session_key,
-        user_config=context.config,
-    )
+        runner._session_model_overrides[session_key] = {
+            "model": "override-model",
+            "provider": "openrouter",
+        }
+        model, _runtime = runner._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+            user_config=user_config,
+        )
     assert model == "override-model"
 
 
@@ -194,99 +209,31 @@ async def test_run_agent_executes_inside_bound_profile_home(tmp_path, monkeypatc
     root = tmp_path / "hermes-home"
     root.mkdir()
     profile_dir = _seed_profile(root, "worker", model="profile-model")
-    (profile_dir / "workspace").mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
+    runner = _make_runner(tmp_path, root, monkeypatch)
+    source = _bind_source(runner, _make_source())
+    session_key = build_session_key(source, profile=source.profile)
+    captured = {}
 
-    class CapturingAgent:
-        def __init__(self, **kwargs):
-            self.session_id = kwargs.get("session_id")
-            self.tools = []
+    async def capture_turn(message, context_prompt, history, source, session_id, **kwargs):
+        from hermes_constants import get_hermes_home
 
-        def run_conversation(self, user_message, conversation_history=None, task_id=None):
-            from hermes_constants import get_hermes_home
-            from tools.terminal_tool import _task_env_overrides
+        captured["home"] = get_hermes_home()
+        return {"final_response": "ok"}
 
-            return {
-                "final_response": json.dumps(
-                    {
-                        "home": str(get_hermes_home()),
-                        "workspace_override": _task_env_overrides.get(task_id),
-                    }
-                ),
-                "messages": [],
-                "api_calls": 1,
-            }
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = CapturingAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    import gateway.run as gateway_run
-
-    monkeypatch.setattr(
-        gateway_run,
-        "_resolve_runtime_agent_kwargs",
-        lambda *args, **kwargs: {
-            "provider": "openrouter",
-            "api_key": "test-key",
-            "base_url": "https://example.test",
-            "api_mode": "chat_completions",
-        },
-    )
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-
-    runner = object.__new__(GatewayRunner)
-    runner.adapters = {}
-    runner._voice_mode = {}
-    runner._prefill_messages = []
-    runner._ephemeral_system_prompt = ""
-    runner._reasoning_config = None
-    runner._provider_routing = {}
-    runner._fallback_model = None
-    runner._session_db = None
-    runner._running_agents = {}
-    runner._session_run_generation = {}
-    runner._session_model_overrides = {}
-    runner._last_resolved_model = {}
-    runner._draining = False
-    runner.hooks = SimpleNamespace(loaded_hooks=False)
-    runner.config = SimpleNamespace(
-        thread_sessions_per_user=False,
-        group_sessions_per_user=False,
-        stt_enabled=False,
-    )
-    source = _make_source()
-    runtime_context = SimpleNamespace(
-        profile_name="worker",
-        agent_id="worker",
-        profile_home=profile_dir,
-        config={
-            "model": {"provider": "openrouter", "default": "profile-model"},
-            "display": {"platforms": {"dingtalk": {"tool_progress": "off"}}},
-        },
-        session_store=None,
-        session_db=None,
-        session_key="agent:worker:dingtalk:group:chat-1:user-1",
-        source_binding_key="source:dingtalk:group:chat-1:user-1",
-        workspace_cwd=profile_dir / "workspace",
-        binding=None,
-        config_mtime=0,
-    )
-
+    runner._run_agent_inner = capture_turn
     result = await runner._run_agent(
         message="hello",
         context_prompt="",
         history=[],
         source=source,
         session_id="sess-worker",
-        session_key=runtime_context.session_key,
-        runtime_context=runtime_context,
+        session_key=session_key,
     )
 
-    payload = json.loads(result["final_response"])
-    assert payload["home"] == str(profile_dir)
-    assert payload["workspace_override"] == {"cwd": str(profile_dir / "workspace")}
+    from hermes_constants import get_hermes_home
 
-    from tools.terminal_tool import _task_env_overrides
-
-    assert "sess-worker" not in _task_env_overrides
+    assert result["final_response"] == "ok"
+    assert captured["home"] == profile_dir
+    assert get_hermes_home() == root
+    assert os.environ["HERMES_HOME"] == str(root)

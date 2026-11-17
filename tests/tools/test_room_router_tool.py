@@ -311,37 +311,25 @@ def test_route_to_member_schema_has_correct_openai_envelope():
 
 
 def test_toolsets_override_locks_agent_tools_to_only_route_to_member():
-    """Live bug #2: tool_search's tier-1 mechanism keeps
-    _HERMES_CORE_TOOLS alive even when enabled_toolsets is narrowed.
-    Without _LockedTools + valid_tool_names sync, the LLM sees 30+ tools
-    and route_to_member gets buried — it outputs text instead of a
-    tool_call.
-
-    This test verifies the TurnRunner-level lock code exists and
-    correctly sets valid_tool_names alongside _LockedTools.
+    """The in-process observer exposes only its routing tool, and a
+    tool_search rebuild cannot add the core tools back or leave the
+    executor's valid-tool set out of sync.
     """
-    import inspect
-    import gateway.run as run_module
+    from gateway.agent_room_inprocess_runner import _lock_agent_tools
 
-    src = inspect.getsource(run_module.TurnRunner.run_sync)
+    agent = MagicMock()
+    agent.tools = []
+    agent.valid_tool_names = set()
 
-    # _LockedTools class definition inside run_sync
-    assert "_LockedTools" in src, (
-        "TurnRunner.run_sync missing _LockedTools — tool_search will "
-        "re-add _HERMES_CORE_TOOLS and route_to_member gets buried"
-    )
+    _lock_agent_tools(agent, ["room_observer"])
 
-    # valid_tool_names sync after _LockedTools assignment
-    assert "valid_tool_names" in src, (
-        "TurnRunner.run_sync missing valid_tool_names sync — "
-        "conversation_loop will reject route_to_member with "
-        "'Tool does not exist'"
-    )
+    names = {tool["function"]["name"] for tool in agent.tools}
+    assert names == {"route_to_member"}
+    assert agent.valid_tool_names == names
 
-    # ROUTE_TO_MEMBER_SCHEMA wrapped in OpenAI envelope
-    assert 'ROUTE_TO_MEMBER_SCHEMA' in src or 'route_to_member' in src, (
-        "TurnRunner.run_sync doesn't reference ROUTE_TO_MEMBER_SCHEMA"
-    )
+    agent.tools.append({"type": "function", "function": {"name": "terminal"}})
+    agent.tools.extend([{"type": "function", "function": {"name": "read_file"}}])
+    assert {tool["function"]["name"] for tool in agent.tools} == names
 
 
 def test_observer_config_has_tool_search_off():
@@ -375,14 +363,14 @@ def test_observer_config_inherits_model_from_default_profile(monkeypatch, tmp_pa
     # Create a fake default profile config.yaml with a model section
     fake_home = tmp_path / "fake_hermes"
     fake_home.mkdir()
-    import yaml as _yaml
-    (fake_home / "config.yaml").write_text(_yaml.dump({
+    from hermes_cli.config import atomic_config_replace
+    atomic_config_replace(fake_home / "config.yaml", {
         "model": {
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "default": "qwen-plus",
             "provider": "alibaba",
         },
-    }))
+    })
 
     # Monkeypatch get_hermes_home to point at the fake home
     from hermes_constants import get_hermes_home as _orig_get

@@ -147,7 +147,7 @@ def route_to_member(
                 "in a live agent turn — check that bind_subagent_parent is in "
                 "the call stack."
             )
-    except Exception as exc:  # noqa: BLE001 — deliberately broad
+    except Exception as exc:
         logger.warning(
             "route_to_member: hard-interrupt raised %s (%s); "
             "returning routing decision anyway",
