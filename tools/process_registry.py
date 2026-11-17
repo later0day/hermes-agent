@@ -44,50 +44,15 @@ from tools.process_registry_termination import ProcessTerminationMixin, _sandbox
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.process_registry_wait import max_wait_timeout, process_deadline_floor
 
 logger = logging.getLogger(__name__)
 
-
-def _terminal_policy(name: str, default: str = "") -> str:
-    from tools.terminal_scope import terminal_env
-
-    return terminal_env(name, default)
-
-
-def max_wait_timeout() -> int:
-    """The active profile's default process wait and requested-wait cap."""
-    try:
-        return int(_terminal_policy("TERMINAL_TIMEOUT", "180"))
-    except (ValueError, TypeError):
-        return 180
-
-
-def process_deadline_floor(args: dict) -> float | None:
-    """Match the executor deadline to the same scoped wait window enforced below."""
-    if args.get("action") != "wait":
-        return None
-    max_timeout = float(max_wait_timeout())
-    requested = args.get("timeout")
-    if requested is None:
-        return max_timeout
-    try:
-        requested = float(requested)
-    except (TypeError, ValueError):
-        return max_timeout
-    return min(requested, max_timeout) if requested > 0 else None
-
-
-# Crash-recovery checkpoint (gateway only)
-CHECKPOINT_PATH = get_hermes_home() / "processes.json"
-_CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
-
-
 def _checkpoint_path() -> Path:
-    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
-    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
-    profile from one process, so the import-time constant would pin every profile's process
-    checkpoint to the launch home."""
-    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
+    """Active profile's crash-recovery checkpoint file, resolved per call: the multiplexed gateway
+    serves every profile from one process, so an import-time path would pin every profile's
+    process checkpoint to the launch home."""
+    return get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
@@ -151,6 +116,12 @@ _SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _terminal_policy(name: str, default: str = "") -> str:
+    from tools.terminal_scope import terminal_env
+
+    return terminal_env(name, default)
 
 
 def _worker_memory_max_bytes() -> int:
@@ -1438,7 +1409,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             logger.warning("%s wait failed; recording known exit status: %s", label, e)
         self._finish_exited(session, exit_code())
 
-    _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
         """Background thread: poll a sandbox log file for non-local backends.
@@ -1453,7 +1423,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             try:
                 # Read only the bytes written since the last poll, plus the process status.
                 raw = env.execute(
-                    self._log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
+                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
                     timeout=10).get("output", "")
                 reply = parse_log_delta_reply(raw)
                 delta = reply.delta if reply else ""

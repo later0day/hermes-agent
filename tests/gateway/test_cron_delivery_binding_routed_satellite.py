@@ -59,7 +59,7 @@ def test_binding_routed_satellite_queue_row_is_delivered_by_the_primary_adapter(
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True), _profile_adapters={"satellite": {}})
     monkeypatch.setattr(gateway_run, "_handoff_watch_scopes", lambda _r: [("satellite", satellite_home)])
     try:
-        with patch("tools.send_message_tool._send_to_platform", _standalone), \
+        with patch("gateway.outbound.send._send_to_platform", _standalone), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             gateway_run._drain_restart_safe_cron_deliveries({Platform.DINGTALK: PrimaryDingTalk()}, loop, runner)
     finally:

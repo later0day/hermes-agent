@@ -5,13 +5,12 @@ Shared by :meth:`ProcessRegistry.wait`, which enforces the window, and by the to
 instead of cutting the wait short (see ``ToolEntry.deadline_floor``).
 """
 
-import os
-
-
 def max_wait_timeout() -> int:
     """``TERMINAL_TIMEOUT``: the default wait, and the cap on a requested one."""
+    from tools.terminal_scope import terminal_env
+
     try:
-        return int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        return int(terminal_env("TERMINAL_TIMEOUT", "180"))
     except (ValueError, TypeError):
         return 180
 

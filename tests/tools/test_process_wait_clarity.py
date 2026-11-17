@@ -34,6 +34,20 @@ class TestWaitTimeoutClarity:
         finally:
             registry.kill_process(sid)
 
+    def test_wait_cap_uses_active_profile_terminal_scope(self, tmp_path, monkeypatch):
+        from tools.process_registry_wait import max_wait_timeout
+        from tools.terminal_scope import build_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
+
+        home = tmp_path / "profile"
+        home.mkdir()
+        (home / ".env").write_text("TERMINAL_TIMEOUT=42\n", encoding="utf-8")
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
+        token = set_terminal_scope(build_profile_terminal_scope(home))
+        try:
+            assert max_wait_timeout() == 42
+        finally:
+            reset_terminal_scope(token)
+
     def test_exited_process_unaffected(self, registry):
         session = registry.spawn_local("true", cwd="/tmp", task_id="t-waitclar")
         r = registry.wait(session.id, timeout=10)
@@ -68,7 +82,7 @@ class TestWaitYieldRelease:
             assert r["process_running"] is True
             # The process was not killed and the yield bit was consumed.
             assert registry.poll(sid)["status"] == "running"
-            from tools.interrupt import is_thread_yield_requested
-            assert not is_thread_yield_requested(t.ident)
+            from tools.interrupt import consume_yield
+            assert not consume_yield(t.ident)
         finally:
             registry.kill_process(sid)

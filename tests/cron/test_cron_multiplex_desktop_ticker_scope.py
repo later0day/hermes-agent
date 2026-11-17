@@ -27,7 +27,7 @@ def test_standalone_fallback_pool_keeps_profile_scope(tmp_path, monkeypatch):
     )
     from hermes_constants import get_hermes_home, set_hermes_home_override
     import cron.scheduler as sched
-    import tools.send_message_tool as smt
+    import gateway.outbound.send as smt
 
     default_home = tmp_path / "default"
     sec_home = tmp_path / "profiles" / "ops"
@@ -273,6 +273,7 @@ def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_p
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: launch)
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: launch / "profiles")
     monkeypatch.setattr(scheduler, "_hermes_home", None)
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda _job: False)
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: InProcessCronScheduler())
     secret_scope.set_multiplex_active(False)  # the desktop backend never sets the process flag
 

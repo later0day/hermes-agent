@@ -341,6 +341,15 @@ def test_staged_merge_accepts_debt_inherited_from_either_parent(tmp_path):
     assert fresh.returncode == 1 and "pkg/fresh.py" in fresh.stdout, fresh.stdout + fresh.stderr
 
 
+def test_staged_merge_uses_actual_parents_when_origin_base_lags(tmp_path):
+    repo = _staged_merge(tmp_path)
+    _git(repo, "update-ref", "refs/remotes/origin/main", _git(repo, "rev-parse", "HEAD^"))
+
+    proc = _check(repo, "--staged", "--only", "health")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_committed_merge_uses_both_parents_but_explicit_base_does_not(tmp_path):
     repo = _staged_merge(tmp_path)
     explicit = _check(repo, "--staged", "--only", "health", "--base", "HEAD")

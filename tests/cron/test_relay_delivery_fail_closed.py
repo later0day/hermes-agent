@@ -75,7 +75,7 @@ def test_failed_relay_delivery_does_not_retry_standalone(monkeypatch):
         patch("gateway.config.load_gateway_config", return_value=_relay_config(Platform.SLACK)),
         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
         patch("asyncio.run_coroutine_threadsafe", side_effect=_fake_run_coro),
-        patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+        patch("gateway.outbound.send._send_to_platform", new=standalone_send),
     ):
         result = _deliver_result(
             {"id": "relay-fail", "deliver": "slack"},
@@ -108,7 +108,7 @@ def test_raising_relay_delivery_does_not_retry_standalone(monkeypatch):
         patch("gateway.config.load_gateway_config", return_value=_relay_config(Platform.SLACK)),
         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
         patch("asyncio.run_coroutine_threadsafe", side_effect=_fake_run_coro),
-        patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+        patch("gateway.outbound.send._send_to_platform", new=standalone_send),
     ):
         result = _deliver_result(
             {"id": "relay-raise", "deliver": "slack"},
@@ -151,7 +151,7 @@ def test_relay_fronted_dingtalk_does_not_bypass_via_session_webhook(monkeypatch)
         patch("gateway.config.load_gateway_config", return_value=_relay_config(Platform.DINGTALK)),
         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
         patch("asyncio.run_coroutine_threadsafe", side_effect=_fake_run_coro),
-        patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+        patch("gateway.outbound.send._send_to_platform", new=standalone_send),
         patch(
             "cron.scheduler_delivery_origin._resolve_dingtalk_origin_session_webhook_status",
             return_value=("https://oapi.dingtalk.com/robot/sendBySession?x=1", None),
@@ -209,7 +209,7 @@ def test_native_dingtalk_still_uses_the_session_webhook_fallback(monkeypatch):
     with (
         patch("gateway.config.load_gateway_config", return_value=config),
         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
-        patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+        patch("gateway.outbound.send._send_to_platform", new=standalone_send),
         patch(
             "cron.scheduler_delivery_origin._resolve_dingtalk_origin_session_webhook_status",
             return_value=("https://oapi.dingtalk.com/robot/sendBySession?x=1", None),

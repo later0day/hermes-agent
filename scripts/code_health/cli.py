@@ -181,7 +181,7 @@ def _local_bases(repo: Path, base: str, tip: str | None) -> list[str]:
     else:
         incoming = gitio.commit_or_none(repo, "MERGE_HEAD")
         first = gitio.commit_or_none(repo, "HEAD")
-        if incoming and first == base:
+        if incoming and first:
             return [first, incoming]
     return [base]
 

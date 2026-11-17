@@ -16,8 +16,8 @@ _sequential_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
 
 def _job_run_profile(job: dict) -> Optional[str]:
-    """Return the profile used to execute this job."""
-    for key in ("run_profile", "profile", "owner_profile"):
+    """Return the explicit execution profile; ``owner_profile`` only identifies the origin store."""
+    for key in ("run_profile", "profile"):
         text = str(job.get(key) or "").strip()
         if text:
             return text

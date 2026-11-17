@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,9 +22,9 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     source = Path(__file__).resolve().parents[2]
     root = tmp_path / "source with spaces"
     root.mkdir()
-    for name in ("pm", "hermes_cli", "hermes_agent"):
+    for name in ("pm", "hermes_cli", "hermes_agent", "utils"):
         shutil.copytree(source / name, root / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for name in ("hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "utils.py", "hermes_bootstrap.py"):
+    for name in ("hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "hermes_bootstrap.py"):
         shutil.copy2(source / name, root / name)
     home, store, wheels = (tmp_path / name for name in ("home", "tools", "wheels"))
     for directory in (home, store, wheels):
@@ -55,9 +56,14 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
         entry = store / name
         binary = entry / rel
         binary.parent.mkdir(parents=True, exist_ok=True)
-        binary.symlink_to(Path(executable).resolve())
         if name == "uv":
-            (entry / "uvx").symlink_to(Path(uv).resolve().with_name("uvx"))
+            for tool in ("uv", "uvx"):
+                managed = entry / tool
+                host_tool = Path(uv).resolve().with_name(tool)
+                managed.write_text(f'#!/bin/sh\nexec {shlex.quote(str(host_tool))} "$@"\n', encoding="utf-8")
+                managed.chmod(0o755)
+        else:
+            binary.symlink_to(Path(executable).resolve())
         lock.set_pin(name, "fixture", {})
         Facts(store / "facts.json").record(name, "fixture", name, {"PATH": [str(binary.parent)]}, store,
                                           target=target, digest=tree_digest(entry))

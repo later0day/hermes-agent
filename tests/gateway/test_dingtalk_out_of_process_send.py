@@ -75,10 +75,10 @@ class _LiveDingTalk:
 
 
 def test_send_message_to_dingtalk_goes_through_the_live_adapter_with_media(monkeypatch, tmp_path):
-    import tools.send_message_tool as smt
+    import gateway.outbound.send as smt
 
     adapter = _LiveDingTalk()
-    monkeypatch.setattr(smt, "_live_adapter", lambda platform, **_kw: (object(), adapter))
+    monkeypatch.setattr(smt, "_live_adapter", lambda platform, chat_id, thread_id, **_kw: (object(), adapter))
 
     async def _inline(_runner, make_coro, _msg):
         return await make_coro()
