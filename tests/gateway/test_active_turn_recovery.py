@@ -95,6 +95,29 @@ def test_active_turn_fields_round_trip_and_legacy_payload_defaults(tmp_path):
     assert corrupt.active_turn_started_at is None
 
 
+def test_stream_preview_checkpoint_is_token_owned_and_cleared_with_normal_completion(tmp_path):
+    store = _make_store(tmp_path)
+    entry = store.get_or_create_session(_make_source())
+    first = store.mark_turn_active(entry.session_key)
+    assert first is not None
+    assert store.checkpoint_stream_preview(
+        entry.session_key, first, entry.origin.to_dict(), {"preview-1"},
+    )
+
+    second = store.mark_turn_active(entry.session_key)
+    assert second is not None
+    assert not store.checkpoint_stream_preview(
+        entry.session_key, first, entry.origin.to_dict(), {"stale-preview"},
+    )
+    assert store.checkpoint_stream_preview(
+        entry.session_key, second, entry.origin.to_dict(), {"preview-2"},
+    )
+    assert store.clear_turn_active(entry.session_key, second)
+    assert store.pending_stream_previews() == []
+    assert not any(key.startswith("stream_preview_recovery:")
+                   for key in _entry_for(store, entry.origin).metadata)
+
+
 def test_mark_refreshes_updated_at_for_legacy_upgrade_fallback(tmp_path):
     store = _make_store(tmp_path)
     source = _make_source()
@@ -454,6 +477,56 @@ def _turn(store: SessionStore, chat_id: str, *, marked: bool, reply: str | None,
     if reply is not None:
         store.append_to_transcript(entry.session_id, {"role": "assistant", "content": reply})
     return source
+
+
+@pytest.mark.asyncio
+async def test_unclean_restart_preserves_an_orphaned_preview_for_retirement(tmp_path):
+    runner, store = _db_runner(tmp_path)
+    source = _turn(store, "preview-crash", marked=True, reply=None)
+    entry = _entry_for(store, source)
+    token = entry.active_turn_token
+    assert token is not None
+    assert store.checkpoint_stream_preview(
+        entry.session_key, token, source.to_dict(), {"accepted-preview"},
+    )
+
+    assert await runner._recover_unclean_sessions() == (1, 0)
+
+    pending = store.pending_stream_previews()
+    assert len(pending) == 1
+    pending_entry, pending_token, checkpoint = pending[0]
+    assert pending_entry.session_key == entry.session_key
+    assert pending_token == token
+    assert checkpoint["message_ids"] == ["accepted-preview"]
+    assert checkpoint["source"]["chat_id"] == "preview-crash"
+    assert checkpoint["orphaned"] is True
+    _close_store_db(store)
+
+
+@pytest.mark.asyncio
+async def test_orphaned_preview_cleanup_retries_without_losing_ownership(tmp_path):
+    from gateway.stream_preview_recovery import cleanup_orphaned_stream_previews
+
+    runner, store = _db_runner(tmp_path)
+    source = _turn(store, "preview-retry", marked=True, reply=None)
+    entry = _entry_for(store, source)
+    token = entry.active_turn_token
+    assert token is not None
+    assert store.checkpoint_stream_preview(
+        entry.session_key, token, source.to_dict(), {"accepted-preview"},
+    )
+    assert await runner._recover_unclean_sessions() == (1, 0)
+    adapter = MagicMock()
+    adapter.delete_message = AsyncMock(side_effect=[OSError("offline"), True])
+    runner._restored_source = MagicMock(side_effect=lambda row: row.origin)
+    runner._delivery_adapter_for = MagicMock(return_value=adapter)
+
+    assert await cleanup_orphaned_stream_previews(runner) == 0
+    assert len(store.pending_stream_previews()) == 1
+    assert await cleanup_orphaned_stream_previews(runner) == 1
+    assert store.pending_stream_previews() == []
+    adapter.delete_message.assert_awaited_with("preview-retry", "accepted-preview")
+    _close_store_db(store)
 
 
 @pytest.mark.asyncio

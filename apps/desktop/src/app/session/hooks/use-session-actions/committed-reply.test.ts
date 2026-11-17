@@ -60,6 +60,17 @@ describe('a re-attach page that commits the reply before its completion', () => 
     expect(assistants(overlaid).map(([id]) => id)).toEqual(['19-assistant', 'assistant-stream-1-3'])
   })
 
+  it('drops that stale pending row when an idle resume proves the turn finished', () => {
+    const baseline = [steer, live('A6 ')]
+    const current = [steer, live('A6 steered')]
+
+    const overlaid = overlayConcurrentMessageChanges(committedPage('change course'), baseline, current, {
+      settledResume: true
+    })
+
+    expect(assistants(overlaid).map(([id]) => id)).toEqual(['19-assistant'])
+  })
+
   // A page whose newest prompt is not the live row's own is an earlier turn:
   // a new reply that happens to open with the same words is not that answer.
   it('leaves a page reply that follows another prompt alone', () => {

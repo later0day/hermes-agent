@@ -19,7 +19,8 @@ REF = SessionRef('owned', 's')
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reused', [True, False])
-async def test_completion_carries_the_reused_final_flag(tmp_path, monkeypatch, reused):
+@pytest.mark.parametrize('streamed', [True, False])
+async def test_completion_carries_the_reused_final_flag(tmp_path, monkeypatch, reused, streamed):
     from gateway import session_finite
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(db_path=tmp_path / 'state.db')
@@ -35,8 +36,9 @@ async def test_completion_carries_the_reused_final_flag(tmp_path, monkeypatch, r
     async def execute(authority, ref, row):
         authority.pending_results[row['admission_id']] = {'result': {
             'final_response': 'answered', 'messages': [], 'response_reused': reused,
-            'response_transformed': False}, 'usage': {}}
-        return 'answered'
+            'response_transformed': False, 'local_viewer': streamed,
+            'response_previewed': streamed}, 'usage': {}}
+        return None if streamed else 'answered'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
     with db:
@@ -44,5 +46,5 @@ async def test_completion_carries_the_reused_final_flag(tmp_path, monkeypatch, r
         await asyncio.wait_for(authority.sessions['s'].task, 5)
 
     [complete] = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
-    assert complete['text'] == 'answered'
+    assert complete['text'] == ('answered' if reused or not streamed else None)
     assert complete.get('response_reused', False) is reused

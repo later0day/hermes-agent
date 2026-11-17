@@ -617,6 +617,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             return None
         try:
             from gateway.stream_consumer import GatewayStreamConsumer
+            from gateway.stream_preview_recovery import stream_preview_checkpoint
             _adapter = self._delivery_adapter_for(source)
             if not _adapter:
                 return None
@@ -627,6 +628,11 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 adapter=_adapter, chat_id=source.chat_id, config=_consumer_cfg,
                 metadata=_thread_metadata, on_before_finalize=_pause_typing_before_finalize,
                 initial_reply_to_id=event_message_id, run_still_current=_run_still_current,
+                on_preview_checkpoint=stream_preview_checkpoint(
+                    getattr(self, "session_store", None),
+                    self._session_key_for_source(source) if getattr(self, "session_store", None) is not None else None,
+                    source,
+                ),
             )
         except Exception as _sc_err:
             logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)

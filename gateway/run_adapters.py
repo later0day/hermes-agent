@@ -934,6 +934,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
         self._schedule_restart_notice_replay()
+        from gateway.stream_preview_recovery import cleanup_orphaned_stream_previews
+        with _log_suppressed(logging.WARNING, "Orphaned stream-preview cleanup after reconnect failed: %s"):
+            await cleanup_orphaned_stream_previews(self, platform=platform)
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",

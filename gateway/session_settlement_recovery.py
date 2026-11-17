@@ -72,17 +72,19 @@ def completion_payload(row, settled, response, captured):
             model=str(captured_result.get('model') or ''))
     if isinstance(surface, dict):
         complete['error_surface'] = surface
-    if response and captured_result.get('response_reused'):
-        complete['response_reused'] = True
     if captured_result.get('local_viewer'):
+        # Delivery returns None after an exact stream, but the completion still carries a rewritten
+        # or reused final so the viewer can settle the bubble it already painted.
+        if not response and (captured_result.get('response_transformed') or captured_result.get('response_reused')):
+            response = captured_result.get('final_response') or response
+            complete['text'] = complete['content'] = response
         if captured_result.get('response_previewed'):
             complete['response_previewed'] = True
         if captured_result.get('response_transformed'):
             complete['response_transformed'] = True
-            # The stream carried the raw reply and the turn counts as delivered (``response`` is
-            # None): this frame is the only carrier of the rewrite the session stored.
-            if not response and (final := captured_result.get('final_response')):
-                complete['text'] = complete['content'] = final
+    if response and captured_result.get('response_reused'):
+        complete['response_reused'] = True
+    if captured_result.get('local_viewer'):
         if isinstance(captured_result.get('warning'), str) and captured_result['warning']:
             complete['warning'] = captured_result['warning']
         if isinstance(captured_result.get('billing_block'), dict):

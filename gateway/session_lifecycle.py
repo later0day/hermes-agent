@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone, UTC
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from hermes_state_ids import new_session_id
 
@@ -16,6 +16,23 @@ if TYPE_CHECKING:
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
+
+_STREAM_PREVIEW_KEY_PREFIX = "stream_preview_recovery:"
+
+
+def _stream_preview_key(token: str) -> str:
+    return _STREAM_PREVIEW_KEY_PREFIX + token
+
+
+def _orphan_stream_preview(entry: SessionEntry) -> bool:
+    token = entry.active_turn_token
+    if not token:
+        return False
+    checkpoint = entry.metadata.get(_stream_preview_key(token))
+    if not isinstance(checkpoint, dict) or checkpoint.get("orphaned"):
+        return False
+    checkpoint["orphaned"] = True
+    return True
 
 
 def _now() -> datetime:
@@ -201,6 +218,12 @@ class SessionLifecycleMixin:
         candidate = entry.to_dict()
         candidate["active_turn_token"] = token
         candidate["active_turn_started_at"] = _iso(started_at)
+        checkpoint_key = _stream_preview_key(str(entry.active_turn_token or ""))
+        checkpoint = entry.metadata.get(checkpoint_key)
+        clear_checkpoint = (token != entry.active_turn_token and isinstance(checkpoint, dict)
+                            and not checkpoint.get("orphaned"))
+        if clear_checkpoint:
+            candidate.setdefault("metadata", {}).pop(checkpoint_key, None)
         touched = _now() if started_at is not None else None
         if touched is not None:
             # Keeps the legacy 120s startup heuristic working for an older binary during a rolling
@@ -209,6 +232,8 @@ class SessionLifecycleMixin:
         self._save_entry(session_key, entry_data=candidate, lock_held=True)
         entry.active_turn_token = token
         entry.active_turn_started_at = started_at
+        if clear_checkpoint:
+            entry.metadata.pop(checkpoint_key, None)
         if touched is not None:
             entry.updated_at = touched
 
@@ -236,6 +261,55 @@ class SessionLifecycleMixin:
             self._set_turn_marker_locked(session_key, entry, None, None)
         return True
 
+    def checkpoint_stream_preview(
+        self, session_key: str, token: str, source: dict[str, Any], message_ids,
+    ) -> bool:
+        """Persist only accepted preview identities, owned by the exact active-turn token."""
+        ids = sorted({str(message_id) for message_id in message_ids if message_id})
+
+        def _apply(entry: SessionEntry):
+            if entry.active_turn_token != token:
+                return False
+            key = _stream_preview_key(token)
+            if not ids:
+                if key not in entry.metadata:
+                    return False
+                entry.metadata.pop(key, None)
+                return True
+            entry.metadata[key] = {
+                "source": dict(source), "message_ids": ids, "orphaned": False,
+            }
+            return True
+
+        return self._update_entry(session_key, _apply)
+
+    def orphan_stream_previews(self) -> int:
+        return self._update_all_entries_locked(_orphan_stream_preview)
+
+    def clear_orphaned_stream_preview(self, session_key: str, token: str) -> bool:
+        def _apply(entry: SessionEntry):
+            key = _stream_preview_key(token)
+            checkpoint = entry.metadata.get(key)
+            if not isinstance(checkpoint, dict) or not checkpoint.get("orphaned"):
+                return False
+            entry.metadata.pop(key, None)
+            return True
+
+        return self._update_entry(session_key, _apply)
+
+    def pending_stream_previews(self):
+        """Return orphaned checkpoints with their current routing row, without clearing failures."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            pending = []
+            for entry in self._entries.values():
+                for key, checkpoint in entry.metadata.items():
+                    if (key.startswith(_STREAM_PREVIEW_KEY_PREFIX) and isinstance(checkpoint, dict)
+                            and checkpoint.get("orphaned") and checkpoint.get("message_ids")
+                            and isinstance(checkpoint.get("source"), dict)):
+                        pending.append((entry, key[len(_STREAM_PREVIEW_KEY_PREFIX):], dict(checkpoint)))
+            return pending
+
     def recover_interrupted_turns(self, max_age_seconds: int = 60 * 60) -> int:
         """Promote crash-left turn markers into ``resume_pending`` (unclean startup only).
         Old/invalid markers are cleared without resuming; suspended sessions are never re-armed.
@@ -247,6 +321,7 @@ class SessionLifecycleMixin:
             nonlocal promoted
             if not entry.active_turn_token:
                 return False
+            _orphan_stream_preview(entry)
             started_at = entry.active_turn_started_at
             # Epoch arithmetic: a pre-upgrade naive marker reads as local time, an aware one exactly.
             marker_is_stale = started_at is None or (
@@ -274,6 +349,10 @@ class SessionLifecycleMixin:
         def _discard(entry: SessionEntry) -> bool:
             if not entry.active_turn_token and entry.active_turn_started_at is None:
                 return False
+            checkpoint_key = _stream_preview_key(str(entry.active_turn_token or ""))
+            checkpoint = entry.metadata.get(checkpoint_key)
+            if isinstance(checkpoint, dict) and not checkpoint.get("orphaned"):
+                entry.metadata.pop(checkpoint_key, None)
             entry.active_turn_token = None
             entry.active_turn_started_at = None
             return True

@@ -261,6 +261,14 @@ class StreamTransportMixin:
             self._preview_message_ids.add(message_id)
             self._segment_preview_message_ids.add(message_id)
 
+    def _checkpoint_preview_ids(self) -> None:
+        if self._on_preview_checkpoint is None:
+            return
+        try:
+            self._on_preview_checkpoint(set(self._segment_preview_message_ids))
+        except Exception:
+            logger.warning("Could not checkpoint accepted stream preview ids", exc_info=True)
+
     def _track_preview_ids_from_result(self, result: Any) -> None:
         """Record the primary id plus any continuation ids from an oversized split."""
         raw = getattr(result, "raw_response", None) or {}
@@ -268,6 +276,7 @@ class StreamTransportMixin:
         for mid in (getattr(result, "message_id", None),
                     *(getattr(result, "continuation_message_ids", None) or ()), *(raw_ids or ())):
             self._track_preview_id(mid)
+        self._checkpoint_preview_ids()
         self._ceiling_observe(result)
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:

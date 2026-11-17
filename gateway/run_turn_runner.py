@@ -310,6 +310,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
+                from gateway.stream_preview_recovery import stream_preview_checkpoint
                 adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
                     supports_incremental_stream = (
@@ -332,6 +333,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
+                        on_preview_checkpoint=stream_preview_checkpoint(
+                            getattr(self._runner, "session_store", None), getattr(ctx, "session_key", None), ctx.source,
+                        ),
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
                     # #105341: a consumer created only for interim commentary (text streaming off)

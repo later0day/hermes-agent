@@ -1387,7 +1387,8 @@ export function removeRepresentedLocalLiveProjection(
 export function overlayConcurrentMessageChanges(
   nextMessages: ChatMessage[],
   baselineMessages: ChatMessage[],
-  currentMessages: ChatMessage[]
+  currentMessages: ChatMessage[],
+  { settledResume = false }: { settledResume?: boolean } = {}
 ): ChatMessage[] {
   const baselineById = new Map(baselineMessages.map(message => [message.id, message]))
   const nextIndexById = new Map(nextMessages.map((message, index) => [message.id, index]))
@@ -1406,12 +1407,15 @@ export function overlayConcurrentMessageChanges(
   // earlier turn's answer (a resent prompt can repeat it word for word). An
   // errored row carries a failure the committed text cannot show.
   const committedOnPage = (current: ChatMessage): boolean => {
-    const text = textWithoutReferenceLines(chatMessageText(current)).trim()
+    const texts = [chatMessageText(current), replyAfterLastTool(current)]
+      .map(text => textWithoutReferenceLines(text).trim())
+      .filter(Boolean)
+
     const lastUser = overlaid.findLastIndex(message => message.role === 'user')
     const liveRows = transcriptRowIds(current)
 
     return (
-      Boolean(text) &&
+      Boolean(texts.length) &&
       overlaid.some((message, index) => {
         if (
           !(index > lastUser) ||
@@ -1438,10 +1442,11 @@ export function overlayConcurrentMessageChanges(
         return [chatMessageText(message), replyAfterLastTool(message)].some(full => {
           const candidate = textWithoutReferenceLines(full).trim()
 
-          return (
-            candidate === text ||
-            isStrictAnswerTextExtension(candidate, text) ||
-            isStrictAnswerTextExtension(text, candidate)
+          return texts.some(
+            text =>
+              candidate === text ||
+              isStrictAnswerTextExtension(candidate, text) ||
+              isStrictAnswerTextExtension(text, candidate)
           )
         })
       })
@@ -1468,7 +1473,7 @@ export function overlayConcurrentMessageChanges(
     // The page can still carry the row's older streaming copy by id when it
     // was composed from the baseline; the committed row replaces both.
     (current.role === 'assistant' &&
-      current.pending !== true &&
+      (current.pending !== true || settledResume) &&
       !current.error &&
       isLiveTailReplyId(current.id) &&
       committedOnPage(current)) ||

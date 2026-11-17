@@ -2156,7 +2156,8 @@ export function useSessionActions({
         const preferredWithRuntimeChanges = overlayConcurrentMessageChanges(
           preferredMessages,
           resumeRuntimeBaselineMessages,
-          currentRuntimeMessages
+          currentRuntimeMessages,
+          { settledResume: resumed.running === false && !hasLiveProjection }
         )
 
         // #70449: same stale-snapshot guard as the warm path — a turn that

@@ -125,7 +125,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
-        run_still_current: Optional[Callable[[], bool]] = None):
+        run_still_current: Optional[Callable[[], bool]] = None,
+        on_preview_checkpoint: Optional[Callable[[set[str]], Any]] = None):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
@@ -134,6 +135,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
         self._on_new_message = on_new_message
         self._on_before_finalize = on_before_finalize
+        self._on_preview_checkpoint = on_preview_checkpoint
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
         # Returns False after /new or /stop; run() then abandons the stream.
@@ -491,6 +493,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Also clears the final flags: what we delivered was an interim preamble.  Safe:
         # got_done returns before any reset; run.py reads flags after the task exits.
         self._reset_message_state()
+        self._checkpoint_preview_ids()
         # Telegram-shaped drafts: bump draft_id so the next segment animates as a fresh
         # preview below the tool-progress bubbles.  Stream-is-the-message adapters keep
         # ONE stream per turn — a bump there left one frozen message per segment.

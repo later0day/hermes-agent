@@ -350,6 +350,12 @@ class GatewaySecondaryReconnectMixin:
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
+                            from gateway.stream_preview_recovery import cleanup_orphaned_stream_previews
+                            with _log_suppressed(
+                                logging.WARNING, "Orphaned stream-preview cleanup after reconnect failed (profile: %s)",
+                                profile_name, exc_info=True,
+                            ):
+                                await cleanup_orphaned_stream_previews(self, platform=platform)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name
                             )

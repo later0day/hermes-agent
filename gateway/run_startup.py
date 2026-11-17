@@ -738,6 +738,8 @@ class GatewayStartupMixin:
         from gateway.run import _float_env
         resumed = ledgered = 0
         max_age = max(60 * 60, int(max(1.0, _float_env("HERMES_AGENT_TIMEOUT", 1800)) * 2))
+        with _log_suppressed(logging.WARNING, "Stream-preview orphan recovery on startup failed: %s"):
+            await self.async_session_store.orphan_stream_previews()
         with _log_suppressed(logging.WARNING, "Crash-left reply recovery on startup failed: %s"):
             ledgered = await self._ledger_crash_left_replies(max_age)
         with _log_suppressed(logging.WARNING, "Exact active-turn recovery on startup failed: %s"):
@@ -1574,6 +1576,9 @@ class GatewayStartupMixin:
         # control sleep here once froze every platform).
         # Restart notification, home-channel startup notice, and obligation redelivery all call
         # adapter.send(). Bound them the same way _finish_startup_restore bounds resume turns. See #91969.
+        from gateway.stream_preview_recovery import cleanup_orphaned_stream_previews
+        with _log_suppressed(logging.WARNING, "Orphaned stream-preview cleanup failed: %s"):
+            await cleanup_orphaned_stream_previews(self)
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=_planned_restart_notification_pending(),
         )

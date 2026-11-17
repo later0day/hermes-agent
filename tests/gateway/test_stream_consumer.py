@@ -165,6 +165,22 @@ class TestSendOrEditMediaStripping:
         assert "Here is your image" in sent_text
 
     @pytest.mark.asyncio
+    async def test_accepted_preview_id_is_checkpointed_before_the_next_edit(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        checkpoints = []
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123", on_preview_checkpoint=lambda ids: checkpoints.append(set(ids)),
+        )
+
+        await consumer._send_or_edit("Starting response...")
+
+        assert checkpoints == [{"msg_1"}]
+        consumer._reset_segment_state()
+        assert checkpoints[-1] == set()
+
+    @pytest.mark.asyncio
     async def test_edit_strips_media(self):
         """Edit call removes MEDIA: tags from visible text."""
         adapter = MagicMock()
