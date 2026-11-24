@@ -187,6 +187,7 @@ async def test_drain_task_cancellation_releases_session():
 
     turn_started = asyncio.Event()
     drain_hit_handler = asyncio.Event()
+    never_set = asyncio.Event()
 
     async def handler(event):
         if event.text == "M0":
@@ -196,10 +197,7 @@ async def test_drain_task_cancellation_releases_session():
             return "ok"
         # M1 is the drained follow-up — hang so we can cancel the drain task.
         drain_hit_handler.set()
-        try:
-            await asyncio.sleep(0.2)
-        except asyncio.CancelledError:
-            raise
+        await never_set.wait()
 
     adapter._message_handler = handler
 
@@ -213,14 +211,8 @@ async def test_drain_task_cancellation_releases_session():
     assert drain_task is not None, "in-band drain did not install a drain task"
     assert not drain_task.done(), "drain task finished before we could cancel"
     drain_task.cancel()
-
-    # Drain task's finally must release both registries.
-    for _ in range(200):
-        if sk not in adapter._active_sessions and sk not in adapter._session_tasks:
-            break
-        await asyncio.sleep(0.01)
-
-    await adapter.cancel_background_tasks()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(drain_task, timeout=2)
 
     assert sk not in adapter._active_sessions, (
         "cancelled drain task did not release _active_sessions[sk] — "
@@ -230,3 +222,5 @@ async def test_drain_task_cancellation_releases_session():
         "cancelled drain task did not release _session_tasks[sk] — "
         "stale-lock detection will treat the dead task as alive"
     )
+
+    await adapter.cancel_background_tasks()

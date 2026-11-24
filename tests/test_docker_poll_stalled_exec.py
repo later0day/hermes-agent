@@ -119,3 +119,49 @@ def test_sleep_between_failed_probes_stops_at_the_deadline(monkeypatch, module):
         with pytest.raises(AssertionError, match="never returned HTTP"):
             module._http_probe("c", "/api/status", deadline_s=1.0)
     assert clock.now <= 1.0
+
+
+def test_cleanup_timeout_observes_daemon_removal_without_retrying(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "rm":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return SimpleNamespace(
+            returncode=0,
+            stdout="hermes-test-slow-daemon\n" if len(calls) == 2 else "",
+            stderr="",
+        )
+
+    def drive(predicate, **kwargs):
+        for _ in range(3):
+            if predicate():
+                return True
+        raise AssertionError("container remained")
+
+    monkeypatch.setattr(docker_conftest.subprocess, "run", run)
+    monkeypatch.setattr(docker_conftest, "wait_until", drive)
+    docker_conftest._remove_container("hermes-test-slow-daemon")
+    assert [call[1] for call in calls] == ["rm", "container", "container"]
+
+
+def test_cleanup_timeout_still_fails_when_container_remains(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "rm":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="hermes-test-stuck\n", stderr="")
+
+    def drive(predicate, **kwargs):
+        if not predicate():
+            raise AssertionError("container remained")
+        return True
+
+    monkeypatch.setattr(docker_conftest.subprocess, "run", run)
+    monkeypatch.setattr(docker_conftest, "wait_until", drive)
+    with pytest.raises(AssertionError, match="container remained"):
+        docker_conftest._remove_container("hermes-test-stuck")
+    assert [call[1] for call in calls] == ["rm", "container"]

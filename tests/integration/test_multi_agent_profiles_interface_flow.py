@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -11,9 +12,7 @@ import pytest
 
 @pytest.fixture()
 def multi_agent_interface_env(tmp_path, monkeypatch):
-    import hermes_state
-    from gateway.source_agent_binding import SourceAgentBindingStore
-    from hermes_cli import profiles, web_server
+    from hermes_cli import profiles
 
     root = tmp_path / "hermes-home"
     root.mkdir(parents=True)
@@ -21,28 +20,20 @@ def multi_agent_interface_env(tmp_path, monkeypatch):
     (root / "sessions").mkdir()
     (root / "skills").mkdir()
     (root / "config.yaml").write_text(
-        "model:\n  provider: openrouter\n  default: nous/default\n",
+        "model:\n  provider: openrouter\n  default: nous/default\n"
+        "gateway:\n  multiplex_profiles: true\n",
         encoding="utf-8",
     )
     (root / "SOUL.md").write_text("Default identity\n", encoding="utf-8")
-
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    (root / ".env").write_text("ANTHROPIC_API_KEY=test-worker-key\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: root / "profiles")
     monkeypatch.setattr(profiles, "check_alias_collision", lambda _name: "skip wrapper")
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda _name: None)
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", root / "state.db")
 
-    bindings_db = tmp_path / "source-bindings.sqlite"
-    monkeypatch.setattr(
-        web_server,
-        "_source_binding_store",
-        lambda: SourceAgentBindingStore(bindings_db),
-    )
-
-    return {"root": root, "bindings_db": bindings_db}
+    return {"root": root, "bindings_db": root / "gateway_source_agent_bindings.sqlite"}
 
 
 @pytest.fixture()
@@ -57,7 +48,8 @@ def dashboard_client(multi_agent_interface_env):
 
 
 def test_dashboard_rest_full_multi_agent_flow(dashboard_client, multi_agent_interface_env):
-    import hermes_state
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     root = multi_agent_interface_env["root"]
 
@@ -93,17 +85,15 @@ def test_dashboard_rest_full_multi_agent_flow(dashboard_client, multi_agent_inte
     assert bind.status_code == 200, bind.text
     assert bind.json()["binding"]["profile_name"] == "worker"
 
-    db = hermes_state.SessionDB(root / "state.db")
-    try:
-        db.create_session(
+    with open_persistence(profile_scope(home=root)) as store:
+        seed_session(
+            store,
             "agent:worker:dingtalk:group:chat-1:user-1",
             "dingtalk",
             model="claude-worker",
         )
-    finally:
-        db.close()
 
-    sessions = dashboard_client.get("/api/sessions?limit=10&offset=0")
+    sessions = dashboard_client.get("/api/sessions?profile=default&limit=10&offset=0")
     assert sessions.status_code == 200, sessions.text
     session = sessions.json()["sessions"][0]
     assert session["source_binding_key"] == source_key
@@ -143,7 +133,12 @@ def test_dashboard_rest_full_multi_agent_flow(dashboard_client, multi_agent_inte
     default_jobs = dashboard_client.get("/api/cron/jobs?profile=default").json()
     assert [job["id"] for job in worker_jobs] == [worker_cron_job["id"]]
     assert [job["id"] for job in default_jobs] == [split_job["id"]]
-    assert not (worker_home / "cron" / "jobs.json").exists()
+    worker_stored = json.loads((worker_home / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
+    default_stored = json.loads((root / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
+    assert [job["id"] for job in worker_stored] == [worker_cron_job["id"]]
+    assert [job["id"] for job in default_stored] == [split_job["id"]]
+    assert worker_stored[0]["owner_profile"] == "worker"
+    assert default_stored[0]["run_profile"] == "worker"
 
     details = dashboard_client.get("/api/profiles/worker/details")
     assert details.status_code == 200, details.text
@@ -156,11 +151,12 @@ def test_dashboard_rest_full_multi_agent_flow(dashboard_client, multi_agent_inte
     clear = dashboard_client.delete(f"/api/source-bindings/{quote(source_key, safe='')}")
     assert clear.status_code == 200, clear.text
     assert clear.json() == {"ok": True, "deleted": True}
-    sessions_after_clear = dashboard_client.get("/api/sessions?limit=10&offset=0").json()
+    sessions_after_clear = dashboard_client.get("/api/sessions?profile=default&limit=10&offset=0").json()
     assert sessions_after_clear["sessions"][0]["bound_profile"] == "default"
 
 
 def _make_runner(tmp_path):
+    from gateway.config import Platform
     from gateway.run import GatewayRunner
     from gateway.source_agent_binding import SourceAgentBindingStore
 
@@ -168,6 +164,8 @@ def _make_runner(tmp_path):
     runner.config = SimpleNamespace(
         group_sessions_per_user=True,
         thread_sessions_per_user=False,
+        multiplex_profiles=True,
+        platforms={Platform.DINGTALK: {"group_allow_admin_from": ["user-1"]}},
     )
     runner._source_agent_binding_store = SourceAgentBindingStore(
         tmp_path / "gateway-bindings.sqlite"
@@ -202,6 +200,8 @@ def _gateway_event(text: str, raw_message=None):
 async def test_gateway_im_command_full_multi_agent_flow(tmp_path, monkeypatch):
     from gateway.session import build_source_binding_key
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
 
     root = tmp_path / "hermes-home"
     root.mkdir()
@@ -226,7 +226,8 @@ async def test_gateway_im_command_full_multi_agent_flow(tmp_path, monkeypatch):
     assert "Created agent profile `worker`" in create
     assert (worker_home / "config.yaml").exists()
     assert not (worker_home / "skills" / "demo" / "SKILL.md").exists()
-    assert not (worker_home / ".env").exists()
+    worker_env = (worker_home / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=secret" not in worker_env
 
     use = await runner._handle_agent_command(_gateway_event("/agent use worker"))
     assert "Bound this chat to agent `worker`" in use
@@ -242,15 +243,20 @@ async def test_gateway_im_command_full_multi_agent_flow(tmp_path, monkeypatch):
 
     status = await runner._handle_agent_command(_gateway_event("/agent status"))
     assert "Profile: `worker`" in status
-    assert "DingTalk fallback webhook: configured" in status
+    assert "DingTalk fallback webhook: present" in status
 
-    delegate = await runner._handle_delegate_command(
-        _gateway_event("/delegate worker summarize the escalation")
+    delegate = await runner._handle_kanban_command(
+        _gateway_event(
+            '/kanban create "summarize the escalation" '
+            '--body "summarize the escalation" --assignee worker'
+        )
     )
-    task_id = delegate.split("`", 2)[1]
-    with kb.connect() as conn:
+    task_match = re.search(r"\bCreated\s+(t_[0-9a-f]+)\b", delegate)
+    assert task_match, delegate
+    task_id = task_match.group(1)
+    with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
-        subs = kb.list_notify_subs(conn, task_id)
+        subs = kbn.list_notify_subs(conn, task_id)
     assert task is not None
     assert task.assignee == "worker"
     assert task.body == "summarize the escalation"
@@ -278,8 +284,6 @@ async def test_gateway_im_command_full_multi_agent_flow(tmp_path, monkeypatch):
     assert audit_actions == [
         "agent.create",
         "agent.use",
-        "agent.webhook",
-        "delegate.create",
         "agent.delete.request",
         "agent.delete",
     ]

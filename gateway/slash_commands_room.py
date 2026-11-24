@@ -138,8 +138,9 @@ class GatewayRoomCommandsMixin:
 
     def _room_list(self, request: _RoomRequest, db_path) -> str:
         from gateway.hosted_rooms import list_rooms
+        from tui_gateway.methods_groups import _active_store
 
-        rooms = list_rooms(db_path, include_disbanded="--all" in request.args)
+        rooms = list_rooms(_active_store(), placement="shared", include_disbanded="--all" in request.args)
         if not rooms:
             return t("gateway.room.no_rooms")
         lines = [t("gateway.room.list_header", count=len(rooms))]
@@ -155,12 +156,13 @@ class GatewayRoomCommandsMixin:
 
     def _room_show(self, request: _RoomRequest, db_path) -> str:
         from gateway.hosted_rooms import HostedRoomError, room_state
-        from tui_gateway.methods_groups import get_hosted_room_service
+        from tui_gateway.methods_groups import _active_store, get_hosted_room_service
 
         if not request.args:
             return t("gateway.room.need_room_id", action="show")
         try:
-            room = room_state(db_path, room_id=request.args[0], include_disbanded=True)
+            room = room_state(
+                _active_store(), placement="shared", room_id=request.args[0], include_disbanded=True)
         except HostedRoomError as exc:
             return t("gateway.room.error_prefix", error=exc)
         lines = [
@@ -247,7 +249,7 @@ class GatewayRoomCommandsMixin:
         if service is None:
             return t("gateway.room.worker_unavailable")
         try:
-            room = room_state(db_path, room_id=room_id)
+            room = room_state(service.store, placement=service.placement, room_id=room_id)
         except HostedRoomError as exc:
             return t("gateway.room.error_prefix", error=exc)
         current = [dict(member) for member in (room.get("members") or []) if isinstance(member, dict)]
@@ -274,7 +276,8 @@ class GatewayRoomCommandsMixin:
         if state is not None and str(state["authority_gateway_id"]) != local_gateway_id:
             raise AuthorityConflictError("This room is managed by another gateway.")
         return disband_room(
-            service.db_path,
+            service.store,
+            placement=service.placement,
             room_id=room_id,
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1),
@@ -294,7 +297,8 @@ class GatewayRoomCommandsMixin:
             return t("gateway.room.worker_unavailable")
         try:
             try:
-                existing = room_state(service.db_path, room_id=room_id, include_disbanded=True)
+                existing = room_state(
+                    service.store, placement=service.placement, room_id=room_id, include_disbanded=True)
             except RoomHistoryExpiredError:
                 self._disband_room_tombstone(service, room_id)
                 return t("gateway.room.disbanded", room_id=room_id, routes=0)
@@ -359,6 +363,7 @@ class GatewayRoomCommandsMixin:
     def _room_mirror(self, request: _RoomRequest, db_path) -> str:
         from gateway import room_mirror_db
         from gateway.hosted_rooms import HostedRoomError, room_state
+        from tui_gateway.methods_groups import _active_store
 
         mirror = self._parse_room_mirror(request)
         if isinstance(mirror, str):
@@ -369,7 +374,7 @@ class GatewayRoomCommandsMixin:
             return t("gateway.room.error_prefix",
                      error="--decider-only and --all-members are mutually exclusive")
         try:
-            room = room_state(db_path, room_id=mirror.room_id)
+            room = room_state(_active_store(), placement="shared", room_id=mirror.room_id)
         except HostedRoomError as exc:
             return t("gateway.room.error_prefix", error=exc)
         decider = next(
@@ -457,11 +462,14 @@ class GatewayRoomCommandsMixin:
     def _room_live_task_list(self, room_id: str, db_path) -> str:
         from gateway import hosted_room_discussion
         from gateway.hosted_rooms import HostedRoomError, MAX_LOG_LIMIT, read_events, room_state
+        from tui_gateway.methods_groups import _active_store
 
         profiles = self._room_local_profiles()
         try:
-            room = room_state(db_path, room_id=room_id)
-            event_page = read_events(db_path, room_id=room_id, since_seq=0, limit=MAX_LOG_LIMIT)
+            store = _active_store()
+            room = room_state(store, placement="shared", room_id=room_id)
+            event_page = read_events(
+                store, placement="shared", room_id=room_id, since_seq=0, limit=MAX_LOG_LIMIT)
             projected = hosted_room_discussion.project_task_dag(
                 room, event_page.get("events") or [], local_profiles=profiles,
             )

@@ -245,10 +245,32 @@ def test_canonical_safe_launch_is_frozen_policy_executed_in_isolated_worker(tmp_
 
             # Config-only keeps plugin discovery (the gate is safe_mode), yet reads no profile YAML.
             (home / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
-            _config_sid, _ = safe_cli('three', '--ignore-user-config')
-            config_worker = [p for p in worker_pids(owner.pid) if p not in workers][-1]
+            config_sid, _ = safe_cli('three', '--ignore-user-config')
+            config_rows = query('SELECT execution_id,status FROM worker_executions WHERE session_id=?', (config_sid,))
+            assert len(config_rows) == 1 and config_rows[0][1] == 'terminal', config_rows
+            outbox = home / 'worker-outboxes' / config_rows[0][0].replace(':', '-')
+            managed_pids = {r['pid'] for r in records() if r['kind'] == 'start'
+                            and r['argv'][-2:] == ['-m', 'agent.managed_worker']}
+            config_workers = managed_pids & {r['pid'] for r in records() if r['kind'] == 'open'
+                                             and str(outbox) in r['path']}
+            assert len(config_workers) == 1, (config_sid, outbox, config_workers)
+            config_worker = config_workers.pop()
             config_opens = [r['path'] for r in records() if r['kind'] == 'open' and r['pid'] == config_worker]
-            assert any('/plugins/' in p for p in config_opens), 'config-only must still discover plugins'
+            if not any('/plugins/' in p for p in config_opens):
+                evidence = {
+                    'owner_pid': owner.pid, 'first_worker_pids': workers, 'config_worker': config_worker,
+                    'worker_starts': [r for r in records() if r['kind'] == 'start'
+                                      and r['argv'][-2:] == ['-m', 'agent.managed_worker']],
+                    'config_opens': config_opens,
+                    'worker_rows': query('SELECT execution_id,session_id,status FROM worker_executions'),
+                    'policies': query("SELECT key,json_extract(value,'$.policy.safe_mode'),"
+                                      "json_extract(value,'$.policy.ignore_user_config') FROM state_meta "
+                                      "WHERE key LIKE 'gateway.local_policy.v1:%'"),
+                }
+                for name in ('restart.log', 'logs/managed-worker.log'):
+                    path = home / name
+                    evidence[name] = path.read_text(encoding='utf-8')[-8000:] if path.exists() else None
+                raise AssertionError(json.dumps(evidence, indent=1))
             assert not [p for p in config_opens if p.endswith(('config.yaml', '.env'))]
             print(json.dumps({'owner_pid': owner.pid, 'safe_worker_pid': worker, 'config_only_worker_pid': config_worker,
                               'safe_session': safe_sid, 'skill_in_ordinary_prompt': skill_in_ordinary,

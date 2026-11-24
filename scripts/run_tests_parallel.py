@@ -144,6 +144,7 @@ _SKIP_PARTS = {"integration", "e2e", "docker"}
 # take 7-10 min anyway, so this headroom costs nothing on total CI wall
 # time while keeping a genuinely hung file bounded.
 _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
+_UPGRADE_FILE_TIMEOUT_SECONDS = 3000.0
 
 # One-shot retry of failing test FILES. A file that exits non-zero is re-run
 # once in a fresh subprocess; if the re-run passes, the file counts as passed
@@ -514,18 +515,21 @@ def _effective_file_timeout(
     approaches the flat cap.
 
     The flat ``file_timeout`` (default 300s) is sized for the typical file,
-    but a handful of large-collection files (e.g. ``tests/test_hermes_state.py``,
-    239 tests × subprocess-per-test overhead) legitimately run 200s+ on a
+    but a handful of large-collection files legitimately run 200s+ on a
     quiet runner. Under CI load that dilates past the cap, the file is
     SIGKILL'd mid-run, and the automatic retry then passes — a manufactured
     FLAKY report for a file that was never broken (seen 2026-08-18 on main:
     first attempt killed at 300s, retry passed in 205s).
 
     Rule: a file gets ``max(flat_cap, 3 × last_observed_duration)``. Files
-    without a cache entry keep the flat cap. This only ever *raises* the
-    bound — a genuinely hung file is still killed, just with headroom
-    proportional to its known-good runtime.
+    without a cache entry keep the flat cap, except real-install upgrade E2E:
+    their dedicated CI lane already budgets 3000s because one file drives
+    several installs and updates. This only ever *raises* the default bound —
+    a genuinely hung file is still killed, just with suitable headroom.
     """
+    upgrade_root = (repo_root / "tests/e2e/core/upgrade").resolve()
+    if file_timeout == _DEFAULT_FILE_TIMEOUT_SECONDS and file.resolve().is_relative_to(upgrade_root):
+        file_timeout = _UPGRADE_FILE_TIMEOUT_SECONDS
     if not durations:
         return file_timeout
     cached = durations.get(_format_file(file, repo_root))

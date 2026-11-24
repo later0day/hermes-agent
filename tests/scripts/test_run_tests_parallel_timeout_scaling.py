@@ -49,6 +49,16 @@ def test_slow_file_gets_proportional_headroom() -> None:
     assert mod._effective_file_timeout(f, REPO_ROOT, 300.0, durations) == 615.0
 
 
+def test_upgrade_e2e_uses_its_ci_baseline_before_the_first_pass() -> None:
+    mod = _load_runner()
+    upgrade = REPO_ROOT / "tests/e2e/core/upgrade/git/test_partial_clone.py"
+    durations = {mod._format_file(upgrade, REPO_ROOT): 1200.0}
+
+    assert mod._effective_file_timeout(upgrade, REPO_ROOT, 300.0, None) == 3000.0
+    assert mod._effective_file_timeout(upgrade, REPO_ROOT, 300.0, durations) == 3600.0
+    assert mod._effective_file_timeout(upgrade, REPO_ROOT, 120.0, None) == 120.0
+
+
 def test_only_first_attempt_clean_durations_feed_the_cache() -> None:
     """A timed-out or retried file must not raise its own future bound."""
     mod = _load_runner()

@@ -386,7 +386,7 @@ CASES = {
         ["tests/e2e/core/sqlite/test_torture.py"],
         _lanes(python=True, python_prod=False, scan=True, e2e=True),
     ),
-    "state db → e2e": (["hermes_state_wal.py"], _lanes(python=True, scan=True, e2e=True)),
+    "state db → e2e": (["persistence/sqlite/_state/wal.py"], _lanes(python=True, scan=True, e2e=True)),
     "upgrade suite → e2e_upgrade, not e2e": (
         ["tests/e2e/core/upgrade/pm/test_pm_lifecycle.py"],
         _lanes(python=True, python_prod=False, scan=True, e2e_upgrade=True),
@@ -496,7 +496,8 @@ def test_every_slow_lane_path_matches_a_tracked_file():
     module counts when its directory does: it may be a namespace directory.
     """
     tracked = subprocess.run(
-        ["git", "ls-files"], cwd=_REPO, capture_output=True, text=True, check=False,
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=_REPO, capture_output=True, text=True, check=False,
     )
     if tracked.returncode != 0:
         pytest.skip("not a git checkout")

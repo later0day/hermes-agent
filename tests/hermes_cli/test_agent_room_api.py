@@ -1,288 +1,200 @@
-"""Tests for /api/rooms REST endpoints — M1.8.
-
-Uses httpx.AsyncClient against the FastAPI app in test mode. All
-file-system operations (profile creation, bootstrapper) are mocked so
-the tests don't touch the real Hermes home.
-"""
+"""Behavioral coverage for the current hosted-room dashboard REST API."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from starlette.testclient import TestClient
+
+from gateway import hosted_rooms
+from gateway.hosted_room_discussion import DiscussionValidationError
+from persistence_assembly import open_persistence, profile_scope
 
 
-async def _client():
+def _client() -> TestClient:
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-    return AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-        headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    return client
+
+
+@pytest.fixture
+def room_store(tmp_path, monkeypatch):
+    store = open_persistence(profile_scope(home=tmp_path))
+    db_path = hosted_rooms.default_db_path(tmp_path)
+    monkeypatch.setattr("tui_gateway.methods_groups._active_store", lambda: store)
+    monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: db_path)
+    yield store
+    store.close()
+
+
+@pytest.fixture
+def room_db(room_store):
+    hosted_rooms.create_room(
+        room_store,
+        placement="shared",
+        room_id="room-web",
+        name="Web room",
+        members=[
+            {"member_id": "member-lead", "handle": "lead", "profile": "default"},
+            {"member_id": "member-research", "handle": "research", "profile": "researcher"},
+        ],
+        authority_gateway_id="gateway-a",
+        now=1,
+    )
+    return room_store
+
+
+def test_list_rooms_empty(room_store):
+
+    response = _client().get("/api/rooms")
+
+    assert response.status_code == 200
+    assert response.json() == {"rooms": []}
+
+
+def test_get_room_returns_durable_state_and_live_driver_status(room_db, monkeypatch):
+    status = {"state": "running", "active_member": "lead"}
+    service = SimpleNamespace(status=lambda room_id: status if room_id == "room-web" else None)
+    monkeypatch.setattr("tui_gateway.methods_groups.get_hosted_room_service", lambda: service)
+
+    response = _client().get("/api/rooms/room-web")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["room"]["room_id"] == "room-web"
+    assert body["room"]["name"] == "Web room"
+    assert [member["handle"] for member in body["room"]["members"]] == ["lead", "research"]
+    assert body["driver_status"] == status
+
+
+def test_get_room_not_found_does_not_require_a_live_service(room_db, monkeypatch):
+    monkeypatch.setattr(
+        "tui_gateway.methods_groups.get_hosted_room_service",
+        lambda: (_ for _ in ()).throw(AssertionError("missing rooms need no driver lookup")),
     )
 
+    response = _client().get("/api/rooms/missing")
 
-# ---------------------------------------------------------------------------
-# GET /api/rooms — list
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_list_rooms_empty(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-
-    with patch("hermes_cli.web_server._room_store",
-               return_value=AgentRoomStore(tmp_path / "rooms.sqlite")):
-        async with await _client() as c:
-            r = await c.get("/api/rooms")
-    assert r.status_code == 200
-    assert r.json()["rooms"] == []
+    assert response.status_code == 404
+    assert response.json() == {"detail": "room not found"}
 
 
-@pytest.mark.asyncio
-async def test_list_rooms_returns_created_rooms(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
+def test_room_log_replays_a_bounded_cursor_slice(room_db):
+    for index in range(1, 4):
+        hosted_rooms.append_event(
+            room_db,
+            placement="shared",
+            room_id="room-web",
+            event_id=f"event-{index}",
+            kind="message.user",
+            actor={"kind": "user", "id": "alice"},
+            authority_gateway_id="gateway-a",
+            authority_epoch=1,
+            payload={"text": f"message {index}", "thread_id": "thread-1"},
+            now=index,
+        )
 
-    store = AgentRoomStore(tmp_path / "rooms.sqlite")
-    store.create_room("r1", "Support", observer_profile="obs", members=["a"])
+    first_page = _client().get("/api/rooms/room-web/log?since_seq=1&limit=1")
+    assert first_page.status_code == 200
+    first = first_page.json()
+    assert [event["seq"] for event in first["events"]] == [2]
+    assert first["cursor"] == 2
+    assert first["latest_seq"] == 3
+    assert first["has_more"] is True
 
-    with patch("hermes_cli.web_server._room_store", return_value=store):
-        async with await _client() as c:
-            r = await c.get("/api/rooms")
-    assert r.status_code == 200
-    assert len(r.json()["rooms"]) == 1
-    assert r.json()["rooms"][0]["room_name"] == "Support"
-
-
-# ---------------------------------------------------------------------------
-# GET /api/rooms/{room_id} — detail
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_room_not_found(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-
-    with patch("hermes_cli.web_server._room_store",
-               return_value=AgentRoomStore(tmp_path / "rooms.sqlite")):
-        async with await _client() as c:
-            r = await c.get("/api/rooms/nonexistent")
-    assert r.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_get_room_returns_details(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-
-    store = AgentRoomStore(tmp_path / "rooms.sqlite")
-    store.create_room("r1", "Support", observer_profile="obs", members=["a", "b"])
-
-    with patch("hermes_cli.web_server._room_store", return_value=store):
-        async with await _client() as c:
-            r = await c.get("/api/rooms/r1")
-    assert r.status_code == 200
-    body = r.json()["room"]
-    assert body["room_name"] == "Support"
-    assert "a" in body["members"]
+    second_page = _client().get(f"/api/rooms/room-web/log?since_seq={first['cursor']}&limit=1")
+    assert second_page.status_code == 200
+    second = second_page.json()
+    assert [event["event_id"] for event in second["events"]] == ["event-3"]
+    assert second["cursor"] == 3
+    assert second["has_more"] is False
 
 
-# ---------------------------------------------------------------------------
-# POST /api/rooms — create
-# ---------------------------------------------------------------------------
+def test_send_normalizes_mention_and_surrounding_whitespace(monkeypatch):
+    sent = []
 
-@pytest.mark.asyncio
-async def test_post_rooms_nonexistent_member_rejected(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
+    def send(**kwargs):
+        sent.append(kwargs)
+        return {"event_id": kwargs["event_id"], "seq": 1}
 
-    with patch("hermes_cli.web_server._room_store",
-               return_value=AgentRoomStore(tmp_path / "rooms.sqlite")), \
-         patch("hermes_cli.profiles.profile_exists", return_value=False):
-        async with await _client() as c:
-            r = await c.post("/api/rooms", json={
-                "name": "Test", "members": ["ghost"]
-            })
-    assert r.status_code == 400
-    assert "not found" in r.json()["detail"].lower() or "Profiles" in r.json()["detail"]
+    monkeypatch.setattr(
+        "tui_gateway.methods_groups.get_hosted_room_service",
+        lambda: SimpleNamespace(send=send),
+    )
 
+    response = _client().post("/api/rooms/room-web/messages", json={
+        "recipient": "  @lead  ",
+        "text": "  Investigate the regression  ",
+        "event_id": "web-event-normalized",
+        "thread_id": "web-thread-1",
+    })
 
-@pytest.mark.asyncio
-async def test_post_rooms_creates_and_returns_room(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-    from pathlib import Path
-
-    fake_dir = tmp_path / "profiles" / "room_test_observer"
-    fake_dir.mkdir(parents=True)
-    (fake_dir / ".observer").touch()
-
-    store = AgentRoomStore(tmp_path / "rooms.sqlite")
-
-    with patch("hermes_cli.web_server._room_store", return_value=store), \
-         patch("hermes_cli.profiles.profile_exists", side_effect=lambda n: n != "room_test_observer"), \
-         patch("hermes_cli.profiles.read_profile_meta", return_value={}), \
-         patch("hermes_cli.profiles.get_profile_dir", return_value=fake_dir), \
-         patch("gateway.agent_room_bootstrapper.build_observer_profile", return_value=fake_dir):
-        async with await _client() as c:
-            r = await c.post("/api/rooms", json={
-                "name": "Test", "members": ["client_svc", "finance"],
-                "description": "Customer support"
-            })
-
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert body["room"]["room_name"] == "Test"
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert sent == [{
+        "room_id": "room-web",
+        "event_id": "web-event-normalized",
+        "payload": {"text": "@lead Investigate the regression", "thread_id": "web-thread-1"},
+        "recipient": "lead",
+    }]
 
 
-# ---------------------------------------------------------------------------
-# PATCH /api/rooms/{room_id}
-# ---------------------------------------------------------------------------
+def test_send_rejects_an_empty_recipient_before_service(monkeypatch):
+    monkeypatch.setattr(
+        "tui_gateway.methods_groups.get_hosted_room_service",
+        lambda: SimpleNamespace(
+            send=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("service must not be called"))
+        ),
+    )
 
-@pytest.mark.asyncio
-async def test_patch_room_updates_members(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-    from pathlib import Path
+    response = _client().post("/api/rooms/room-web/messages", json={
+        "recipient": " @  ",
+        "text": "Investigate",
+        "event_id": "web-event-no-recipient",
+        "thread_id": "web-thread-1",
+    })
 
-    store = AgentRoomStore(tmp_path / "rooms.sqlite")
-    store.create_room("r1", "Support", observer_profile="room_support_observer",
-                      members=["a", "b"])
-    obs_dir = tmp_path / "profiles" / "room_support_observer"
-    obs_dir.mkdir(parents=True)
-    (obs_dir / ".observer").touch()
-
-    with patch("hermes_cli.web_server._room_store", return_value=store), \
-         patch("hermes_cli.profiles.read_profile_meta", return_value={}), \
-         patch("hermes_cli.profiles.get_profile_dir", return_value=obs_dir), \
-         patch("gateway.agent_room_bootstrapper.regenerate_observer_soul"):
-        async with await _client() as c:
-            r = await c.patch("/api/rooms/r1", json={"members": ["a", "b", "c"]})
-
-    assert r.status_code == 200
-    assert "c" in r.json()["room"]["members"]
+    assert response.status_code == 400
+    assert response.json() == {"detail": "recipient is required"}
 
 
-@pytest.mark.asyncio
-async def test_patch_room_not_found(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
+def test_create_maps_hosted_room_validation_errors_to_400(monkeypatch):
+    def create_room(**_kwargs):
+        raise hosted_rooms.HostedRoomError("invalid room roster")
 
-    with patch("hermes_cli.web_server._room_store",
-               return_value=AgentRoomStore(tmp_path / "rooms.sqlite")):
-        async with await _client() as c:
-            r = await c.patch("/api/rooms/ghost", json={"members": ["a"]})
-    assert r.status_code == 404
+    monkeypatch.setattr(
+        "tui_gateway.methods_groups.get_hosted_room_service",
+        lambda: SimpleNamespace(create_room=create_room),
+    )
 
+    response = _client().post("/api/rooms", json={
+        "room_id": "invalid-room",
+        "name": "Invalid room",
+        "members": [{"profile": "lead", "handle": "lead", "role": "decider"}],
+    })
 
-# ---------------------------------------------------------------------------
-# DELETE /api/rooms/{room_id}
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_delete_room(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-    from gateway.source_agent_binding import SourceAgentBindingStore
-
-    store = AgentRoomStore(tmp_path / "rooms.sqlite")
-    store.create_room("r1", "Support", observer_profile="obs", members=["a"])
-    binding_store = SourceAgentBindingStore(tmp_path / "bindings.sqlite")
-
-    with patch("hermes_cli.web_server._room_store", return_value=store), \
-         patch("hermes_cli.web_server._room_binding_store", return_value=binding_store), \
-         patch("gateway.agent_room_bootstrapper.teardown_observer_profile", return_value=True):
-        async with await _client() as c:
-            r = await c.delete("/api/rooms/r1")
-
-    assert r.status_code == 200
-    assert r.json()["deleted"] is True
-    # Reopen store (endpoint closed it in finally block)
-    from gateway.agent_room_store import AgentRoomStore as _ReopenStore
-    check = _ReopenStore(tmp_path / "rooms.sqlite")
-    assert check.get_room("r1") is None
-    check.close()
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid room roster"}
 
 
-@pytest.mark.asyncio
-async def test_delete_room_not_found(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-    from gateway.source_agent_binding import SourceAgentBindingStore
+def test_send_maps_discussion_validation_errors_to_400(monkeypatch):
+    def send(**_kwargs):
+        raise DiscussionValidationError("invalid discussion payload")
 
-    with patch("hermes_cli.web_server._room_store",
-               return_value=AgentRoomStore(tmp_path / "rooms.sqlite")), \
-         patch("hermes_cli.web_server._room_binding_store",
-               return_value=SourceAgentBindingStore(tmp_path / "bindings.sqlite")):
-        async with await _client() as c:
-            r = await c.delete("/api/rooms/ghost")
-    assert r.status_code == 404
+    monkeypatch.setattr(
+        "tui_gateway.methods_groups.get_hosted_room_service",
+        lambda: SimpleNamespace(send=send),
+    )
 
+    response = _client().post("/api/rooms/room-web/messages", json={
+        "recipient": "lead",
+        "text": "Investigate",
+        "event_id": "web-event-invalid",
+        "thread_id": "web-thread-1",
+    })
 
-# ---------------------------------------------------------------------------
-# POST /api/rooms/{room_id}/bind  +  /unbind
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_bind_and_unbind(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-    from gateway.source_agent_binding import SourceAgentBindingStore
-
-    db_rooms = tmp_path / "rooms.sqlite"
-    db_bindings = tmp_path / "bindings.sqlite"
-    source_key = "source:dingtalk:group:cid-1:u1"
-
-    seed = AgentRoomStore(db_rooms)
-    seed.create_room("r1", "Support", observer_profile="obs", members=["a"])
-    seed.close()
-
-    with patch("hermes_cli.web_server._room_store",
-               side_effect=lambda: AgentRoomStore(db_rooms)),          patch("hermes_cli.web_server._room_binding_store",
-               side_effect=lambda: SourceAgentBindingStore(db_bindings)):
-        async with await _client() as c:
-            r = await c.post("/api/rooms/r1/bind",
-                             json={"source_binding_key": source_key})
-        assert r.status_code == 200
-        assert r.json()["ok"] is True
-
-        check = SourceAgentBindingStore(db_bindings)
-        binding = check.get_binding(source_key)
-        assert (binding.fallback_extra or {}).get("room_id") == "r1"
-        check.close()
-
-        async with await _client() as c:
-            r = await c.post("/api/rooms/r1/unbind",
-                             json={"source_binding_key": source_key})
-        assert r.status_code == 200
-        assert r.json()["unbound"] is True
-
-        check2 = SourceAgentBindingStore(db_bindings)
-        assert check2.get_binding(source_key) is None
-        check2.close()
-
-
-@pytest.mark.asyncio
-async def test_bind_invalid_source_key(tmp_path):
-    from gateway.agent_room_store import AgentRoomStore
-    from gateway.source_agent_binding import SourceAgentBindingStore
-
-    store = AgentRoomStore(tmp_path / "rooms.sqlite")
-    store.create_room("r1", "Support", observer_profile="obs", members=["a"])
-
-    with patch("hermes_cli.web_server._room_store", return_value=store), \
-         patch("hermes_cli.web_server._room_binding_store",
-               return_value=SourceAgentBindingStore(tmp_path / "bindings.sqlite")):
-        async with await _client() as c:
-            r = await c.post("/api/rooms/r1/bind",
-                             json={"source_binding_key": "bad-key"})
-    assert r.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# Route registration check (source introspection)
-# ---------------------------------------------------------------------------
-
-def test_all_seven_endpoints_registered():
-    import inspect
-    from hermes_cli import web_server
-    src = inspect.getsource(web_server)
-    routes = [
-        '"/api/rooms"',
-        '"/api/rooms/{room_id}"',
-        '"/api/rooms/{room_id}/bind"',
-        '"/api/rooms/{room_id}/unbind"',
-    ]
-    for route in routes:
-        assert route in src, f"Missing route {route} in web_server.py"
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid discussion payload"}

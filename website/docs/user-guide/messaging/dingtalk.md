@@ -156,6 +156,26 @@ gateway:
 - `require_mention: true` prevents the bot from responding to every group message — it only answers when someone @-mentions it
 - `allowed_users` under `dingtalk.extra` is an alternative to `DINGTALK_ALLOWED_USERS`; set one or the other (if both are set, only users present in both lists are authorized)
 
+The top-level `dingtalk` block holds the complete set of DingTalk behavior and AI Card options:
+
+```yaml
+dingtalk:
+  app_code: ""             # Optional appCode for enterprise API calls
+  corp_id: ""              # Optional CorpId for enterprise API calls
+  agent_id: ""             # Optional AgentId for enterprise API calls
+  robot_code: ""           # robotCode/chatBotId override; empty uses the Client ID
+  require_mention: true    # Require @mention in group chats
+  free_response_chats: "" # Comma-separated conversation IDs exempt from require_mention
+  allowed_chats: ""       # Comma-separated group chat allowlist; empty allows every chat
+  allowed_users: ""       # Comma-separated staff_id/sender_id allowlist; "*" allows any user
+  allow_all_users: false  # Disable sender allowlisting (avoid on a publicly reachable bot)
+  card_template_id: ""    # AI Card template ID; empty uses the SDK default
+  card_content_key: ""    # AI Card variable that receives streamed content
+  reply_at_sender: false  # @ the triggering sender on final group replies
+```
+
+`allowed_chats` and `allowed_users` are independent restrictions: when both are set, a message must pass both. `free_response_chats` only bypasses the mention requirement; it does not bypass either allowlist. Setting `allow_all_users: true` permits every DingTalk sender, so combine it with `allowed_chats` when the bot should serve only selected groups. Keep Client ID and Client Secret in `.env`, not in this configuration block.
+
 ### Start the Gateway
 
 Once configured, start the DingTalk gateway:

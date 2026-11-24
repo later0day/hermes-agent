@@ -8,7 +8,7 @@ from hermes_cli import config, update_cmd
 
 @pytest.mark.parametrize('case,expected', [
     ('format', [(False, True)]), ('warnings', [(False, True)]),
-    ('migration-error', [(False, True)]), ('current', []), ('ahead', []), ('read-error', []),
+    ('migration-error', [(False, True)]), ('current', [(False, True)]), ('ahead', []), ('read-error', []),
     ('yes', [(False, False)]), ('tty-yes', [(True, False)]), ('tty-decline', []),
     ('noninteractive', [(False, False)]), ('gateway', [(False, False)]), ('eof', []), ('unicode', []),
 ])
@@ -76,6 +76,29 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
         assert 'v2 → v3' in output and 'no new settings to configure' in output
         if case == 'warnings':
             assert 'setting reset' in output and 'personality reset' in output
+
+
+def test_current_schema_active_runs_stamp_independent_migrations(tmp_path, monkeypatch):
+    import hermes_yaml as yaml
+    from hermes_cli import update_cmd_config
+
+    home = tmp_path / '.hermes'
+    home.mkdir()
+    latest = config.DEFAULT_CONFIG['_config_version']
+    (home / 'config.yaml').write_text(yaml.safe_dump({
+        '_config_version': latest,
+        'mcp_servers': {'legacy': {'command': '/bin/true', 'disabled': True}},
+    }), encoding='utf-8')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(update_cmd, '_migrate_sibling_profile_configs', lambda *_: [])
+    monkeypatch.setattr(update_cmd_config, '_restore_snapshot_safety_nets', lambda _: None)
+
+    update_cmd_config._check_and_apply_config_migration()
+
+    migrated = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8'))
+    assert migrated['_config_version'] == latest
+    assert migrated['mcp_servers']['legacy']['enabled'] is False
+    assert 'disabled' not in migrated['mcp_servers']['legacy']
 
 
 @pytest.mark.parametrize('named', [False, True])

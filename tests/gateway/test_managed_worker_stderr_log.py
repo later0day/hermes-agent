@@ -5,7 +5,7 @@ import io
 import stat
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -23,17 +23,24 @@ raise SystemExit(1)
 @pytest.mark.platforms("linux")
 def test_worker_stderr_reaches_a_private_redacted_profile_log(tmp_path, monkeypatch):
     from gateway import session_managed_worker as managed
+    from gateway.run import GatewayRunner
     original = subprocess.Popen
 
     def crashing_child(args, **kwargs):
         return original([sys.executable, '-c', CRASH], **kwargs)
     monkeypatch.setattr(managed.subprocess, 'Popen', crashing_child)
     monkeypatch.setattr(managed, '_worker_env', lambda authority: None)
-    authority = SimpleNamespace(profile_id=str(tmp_path), pending_results={}, waiters={},
+    runner = SimpleNamespace()
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SimpleNamespace(profile_id=str(tmp_path), pending_results={}, waiters={}, runner=runner,
                                 adopt_agent=lambda session_id, generation, worker: None)
     row = {'admission_id': 'adm', 'principal_id': 'owner', 'generation': 3, 'payload': {'text': 'go'}}
-    with pytest.raises(EOFError):
-        asyncio.run(asyncio.wait_for(managed.execute_managed(authority, SessionRef('p', 's'), row, None), 20))
+    try:
+        with pytest.raises(EOFError):
+            asyncio.run(asyncio.wait_for(managed.execute_managed(authority, SessionRef('p', 's'), row, None), 20))
+    finally:
+        GatewayRunner._shutdown_executor(runner, drain_timeout=2)
     log = tmp_path / 'logs' / 'managed-worker.log'
     text = log.read_text()
     assert 'Traceback (most recent call last)' in text and 'RuntimeError: provider refused' in text

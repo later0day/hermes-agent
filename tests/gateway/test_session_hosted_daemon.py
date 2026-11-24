@@ -202,7 +202,9 @@ def test_existing_room_member_switches_off_exhausted_provider(tmp_path):
                 exhausted = True
                 refused = await turn('quota-refusal')
                 assert refused['kind'] == 'turn.failed', refused
-                assert 'Daily limit reached' in refused['payload']['error']
+                assert refused['payload']['reason_code'] == 'provider_quota_limit'
+                assert refused['payload']['error'] == 'provider_quota_limit'
+                assert 'Daily limit reached' not in str(refused['payload'])
 
                 replacement = config | {
                     'model': {'provider': 'local-test', 'default': new_model},
@@ -216,7 +218,9 @@ def test_existing_room_member_switches_off_exhausted_provider(tmp_path):
                 old_count = len(nous.main_requests())
                 switched = await turn('after-profile-edit')
                 assert switched['kind'] == 'turn.failed', switched
-                assert 'Local request rejected' in switched['payload']['error']
+                assert switched['payload']['reason_code'] == 'unknown'
+                assert switched['payload']['error'] == 'unknown'
+                assert 'Local request rejected' not in str(switched['payload'])
                 recovered = await turn('retry-local-provider')
                 assert recovered['kind'] == 'turn.settled', recovered
                 assert len(nous.main_requests()) == old_count

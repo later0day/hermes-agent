@@ -3,7 +3,7 @@ import asyncio
 import threading
 
 
-async def acquire_process(spawn, *args, **kwargs):
+async def acquire_process(run_in_executor, spawn, *args, **kwargs):
     from gateway.session_managed_worker import ManagedWorker
     lock = threading.Lock()
     state = {'cancelled': False, 'process': None}
@@ -18,7 +18,7 @@ async def acquire_process(spawn, *args, **kwargs):
             ManagedWorker(process).close()
         return process
 
-    pending = asyncio.create_task(asyncio.to_thread(create))
+    pending = asyncio.create_task(run_in_executor(create))
     try:
         process = await asyncio.shield(pending)
         with lock:
@@ -30,7 +30,7 @@ async def acquire_process(spawn, *args, **kwargs):
             process = state['process']
             state['process'] = None
         if process is not None:
-            await asyncio.to_thread(ManagedWorker(process).close)
+            await run_in_executor(ManagedWorker(process).close)
         # If creation still runs, its thread owns cleanup; consume an eventual spawn exception.
         pending.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
         raise

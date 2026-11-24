@@ -1,0 +1,5 @@
+name: approval-kinds-e2e
+manifest_version: 1
+version: 1.0.0
+description: Desktop E2E fixture for generic folder and site approval cards
+provides_tools: [approval_kinds_e2e]

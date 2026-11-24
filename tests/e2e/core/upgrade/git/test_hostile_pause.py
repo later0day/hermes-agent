@@ -27,10 +27,9 @@ and the durable pause record ``update_pause_record`` keeps in the root hermes ho
     dependencies). A ``hermes gateway run`` launched then (the replayed argv) syncs the owed
     dependencies in its own launch before serving; the next ``hermes`` launch adopts that gateway
     instead of starting a twin, and the record is discharged.
-(i) the checkout move itself fails before the commit point (the release adds a file under a
-    directory the user cannot write): the paused gateway is restarted on the OLD code, and the
-    update's exit code and receipt outcome equal those of the same failing update run with no
-    gateway at all.
+(i) the checkout move itself fails before the commit point (the git shim rejects the fast-forward):
+    the paused gateway is restarted on the OLD code, and the update's exit code and receipt outcome
+    equal those of the same failing update run with no gateway at all.
 (h) the Desktop hand-off (``scripts/desktop-update/posix.sh``, what the Desktop app spawns before it
     quits) runs the same ``hermes update --gateway``: the gateway is paused and restarted on the new
     commit, and the hand-off's result file reports success.
@@ -178,6 +177,22 @@ def _start_gateway(host: NamespaceHost, w: G.World, tag: str) -> dict:
     except AssertionError as exc:
         raise AssertionError(f"premise: the gateway never came up: {exc}\n{host.ps_text()}\n"
                              f"{_read(w.sb.root / f'gateway-{tag}.log')[-4000:]}") from None
+
+
+@contextlib.contextmanager
+def _failed_move(w: G.World) -> Iterator[None]:
+    shim = w.sb.root / "wrap" / "git"
+    original = shim.read_text(encoding="utf-8-sig")
+    first, _, rest = original.partition("\n")
+    shim.write_text(
+        f'{first}\ncase " $* " in *" merge --ff-only "*) '
+        'echo "e2e: forced checkout move failure" >&2; exit 1;; esac\n' + rest,
+        encoding="utf-8",
+    )
+    try:
+        yield
+    finally:
+        shim.write_text(original, encoding="utf-8")
 
 
 def _kill_born_after(host: NamespaceHost, before: set[int], keep: set[int] | frozenset[int] = frozenset()) -> list[int]:
@@ -547,21 +562,12 @@ def test_desktop_handoff_update_pauses_and_restarts_through_the_same_path(w):
 
 def test_failed_move_restarts_exactly_the_paused_set_on_the_old_code(w):
     w.reset_clean()
-    blocked = w.checkout / "website"
-    assert blocked.is_dir(), "premise: website/ is tracked"
     target = w.publish("release: e2e hostile pause i", {"website/e2e-hostile-pause-i.txt": "release i\n"})
 
-    def failing_update(host):
-        blocked.chmod(0o555)
-        try:
-            return _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
-        finally:
-            blocked.chmod(0o755)
-
-    with _namespace(w) as host:
+    with _failed_move(w), _namespace(w) as host:
         before = _start_gateway(host, w, "i")
         old_sha, old_pid = w.head(), int(before["pid"])
-        cp = failing_update(host)
+        cp = _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
         out = G.output(cp)
         receipt = w.receipt()
         after = None
@@ -580,7 +586,7 @@ def test_failed_move_restarts_exactly_the_paused_set_on_the_old_code(w):
         host.kill(int(after["pid"]), signal.SIGTERM)
         H.wait_for(lambda: not _gateways(host), timeout=120, interval=0.5, what="the gateway to exit")
         (w.sb.hermes_home / "gateway.pid").unlink(missing_ok=True)
-        ctrl = failing_update(host)
+        ctrl = _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
         ctrl_receipt = w.receipt()
         diag = _diag(w, host, ctrl, with_gateway_rc=rc_with, with_gateway_receipt=receipt)
         assert w.head() == old_sha, f"premise: the control run moved the checkout:\n{diag}"

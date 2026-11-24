@@ -52,10 +52,23 @@ def flavored_assets(icons: Path, assets: Path):
 
 
 def release_version(_repo: Path, tag: str) -> str:
-    from scripts.termux.deb_version import channel_for_tag
+    from hermes_cli.update_channel import release_version as version_for
 
-    channel_for_tag(tag)  # shared release tag grammar, not a second version parser
-    return tag[1:]
+    version = version_for(tag)
+    if version is None:
+        raise ValueError(f"Not a release tag: {tag!r}")
+    return version
+
+
+def native_version_args(request, variant: str, *, platform: str, node: str, repo: Path,
+                        env: dict[str, str]) -> list[str]:
+    if platform != "win32" or request.channel_request is not None or request.tag is None:
+        return []
+    # A Store package carries the Store scheme (revision zero) even on a canary.
+    script = ("const m=require('./scripts/msix-shared.mjs');const e=Number(process.env.HERMES_RELEASE_EPOCH);"
+              "console.log(process.argv[2]==='store'?m.storePackageVersionAt(e):m.nativeQuad(process.argv[1],e))")
+    quad = capture([node, "-e", script, request.tag, variant], repo, env)
+    return [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
 
 
 def pnpm_command(node: str) -> list[str]:
@@ -131,11 +144,7 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
         run([node, "scripts/build/desktop.mjs", "--source", str(repo), "--icons", str(icons),
              "--stamp", str(desktop / "build/install-stamp.json"), "--native-deps", str(prepared.native),
              "--out", str(desktop / "dist")], cwd=repo, env=env)
-        version_args = []
-        if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
-            script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.HERMES_RELEASE_EPOCH)))"
-            quad = capture([node, "-e", script, request.tag], repo, env)
-            version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
+        version_args = native_version_args(request, variant, platform=sys.platform, node=node, repo=repo, env=env)
         run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,
             env=packaging_environment(env, os.environ, request.target))
     require_source(repo, request.commit)

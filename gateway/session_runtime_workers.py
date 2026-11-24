@@ -134,13 +134,17 @@ async def tracked_write(authority, write, then=None, *, ordered=False, after=Non
     order = getattr(authority, '_ordered_writes', None)
     if ordered and order is None:
         order = authority._ordered_writes = asyncio.Lock()
+    from gateway.session_persistence import authority_persistence
+
+    async def commit():
+        return await authority_persistence(authority).aio.run(write)
 
     async def run():
         if ordered:
             async with order:
-                result = await asyncio.to_thread(write)
+                result = await commit()
         else:
-            result = await asyncio.to_thread(write)
+            result = await commit()
         if then is None:
             return result
         followed = then(result)

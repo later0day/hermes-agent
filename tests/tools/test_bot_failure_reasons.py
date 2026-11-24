@@ -41,6 +41,7 @@ FIXTURE_TARGET_SCOPE_DETAILED = (
         ("Error code: 403 - forbidden", fr.PROVIDER_AUTH_OR_ACCESS),
         ("Invalid API key provided", fr.PROVIDER_AUTH_OR_ACCESS),
         ("Error code: 402 - payment required", fr.PROVIDER_QUOTA_LIMIT),
+        ("billing", fr.PROVIDER_QUOTA_LIMIT),
         ("insufficient balance, top up your account", fr.PROVIDER_QUOTA_LIMIT),
         ("You exceeded your current quota", fr.PROVIDER_QUOTA_LIMIT),
         ("Error code: 429 - Too Many Requests", fr.PROVIDER_RATE_LIMIT),

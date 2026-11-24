@@ -9,6 +9,7 @@ import time
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 ROOM_ID, GW = "room-contract", "gateway-a"
 MEMBERS = [
@@ -19,17 +20,22 @@ LOCAL = ("lead", "api")
 
 
 def _room(tmp_path):
-    db = tmp_path / "state.db"
-    room = hosted_rooms.create_room(db, room_id=ROOM_ID, name="R", members=MEMBERS, authority_gateway_id=GW, now=1)
+    db = storage_handle(tmp_path)
+    room = hosted_rooms.create_room(
+        db, placement="profile", room_id=ROOM_ID, name="R", members=MEMBERS, authority_gateway_id=GW, now=1
+    )
     return db, room
 
 
 def _append(db, **event):
-    hosted_rooms.append_event(db, room_id=ROOM_ID, authority_gateway_id=GW, authority_epoch=1, now=time.time(), **event)
+    hosted_rooms.append_event(
+        db, placement="profile", room_id=ROOM_ID, authority_gateway_id=GW, authority_epoch=1,
+        now=time.time(), **event
+    )
 
 
 def _events(db):
-    return hosted_rooms.read_events(db, room_id=ROOM_ID, since_seq=0, limit=100)["events"]
+    return hosted_rooms.read_events(db, placement="profile", room_id=ROOM_ID, since_seq=0, limit=100)["events"]
 
 
 def test_decider_and_worker_prompts_carry_the_contract(tmp_path):
@@ -45,7 +51,7 @@ def test_decider_and_worker_prompts_carry_the_contract(tmp_path):
     task = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task
     for event in discussion.plan_publication(room, _events(db), task, status="settled",
                                              result={"text": "@api 查功能"}, local_profiles=LOCAL).events:
-        hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
+        hosted_rooms.append_event(db, placement="profile", **event.append_kwargs(ROOM_ID), now=time.time())
     worker = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task
     assert worker.member.profile == "api"
     prompt = worker.payload["prompt"]
@@ -89,6 +95,6 @@ def test_workers_get_the_absolute_shared_room_folder_from_their_terminal_cwd(tmp
     task = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task
     for event in discussion.plan_publication(room, _events(db), task, status="settled",
                                              result={"text": "@api work"}, local_profiles=LOCAL).events:
-        hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
+        hosted_rooms.append_event(db, placement="profile", **event.append_kwargs(ROOM_ID), now=time.time())
     prompt = discussion.plan_next_task(room, _events(db), local_profiles=LOCAL).task.payload["prompt"]
     assert f"under /srv/rooms/{ROOM_ID}/ (use this exact path)" in prompt

@@ -8,6 +8,7 @@ import time
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 ROOM_ID, GW = "room-wrap", "gateway-a"
 WORKERS = ("w1", "w2", "w3", "w4")
@@ -20,7 +21,7 @@ def _run(db, room, reply, limit=20):
     """Drive the policy like the service does; returns (decisions, published member handles)."""
     spoken = []
     for _ in range(limit):
-        events = hosted_rooms.read_events(db, room_id=ROOM_ID, since_seq=0, limit=500)["events"]
+        events = hosted_rooms.read_events(db, placement="profile", room_id=ROOM_ID, since_seq=0, limit=500)["events"]
         decision = discussion.plan_next_task(room, events, local_profiles=LOCAL)
         if decision.task is None:
             return decision, spoken
@@ -29,16 +30,19 @@ def _run(db, room, reply, limit=20):
         publication = discussion.plan_publication(room, events, task, status="settled",
                                                   result={"text": reply(task.member.handle)}, local_profiles=LOCAL)
         for event in publication.events:
-            hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
+            hosted_rooms.append_event(db, placement="profile", **event.append_kwargs(ROOM_ID), now=time.time())
     raise AssertionError("discussion never ended")
 
 
 def test_decider_reports_when_the_message_budget_runs_out(tmp_path):
-    db = tmp_path / "state.db"
-    room = hosted_rooms.create_room(db, room_id=ROOM_ID, name="R", members=MEMBERS, authority_gateway_id=GW, now=1)
-    hosted_rooms.append_event(db, room_id=ROOM_ID, authority_gateway_id=GW, authority_epoch=1, now=time.time(),
-                              event_id="u1", kind="message.user", actor={"kind": "user", "id": "u"},
-                              payload={"text": "research", "thread_id": "t"})
+    db = storage_handle(tmp_path)
+    room = hosted_rooms.create_room(
+        db, placement="profile", room_id=ROOM_ID, name="R", members=MEMBERS, authority_gateway_id=GW, now=1
+    )
+    hosted_rooms.append_event(
+        db, placement="profile", room_id=ROOM_ID, authority_gateway_id=GW, authority_epoch=1, now=time.time(),
+        event_id="u1", kind="message.user", actor={"kind": "user", "id": "u"},
+        payload={"text": "research", "thread_id": "t"})
     everyone = " ".join(f"@{w} do part" for w in WORKERS)
 
     final, spoken = _run(db, room, lambda who: everyone if who == "lead" else f"@lead {who} result")

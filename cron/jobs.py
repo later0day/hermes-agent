@@ -1734,6 +1734,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "catch_up": _normalize_catch_up,
     "wrap_response": normalize_wrap_response,
     "profile": _normalize_profile,
+    "owner_profile": _normalize_profile,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1808,6 +1809,7 @@ def create_job(
     grace_minutes: Optional[int] = None,
     wrap_response: Optional[bool] = None,
     profile: Optional[str] = None,
+    owner_profile: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1906,7 +1908,7 @@ def create_job(
         **({"owner_chat": owner_chat} if owner_chat else {}),
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
-        "owner_profile": f["profile"] or "default",
+        "owner_profile": f["owner_profile"] or f["profile"] or "default",
         "profile": f["profile"],
         "run_profile": f["profile"],
     }

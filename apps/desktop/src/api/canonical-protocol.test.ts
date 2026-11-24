@@ -1,6 +1,51 @@
 import { expect, test, vi } from 'vitest'
 
-import { CanonicalDesktopProtocol, slashMutation } from './canonical-protocol'
+import { CanonicalDesktopProtocol, canonicalPromptParams, slashMutation } from './canonical-protocol'
+
+const approvalCard = {
+  kind: 'approval', prompt_id: 'card-1', execution_generation: 4,
+  command: '', description: 'E2E approval', choices: ['once', 'deny'],
+}
+
+test.each([
+  ['access', { path: '/srv/Project  Files', access: 'read', risk: 'Read risk' }],
+  ['access', { path: '/srv/Shared  Output', access: 'read_write', risk: 'Write risk' }],
+  ['network', { host: 'downloads.example', label: 'Download  mirror', risk: 'Network risk' }],
+] as const)('canonical %s cards retain exact target and risk in live and replay projections', (approval_kind, target) => {
+  const prompt = { ...approvalCard, approval_kind, ...target }
+  const expected = {
+    session_id: 's', request_id: 'card-1', command: '', description: 'E2E approval',
+    choices: ['once', 'deny'], allow_permanent: false, edit: undefined,
+    kind: approval_kind, ...target,
+  }
+  expect(canonicalPromptParams('approval', 's', prompt)).toEqual(expected)
+
+  const protocol = new CanonicalDesktopProtocol()
+  const snapshot = protocol.result('session.resume', { session_id: 's' }, {
+    session_id: 's', revision: 1, execution_generation: 4, prompts: [prompt],
+  })
+  expect(snapshot.open_requests).toEqual([{ id: 'card-1', method: 'approval', params: expected }])
+})
+
+test('canonical folder denial returns a trimmed reason but command answers stay choice-only', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, {
+    session_id: 's', revision: 1, execution_generation: 4,
+    prompts: [{ ...approvalCard, approval_kind: 'access', path: '/srv/Project  Files', access: 'read' }],
+  })
+  expect(protocol.prepare('approval.respond', {
+    session_id: 's', request_id: 'card-1', choice: 'deny', reason: '  Not this folder  ',
+  })).toEqual({ session_id: 's', execution_generation: 4, prompt_id: 'card-1', choice: 'deny', reason: 'Not this folder' })
+
+  const commands = new CanonicalDesktopProtocol()
+  commands.result('session.resume', { session_id: 's' }, {
+    session_id: 's', revision: 1, execution_generation: 4,
+    prompts: [{ ...approvalCard, approval_kind: 'command', command: 'rm -rf build' }],
+  })
+  expect(commands.prepare('approval.respond', {
+    session_id: 's', request_id: 'card-1', choice: 'deny', reason: 'not for commands',
+  })).toEqual({ session_id: 's', execution_generation: 4, prompt_id: 'card-1', choice: 'deny' })
+})
 
 test('sibling routes survive every rebuilt control and compression follow-up', async () => {
   const protocol = new CanonicalDesktopProtocol()

@@ -129,6 +129,8 @@ def registry_state(tmp_path, monkeypatch):
 def test_rejected_background_child_stops_with_parent(
     registry_state, monkeypatch, tmp_path, rejection, stop_timing, stop_kind,
 ):
+    # Durable dispatch I/O is unrelated to cancellation ownership and can delay admission under load.
+    monkeypatch.setattr(async_delegation, "_persist_dispatch", lambda _record: None)
     parent, child = _Parent(), _ControlledChild()
     background_child = pending_child = None
     if rejection == "partial_schedule_failure":
@@ -149,6 +151,7 @@ def test_rejected_background_child_stops_with_parent(
     release_occupier = threading.Event()
     admission_started = threading.Event()
     continue_admission = threading.Event()
+    rejection_returned = threading.Event()
     outcome = Future()
 
     def occupy_slot():
@@ -187,16 +190,21 @@ def test_rejected_background_child_stops_with_parent(
 
     dispatch = async_delegation.dispatch_async_delegation_batch
     admissions = 0
+    admission_lock = threading.Lock()
     accepted_ids = []
 
     def pause_admission(**kwargs):
         nonlocal admissions
-        admissions += 1
+        with admission_lock:
+            admissions += 1
+            admission = admissions
         rejected_admission = 2 if background_child is not None else 1
-        if admissions == rejected_admission:
+        if admission == rejected_admission:
             admission_started.set()
             assert continue_admission.wait(5)
         result = dispatch(**kwargs)
+        if admission == rejected_admission:
+            rejection_returned.set()
         if result.get("status") == "dispatched":
             accepted_ids.append(result["delegation_id"])
         return result
@@ -220,6 +228,10 @@ def test_rejected_background_child_stops_with_parent(
         if stop_timing == "during_admission":
             request_stop(stop_message)
         continue_admission.set()
+        rejection_finished = rejection_returned.wait(5)
+        if not rejection_finished and outcome.done():
+            outcome.result()
+        assert rejection_finished, "rejected admission did not finish cleanup"
         assert child.started.wait(5)
         if stop_timing == "running":
             request_stop(stop_message)

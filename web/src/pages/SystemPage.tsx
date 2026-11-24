@@ -43,6 +43,8 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
+import { BackendMigrationCard } from "@/components/BackendMigrationCard";
+import { MultiplexMigrateOffer } from "@/components/MultiplexMigrateOffer";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -1248,30 +1250,9 @@ export default function SystemPage() {
               {servedNotice ?? s.sharedGatewayServed.replace("{profiles}", sharedGateway!.join(", "))}
             </CardContent>
           )}
-          {migratePlan && !migratePlan.already_multiplexed && migratePlan.profiles.length > 1 && (
-            migratePlan.eligible || migratePlan.blockers.length > 0
-          ) && (
-            <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">
-                  {s.migrateHint}
-                </span>
-                <Button
-                  size="sm"
-                  className="uppercase"
-                  onClick={migrateToMultiplex}
-                  disabled={!migratePlan.eligible}
-                  title={migratePlan.eligible ? undefined : s.migrateBlockersFirst}
-                >
-                  {s.migrateButton}
-                </Button>
-              </div>
-              {migratePlan.blockers.map((b) => (
-                <div key={b} className="text-warning">• {b}</div>
-              ))}
-            </CardContent>
-          )}
+          {migratePlan && <MultiplexMigrateOffer plan={migratePlan} onMigrate={migrateToMultiplex} />}
         </Card>
+        <BackendMigrationCard />
       </section>
 
       {/* ── Memory ────────────────────────────────────────────────── */}

@@ -113,6 +113,21 @@ print(json.dumps(row))
     assert row["steps"][0]["ok"] is False
 
 
+def test_finalize_does_not_recreate_a_renamed_profile_home(tmp_path, monkeypatch):
+    import hermes_constants
+
+    old_home = tmp_path / ".hermes" / "profiles" / "gamma"
+    new_home = old_home.with_name("delta")
+    old_home.mkdir(parents=True)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: old_home)
+    token = receipt.begin("plugin-check")
+
+    old_home.rename(new_home)
+
+    assert receipt.finalize("ok", token=token) is None
+    assert not old_home.exists()
+
+
 def test_concurrent_finalize_writes_unique_names(homed):
     """Overlapping syncs (threaded cadence/ensure) must each get their own
     receipt file — no stamp collision overwrites."""

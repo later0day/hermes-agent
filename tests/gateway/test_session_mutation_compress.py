@@ -95,7 +95,22 @@ def run_compress_case(tmp_path, mode, in_place):
                     with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
                         row = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
                     return row and row[0] == 'terminal'
-                await async_wait_until(terminal, timeout=30, what=f'{text} terminal')
+                try:
+                    await async_wait_until(terminal, timeout=30, what=f'{text} terminal')
+                except AssertionError as exc:
+                    with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
+                        evidence = {
+                            'admissions': db.execute(
+                                'SELECT request_id,status,outcome,generation FROM session_admissions').fetchall(),
+                            'workers': db.execute(
+                                'SELECT execution_id,session_id,status,generation FROM worker_executions').fetchall(),
+                        }
+                    evidence['outboxes'] = {str(p): p.read_text(encoding='utf-8')
+                                            for p in (home / 'worker-outboxes').rglob('pending.json')}
+                    for name in ('restart.log', 'logs/managed-worker.log'):
+                        path = home / name
+                        evidence[name] = path.read_text(encoding='utf-8')[-8000:] if path.exists() else None
+                    raise AssertionError(json.dumps(evidence, indent=1)) from exc
                 return await call('session.resume', session_id=sid)
             history_count = 16
             for i in range(history_count):

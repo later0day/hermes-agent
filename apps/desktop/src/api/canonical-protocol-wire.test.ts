@@ -38,6 +38,52 @@ test('named canonical prompt listeners receive replay-safe IDs before answering 
   }
 })
 
+test('live canonical folder approval projects its card and returns a trimmed denial reason', async () => {
+  const wsPackage = 'ws'
+  const { WebSocketServer } = await import(wsPackage)
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await new Promise<void>(resolve => server.once('listening', resolve))
+  const sent: any[] = []
+  server.on('connection', (socket: any) => {
+    socket.on('message', (bytes: Buffer) => {
+      const frame = JSON.parse(bytes.toString())
+      sent.push(frame)
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { status: 'resolved' } }))
+    })
+    socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: {
+      type: 'approval.request', session_id: 's', payload: {
+        prompt_id: 'folder-1', execution_generation: 4, choices: ['once', 'deny'],
+        approval_kind: 'access', path: '/srv/Project  Files', access: 'read_write', risk: 'Write risk',
+      },
+    } }))
+  })
+  const client = new HermesGateway()
+  let promptRequest: any
+  let projected: any
+  let received!: () => void
+  const ready = new Promise<void>(resolve => { received = resolve })
+  client.onRequest(request => {
+    if (request.id === 'folder-1') { promptRequest = request; projected = request.params; received() }
+  })
+
+  try {
+    const address = server.address() as { port: number }
+    await client.connect(`ws://127.0.0.1:${address.port}/api/ws?native_dial=fixture&ticket=one-use`)
+    await ready
+    expect(projected).toMatchObject({ request_id: 'folder-1', kind: 'access',
+      path: '/srv/Project  Files', access: 'read_write', risk: 'Write risk' })
+    promptRequest.respond({ choice: 'deny', reason: '  Private files  ' })
+    await vi.waitFor(() => expect(sent.some(frame => frame.method === 'approval.respond')).toBe(true))
+    expect(sent.find(frame => frame.method === 'approval.respond').params).toEqual({ session_id: 's', profile: 'default', prompt_id: 'folder-1', execution_generation: 4,
+      choice: 'deny', reason: 'Private files' })
+  } finally {
+    client.close()
+
+    for (const socket of server.clients) { socket.terminate() }
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
 test('a legacy (non-canonical) dial strips canonical-only identity keys the serve contract refuses', async () => {
   // `hermes serve` answers 4000 "out of sync" for an unknown key, which the remote-topology E2E
   // surfaced as a permanent "Session unavailable" on a URL+token connection.

@@ -31,10 +31,6 @@ def _make_source() -> SessionSource:
 
 
 def _make_runner(tmp_path, root, monkeypatch):
-    import hermes_state
-
-    # The hermetic fixture's fixed DB path would override the per-profile resolution under test.
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
         sessions_dir=root / "sessions",
@@ -46,7 +42,7 @@ def _make_runner(tmp_path, root, monkeypatch):
         root / "sessions",
         runner.config,
     )
-    runner._session_db = runner.session_store._db
+    runner._session_db = runner.session_store.persistence
     runner._source_agent_binding_store = SourceAgentBindingStore(
         tmp_path / "bindings.sqlite"
     )
@@ -101,7 +97,7 @@ def test_bound_profile_runtime_uses_profile_home_and_session_namespace(tmp_path,
         from hermes_constants import get_hermes_home
 
         assert get_hermes_home() == profile_dir
-        assert runner.session_store._db.db_path == profile_dir / "state.db"
+        assert runner.session_store.persistence.scope.profile_dir == profile_dir
         assert gateway_run._load_gateway_config()["model"]["default"] == "worker-model"
     assert os.environ.get("HERMES_HOME") == before_home
 
@@ -139,7 +135,7 @@ def test_profile_config_reload_reuses_store_and_scoped_db_handle(tmp_path, monke
 
     with runner._profile_scope_for_source(source):
         first_config = gateway_run._load_gateway_config()
-        first_db = store._db
+        first_db = store.persistence
 
     config_path = profile_dir / "config.yaml"
     config_path.write_text(
@@ -151,13 +147,13 @@ def test_profile_config_reload_reuses_store_and_scoped_db_handle(tmp_path, monke
 
     with runner._profile_scope_for_source(source):
         second_config = gateway_run._load_gateway_config()
-        second_db = store._db
+        second_db = store.persistence
 
     assert first_config["model"]["default"] == "first-model"
     assert second_config["model"]["default"] == "second-model"
     assert runner.session_store is store
     assert second_db is first_db
-    assert second_db.db_path == profile_dir / "state.db"
+    assert second_db.scope.profile_dir == profile_dir
 
 
 def test_session_model_override_takes_priority_over_bound_profile_model(

@@ -15,6 +15,11 @@ from tests.gateway.relay.test_relay_adapter import _CaptureTransport, make_desc
 from tests.gateway.test_platform_shared_metrics import rows
 
 
+@pytest.fixture(autouse=True)
+def fixed_monotonic(monkeypatch):
+    monkeypatch.setattr(smg, "time", SimpleNamespace(monotonic=lambda: 0.0))
+
+
 def _relay(platform="telegram"):
     return RelayAdapter(PlatformConfig(), make_desc(platform=platform), transport=_CaptureTransport())
 

@@ -14,6 +14,7 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 from gateway.slash_commands import GatewaySlashCommandsMixin
+from persistence_assembly import open_persistence, profile_scope
 
 MEMBERS = [{"member_id": "m-a", "profile": "a", "handle": "a", "target": {"kind": "local", "profile": "a"}},
            {"member_id": "m-b", "profile": "b", "handle": "b", "target": {"kind": "local", "profile": "b"}}]
@@ -34,10 +35,19 @@ def _source():
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    path = tmp_path / "state.db"
-    hosted_rooms.create_room(path, room_id="room-1", name="R", members=MEMBERS, authority_gateway_id="g", now=1)
+def store(tmp_path):
+    with open_persistence(profile_scope(tmp_path)) as store:
+        yield store
+
+
+@pytest.fixture
+def db(tmp_path, store, monkeypatch):
+    path = hosted_rooms.default_db_path(tmp_path)
+    hosted_rooms.create_room(
+        store, placement="shared", room_id="room-1", name="R",
+        members=MEMBERS, authority_gateway_id="g", now=1)
     monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: path)
+    monkeypatch.setattr("tui_gateway.methods_groups._active_store", lambda: store)
     return path
 
 

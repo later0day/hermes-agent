@@ -3,9 +3,12 @@ outcome 'unknown' (N117), so a client that renders by status never shows a norma
 import asyncio
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
+from gateway.run import GatewayRunner
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from gateway.session_contract import SessionActor, SessionRef
 
@@ -24,19 +27,19 @@ for line in sys.stdin.buffer:
 def _authority_with_a_lost_worker(tmp_path, monkeypatch):
     """A real authority whose next managed turn's child says hello, then sends a bogus frame."""
     from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
     runner = SimpleNamespace(_draining=False, _cached_agent_for=lambda route: None,
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'), persistence=storage_handle(tmp_path))
     live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     published = []
     original = live.event_stream.publish
@@ -54,7 +57,7 @@ def _authority_with_a_lost_worker(tmp_path, monkeypatch):
 
     async def claim():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        return claim_session_input(db, epoch=authority.epoch, session_id='s')
+        return admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
     return authority, ref, policy, claim, published, db
 
 
@@ -68,8 +71,11 @@ def test_unknown_worker_loss_publishes_error_status(tmp_path, monkeypatch):
         with pytest.raises(managed.ManagedExecutionUnknown):
             async with asyncio.timeout(30):
                 await managed.execute_managed(authority, ref, row, policy)
-    with db:
-        asyncio.run(scenario())
+    try:
+        with db:
+            asyncio.run(scenario())
+    finally:
+        GatewayRunner._shutdown_executor(authority.runner, drain_timeout=2)
     complete = [p for kind, p in published if kind == 'message.complete' and p.get('outcome') == 'unknown']
     assert complete and complete[0]['status'] == 'error', published
 
@@ -109,8 +115,11 @@ def test_a_lost_card_worker_is_on_the_board_before_its_admission_settles(tmp_pat
         with pytest.raises(managed.ManagedExecutionUnknown):
             async with asyncio.timeout(30):
                 await managed.execute_managed(authority, ref, row, policy)
-    with db:
-        asyncio.run(scenario())
+    try:
+        with db:
+            asyncio.run(scenario())
+    finally:
+        GatewayRunner._shutdown_executor(authority.runner, drain_timeout=2)
     assert order == ['worker_lost', 'settled']
 
 
@@ -134,8 +143,11 @@ def test_a_cancellation_while_the_board_is_busy_still_settles_the_admission(tmp_
         busy_board_frees.set()
         await asyncio.gather(*authority._mutation_tasks)
         return row
-    with db:
-        row = asyncio.run(scenario())
+    try:
+        with db:
+            row = asyncio.run(scenario())
+    finally:
+        GatewayRunner._shutdown_executor(authority.runner, drain_timeout=2)
     assert order == ['settled', 'worker_lost']
     import sqlite3
     with sqlite3.connect(tmp_path / 'state.db') as ledger:

@@ -79,7 +79,8 @@ def main():
     hook = home / 'hook.py'
     hook.write_text('from pathlib import Path\nPath(' + repr(str(home / 'hook-effect')) + ').write_text("accepted")\n', encoding='utf-8')
     cfg = {'gateway': {'multiplex_profiles': False}, 'model': {'provider': 'custom', 'default': 'loop-model', 'base_url': url},
-        'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': ['terminal', 'file']},
+        'auxiliary': {'title_generation': {'enabled': False}}, 'updates': {'check': False},
+        'platform_toolsets': {'cli': ['terminal', 'file']},
         'terminal': {'backend': 'local'}, 'agent': {'api_max_retries': 1}, 'kanban': {'dispatch_in_gateway': False},
         'hooks': {'post_tool_call': [{'command': f'{sys.executable} {hook}'}]}}
     (home / 'config.yaml').write_text(json.dumps(cfg), encoding='utf-8')
@@ -102,7 +103,7 @@ def main():
         child = original_popen(*args, **kwargs)
         if 'hermes_cli.kanban_worker_client' in args[0]:
             clients.append(child)
-            if peer.mode == 'timeout':
+            if peer.mode in {'timeout', 'crash'}:
                 assert peer.blocked.wait(55), 'managed worker did not reach loopback'
                 with closing(connect(board='owned')) as snapshot:
                     bound = snapshot.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='worker_bound' "
@@ -143,10 +144,13 @@ def main():
                         import signal
                         # Windows has no SIGKILL; os.kill there is TerminateProcess for any signal.
                         os.kill(active.worker_pid, getattr(signal, 'SIGKILL', signal.SIGTERM))
-                    peer.release.set()
+                    if peer.mode != 'crash':
+                        peer.release.set()
                     if peer.mode != 'timeout':
                         wait_for(lambda: not kb._pid_alive(active.worker_pid))
                     wait_for(lambda: not kb._pid_alive(clients[0].pid))
+                    if peer.mode == 'crash':
+                        wait_for(lambda: not kb._pid_alive(receipt['managed_pid']))
                     dispatch.reap_worker_zombies()
                     receipt['client_exit'] = dispatch._classify_worker_exit(clients[0].pid)
                     dispatch._recent_worker_exits.clear()

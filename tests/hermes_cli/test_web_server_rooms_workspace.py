@@ -4,13 +4,17 @@ import pytest
 
 from gateway import hosted_rooms
 from gateway import room_task_dag as dag
+from persistence.gateway.hosted_rooms import RoomConflictError
+from persistence_assembly import open_persistence, profile_scope
 
 
 @pytest.fixture
 def room_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db = tmp_path / "state.db"
+    store = open_persistence(profile_scope(home=tmp_path))
     hosted_rooms.create_room(
-        db,
+        store,
+        placement="shared",
         room_id="room-web",
         name="Web room",
         members=[{"member_id": "lead", "handle": "lead", "profile": "default"}],
@@ -19,7 +23,9 @@ def room_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     dag.create_task(db, room_id="room-web", task_id="t1", subject="Build")
     monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: db)
-    return db
+    monkeypatch.setattr("tui_gateway.methods_groups._active_store", lambda: store)
+    yield db
+    store.close()
 
 
 def _client():
@@ -130,7 +136,7 @@ def test_rooms_send_rejects_empty_task_before_service(monkeypatch):
 def test_rooms_mutations_map_not_found_and_conflict(monkeypatch):
     class FakeService:
         def create_room(self, **kwargs):
-            raise hosted_rooms.RoomConflictError("room already exists")
+            raise RoomConflictError("room already exists")
 
         def send(self, **kwargs):
             raise hosted_rooms.RoomNotFoundError("room not found")

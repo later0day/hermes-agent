@@ -297,7 +297,6 @@ export const ZH_CONFIG_LEAVES: Record<string, string> = {
   context_timeout_seconds: "上下文超时（秒）",
   context_total_ceiling_seconds: "上下文总时长上限（秒）",
   cooldown_seconds: "冷却时间（秒）",
-  copy_shortcut: "复制快捷键",
   cost_threshold_usd: "费用阈值（美元）",
   create_dir: "创建目录",
   credential_source: "凭据来源",

@@ -86,6 +86,40 @@ def sandbox_required_reason() -> str | None:
     return "bubblewrap sandbox unavailable and not on CI; refusing to run the real updater next to a live install"
 
 
+def unprivileged_argv(argv: Sequence[str]) -> list[str]:
+    if os.geteuid() != 0:
+        return list(argv)
+    account = pwd.getpwnam("nobody")
+    setpriv = shutil.which("setpriv")
+    assert setpriv is not None, "setpriv required to test real permission bits as root"
+    return [setpriv, f"--reuid={account.pw_uid}", f"--regid={account.pw_gid}", "--clear-groups", *argv]
+
+
+def unprivileged_env(env: dict[str, str]) -> dict[str, str]:
+    if os.geteuid() == 0:
+        return {**env, "USER": "nobody", "LOGNAME": "nobody"}
+    return env
+
+
+def prepare_unprivileged_tree(root: Path) -> None:
+    if os.geteuid() != 0:
+        return
+    account = pwd.getpwnam("nobody")
+    for dirpath, dirnames, filenames in os.walk(root):
+        os.chown(dirpath, account.pw_uid, account.pw_gid)
+        for name in [*dirnames, *filenames]:
+            os.chown(Path(dirpath) / name, account.pw_uid, account.pw_gid, follow_symlinks=False)
+    parent = root.parent
+    while True:
+        mode = parent.stat().st_mode
+        if mode & 0o001:
+            break
+        parent.chmod(mode | 0o001)
+        if parent == parent.parent:
+            break
+        parent = parent.parent
+
+
 def write_shims(bin_dir: Path) -> Path:
     """Create failing, argv-logging shims for service managers; returns the call log path."""
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -171,6 +205,17 @@ def sandbox_argv(argv: Sequence[str], *, writable: Iterable[Path], unshare_net: 
     if not BWRAP_OK:
         if unshare_net:
             raise RuntimeError("unshare_net requires the bwrap sandbox")
+        unshare = shutil.which("unshare")
+        if os.environ.get("HERMES_E2E_UNSHARE_PID") == "1" and unshare:
+            return [
+                unshare, "--pid", "--fork", "--mount", "--mount-proc", "--kill-child", "--",
+                "/bin/sh", "-c",
+                'exec 3<&0; env --default-signal=INT --default-signal=QUIT "$0" "$@" <&3 & child=$!; '
+                'trap \'kill -KILL "$child" 2>/dev/null\' EXIT; '
+                'trap \'exit 129\' HUP; trap \'exit 130\' INT; trap \'exit 143\' TERM; '
+                'wait "$child"; status=$?; trap - EXIT; exit "$status"',
+                *argv,
+            ]
         return list(argv)
     # The child's allowlisted PATH may omit the Nix-provided bwrap (notably a login shell
     # with a clean distro PATH); resolve it in the parent before wrapping the command.

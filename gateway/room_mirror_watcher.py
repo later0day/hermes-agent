@@ -209,7 +209,10 @@ class GatewayRoomMirrorMixin:
             try:
                 await asyncio.to_thread(self._reload_room_inbound_sources)
                 def _collect() -> list[dict]:
+                    from tui_gateway.methods_groups import _active_store
+
                     claimed: list[dict] = []
+                    store = _active_store()
                     try:
                         subs = _mir.list_subs(db_path)
                     except Exception as exc:
@@ -219,6 +222,8 @@ class GatewayRoomMirrorMixin:
                         try:
                             old_cursor, cursor, events = _mir.claim_unseen_room_events(
                                 db_path,
+                                store=store,
+                                placement="shared",
                                 room_id=sub["room_id"],
                                 platform=sub["platform"],
                                 chat_id=sub["chat_id"],
@@ -232,7 +237,7 @@ class GatewayRoomMirrorMixin:
                             handles: dict[str, str] = {}
                             try:
                                 state = _rooms.room_state(
-                                    db_path, room_id=sub["room_id"]
+                                    store, placement="shared", room_id=sub["room_id"]
                                 )
                                 for m in state.get("members") or []:
                                     if isinstance(m, dict):

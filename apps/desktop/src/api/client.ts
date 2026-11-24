@@ -1,4 +1,5 @@
 import {
+  type CanonicalClientIdentity,
   type ConnectionState,
   type GatewayEvent,
   type GatewayEventName,
@@ -9,6 +10,7 @@ import {
 import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
+import { desktopClientIdentity } from '@/lib/client-identity'
 
 import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } from './dial-readiness'
@@ -149,7 +151,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
         // authority records as skipped; `clarify.respond` refuses a missing field.
         const answer = kind === 'clarify'
           ? { answer: typeof result.answer === 'string' ? result.answer : '' }
-          : { choice: result.choice }
+          : { choice: result.choice,
+              ...((p.approval_kind === 'access' || p.approval_kind === 'network') && result.choice === 'deny' &&
+                  typeof result.reason === 'string' && result.reason.trim()
+                ? { reason: result.reason.trim() }
+                : {}) }
 
         void this.request(`${kind}.respond`, { session_id: sid, profile, request_id: id, ...answer })
           .catch(() => this.recoverCanonicalPrompt(id, sid, profile, generation))
@@ -327,6 +333,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
   protected override isDesktopLocal(): boolean {
     return this.nativeDial
+  }
+
+  protected override clientIdentity(): Promise<CanonicalClientIdentity> {
+    return desktopClientIdentity()
   }
 
   /** The session wire this connection negotiated; null until its readiness settles. */

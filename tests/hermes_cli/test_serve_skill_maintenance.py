@@ -6,6 +6,8 @@ from queue import Queue
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 
 @pytest.mark.asyncio
 async def test_removed_sessions_keep_profile_idle_watermark(tmp_path, monkeypatch):
@@ -33,7 +35,9 @@ async def test_removed_sessions_keep_profile_idle_watermark(tmp_path, monkeypatc
                 gateway._sessions["watermark"] = {
                     "last_active": recent, "running": False, "profile_home": str(tmp_path)}
             assert gateway._close_session_by_id("watermark", end_reason=reason)
-            assert _skill_maintenance_idle_for(recent - 3600) < 2
+            idle_for = _skill_maintenance_idle_for(recent - 3600)
+            assert idle_for is not None
+            assert 0 <= idle_for <= time.time() - recent
         # An active sibling profile must not hold this profile's idle clock.
         with gateway._sessions_lock:
             gateway._sessions["other-profile"] = {
@@ -95,7 +99,9 @@ async def test_serve_timer_runs_due_curator_once_and_honors_pause(tmp_path, monk
         async with asyncio.timeout(8):
             while load_state()["run_count"] == 0:
                 await asyncio.sleep(.02)
-        await asyncio.sleep(.15)
+            await async_wait_until(
+                lambda: "consolidation off" in (load_state().get("last_run_summary") or ""),
+                timeout=8, interval=.02)
         state = json.loads((tmp_path / "skills" / ".curator_state").read_text())
         assert state["run_count"] == 1
         assert "consolidation off" in state["last_run_summary"]

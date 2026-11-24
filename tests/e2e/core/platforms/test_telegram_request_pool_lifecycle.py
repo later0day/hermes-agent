@@ -487,6 +487,8 @@ async def test_no_proxy_custom_base_url_is_reached_directly(tmp_path, monkeypatc
     bot = Bot("123:abc", request=general, get_updates_request=updates, base_url=base_url)
     try:
         assert (await bot.get_me()).username == "edge_bot"
+        # The client can parse sendall()'s response before the edge thread updates its counter.
+        await async_wait_until(lambda: edge.served == 1, timeout=10, what="custom base URL request served")
         assert edge.served == 1
     finally:
         await bot.shutdown()

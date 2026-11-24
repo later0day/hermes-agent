@@ -13,29 +13,24 @@
  * the other Webapp journeys; needs `pnpm run build:webapp` and a Chromium Playwright can launch.
  */
 
-import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { type Browser, type BrowserContext, chromium, expect, type Page, test } from '@playwright/test'
+import { type Browser, type BrowserContext, expect, type Page, test } from '@playwright/test'
 
 import {
   backendProcesses,
   composer,
   type CoreSandbox,
-  createCoreSandbox,
   currentSessionId,
-  DESKTOP_ROOT,
-  freePort,
   recordWebSockets,
   renderedTranscript,
-  sandboxProcesses,
   send,
   storedSessionForMarker,
   webappLaunchLink,
-  writeProviderHome
+  withWebapp
 } from './harness'
-import { gate, type Gate, type ScriptedProvider, startScriptedProvider } from './provider'
+import { gate, type Gate, type ScriptedProvider } from './provider'
 
 const nonce = Math.random()
   .toString(36)
@@ -127,6 +122,41 @@ function viewport(page: Page) {
   return page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
 }
 
+async function openWebapp(page: Page, sandbox: CoreSandbox): Promise<void> {
+  const diagnostics: string[] = []
+
+  const redact = (text: string) =>
+    text.replace(/([?&](?:ticket|hermes-session|token)=)[^&\s]+/g, '$1<redacted>')
+
+  page.on('console', message => {
+    if (message.type() === 'error') {diagnostics.push(`console: ${redact(message.text())}`)}
+  })
+  page.on('pageerror', error => diagnostics.push(`pageerror: ${redact(String(error))}`))
+  page.on('requestfailed', request => {
+    if (new URL(request.url()).pathname.startsWith('/assets/')) {
+      diagnostics.push(`requestfailed: ${redact(request.url())} ${request.failure()?.errorText ?? ''}`)
+    }
+  })
+  page.on('response', response => {
+    if (new URL(response.url()).pathname.startsWith('/assets/') && response.status() >= 400) {
+      diagnostics.push(`response: ${response.status()} ${redact(response.url())}`)
+    }
+  })
+
+  await page.goto(webappLaunchLink(sandbox))
+  const bootFailure = page.getByRole('heading', { name: 'Hermes couldn’t load', exact: true })
+
+  try {
+    await expect(composer(page).or(bootFailure)).toBeVisible({ timeout: 180_000 })
+  } catch (error) {
+    throw new Error(`Webapp did not become interactive\n${diagnostics.join('\n')}`, { cause: error })
+  }
+
+  if (await bootFailure.isVisible()) {
+    throw new Error(`Webapp renderer boot failed\n${diagnostics.join('\n')}`)
+  }
+}
+
 /** Bubbles of the old turn (its prompt or its reply) rendered after the newest prompt. */
 async function oldTurnAfterNewestPrompt(page: Page): Promise<string[]> {
   const { bubbles } = await renderedTranscript(page)
@@ -154,8 +184,7 @@ async function phoneDiesMidTurn(browser: Browser, sandbox: CoreSandbox, provider
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 } })
   const tab = await context.newPage()
   const ws = recordWebSockets(tab)
-  await tab.goto(webappLaunchLink(sandbox))
-  await expect(composer(tab)).toBeVisible({ timeout: 180_000 })
+  await openWebapp(tab, sandbox)
 
   provider.script(U(1), [{ text: [`${A(1)} `, 'the ', 'old ', 'turn'], holdAfterFirstChunk: hold }])
   await send(tab, `${U(1)} start the old turn`, 'Enter', ws)
@@ -198,8 +227,7 @@ async function phoneDiesMidTurn(browser: Browser, sandbox: CoreSandbox, provider
  *  first newest-page transcript read the reopened renderer makes for the chat. */
 async function phoneReopens(phone: Phone, sandbox: CoreSandbox): Promise<{ tab: Page; newestPage: Promise<string> }> {
   const tab = await phone.context.newPage()
-  await tab.goto(webappLaunchLink(sandbox))
-  await expect(composer(tab)).toBeVisible({ timeout: 180_000 })
+  await openWebapp(tab, sandbox)
 
   const newestPage = tab
     .waitForResponse(
@@ -217,45 +245,6 @@ async function phoneReopens(phone: Phone, sandbox: CoreSandbox): Promise<{ tab: 
   await expect.poll(() => currentSessionId(tab)).toBe(phone.sessionId)
 
   return { tab, newestPage }
-}
-
-async function withWebapp(
-  label: string,
-  body: (sandbox: CoreSandbox, provider: ScriptedProvider, browser: Browser) => Promise<void>
-) {
-  test.skip(process.platform !== 'linux', 'runs with the other Webapp journeys (Linux CI)')
-  expect(
-    fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
-    'the Webapp renderer is built (pnpm run build:webapp)'
-  ).toBe(true)
-
-  const provider = await startScriptedProvider()
-  const sandbox = createCoreSandbox(label)
-  writeProviderHome(sandbox.hermesHome, provider.url)
-  // todo_list is deferred behind tool_search by default; the scripted model calls it directly.
-  fs.appendFileSync(
-    path.join(sandbox.hermesHome, 'config.yaml'),
-    `\nwebapp:\n  enabled: true\n  port: ${await freePort()}\ntools:\n  tool_search:\n    defer: []\n`
-  )
-  let browser: Browser | null = null
-
-  try {
-    browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
-    await body(sandbox, provider, browser)
-  } finally {
-    await browser?.close().catch(() => undefined)
-
-    for (const proc of sandboxProcesses(sandbox)) {
-      try {
-        process.kill(proc.pid, 'SIGKILL')
-      } catch {
-        /* already gone */
-      }
-    }
-
-    await provider.close()
-    sandbox.cleanup()
-  }
 }
 
 test('a Webapp tab that died mid-turn does not replay that turn after the newest reply', async () => {

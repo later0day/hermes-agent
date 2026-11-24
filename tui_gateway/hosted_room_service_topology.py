@@ -49,7 +49,7 @@ def _current_discussion_position(service: Any, room_id: str) -> tuple[int | None
     current_round = None
     max_rounds = None
     try:
-        tasks = driver.list_tasks(service.db_path, room_id=room_id)
+        tasks = driver.list_tasks(service.store, placement=service.placement, room_id=room_id)
         for task in tasks:
             if task.get("status") in {"running", "queued"}:
                 identity = task.get("identity")
@@ -67,7 +67,7 @@ def _current_discussion_position(service: Any, room_id: str) -> tuple[int | None
 
 def topology(service: Any, room_id: str) -> dict[str, Any] | None:
     """Return team topology: members with roles, states, and current tasks."""
-    room = hosted_rooms.room_state(service.db_path, room_id=room_id)
+    room = hosted_rooms.room_state(service.store, placement=service.placement, room_id=room_id)
     if room is None:
         return None
     members = room.get("members") or []
@@ -118,7 +118,7 @@ def _derive_observer_state(service: Any, room_id: str) -> str | None:
             if action_room_id == room_id and action.get("kind") == "observer":
                 return "armed"
     try:
-        room = hosted_rooms.room_state(service.db_path, room_id=room_id)
+        room = hosted_rooms.room_state(service.store, placement=service.placement, room_id=room_id)
         if room:
             has_observer = any(
                 str(member.get("role") or "") == "observer"
@@ -134,7 +134,7 @@ def _derive_observer_state(service: Any, room_id: str) -> str | None:
 def _derive_activity_level(service: Any, room_id: str, member_id: str) -> int | None:
     """Derive a 0-100 activity level for a teammate."""
     try:
-        tasks = driver.list_tasks(service.db_path, room_id=room_id)
+        tasks = driver.list_tasks(service.store, placement=service.placement, room_id=room_id)
         member_tasks = [
             task for task in tasks
             if task.get("identity") and getattr(task["identity"], "member_id", None) == member_id
@@ -164,7 +164,7 @@ def _current_task_for_member(service: Any, room_id: str, handle: str) -> dict[st
 def policy_trace(service: Any, room_id: str) -> dict[str, Any]:
     """Return policy checkpoint snapshot for a room."""
     try:
-        room = hosted_rooms.room_state(service.db_path, room_id=room_id)
+        room = hosted_rooms.room_state(service.store, placement=service.placement, room_id=room_id)
         latest_seq = int(room.get("latest_seq") or 0) if room else 0
         snapshot = service.policy_checkpoint.snapshot(room_id=room_id, latest_seq=latest_seq)
         return {

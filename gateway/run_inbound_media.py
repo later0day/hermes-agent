@@ -5,11 +5,33 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
 from gateway.platforms.event import MessageEvent
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def discord_triggering_note(message_id: Any) -> str:
+    """Model-facing routing note for a Discord turn (rides the API-bound user message only)."""
+    return (
+        f"[Triggering message id: `{message_id}` — use as `message_id` for reply/react/pin "
+        f"via the discord tools.]"
+    )
+
+
+def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
+    """Authored text for the durable user row: peel off exactly the note
+    ``_prepend_inbound_reply_context`` added for THIS event, if present. The note is a
+    model instruction, not something the user wrote — persisted as ``content`` it renders
+    verbatim in every transcript surface and pollutes FTS/memory (#71304, #114719). It
+    keeps riding ``message_text`` (and the replay-only ``api_content`` sidecar)."""
+    message_id = getattr(event, "message_id", None)
+    if not message_id or not isinstance(message_text, str):
+        return message_text
+    prefix = f"{discord_triggering_note(message_id)}\n\n"
+    return message_text.removeprefix(prefix)
 
 
 def rehome_inbound_media(event: MessageEvent) -> None:

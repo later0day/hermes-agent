@@ -1,0 +1,10 @@
+name: Profile Backend E2E
+version: 0.1.0
+description: Exercises profile-owned backend authorization through the real desktop SDK.
+platforms:
+  - desktop
+desktop:
+  runtime:
+    id: profile-backend-e2e
+    entry: plugin.js
+    name: Profile Backend E2E

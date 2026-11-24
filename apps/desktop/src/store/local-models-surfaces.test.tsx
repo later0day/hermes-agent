@@ -42,7 +42,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { deferred } from '@/test/deferred'
-import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
+import { drainDeferredDomEvents, stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import {
   checkLocalRuntimeUpdate,
@@ -159,9 +159,10 @@ beforeEach((): void => {
   $activeGatewayProfile.set('work')
   $localModelsEnabled.set(true)
 })
-afterEach((): void => {
+afterEach(async (): Promise<void> => {
   cleanup()
   queryClient.clear()
+  await drainDeferredDomEvents()
   vi.useRealTimers()
 })
 

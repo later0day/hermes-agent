@@ -380,6 +380,13 @@ class TelegramStandin(StandinServer):
         chat = {"id": int(user_id), "type": "private", "first_name": "Tester", "username": f"user{user_id}"}
         return self._inbound(chat, user_id, text=text)
 
+    def dm_reply(self, user_id: int, text: str, reply_to: dict[str, Any]) -> dict[str, Any]:
+        """A real inbound DM update whose reply target is the bot's ForceReply prompt."""
+        chat = {"id": int(user_id), "type": "private", "first_name": "Tester", "username": f"user{user_id}"}
+        target = {"message_id": int(reply_to["message_id"]), "date": int(reply_to.get("date") or time.time()),
+                  "chat": chat, "from": self._bot_user(), "text": str(reply_to.get("text") or "")}
+        return self._inbound(chat, user_id, text=text, reply_to_message=target)
+
     def group(self, chat_id: int, user_id: int, text: str, *, mention: bool) -> dict[str, Any]:
         chat = {"id": int(chat_id), "type": "supergroup", "title": "Standin Group"}
         fields: dict[str, Any] = {"text": text}

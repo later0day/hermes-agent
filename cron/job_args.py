@@ -458,22 +458,36 @@ def _apply_continuity(
     return refs or None
 
 
-def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
-    """Error string if any non-"self" ref names a missing job ("self" resolves to the job's
-    own id at run time, so it can't be checked — the job doesn't exist yet at create). A job
-    the calling chat may not touch reads as missing: context_from injects that job's last
-    output into this one, so a chat that learned another group's job id could pull its reports."""
-    from cron.jobs import get_job as _get_job
+def _resolve_context_from_refs(refs: list[Any]) -> tuple[list[str], Optional[str]]:
+    """Resolve non-"self" ID/name refs to canonical IDs, or return a public validation error.
+
+    A job the calling chat may not touch reads as missing: context_from injects that job's last
+    output into this one, so a chat that learned another group's job id could pull its reports.
+    Ambiguity is judged only among jobs visible to the caller, matching other management actions.
+    """
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
     from tools.cronjob_tools import _caller_may_touch_job
+
+    canonical: list[str] = []
     for ref_id in refs:
         if isinstance(ref_id, str) and ref_id.strip().lower() == "self":
+            canonical.append(ref_id)
             continue
-        job = _get_job(ref_id)
+        job = None
+        if isinstance(ref_id, str):
+            try:
+                job = resolve_job_ref(ref_id)
+            except AmbiguousJobReference as exc:
+                visible = [match for match in exc.matches if _caller_may_touch_job(match)]
+                if len(visible) > 1:
+                    return [], str(AmbiguousJobReference(ref_id, visible))
+                job = visible[0] if visible else None
         if not job or not _caller_may_touch_job(job):
-            return (
+            return [], (
                 f"context_from job '{ref_id}' not found. "
                 "Use cronjob(action='list') to see available jobs.")
-    return None
+        canonical.append(job["id"])
+    return canonical, None
 
 
 # Optional fields echoed by _format_job only when truthy (order = JSON key order).

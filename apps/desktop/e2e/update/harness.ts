@@ -317,9 +317,9 @@ export function nonGatewayProcesses(facts: InstallFacts): ProcInfo[] {
   return installProcesses(facts).filter(proc => !gateways.has(proc.pid) && !gateways.has(proc.ppid))
 }
 
-/** `hermes gateway stop` with the install's own CLI: attach-mode Desktop never owns the gateway. */
+/** Stop the throwaway install's gateway, deliberately interrupting any managed run left by app shutdown. */
 export function stopInstallGateway(facts: InstallFacts): { code: number | null; output: string } {
-  const result = spawnSync(facts.hermes, ['gateway', 'stop'], { env: facts.env, encoding: 'utf8', timeout: 90_000 })
+  const result = spawnSync(facts.hermes, ['gateway', 'stop', '--yes'], { env: facts.env, encoding: 'utf8', timeout: 90_000 })
 
   return { code: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }

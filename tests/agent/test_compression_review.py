@@ -30,6 +30,8 @@ from agent.conversation_compression import (
     CompressionCommitFence,
     run_compress_context_with_progress_timeout,
 )
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _drain_admission_slots():
@@ -388,12 +390,12 @@ class TestF6ExecutorSaturation:
         from unittest.mock import MagicMock, patch
         import tempfile
 
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         with tempfile.TemporaryDirectory() as td:
-            db = SessionDB(db_path=Path(td) / "state.db")
+            db = open_persistence(profile_scope(home=Path(td)))
             session_id = "F6_PRESTART_FENCE"
-            db.create_session(session_id, source="cli")
+            seed_session(db, session_id, "cli")
             with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
                 from run_agent import AIAgent
 
@@ -402,7 +404,7 @@ class TestF6ExecutorSaturation:
                     base_url="https://openrouter.ai/api/v1",
                     model="test/model",
                     quiet_mode=True,
-                    session_db=db,
+                    persistence=db,
                     session_id=session_id,
                     skip_context_files=True,
                     skip_memory=True,
@@ -429,8 +431,49 @@ class TestF6ExecutorSaturation:
             compressor.compress.assert_not_called()
             assert returned is messages
             # The cancelled attempt must not leave the durable lock held.
-            assert db.get_compression_lock_holder(session_id) is None
+            assert db.coordination.get_compression_lock_holder(session_id=session_id) is None
             db.close()
+
+    def test_cancel_after_lease_admission_is_not_a_structural_no_op(self, tmp_path, monkeypatch):
+        """Cancellation between lease admission and summary dispatch must not arm the no-progress backoff."""
+        import os
+        from unittest.mock import MagicMock, patch
+
+        from run_agent import AIAgent
+
+        db = storage_handle(tmp_path)
+        session_id = "F6_PRE_DISPATCH_FENCE"
+        seed_session(db, session_id, "cli")
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            agent = AIAgent(
+                api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+                persistence=db, session_id=session_id, skip_context_files=True, skip_memory=True,
+            )
+        compressor = MagicMock()
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        compressor._last_aux_model_failure_model = None
+        compressor._last_aux_model_failure_error = None
+        agent.context_compressor = compressor
+        agent._compression_feasibility_checked = True
+        agent._cached_system_prompt = "sys"
+        fence = CompressionCommitFence()
+        real_resolve = cc._resolve_compress_call
+
+        def cancel_before_dispatch(*args, **kwargs):
+            resolved = real_resolve(*args, **kwargs)
+            assert fence.cancel_before_commit() is True
+            return resolved
+
+        monkeypatch.setattr(cc, "_resolve_compress_call", cancel_before_dispatch)
+        messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+        returned, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000, commit_fence=fence)
+
+        compressor.compress.assert_not_called()
+        compressor._record_structural_no_op.assert_not_called()
+        assert returned is messages
+        assert db.coordination.get_compression_lock_holder(session_id=session_id) is None
+        db.close()
 
 
 class TestS3IdleChargedFromLastProgress:
@@ -479,14 +522,12 @@ class TestRound2MidCommitLeaseRelease:
     """
 
     def _db_with_lease(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         session_id = "R2_MID_COMMIT_LEASE"
-        db.create_session(session_id, source="cli")
+        seed_session(db, session_id, "cli")
         holder = "pid:worker:original"
-        assert db.try_acquire_compression_lock(
-            session_id, holder, ttl_seconds=60
+        assert db.coordination.try_acquire_compression_lock(
+            session_id=session_id, holder=holder, ttl_seconds=60
         )
         return db, session_id, holder
 
@@ -497,7 +538,7 @@ class TestRound2MidCommitLeaseRelease:
         db, session_id, holder = self._db_with_lease(tmp_path)
         fence = CompressionCommitFence()
         fence.register_cancelled_lock_release(
-            lambda: db.release_compression_lock(session_id, holder)
+            lambda: db.coordination.release_compression_lock(session_id=session_id, holder=holder)
         )
 
         commit_entered = threading.Event()
@@ -523,12 +564,12 @@ class TestRound2MidCommitLeaseRelease:
 
         # ── Assert the hung state BEFORE releasing the commit ────────────
         assert not commit_finished.is_set()
-        assert db.get_compression_lock_holder(session_id) == holder, (
+        assert db.coordination.get_compression_lock_holder(session_id=session_id) == holder, (
             "revoke released the durable lease while a commit was still "
-            "mutating SessionDB"
+            "mutating the store"
         )
-        assert not db.try_acquire_compression_lock(
-            session_id, "pid:second:contender", ttl_seconds=60
+        assert not db.coordination.try_acquire_compression_lock(
+            session_id=session_id, holder="pid:second:contender", ttl_seconds=60
         ), (
             "a second compressor acquired the durable lock DURING an "
             "admitted commit"
@@ -539,18 +580,18 @@ class TestRound2MidCommitLeaseRelease:
         assert commit_finished.wait(timeout=5)
         deadline = time.time() + 5
         while time.time() < deadline:
-            if db.get_compression_lock_holder(session_id) is None:
+            if db.coordination.get_compression_lock_holder(session_id=session_id) is None:
                 break
             time.sleep(0.01)
-        assert db.get_compression_lock_holder(session_id) is None, (
+        assert db.coordination.get_compression_lock_holder(session_id=session_id) is None, (
             "lease was not released promptly after the post-revoke commit "
             "finished (worker thread is parked, so finish_commit must have "
             "performed the deferred release)"
         )
-        assert db.try_acquire_compression_lock(
-            session_id, "pid:second:contender", ttl_seconds=60
+        assert db.coordination.try_acquire_compression_lock(
+            session_id=session_id, holder="pid:second:contender", ttl_seconds=60
         )
-        db.release_compression_lock(session_id, "pid:second:contender")
+        db.coordination.release_compression_lock(session_id=session_id, holder="pid:second:contender")
 
     def test_revoke_before_commit_releases_immediately_and_refuses_commit(
         self, tmp_path
@@ -559,19 +600,19 @@ class TestRound2MidCommitLeaseRelease:
         db, session_id, holder = self._db_with_lease(tmp_path)
         fence = CompressionCommitFence()
         fence.register_cancelled_lock_release(
-            lambda: db.release_compression_lock(session_id, holder)
+            lambda: db.coordination.release_compression_lock(session_id=session_id, holder=holder)
         )
 
         fence.revoke_commit_admission()
 
         # Release happened synchronously inside revoke — no worker involved.
-        assert db.get_compression_lock_holder(session_id) is None, (
+        assert db.coordination.get_compression_lock_holder(session_id=session_id) is None, (
             "revoke before begin_commit must release the lease immediately"
         )
         assert fence.begin_commit() is False, (
             "begin_commit must be refused after admission was revoked"
         )
-        assert db.try_acquire_compression_lock(
-            session_id, "pid:second:contender", ttl_seconds=60
+        assert db.coordination.try_acquire_compression_lock(
+            session_id=session_id, holder="pid:second:contender", ttl_seconds=60
         )
-        db.release_compression_lock(session_id, "pid:second:contender")
+        db.coordination.release_compression_lock(session_id=session_id, holder="pid:second:contender")

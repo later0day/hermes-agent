@@ -67,6 +67,31 @@ def test_stable_build_accepts_the_admitted_commit_before_the_final_tag_exists(tm
         )
 
 
+def test_canary_store_build_uses_the_tag_epoch_and_bundled_preparation(tmp_path):
+    from types import SimpleNamespace
+
+    from scripts.bundles.desktop_inputs import identity_environment, select_variant
+    from scripts.bundles.desktop_prepare import BuildRequest
+
+    source, commit = _project(tmp_path)
+    tag = "canary.20261021T064100Z-v1.2.3"
+    subprocess.run(["git", "tag", tag], cwd=source, check=True)
+    request = BuildRequest.create(
+        source, tag=tag, commit=None, release_commit=commit, variant="store",
+        work=tmp_path / "work", cache=tmp_path / "cache", bundle_env={},
+    )
+
+    assert request.version == "1.2.3+canary.20261021T064100Z"
+    assert request.release_epoch == 1792564860
+    env = identity_environment(request, "store", {})
+    assert env["HERMES_RELEASE_EPOCH"] == "1792564860"
+    assert env["HERMES_PAYLOAD_TAG"] == tag
+    prepared = SimpleNamespace(request=request)
+    assert select_variant(prepared, "bundled") == "bundled"
+    bundled = SimpleNamespace(request=SimpleNamespace(**{**request.data(), "variant": "bundled"}))
+    assert select_variant(bundled, "store") == "store"
+
+
 def test_native_version_capture_uses_admitted_build_environment(tmp_path, monkeypatch):
     from scripts.bundles.desktop import capture
 
@@ -74,6 +99,35 @@ def test_native_version_capture_uses_admitted_build_environment(tmp_path, monkey
     env = {**os.environ, "HERMES_RELEASE_EPOCH": "1787965323"}
     script = "import os; print(os.environ['HERMES_RELEASE_EPOCH'])"
     assert capture([sys.executable, "-c", script], tmp_path, env) == env["HERMES_RELEASE_EPOCH"]
+
+
+@pytest.mark.parametrize("variant,quad", [("store", "2026.6794.1233.0"), ("bundled", "26.1021.0.4100")])
+def test_windows_package_version_arguments_come_from_the_selected_variant(tmp_path, monkeypatch, variant, quad):
+    from types import SimpleNamespace
+
+    from scripts.bundles import desktop
+
+    tag = "canary.20261021T064100Z-v1.2.3"
+    request = SimpleNamespace(tag=tag, channel_request=None)
+    calls = []
+
+    def capture(argv, repo, env):
+        calls.append((argv, repo, env))
+        return quad
+
+    monkeypatch.setattr(desktop, "capture", capture)
+    environment = {"HERMES_RELEASE_EPOCH": "1792564860"}
+    args = desktop.native_version_args(
+        request, variant, platform="win32", node="node", repo=tmp_path, env=environment,
+    )
+
+    assert args == [f"-c.extraMetadata.shortVersion={quad}", f"-c.extraMetadata.shortVersionWindows={quad}"]
+    assert len(calls) == 1
+    argv, repo, env = calls[0]
+    assert argv[:2] == ["node", "-e"] and argv[-2:] == [tag, variant]
+    assert repo == tmp_path and env is environment
+    assert desktop.native_version_args(request, variant, platform="linux", node="node", repo=tmp_path, env=environment) == []
+    assert len(calls) == 1
 
 
 def test_stable_build_rejects_a_claim_tag_for_another_version(tmp_path, monkeypatch):
@@ -181,9 +235,10 @@ def test_source_admission_rejects_dirty_checkout_and_invalid_store_before_writes
     source, commit = _project(tmp_path)
     work = tmp_path / "work"
     cache = tmp_path / "cache"
-    for tag, selected in [(None, commit), ("v1.2.0+canary.20260911T120000Z", None)]:
-        with pytest.raises(ValueError, match="Store.*stable"):
-            BuildRequest.create(source, tag=tag, commit=selected, variant="store", work=work, cache=cache, bundle_env={})
+    # A commit build never packages the Store identity. A canary does (it runs every stable lane),
+    # and only stable ever submits one.
+    with pytest.raises(ValueError, match="Store.*stable"):
+        BuildRequest.create(source, tag=None, commit=commit, variant="store", work=work, cache=cache, bundle_env={})
     (source / "package.json").write_text("{}", encoding="utf-8")
     (source / "pyproject.toml").write_text('staged fixture contents', encoding="utf-8")
     subprocess.run(["git", "add", "pyproject.toml"], cwd=source, check=True)

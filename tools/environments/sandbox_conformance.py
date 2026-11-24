@@ -204,7 +204,7 @@ def check_foreign_handle_refused(provider: RecordingSandboxProvider, a: Scope, b
     with _bind(a):
         call_tool("terminal", {"command": "true"}, task_id="t")
         env_a = _env_for("t")
-        stream = env_a.start_process("mcp", ["srv"])
+        stream = env_a.start_process("mcp", ["cat"])
     seen = len(provider.calls)
     with _bind(b):
         attempts: list[Callable[[], Any]] = [

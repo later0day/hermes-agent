@@ -15,6 +15,7 @@ import pytest
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
 from gateway import room_mirror_db as mirror
+from persistence_assembly import open_persistence, profile_scope
 
 GATEWAY_ID = "gateway-a"
 ROOM_ID = "room-1"
@@ -37,28 +38,39 @@ MEMBERS = [
 
 
 @pytest.fixture
-def room_db(tmp_path: Path) -> tuple[Path, dict]:
-    db = tmp_path / "state.db"
+def store(tmp_path):
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
+@pytest.fixture
+def room_db(tmp_path: Path, store, monkeypatch) -> tuple[Path, dict, object]:
+    db = hosted_rooms.default_db_path(tmp_path)
     room = hosted_rooms.create_room(
-        db,
+        store,
+        placement="shared",
         room_id=ROOM_ID,
         name="Release",
         members=MEMBERS,
         authority_gateway_id=GATEWAY_ID,
         now=1,
     )
-    return db, room
+    monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: db)
+    monkeypatch.setattr("tui_gateway.methods_groups._active_store", lambda: store)
+    return db, room, store
 
 
-def _events(db: Path) -> list[dict]:
+def _events(store) -> list[dict]:
     return hosted_rooms.read_events(
-        db, room_id=ROOM_ID, since_seq=0, limit=hosted_rooms.MAX_LOG_LIMIT
+        store, placement="shared", room_id=ROOM_ID, since_seq=0, limit=hosted_rooms.MAX_LOG_LIMIT
     )["events"]
 
 
-def _append_user(db: Path, event_id: str, text: str, thread: str = "t1") -> None:
+def _append_user(store, event_id: str, text: str, thread: str = "t1") -> None:
     hosted_rooms.append_event(
-        db,
+        store,
+        placement="shared",
         room_id=ROOM_ID,
         event_id=event_id,
         kind="message.user",
@@ -70,21 +82,21 @@ def _append_user(db: Path, event_id: str, text: str, thread: str = "t1") -> None
     )
 
 
-def _drive_member(db: Path, room: dict, text: str) -> None:
+def _drive_member(store, room: dict, text: str) -> None:
     decision = discussion.plan_next_task(
-        room, _events(db), local_profiles=LOCAL_PROFILES
+        room, _events(store), local_profiles=LOCAL_PROFILES
     )
     assert decision.status == "task", decision
     publication = discussion.plan_publication(
         room,
-        _events(db),
+        _events(store),
         decision.task,
         status="settled",
         result={"text": text},
         local_profiles=LOCAL_PROFILES,
     )
     for event in publication.events:
-        hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
+        hosted_rooms.append_event(store, placement="shared", **event.append_kwargs(ROOM_ID), now=time.time())
 
 
 @pytest.mark.asyncio
@@ -94,10 +106,10 @@ async def test_watcher_never_drops_events_after_failure_budget(
     from gateway.room_mirror_watcher import GatewayRoomMirrorMixin
     import gateway.room_mirror_watcher as watcher_module
 
-    db, room = room_db
+    db, room, store = room_db
     mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
-    _append_user(db, "u1", "Ship it")
-    _drive_member(db, room, "final answer")
+    _append_user(store, "u1", "Ship it")
+    _drive_member(store, room, "final answer")
     sends = []
 
     class _Adapter:
@@ -134,14 +146,14 @@ async def test_watcher_never_drops_events_after_failure_budget(
 
 
 def test_claim_advances_cursor_and_second_claim_is_empty(room_db):
-    db, room = room_db
+    db, room, store = room_db
     mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
-    _append_user(db, "u1", "Ship it")
-    _drive_member(db, room, "@backend build the API")
-    _drive_member(db, room, "built it")
+    _append_user(store, "u1", "Ship it")
+    _drive_member(store, room, "@backend build the API")
+    _drive_member(store, room, "built it")
 
     old, new, events = mirror.claim_unseen_room_events(
-        db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
+        db, store=store, placement="shared", room_id=ROOM_ID, platform="telegram", chat_id="c1"
     )
     assert old == 0 and new > 0
     member_ids = {e["payload"]["member_id"] for e in events}
@@ -149,7 +161,7 @@ def test_claim_advances_cursor_and_second_claim_is_empty(room_db):
     assert all(e["kind"] == "message.member" for e in events)
 
     old2, new2, events2 = mirror.claim_unseen_room_events(
-        db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
+        db, store=store, placement="shared", room_id=ROOM_ID, platform="telegram", chat_id="c1"
     )
     assert events2 == [] and old2 == new2 == new
 
@@ -163,7 +175,7 @@ async def test_room_mirror_command_defaults_decider_to_single_external_voice(
     from gateway.session import SessionSource
     from gateway.slash_commands import GatewaySlashCommandsMixin
 
-    db, _room = room_db
+    db, _room, _store = room_db
     monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: db)
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -190,30 +202,30 @@ async def test_room_mirror_command_defaults_decider_to_single_external_voice(
 
 
 def test_member_filter_enforces_single_voice(room_db):
-    db, room = room_db
+    db, room, store = room_db
     mirror.create_sub(
         db, room_id=ROOM_ID, platform="telegram", chat_id="c1",
         member_filter="m-plan",
     )
-    _append_user(db, "u1", "Ship it")
-    _drive_member(db, room, "@backend build the API")  # decider
-    _drive_member(db, room, "built it")                # worker
+    _append_user(store, "u1", "Ship it")
+    _drive_member(store, room, "@backend build the API")  # decider
+    _drive_member(store, room, "built it")                # worker
 
     _, _, events = mirror.claim_unseen_room_events(
-        db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
+        db, store=store, placement="shared", room_id=ROOM_ID, platform="telegram", chat_id="c1"
     )
     member_ids = {e["payload"]["member_id"] for e in events}
     assert member_ids == {"m-plan"}  # backend suppressed
 
 
 def test_rewind_re_exposes_events_and_cas_refuses_stale(room_db):
-    db, room = room_db
+    db, room, store = room_db
     mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
-    _append_user(db, "u1", "Ship it")
-    _drive_member(db, room, "@backend build the API")
+    _append_user(store, "u1", "Ship it")
+    _drive_member(store, room, "@backend build the API")
 
     old, new, events = mirror.claim_unseen_room_events(
-        db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
+        db, store=store, placement="shared", room_id=ROOM_ID, platform="telegram", chat_id="c1"
     )
     assert events
 
@@ -222,7 +234,7 @@ def test_rewind_re_exposes_events_and_cas_refuses_stale(room_db):
         claimed_cursor=new, old_cursor=old,
     )
     _, _, again = mirror.claim_unseen_room_events(
-        db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
+        db, store=store, placement="shared", room_id=ROOM_ID, platform="telegram", chat_id="c1"
     )
     assert {e["payload"]["member_id"] for e in again} == {"m-plan"}
 
@@ -234,7 +246,7 @@ def test_rewind_re_exposes_events_and_cas_refuses_stale(room_db):
 
 
 def test_create_sub_is_idempotent_and_refreshes_filter(room_db):
-    db, _ = room_db
+    db, _, _store = room_db
     mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
     # advance the cursor to a nonzero value
     mirror.advance_cursor(
@@ -252,7 +264,7 @@ def test_create_sub_is_idempotent_and_refreshes_filter(room_db):
 
 
 def test_remove_sub(room_db):
-    db, _ = room_db
+    db, _, _store = room_db
     mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
     assert mirror.remove_sub(
         db, room_id=ROOM_ID, platform="telegram", chat_id="c1"
@@ -266,7 +278,7 @@ def test_remove_sub(room_db):
 # ── C2 slice 2: full-duplex inbound ────────────────────────────────────────
 
 def test_inbound_defaults_off_and_lookup_ignores_outbound_only(room_db):
-    db, _ = room_db
+    db, _, _store = room_db
     # An outbound-only mirror (the slice-1 default) must never be treated as an
     # inbound binding — a read-only mirror can't silently start ingesting.
     row = mirror.create_sub(db, room_id=ROOM_ID, platform="telegram", chat_id="c1")
@@ -280,7 +292,7 @@ def test_inbound_defaults_off_and_lookup_ignores_outbound_only(room_db):
 
 
 def test_inbound_flag_enables_binding_lookup(room_db):
-    db, _ = room_db
+    db, _, _store = room_db
     mirror.create_sub(
         db, room_id=ROOM_ID, platform="telegram", chat_id="c1", inbound=True
     )
@@ -300,7 +312,7 @@ def test_inbound_flag_enables_binding_lookup(room_db):
 
 
 def test_inbound_none_preserves_existing_flag(room_db):
-    db, _ = room_db
+    db, _, _store = room_db
     mirror.create_sub(
         db, room_id=ROOM_ID, platform="telegram", chat_id="c1", inbound=True
     )
@@ -318,7 +330,7 @@ def test_inbound_none_preserves_existing_flag(room_db):
 
 
 def test_inbound_false_disables_routing(room_db):
-    db, _ = room_db
+    db, _, _store = room_db
     mirror.create_sub(
         db, room_id=ROOM_ID, platform="telegram", chat_id="c1", inbound=True
     )

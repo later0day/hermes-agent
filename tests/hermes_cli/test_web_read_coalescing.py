@@ -37,6 +37,11 @@ async def test_profiles_burst_leaves_threadpool_status_responsive(monkeypatch):
 
     monkeypatch.setattr(profiles_mod, "list_profiles", slow_profiles)
     monkeypatch.setattr(profiles, "_profile_to_dict", lambda p: {"name": p})
+    summary = {
+        "total": 0, "webhook_configured": 0, "webhook_expired": 0,
+        "webhook_permanent": 0, "webhook_temporary": 0,
+    }
+    monkeypatch.setattr(profiles.profile_helpers, "_profile_binding_summary", lambda _name: summary)
     monkeypatch.setattr(profiles, "run_in_threadpool", run_in_threadpool)
     app = FastAPI()
     app.include_router(profiles.router)
@@ -63,6 +68,8 @@ async def test_profiles_burst_leaves_threadpool_status_responsive(monkeypatch):
                 release.set()
                 responses = await asyncio.gather(*tasks)
             assert all(r.status_code == 200 for r in responses)
-            assert all(r.json() == {"profiles": [{"name": "example"}]} for r in responses)
+            expected = {"name": "example", "agent_id": "example", "binding_count": 0,
+                        "binding_summary": summary}
+            assert all(r.json() == {"profiles": [expected]} for r in responses)
     finally:
         limiter.total_tokens = previous

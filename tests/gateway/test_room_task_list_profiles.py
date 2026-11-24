@@ -13,6 +13,7 @@ import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
+from persistence_assembly import open_persistence, profile_scope
 
 GATEWAY_ID = "gateway-a"
 ROOM_ID = "room-1"
@@ -31,8 +32,15 @@ def _make_profile(home, name):
     return profile
 
 
+@pytest.fixture
+def store(tmp_path):
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
 @pytest.mark.asyncio
-async def test_task_list_fallback_ignores_deleted_profile_tombstones(tmp_path, monkeypatch):
+async def test_task_list_fallback_ignores_deleted_profile_tombstones(tmp_path, monkeypatch, store):
     from gateway.config import Platform
     from gateway.platforms.base import MessageEvent
     from gateway.session import SessionSource
@@ -47,14 +55,15 @@ async def test_task_list_fallback_ignores_deleted_profile_tombstones(tmp_path, m
 
     db = tmp_path / "shared-state.db"
     monkeypatch.setattr(hosted_rooms, "default_db_path", lambda: db)
-    room = hosted_rooms.create_room(db, room_id=ROOM_ID, name="Release", members=MEMBERS,
+    monkeypatch.setattr("tui_gateway.methods_groups._active_store", lambda: store)
+    room = hosted_rooms.create_room(store, placement="shared", room_id=ROOM_ID, name="Release", members=MEMBERS,
                                     authority_gateway_id=GATEWAY_ID, now=1)
     hosted_rooms.append_event(
-        db, room_id=ROOM_ID, event_id="u1", kind="message.user",
+        store, placement="shared", room_id=ROOM_ID, event_id="u1", kind="message.user",
         actor={"kind": "user", "id": "u"}, authority_gateway_id=GATEWAY_ID, authority_epoch=1,
         payload={"text": "Ship it", "thread_id": "t1"}, now=time.time(),
     )
-    events = hosted_rooms.read_events(db, room_id=ROOM_ID, since_seq=0,
+    events = hosted_rooms.read_events(store, placement="shared", room_id=ROOM_ID, since_seq=0,
                                       limit=hosted_rooms.MAX_LOG_LIMIT)["events"]
     decision = discussion.plan_next_task(room, events, local_profiles=("plan", "backend"))
     publication = discussion.plan_publication(
@@ -62,7 +71,7 @@ async def test_task_list_fallback_ignores_deleted_profile_tombstones(tmp_path, m
         local_profiles=("plan", "backend"),
     )
     for event in publication.events:
-        hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
+        hosted_rooms.append_event(store, placement="shared", **event.append_kwargs(ROOM_ID), now=time.time())
 
     source = SessionSource(platform=Platform.TELEGRAM, user_id="admin", chat_id="c1",
                            chat_type="group")

@@ -1,5 +1,6 @@
 import json
-from pathlib import Path
+
+import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_views as views
@@ -7,13 +8,23 @@ from gateway import hosted_rooms
 from gateway import room_task_dag as dag
 from gateway import hosted_room_actions as actions
 from gateway.hosted_room_actions import set_pending_action
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from persistence_assembly import open_persistence, profile_scope
 
 ROOM = "room-ui"
 
 
-def _room(db: Path) -> dict:
+@pytest.fixture
+def store(tmp_path):
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
+def _room(store) -> dict:
     return hosted_rooms.create_room(
-        db,
+        store,
+        placement="profile",
         room_id=ROOM,
         name="Release room",
         members=[
@@ -25,9 +36,10 @@ def _room(db: Path) -> dict:
     )
 
 
-def _event(db: Path, *, event_id: str, kind: str, actor: dict, payload: dict, now: float) -> dict:
+def _event(store, *, event_id: str, kind: str, actor: dict, payload: dict, now: float) -> dict:
     return hosted_rooms.append_event(
-        db,
+        store,
+        placement="profile",
         room_id=ROOM,
         event_id=event_id,
         kind=kind,
@@ -89,16 +101,16 @@ def test_supersession_and_deferred_are_explicit_activity():
     assert items[1]["title"].endswith("needs retry")
 
 
-def test_workspace_joins_real_durable_stores(tmp_path):
+def test_workspace_joins_real_durable_stores(tmp_path, store):
     db = tmp_path / "state.db"
-    _room(db)
+    _room(store)
     dag.create_task(db, room_id=ROOM, task_id="t1", subject="Design")
     dag.create_task(db, room_id=ROOM, task_id="t2", subject="Build", blocked_by=["t1"])
     dag.claim_task(db, room_id=ROOM, task_id="t1", owner="worker")
-    _event(db, event_id="u1", kind="message.user", actor={"kind": "user", "id": "user"}, payload={"text": "Start", "thread_id": "thread-1"}, now=2)
+    _event(store, event_id="u1", kind="message.user", actor={"kind": "user", "id": "user"}, payload={"text": "Start", "thread_id": "thread-1"}, now=2)
     set_pending_action(db, room_id=ROOM, member_id="worker", action={"action_id": "request-1", "request_id": "request-1", "kind": "approval", "task_id": "t1", "created_at": 3})
 
-    result = views.build_room_workspace(db, room_id=ROOM)
+    result = views.build_room_workspace(store, placement="profile", db_path=db, room_id=ROOM)
 
     assert result["room"]["room_id"] == ROOM
     assert [task["task_id"] for task in result["tasks"]] == ["t1", "t2"]
@@ -112,9 +124,9 @@ def test_workspace_joins_real_durable_stores(tmp_path):
     assert result["log"]["has_more"] is False
 
 
-def test_manual_task_and_its_driver_attempt_are_not_counted_twice(tmp_path):
+def test_manual_task_and_its_driver_attempt_are_not_counted_twice(tmp_path, store):
     db = tmp_path / "state.db"
-    _room(db)
+    _room(store)
     dag.create_task(db, room_id=ROOM, task_id="t1", subject="Build")
     assert dag.claim_task_for_dispatch(
         db,
@@ -123,14 +135,15 @@ def test_manual_task_and_its_driver_attempt_are_not_counted_twice(tmp_path):
         owner="worker",
         dispatch_thread_id="dagtask:t1",
     )
-    identity = driver.TaskIdentity(ROOM, "driver-t1", "dagtask:t1", "turn-1")
+    identity = HostedTaskIdentity(ROOM, "driver-t1", "dagtask:t1", "turn-1")
     driver.admit_task(
-        db,
+        store,
         identity=identity,
+        placement="profile",
         payload={"target_profile": "worker", "prompt": "do it", "source_event_seq": 1},
         clock=lambda: 2,
     )
-    result = views.build_room_workspace(db, room_id=ROOM)
+    result = views.build_room_workspace(store, placement="profile", db_path=db, room_id=ROOM)
     assert [task["task_id"] for task in result["tasks"]] == ["t1"]
     assert result["tasks"][0]["latest_attempt"]["identity"]["task_id"] == "driver-t1"
 
@@ -146,17 +159,18 @@ def test_room_summary_classifies_terminal_failures_as_failed():
         assert result["workspace"]["health"] == "critical"
 
 
-def test_driver_attempt_serializes_identity(tmp_path):
+def test_driver_attempt_serializes_identity(tmp_path, store):
     db = tmp_path / "state.db"
-    _room(db)
-    identity = driver.TaskIdentity(ROOM, "task-1", "thread-1", "turn-1")
+    _room(store)
+    identity = HostedTaskIdentity(ROOM, "task-1", "thread-1", "turn-1")
     driver.admit_task(
-        db,
+        store,
         identity=identity,
+        placement="profile",
         payload={"target_profile": "worker", "prompt": "do it", "source_event_seq": 1},
         clock=lambda: 2,
     )
-    result = views.build_room_workspace(db, room_id=ROOM)
+    result = views.build_room_workspace(store, placement="profile", db_path=db, room_id=ROOM)
     assert result["attempts"][0]["identity"] == {"room_id": ROOM, "task_id": "task-1", "thread_id": "thread-1", "turn_id": "turn-1"}
     assert result["attempts"][0]["status"] == "queued"
     assert "payload" not in result["attempts"][0]
@@ -164,18 +178,20 @@ def test_driver_attempt_serializes_identity(tmp_path):
     assert result["attempts"][0]["redacted"] is True
 
 
-def test_driver_only_discussion_tasks_have_readable_labels_and_summary_counts(tmp_path):
+def test_driver_only_discussion_tasks_have_readable_labels_and_summary_counts(tmp_path, store):
     db = tmp_path / "state.db"
-    _room(db)
-    identity = driver.TaskIdentity(ROOM, "driver-task", "thread-1", "turn-1")
+    _room(store)
+    identity = HostedTaskIdentity(ROOM, "driver-task", "thread-1", "turn-1")
     driver.admit_task(
-        db,
+        store,
         identity=identity,
+        placement="profile",
         payload={"target_profile": "worker", "prompt": "private", "source_event_seq": 1},
         clock=lambda: 1,
     )
     lease = driver.acquire_lease(
-        db,
+        store,
+        placement="profile",
         room_id=ROOM,
         gateway_id="gateway-a",
         authority_epoch=1,
@@ -184,18 +200,19 @@ def test_driver_only_discussion_tasks_have_readable_labels_and_summary_counts(tm
         clock=lambda: 2,
     )
     attempt = driver.start_task(
-        db, identity, lease, expected_cancel_generation=0, clock=lambda: 3
+        store, identity, lease, placement="profile", expected_cancel_generation=0, clock=lambda: 3
     )
     driver.settle_task(
-        db,
+        store,
         attempt,
+        placement="profile",
         settlement_id="settlement-1",
         status="settled",
         result={"text": "private result"},
         clock=lambda: 4,
     )
     _event(
-        db,
+        store,
         event_id="terminal-1",
         kind="turn.settled",
         actor={"kind": "gateway", "id": "gateway-a"},
@@ -209,7 +226,7 @@ def test_driver_only_discussion_tasks_have_readable_labels_and_summary_counts(tm
         now=5,
     )
 
-    workspace = views.build_room_workspace(db, room_id=ROOM)
+    workspace = views.build_room_workspace(store, placement="profile", db_path=db, room_id=ROOM)
     task = workspace["tasks"][0]
     assert task["subject"] == "@worker · Round 3"
     assert task["owner"] == "worker"
@@ -223,18 +240,20 @@ def test_driver_only_discussion_tasks_have_readable_labels_and_summary_counts(tm
     }
 
 
-def test_workspace_projects_retry_action_for_uncertain_attempt(tmp_path):
+def test_workspace_projects_retry_action_for_uncertain_attempt(tmp_path, store):
     db = tmp_path / "state.db"
-    _room(db)
-    identity = driver.TaskIdentity(ROOM, "retry-task", "retry-thread", "retry-turn")
+    _room(store)
+    identity = HostedTaskIdentity(ROOM, "retry-task", "retry-thread", "retry-turn")
     driver.admit_task(
-        db,
+        store,
         identity=identity,
+        placement="profile",
         payload={"target_profile": "worker", "prompt": "private", "source_event_seq": 1},
         clock=lambda: 1,
     )
     lease = driver.acquire_lease(
-        db,
+        store,
+        placement="profile",
         room_id=ROOM,
         gateway_id="gateway-a",
         authority_epoch=1,
@@ -243,9 +262,10 @@ def test_workspace_projects_retry_action_for_uncertain_attempt(tmp_path):
         clock=lambda: 2,
     )
     driver.start_task(
-        db,
+        store,
         identity,
         lease,
+        placement="profile",
         expected_cancel_generation=0,
         clock=lambda: 3,
     )
@@ -259,7 +279,8 @@ def test_workspace_projects_retry_action_for_uncertain_attempt(tmp_path):
         now=4,
     )
     new_lease = driver.acquire_lease(
-        db,
+        store,
+        placement="profile",
         room_id=ROOM,
         gateway_id="gateway-b",
         authority_epoch=2,
@@ -267,8 +288,8 @@ def test_workspace_projects_retry_action_for_uncertain_attempt(tmp_path):
         ttl_seconds=30,
         clock=lambda: 5,
     )
-    driver.recover_room(db, new_lease, clock=lambda: 6)
-    workspace = views.build_room_workspace(db, room_id=ROOM)
+    driver.recover_room(store, new_lease, placement="profile", clock=lambda: 6)
+    workspace = views.build_room_workspace(store, placement="profile", db_path=db, room_id=ROOM)
     action = workspace["pending_actions"][0]
     assert action["action_id"] == "retry:retry-task:1:0"
     assert action["kind"] == "retry"
@@ -280,19 +301,20 @@ def test_workspace_projects_retry_action_for_uncertain_attempt(tmp_path):
     }
 
 
-def test_workspace_omits_private_driver_action_and_event_payloads(tmp_path):
+def test_workspace_omits_private_driver_action_and_event_payloads(tmp_path, store):
     db = tmp_path / "state.db"
-    _room(db)
+    _room(store)
     dag.create_task(db, room_id=ROOM, task_id="t1", subject="Safe title")
-    identity = driver.TaskIdentity(ROOM, "driver-secret", "secret-thread", "secret-turn")
+    identity = HostedTaskIdentity(ROOM, "driver-secret", "secret-thread", "secret-turn")
     driver.admit_task(
-        db,
+        store,
         identity=identity,
+        placement="profile",
         payload={"target_profile": "worker", "prompt": "PRIVATE_PROMPT_CANARY", "source_event_seq": 1},
         clock=lambda: 2,
     )
     _event(
-        db,
+        store,
         event_id="private-event",
         kind="message.user",
         actor={"kind": "user", "id": "user"},
@@ -305,7 +327,7 @@ def test_workspace_omits_private_driver_action_and_event_payloads(tmp_path):
         member_id="worker",
         action={"request_id": "safe-action", "kind": "approval", "approval": {"tool": "terminal", "command": "PRIVATE_COMMAND_CANARY"}},
     )
-    workspace = views.build_room_workspace(db, room_id=ROOM)
+    workspace = views.build_room_workspace(store, placement="profile", db_path=db, room_id=ROOM)
     encoded = json.dumps(workspace)
     assert "PRIVATE_PROMPT_CANARY" not in encoded
     assert "PRIVATE_EVENT_CANARY" not in encoded

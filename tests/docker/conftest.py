@@ -19,6 +19,8 @@ from collections.abc import Iterator
 
 import pytest
 
+from tests.waiting import wait_until
+
 IMAGE_TAG = os.environ.get("HERMES_TEST_IMAGE", "hermes-agent-harness:latest")
 
 
@@ -72,17 +74,42 @@ def built_image() -> str:
     return IMAGE_TAG
 
 
+def _container_absent(name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "container", "ls", "-a", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    if result.returncode != 0:
+        raise AssertionError(f"Could not confirm cleanup of {name}: {result.stderr.strip()}")
+    return name not in result.stdout.splitlines()
+
+
+def _remove_container(name: str) -> None:
+    try:
+        result = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        wait_until(
+            lambda: _container_absent(name), timeout=60, interval=0.25,
+            what=f"Docker daemon to finish removing {name}",
+        )
+        return
+    if result.returncode != 0 and not _container_absent(name):
+        raise AssertionError(f"Could not remove {name}: {result.stderr.strip()}")
+
+
 @pytest.fixture
 def container_name(request) -> Iterator[str]:
     """Generate a unique container name and ensure cleanup on test exit."""
     safe = request.node.name.replace("[", "_").replace("]", "_")
     name = f"hermes-test-{safe}"
     yield name
-    subprocess.run(
-        ["docker", "rm", "-f", name],
-        capture_output=True, timeout=10,
-        check=False,
-    )
+    _remove_container(name)
 
 
 # ---------------------------------------------------------------------------

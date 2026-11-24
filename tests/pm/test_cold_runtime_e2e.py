@@ -101,7 +101,7 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
     for name in ("pm", "hermes_cli", "hermes_agent", "utils"):
         shutil.copytree(source / name, repo / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for name in ("hermes_constants.py", "hermes_yaml.py",
+    for name in ("hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py",
                  "hermes_bootstrap.py"):
         shutil.copy2(source / name, repo / name)
     # No production application lock or metadata enters this source snapshot.

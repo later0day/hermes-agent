@@ -60,6 +60,27 @@ def test_interval_reads_config(homed):
     assert cad.check_interval_hours(lambda s, k: "garbage") == 24
 
 
+def test_check_started_before_a_rename_cannot_recreate_the_old_home(tmp_path, monkeypatch):
+    """A slow check keeps the old profile scope after a live rename; its result and receipt writes
+    must not resurrect that home after the rename has cleared the old-name tombstone."""
+    import hermes_constants
+
+    old_home = tmp_path / ".hermes" / "profiles" / "gamma"
+    new_home = old_home.with_name("delta")
+    old_home.mkdir(parents=True)
+    (old_home / "config.yaml").write_text("model:\n  default: m\n", encoding="utf-8")
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: old_home)
+
+    def renamed_while_checking(_plugins_dir):
+        old_home.rename(new_home)
+        return []
+
+    cad.run_scheduled_check(run_checks_fn=renamed_while_checking, plugins_dir=old_home / "plugins")
+
+    assert new_home.is_dir()
+    assert not old_home.exists()
+
+
 def test_run_writes_receipt_and_marker(homed):
     import pm.receipt as receipts
     calls = []
@@ -135,3 +156,16 @@ def test_housekeeping_runs_real_cadence_and_backs_off(homed, monkeypatch, caplog
     assert (homed / 'plugin-update-checks/last-run').is_file()
     if failed:
         assert saved['warnings'][0]['message'] in caplog.text
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_marker_write_skips_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        cad._markers_dir()
+    cad.record_check_results([], {})  # its writer catches OSError: the write is skipped, not raised
+    assert not home.exists()

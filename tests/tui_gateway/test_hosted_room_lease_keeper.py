@@ -17,30 +17,28 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import hosted_room_driver as state
-from gateway import hosted_rooms
+from persistence.gateway.hosted_rooms import TERMINAL_STATUSES, DriverLease, StaleLeaseError
+from tests.tui_gateway import test_hosted_room_driver_runtime as runtime_fixtures
 from tests.tui_gateway.test_hosted_room_driver_runtime import BINDING, PROFILE, ROOM_ID, _identity, _wait_for
 from tui_gateway.hosted_room_driver import HostedRoomRuntime
+from tui_gateway.hosted_room_lease_keeper import LeaseKeeper
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 
 TTL = 0.6
 
-
-@pytest.fixture
-def db(tmp_path: Path) -> Path:
-    path = tmp_path / "state.db"
-    hosted_rooms.create_room(
-        path, room_id=ROOM_ID, name="Release room", members=[{"profile": PROFILE, "handle": PROFILE}],
-        authority_gateway_id=BINDING.gateway_id, now=time.time())
-    return path
+db = runtime_fixtures.db
+store = runtime_fixtures.store_fixture
 
 
-def _server(submits: list, *, finish_after: float):
+def _server(submits: list, *, finish_after: float, on_submit=None):
     """Installed server surface whose turn finishes ``finish_after`` seconds after submit."""
     def ok(result):
         return lambda rid, params: {"id": rid, "result": result}
 
     def prompt_submit(rid, params):
         submits.append(params)
+        if on_submit is not None:
+            on_submit()
         done = params["_hosted_terminal_callback"]
         threading.Timer(finish_after, done, args=({"status": "settled", "text": "Done."},)).start()
         return {"id": rid, "result": {"status": "streaming"}}
@@ -54,63 +52,90 @@ def _server(submits: list, *, finish_after: float):
         _pending_approval_request_payload=lambda _session_key: None)
 
 
-def _run(db: Path, turn_lock, submits: list, clock=time.time) -> dict:
+def _run(store, turn_lock, submits: list, clock=time.time, on_submit=None) -> dict:
     identity = _identity()
-    state.admit_task(db, identity, clock=time.time, payload={
+    state.admit_task(store, identity, placement="profile", clock=time.time, payload={
         "target_profile": PROFILE, "target_member_id": "member-ops", "prompt": "Ship it.",
         "source_event_seq": 1})
     runtime = HostedRoomRuntime(
-        db_path=db, rooms=[BINDING], rpc=HostedRoomServerRPC(_server(submits, finish_after=TTL)),
+        store=store, placement="profile", rooms=[BINDING],
+        rpc=HostedRoomServerRPC(_server(submits, finish_after=TTL, on_submit=on_submit)),
         turn_lock=turn_lock, clock=clock, lease_ttl_seconds=TTL, poll_interval_seconds=0.01,
         active_poll_interval_seconds=0.02)
     runtime.start()
     try:
         _wait_for(lambda: (
-            state.get_task(db, identity)["status"] in state.TERMINAL_STATUSES
+            state.get_task(store, identity, placement="profile")["status"] in TERMINAL_STATUSES
             or runtime.status()["last_error"] is not None), timeout=10.0)
     finally:
         assert runtime.stop(timeout=5.0)
-    return {"task": state.get_task(db, identity), "last_error": runtime.status()["last_error"]}
+    return {"task": state.get_task(store, identity, placement="profile"), "last_error": runtime.status()["last_error"]}
 
 
-def test_turn_settles_when_the_profile_lock_wait_and_the_run_outlast_the_lease(db: Path):
+def test_turn_settles_when_the_profile_lock_wait_and_the_run_outlast_the_lease(db, store, monkeypatch):
+    base, offset = time.time(), [0.0]
+
+    def clock():
+        return base + offset[0]
+
+    keeper_expiries: list = []
+    renewed = threading.Condition()
+    real_renew = state.renew_lease
+
+    def renew(*args, **kwargs):
+        lease = real_renew(*args, **kwargs)
+        if threading.current_thread().name.startswith("hosted-room-lease-"):
+            with renewed:
+                keeper_expiries.append(lease.expires_at)
+                renewed.notify_all()
+        return lease
+
+    monkeypatch.setattr(state, "renew_lease", renew)
+
+    def outlast_lease():
+        for _ in range(3):
+            offset[0] += TTL / 2
+            expected_expiry = clock() + TTL
+            with renewed:
+                assert renewed.wait_for(
+                    lambda: any(expiry >= expected_expiry for expiry in keeper_expiries), timeout=5.0)
+
     @contextlib.contextmanager
     def busy_lock(_profile):
-        # health: allow HX013 -- the lock wait outlasting the lease ttl IS the behaviour under test
-        time.sleep(TTL * 2)  # another turn on this profile holds the lock past the lease ttl
+        outlast_lease()
         yield
 
     submits: list = []
-    outcome = _run(db, busy_lock, submits)
+    outcome = _run(store, busy_lock, submits, clock=clock, on_submit=outlast_lease)
 
     assert len(submits) == 1
     assert outcome["last_error"] is None
     assert outcome["task"]["status"] == "settled"
 
 
-def test_turn_is_fenced_before_submit_when_the_lease_is_taken_over_during_the_wait(db: Path):
-    offset = [0.0]
+def test_turn_is_fenced_before_submit_when_the_lease_is_taken_over_during_the_wait(db, store):
+    base, offset = time.time(), [0.0]
 
     def clock():
-        return time.time() + offset[0]
+        return base + offset[0]
 
     @contextlib.contextmanager
     def lock_while_another_process_reclaims(_profile):
         offset[0] += TTL * 2  # this process stalls past its lease; another process reclaims it
         state.acquire_lease(
-            db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id, authority_epoch=BINDING.authority_epoch,
-            process_generation="process-b", ttl_seconds=3600, clock=clock)
+            store, placement="profile", room_id=ROOM_ID, gateway_id=BINDING.gateway_id,
+            authority_epoch=BINDING.authority_epoch, process_generation="process-b", ttl_seconds=3600, clock=clock)
         yield
 
     submits: list = []
-    outcome = _run(db, lock_while_another_process_reclaims, submits, clock=clock)
+    outcome = _run(store, lock_while_another_process_reclaims, submits, clock=clock)
 
     assert submits == []
     assert outcome["task"]["status"] != "settled"
     assert "fenced" in (outcome["last_error"] or "")
 
 
-def test_ambiguous_submit_recovers_the_room_when_the_keeper_renewal_lands_late(db: Path, monkeypatch):
+def test_ambiguous_submit_recovers_the_room_when_the_keeper_renewal_lands_late(db: Path, store, monkeypatch):
     """A keeper renewal committed before the turn's own renewal but cached after it must not
     roll the cached expiry back: the ambiguous deferral would end before the row expires, the
     next scan would renew the same generation in place, and the attempt would stay running."""
@@ -145,19 +170,35 @@ def test_ambiguous_submit_recovers_the_room_when_the_keeper_renewal_lands_late(d
             raise RuntimeError("connection reset after send")
 
     identity = _identity()
-    state.admit_task(db, identity, clock=time.time, payload={
+    state.admit_task(store, identity, placement="profile", clock=time.time, payload={
         "target_profile": PROFILE, "target_member_id": "member-ops", "prompt": "Ship it.",
         "source_event_seq": 1})
     runtime = HostedRoomRuntime(
-        db_path=db, rooms=[BINDING], rpc=HostedRoomServerRPC(_server([], finish_after=TTL)),
+        store=store, placement="profile", rooms=[BINDING], rpc=HostedRoomServerRPC(_server([], finish_after=TTL)),
         turn_lock=lock_released_after_the_keeper_tick, clock=time.time, lease_ttl_seconds=TTL,
         poll_interval_seconds=0.01, active_poll_interval_seconds=0.02)
     resolve = runtime._transport_for
     runtime._transport_for = lambda binding, task: AmbiguousSubmit(resolve(binding, task))
     runtime.start()
     try:
-        _wait_for(lambda: state.get_task(db, identity)["status"] != "running" and submitted.is_set(),
+        _wait_for(lambda: state.get_task(store, identity, placement="profile")["status"] != "running" and submitted.is_set(),
                   timeout=TTL * 8)
     finally:
         assert runtime.stop(timeout=5.0)
-    assert state.get_task(db, identity)["status"] == "indeterminate"
+    assert state.get_task(store, identity, placement="profile")["status"] == "indeterminate"
+
+
+def test_keeper_records_a_lease_lost_on_its_thread_and_fences_the_turn_with_it():
+    lease = DriverLease(ROOM_ID, BINDING.gateway_id, BINDING.authority_epoch, "process-a", 1, 100.0)
+    renewals: list[str] = []
+
+    def renew(_lease):
+        renewals.append(threading.current_thread().name)
+        raise StaleLeaseError("driver lease is stale or expired")
+
+    with LeaseKeeper(lease, renew, interval=0.01) as keeper:
+        _wait_for(lambda: renewals, timeout=5.0)
+        keeper._thread.join(timeout=5.0)
+        with pytest.raises(StaleLeaseError):
+            keeper.renew_now()
+    assert len(renewals) == 1  # the turn's renew_now raised the keeper's loss without renewing again

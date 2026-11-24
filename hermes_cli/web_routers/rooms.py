@@ -241,7 +241,7 @@ async def create_hosted_room(body: RoomCreateInput):
 
     def _run():
         from gateway.hosted_room_discussion import DiscussionValidationError
-        from gateway.hosted_rooms import HostedRoomError, RoomConflictError, RoomNotFoundError
+        from persistence.gateway.hosted_rooms import HostedRoomError, RoomConflictError, RoomNotFoundError
         from tui_gateway.methods_groups import get_hosted_room_service
 
         service = get_hosted_room_service()
@@ -270,7 +270,7 @@ async def send_hosted_room_message(room_id: str, body: RoomMessageInput):
 
     def _run():
         from gateway.hosted_room_discussion import DiscussionValidationError
-        from gateway.hosted_rooms import HostedRoomError, RoomConflictError, RoomNotFoundError
+        from persistence.gateway.hosted_rooms import HostedRoomError, RoomConflictError, RoomNotFoundError
         from tui_gateway.methods_groups import get_hosted_room_service
 
         service = get_hosted_room_service()
@@ -307,12 +307,15 @@ async def list_hosted_rooms(all: bool = False):
     def _run():
         from gateway.hosted_room_views import build_room_workspace, room_summary
         from gateway.hosted_rooms import default_db_path, list_rooms
+        from tui_gateway.methods_groups import _active_store
 
         db_path = default_db_path()
+        store = _active_store()
         enriched = []
-        for room in list_rooms(db_path, include_disbanded=bool(all)):
+        for room in list_rooms(store, placement="shared", include_disbanded=bool(all)):
             try:
-                workspace = build_room_workspace(db_path, room_id=str(room["room_id"]))
+                workspace = build_room_workspace(
+                    store, placement="shared", db_path=db_path, room_id=str(room["room_id"]))
                 enriched.append(room_summary(room, tasks=workspace["tasks"], actions=workspace["pending_actions"]))
             except Exception:
                 # One malformed sidecar must not hide the entire Room inbox.
@@ -331,14 +334,13 @@ async def get_hosted_room(room_id: str):
         from gateway.hosted_rooms import (
             HostedRoomError,
             RoomNotFoundError,
-            default_db_path,
             room_state,
         )
-        from tui_gateway.methods_groups import get_hosted_room_service
+        from tui_gateway.methods_groups import _active_store, get_hosted_room_service
 
         try:
             room = room_state(
-                default_db_path(), room_id=room_id, include_disbanded=True
+                _active_store(), placement="shared", room_id=room_id, include_disbanded=True
             )
         except RoomNotFoundError:
             raise HTTPException(status_code=404, detail="room not found")
@@ -365,9 +367,11 @@ async def get_hosted_room_workspace(room_id: str):
     def _run():
         from gateway.hosted_room_views import build_room_workspace
         from gateway.hosted_rooms import HostedRoomError, RoomNotFoundError, default_db_path
+        from tui_gateway.methods_groups import _active_store
 
         try:
-            return build_room_workspace(default_db_path(), room_id=room_id)
+            return build_room_workspace(
+                _active_store(), placement="shared", db_path=default_db_path(), room_id=room_id)
         except RoomNotFoundError:
             raise HTTPException(status_code=404, detail="room not found")
         except HostedRoomError as exc:
@@ -384,13 +388,14 @@ async def get_hosted_room_log(room_id: str, since_seq: int = 0, limit: int = 100
         from gateway.hosted_rooms import (
             HostedRoomError,
             RoomNotFoundError,
-            default_db_path,
             read_events,
         )
+        from tui_gateway.methods_groups import _active_store
 
         try:
             return read_events(
-                default_db_path(),
+                _active_store(),
+                placement="shared",
                 room_id=room_id,
                 since_seq=since_seq,
                 limit=limit,

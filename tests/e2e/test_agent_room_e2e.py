@@ -75,15 +75,14 @@ async def test_e2e_plan_and_confirm_creates_room(hermes_home):
 
     # Fresh room store for this test
     from gateway.agent_room_store import AgentRoomStore
-    from hermes_cli import web_server as ws
+    from hermes_cli.web_routers import rooms as ws
     ws._pending_room_plans.clear()
 
     with patch("agent.auxiliary_client.call_llm",
                return_value=_mock_llm_response(plan_json)), \
          patch("hermes_cli.profiles.list_profiles", return_value=[]), \
-         patch("hermes_cli.web_server._room_store",
-               side_effect=lambda: AgentRoomStore(hermes_home / "rooms.sqlite")), \
-         patch("hermes_cli.web_server._room_binding_store"):
+         patch("hermes_cli.web_routers.rooms._room_store",
+               side_effect=lambda: AgentRoomStore(hermes_home / "rooms.sqlite")):
 
         # Step 1: request plan
         async with await _client() as c:
@@ -98,7 +97,7 @@ async def test_e2e_plan_and_confirm_creates_room(hermes_home):
 
         # Step 2: mock the profile-creation side effects
         with patch("hermes_cli.profiles.profile_exists", return_value=False), \
-             patch("hermes_cli.profiles.create_profile"), \
+             patch("hermes_cli.profile_provision.provision_profile"), \
              patch("hermes_cli.profiles.write_profile_meta"), \
              patch("hermes_cli.profiles.get_profile_dir",
                    return_value=hermes_home / "profiles" / "obs"), \
@@ -135,7 +134,7 @@ async def test_e2e_plan_sanitizes_chinese_names(hermes_home):
         "room_description": "test",
     })
 
-    from hermes_cli import web_server as ws
+    from hermes_cli.web_routers import rooms as ws
     ws._pending_room_plans.clear()
 
     with patch("agent.auxiliary_client.call_llm",

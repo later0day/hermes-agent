@@ -76,7 +76,7 @@ def autodispatch_next(service: HostedRoomService, room: Mapping[str, Any]) -> No
         anchor_text = str(task.get("subject") or "").strip()
         try:
             hosted_rooms.append_event(
-                service.db_path, room_id=room_id,
+                service.store, placement=service.placement, room_id=room_id,
                 event_id=f"dagdispatch:{task['task_id']}", kind="message.user",
                 actor={"kind": "user", "id": "task-dag"},
                 payload={"text": anchor_text, "thread_id": anchor_thread},

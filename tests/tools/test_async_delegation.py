@@ -12,9 +12,12 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
+from tests.waiting import wait_until
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 from tools.process_registry_notifications import format_process_notification
@@ -66,61 +69,48 @@ def _drain_for(delegation_id, timeout=5.0):
     return None
 
 
-def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
-    """The delegation ledger is a guest in state.db, not its mode owner."""
-    conn = sqlite3.connect(tmp_path / "state.db")
-    try:
-        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+@pytest.mark.parametrize("mode", ["delete", "wal"])
+def test_ledger_write_keeps_configured_state_db_journal_mode(tmp_path, monkeypatch, mode):
+    """The ledger opens state.db through its store owner, which keeps the configured journal mode."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(f"database:\n  journal_mode: {mode}\n", encoding="utf-8")
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn:
+        assert conn.execute(f"PRAGMA journal_mode={mode}").fetchone()[0] == mode
+        conn.execute("CREATE TABLE seed (x)")
 
-        ad._initialize_schema(conn)
+    ad.claim_completion_delivery("nope", "claim-1")
 
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == mode
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='async_delegations'"
         ).fetchone() == ("async_delegations",)
-    finally:
-        conn.close()
-
-
-def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
-    """Schema initialization must not replace an existing WAL mode."""
-    conn = sqlite3.connect(tmp_path / "state.db")
-    try:
-        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-
-        ad._initialize_schema(conn)
-
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='async_delegations'"
-        ).fetchone() == ("async_delegations",)
-    finally:
-        conn.close()
 
 
 @pytest.mark.platforms("macos")
-def test_connect_preserves_wal_and_applies_macos_durability_barriers(
+def test_ledger_store_preserves_wal_and_applies_macos_durability_barriers(
     tmp_path, monkeypatch
 ):
-    """Each ledger connection must carry the macOS write barriers."""
+    """The ledger's state.db connection must carry the macOS write barriers."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    seed = sqlite3.connect(tmp_path / "state.db")
-    try:
+    with closing(sqlite3.connect(tmp_path / "state.db")) as seed:
         assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-    finally:
-        seed.close()
+    opened, real_connect = [], sqlite3.connect
 
-    conn = ad._connect()
-    try:
+    def tracking_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, **kwargs)
+        if str(database) != ":memory:":
+            opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+    with ad._DB_LOCK, ad._ledger() as store:
+        store.ready()
+        (conn,) = opened
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
         assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
-    finally:
-        conn.close()
-
-
 
 
 def test_async_executor_workers_are_daemon_threads():
@@ -438,8 +428,11 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
     """list_async_delegations must expose per-child live activity sampled
     from progress_fn plus seconds_since_progress, for /agents UIs (#51690)."""
     monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
+    monkeypatch.setattr(
+        ad, "time", SimpleNamespace(time=lambda: 1012.0, monotonic=time.monotonic)
+    )
     gate = threading.Event()
-    base_ts = time.time() - 12.0
+    base_ts = 1000.0
 
     res = ad.dispatch_async_delegation(
         goal="live listing", context=None, toolsets=None, role="leaf",
@@ -448,10 +441,13 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
         progress_fn=lambda: (((3, "web_search", base_ts),), True),
     )
     try:
-        time.sleep(0.1)  # let the monitor stamp _progress_ts at least once
-        item = next(
-            d for d in ad.list_async_delegations()
-            if d["delegation_id"] == res["delegation_id"]
+        item = wait_until(
+            lambda: next(
+                (d for d in ad.list_async_delegations()
+                 if d["delegation_id"] == res["delegation_id"] and "seconds_since_progress" in d),
+                None,
+            ),
+            what="live delegation monitor progress stamp",
         )
         assert item["status"] == "running"
         assert item["in_tool"] is True
@@ -459,7 +455,7 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
         (child,) = item["children_activity"]
         assert child["api_calls"] == 3
         assert child["current_tool"] == "web_search"
-        assert 10.0 <= child["seconds_since_activity"] <= 20.0
+        assert child["seconds_since_activity"] == 12.0
         # Callables and private bookkeeping must never leak.
         assert "progress_fn" not in item
         assert "interrupt_fn" not in item
@@ -1165,17 +1161,16 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
 
 
 @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
-def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
-    """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh
+def test_ledger_write_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
+    """The ledger shares state.db with every other store user -- a fresh
     HERMES_HOME must land the file (and its WAL sidecar, if created) at 0o600
-    even under a permissive process umask, not the SessionDB-only path."""
+    after a ledger write, even under a permissive process umask."""
     import stat
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     old_umask = os.umask(0o022)
     try:
-        conn = ad._connect()
-        conn.close()
+        ad.claim_completion_delivery("nope", "claim-1")
     finally:
         os.umask(old_umask)
 

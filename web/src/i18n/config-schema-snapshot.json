@@ -400,7 +400,6 @@
   "display.cli_rebuild_scrollback_on_redraw": "display",
   "display.cli_refresh_interval": "display",
   "display.compact": "display",
-  "display.copy_shortcut": "display",
   "display.credits_notices": "display",
   "display.ephemeral_system_ttl": "display",
   "display.file_mutation_verifier": "display",

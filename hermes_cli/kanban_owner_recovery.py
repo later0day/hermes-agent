@@ -1,8 +1,6 @@
 """Read-only canonical admission fences for dispatcher reclaim paths."""
-from contextlib import closing
 import json
 from pathlib import Path
-import sqlite3
 import time
 import psutil
 
@@ -33,13 +31,18 @@ def _admission_row(receipt):
     """
     if not receipt:
         return None
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader
+
     try:
-        with closing(sqlite3.connect(Path(receipt['db']).as_uri() + '?mode=ro', uri=True)) as owner:
-            row = owner.execute('SELECT status,outcome FROM session_admissions WHERE target_session_id=? AND request_id=?',
-                                (receipt['session_id'], receipt['request_id'])).fetchone()
-    except (OSError, KeyError, TypeError, ValueError, sqlite3.Error):
+        session_id, request_id = receipt['session_id'], receipt['request_id']
+        if session_id is None or request_id is None:
+            return None  # a NULL identity names no row, while match() drops a None filter
+        with open_persistence_reader(Path(receipt['db'])) as owner:
+            rows = owner.admissions.match(session_id=session_id, request_id=request_id)
+    except (OSError, KeyError, TypeError, ValueError, *STORE_FAILURES):
         return None
-    return (row[0], row[1]) if row is not None else None
+    return (rows[0].status, rows[0].outcome) if rows else None
 
 
 def owner_reclaim_paused(conn, task_id):
@@ -54,6 +57,14 @@ def owner_reclaim_paused(conn, task_id):
             # when nothing can still be running it.
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
+            return True
+        if row[0] == 'started':
+            worker = conn.execute(
+                "SELECT worker_pid, worker_started_at FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if worker is not None and worker['worker_pid']:
+                from hermes_cli.kanban_db_dispatch import _worker_alive
+                if _worker_alive(worker['worker_pid'], worker['worker_started_at']):
+                    return False
             return True
         from hermes_cli.process_identity import worker_birth
         return worker_birth(psutil.Process(receipt['pid'])) != receipt['birth']
@@ -82,6 +93,16 @@ def _host_local_lock(lock) -> bool:
     """True when ``lock`` was issued by this host — the only pids we can judge."""
     from hermes_cli import kanban_db as kb
     return bool(lock) and str(lock).startswith(kb._host_prefix())
+
+
+def _poll_worker_exit(pid: int, started_at=None) -> bool:
+    """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
+    from hermes_cli.kanban_db_dispatch import _worker_alive
+    for _ in range(10):
+        if not _worker_alive(pid, started_at):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def bound_interpreter_gone(conn, task_id):

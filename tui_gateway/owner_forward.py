@@ -211,11 +211,14 @@ class _Relay:
                         continue
                     self.emit(event_type, self.sid, payload)
                     settled = event_type == "message.complete"
+                    if settled:
+                        self.emit("session.info", self.sid, {"running": False, "stored_session_id": self.key})
         finally:
             if not settled and not self.session.get("_finalized"):
                 # Lost the owner mid-relay: the work is durable and still runs there. An empty
                 # completion settles the bubble; the client re-reads the stored transcript.
                 self.emit("message.complete", self.sid, {"text": ""})
+                self.emit("session.info", self.sid, {"running": False, "stored_session_id": self.key})
 
 
 def forward_rpc(home: Path, endpoint, method: str, params: dict) -> Any:

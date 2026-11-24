@@ -87,9 +87,9 @@ def classic_session(tmp_path):
         with sqlite3.connect(f"file:{home / 'state.db'}?mode=ro", uri=True) as conn:
             return conn.execute(sql, args).fetchall()
 
-    def session_id():
+    def session_id(expect="Session ID: "):
         """Main's bare `/title` prints the full id (the banner shows main's 8-character label)."""
-        shown = send("/title", "Session ID: ")
+        shown = send("/title", expect)
         return [line.split("Session ID: ", 1)[1].strip() for line in shown.splitlines() if "Session ID: " in line][-1]
 
     with (home / "gw.log").open("w") as log:
@@ -134,7 +134,7 @@ def test_classic_view_title_and_usage_match_main(tmp_path):
         send("first question", "RECOVERY_ACK_first question")
         send("second question", "RECOVERY_ACK_second question")
         send("/title View Title", "Session title set: View Title")
-        sid = session_id()
+        sid = session_id("Title: View Title")
         assert "Title: View Title" in screen()
         assert db("SELECT title FROM sessions WHERE id=?", sid) == [("View Title",)]
         send("/usage", "Session Token Usage")

@@ -1,104 +1,107 @@
-"""Cronjob tool stubs must resolve job references by ID *or* name.
-
-The fork introduced ``_context_ref_visible`` / ``_resolve_job_ref_for_scope``
-as scope-routing extension points but wired them to ``cron.jobs.get_job``,
-which only matches by ID.  Every call site catches
-``AmbiguousJobReference`` — that catch is dead code unless the stub goes
-through ``resolve_job_ref`` (ID-first with a fallback to a case-insensitive
-name match), which is what upstream's inline ``_get_job = get_job as _get_job``
-does not use either — upstream users still refer to jobs by name via the
-LLM tool surface, and the fork silently degraded that path to
-"not found" for any name-only reference.
-"""
+"""Public cronjob actions resolve job names and store canonical context references."""
 
 from __future__ import annotations
-from unittest.mock import patch
+
+import json
 
 import pytest
 
-from tools import cronjob_tools
+from cron import jobs as cron_jobs
+from tools.cronjob_tools import cronjob
 
 
-class _MockJobsStore:
-    def __init__(self, jobs):
-        self._jobs = list(jobs)
-
-    def resolve_job_ref(self, ref):
-        # Mimic cron.jobs.resolve_job_ref: ID-exact first, then case-insensitive
-        # name; raise AmbiguousJobReference if the name has multiple matches.
-        for j in self._jobs:
-            if j["id"] == ref:
-                return j
-        matches = [j for j in self._jobs if (j.get("name") or "").lower() == ref.lower()]
-        if not matches:
-            return None
-        if len(matches) > 1:
-            from cron.jobs import AmbiguousJobReference
-            raise AmbiguousJobReference(ref, matches)
-        return matches[0]
+@pytest.fixture
+def store(tmp_path):
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.ensure_dirs()
+        yield
 
 
-def test_context_ref_visible_matches_by_name(monkeypatch):
-    """A NAME reference must be found — upstream parity."""
-    store = _MockJobsStore([
-        {"id": "cj_abc", "name": "daily-report"},
-    ])
-    with patch("tools.cronjob_tools.resolve_job_ref", side_effect=store.resolve_job_ref):
-        assert cronjob_tools._context_ref_visible("daily-report", None) is True
-        assert cronjob_tools._context_ref_visible("cj_abc", None) is True
-        assert cronjob_tools._context_ref_visible("missing", None) is False
+def _create(*, name: str, prompt: str = "Collect a report", paused: bool = False) -> dict:
+    result = json.loads(cronjob(
+        action="create", name=name, prompt=prompt, schedule="every 1h", paused=paused,
+    ))
+    assert result["success"] is True, result
+    return cron_jobs.get_job(result["job_id"])
 
 
-def test_context_ref_visible_raises_on_ambiguous_name():
-    """A name matching multiple jobs must raise so the caller can say so."""
-    from cron.jobs import AmbiguousJobReference
+def test_update_manages_a_job_by_name(store):
+    job = _create(name="hourly-sync", prompt="old prompt")
 
-    store = _MockJobsStore([
-        {"id": "cj_a", "name": "report"},
-        {"id": "cj_b", "name": "report"},
-    ])
-    with patch("tools.cronjob_tools.resolve_job_ref", side_effect=store.resolve_job_ref):
-        with pytest.raises(AmbiguousJobReference):
-            cronjob_tools._context_ref_visible("report", None)
+    result = json.loads(cronjob(
+        action="update", job_id="HOURLY-SYNC", prompt="new prompt",
+    ))
 
-
-def test_resolve_job_ref_for_scope_matches_by_name():
-    """The primary manage-by-name path must find a NAME reference."""
-    store = _MockJobsStore([
-        {"id": "cj_abc", "name": "hourly-sync"},
-    ])
-    with patch("tools.cronjob_tools.resolve_job_ref", side_effect=store.resolve_job_ref):
-        j = cronjob_tools._resolve_job_ref_for_scope("hourly-sync", None)
-        assert j is not None and j["id"] == "cj_abc"
+    assert result["success"] is True, result
+    assert result["job"]["job_id"] == job["id"]
+    assert cron_jobs.get_job(job["id"])["prompt"] == "new prompt"
 
 
-def test_resolve_job_ref_for_scope_raises_on_ambiguous_name():
-    from cron.jobs import AmbiguousJobReference
+def test_update_reports_an_ambiguous_job_name(store):
+    first = _create(name="sync", prompt="first")
+    second = _create(name="sync", prompt="second")
 
-    store = _MockJobsStore([
-        {"id": "cj_x", "name": "sync"},
-        {"id": "cj_y", "name": "sync"},
-    ])
-    with patch("tools.cronjob_tools.resolve_job_ref", side_effect=store.resolve_job_ref):
-        with pytest.raises(AmbiguousJobReference):
-            cronjob_tools._resolve_job_ref_for_scope("sync", None)
+    result = json.loads(cronjob(action="update", job_id="sync", prompt="replacement"))
 
-
-def test_current_origin_scope_stub_returns_none():
-    """Scope routing is intentionally not implemented on this host — pin the
-    stub's contract so a future refactor that changes it (and forgets to
-    update the isolation caveat) is caught in review."""
-    assert cronjob_tools._current_origin_scope() is None
+    assert result["success"] is False
+    assert "ambiguous" in result["error"]
+    assert {match["id"] for match in result["matches"]} == {first["id"], second["id"]}
+    assert cron_jobs.get_job(first["id"])["prompt"] == "first"
+    assert cron_jobs.get_job(second["id"])["prompt"] == "second"
 
 
-def test_list_jobs_for_scope_delegates_to_upstream_list():
-    """The default (scope=None) list must be equivalent to cron.jobs.list_jobs."""
-    sentinel_all = [{"id": "cj_1"}, {"id": "cj_2"}]
-    sentinel_active = [{"id": "cj_1"}]
+def test_list_filters_disabled_jobs_unless_requested(store):
+    active = _create(name="active")
+    paused = _create(name="paused", paused=True)
 
-    def _list(include_disabled=False):
-        return sentinel_all if include_disabled else sentinel_active
+    visible = json.loads(cronjob(action="list"))
+    everything = json.loads(cronjob(action="list", include_disabled=True))
 
-    with patch("tools.cronjob_tools.list_jobs", side_effect=_list):
-        assert cronjob_tools._list_jobs_for_scope() == sentinel_active
-        assert cronjob_tools._list_jobs_for_scope(include_disabled=True) == sentinel_all
+    assert visible["success"] is True
+    assert {job["job_id"] for job in visible["jobs"]} == {active["id"]}
+    assert everything["success"] is True
+    assert {job["job_id"] for job in everything["jobs"]} == {active["id"], paused["id"]}
+
+
+@pytest.mark.parametrize("reference_kind", ["name", "id"])
+def test_create_context_from_stores_the_canonical_job_id(store, reference_kind):
+    upstream = _create(name="daily-report")
+    reference = upstream["name"] if reference_kind == "name" else upstream["id"]
+
+    result = json.loads(cronjob(
+        action="create", name="summary", prompt="Summarize the report",
+        schedule="every 2h", context_from=reference,
+    ))
+
+    assert result["success"] is True, result
+    assert cron_jobs.get_job(result["job_id"])["context_from"] == [upstream["id"]]
+
+
+def test_update_context_from_name_stores_the_canonical_job_id(store):
+    upstream = _create(name="daily-report")
+    downstream = _create(name="summary", prompt="Summarize the report")
+
+    result = json.loads(cronjob(
+        action="update", job_id=downstream["id"], context_from="DAILY-REPORT",
+    ))
+
+    assert result["success"] is True, result
+    assert result["job"]["context_from"] == [upstream["id"]]
+    assert cron_jobs.get_job(downstream["id"])["context_from"] == [upstream["id"]]
+
+
+def test_create_context_from_reports_an_ambiguous_name_without_saving(store):
+    first = _create(name="report")
+    second = _create(name="report")
+    jobs_before = {job["id"] for job in cron_jobs.load_jobs()}
+
+    result = json.loads(cronjob(
+        action="create", name="summary", prompt="Summarize the report",
+        schedule="every 2h", context_from="report",
+    ))
+
+    assert result["success"] is False
+    assert "ambiguous" in result["error"]
+    assert first["id"] in result["error"]
+    assert second["id"] in result["error"]
+    assert {job["id"] for job in cron_jobs.load_jobs()} == jobs_before

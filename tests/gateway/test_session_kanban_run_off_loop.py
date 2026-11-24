@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 from types import SimpleNamespace
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 HOLD_S = 3.0
 
@@ -44,8 +45,8 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
 
     async def resume(ref, params):
         calls.append('resume')
-    db = SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db'))
-    authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
+    store = storage_handle(tmp_path)
+    authority = SimpleNamespace(profile_id=str(tmp_path), persistence=store, submit=submit)
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task_id, run_id=task.current_run_id, claim_lock=task.claim_lock)

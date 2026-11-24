@@ -4,7 +4,7 @@ gateway: its API-only text (voice prefix, model-switch notes), managed workers (
 """
 import asyncio
 import threading
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -149,8 +149,8 @@ def _managed(tmp_path, monkeypatch, text):
         async def next_frame(self, *_args, **_kwargs):
             if not sent:
                 return {'pid': 1}
-            from hermes_state_runtime import RuntimeStoreError
-            raise RuntimeStoreError('managed_worker_failed')  # end the turn once the bootstrap went out
+            from persistence.core.errors import AuthorityRefusal
+            raise AuthorityRefusal('managed_worker_failed')  # end the turn once the bootstrap went out
 
         def send(self, frame):
             sent.append(frame)
@@ -176,7 +176,10 @@ def _managed(tmp_path, monkeypatch, text):
     live = SimpleNamespace(source=SimpleNamespace(user_id='u', chat_id='c', platform=None), route='managed-refs',
                            event_stream=SimpleNamespace(lock=threading.Lock(), publish=lambda *a, **k: None),
                            controls=SimpleNamespace(snapshot=lambda *a: None))
-    authority = SimpleNamespace(profile_id=str(tmp_path), sessions={'sid': live}, runner=None, pending_results={},
+    runner = SimpleNamespace()
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SimpleNamespace(profile_id=str(tmp_path), sessions={'sid': live}, runner=runner, pending_results={},
                                 waiters={}, adopt_agent=lambda *a: None, _publish_pending=lambda ref: None)
     row = {'admission_id': 'adm', 'generation': 1, 'principal_id': 'u', 'payload': {'text': text}}
     authority.executing = {'sid': 1}
@@ -188,9 +191,12 @@ def _managed(tmp_path, monkeypatch, text):
 async def test_a_managed_worker_runs_the_expanded_text(tmp_path, monkeypatch):
     from gateway.session_managed_worker import ManagedExecutionUnknown
     (tmp_path / 'notes.txt').write_text('PROJECT-NOTES', encoding='utf-8')
-    run, _authority, sent, _spawned = _managed(tmp_path, monkeypatch, 'read @file:notes.txt')
-    with pytest.raises(ManagedExecutionUnknown):
-        await run
+    run, authority, sent, _spawned = _managed(tmp_path, monkeypatch, 'read @file:notes.txt')
+    try:
+        with pytest.raises(ManagedExecutionUnknown):
+            await run
+    finally:
+        GatewayRunner._shutdown_executor(authority.runner, drain_timeout=2)
     [frame] = sent
     assert frame['text'].startswith('read @file:notes.txt') and 'PROJECT-NOTES' in frame['text']
 
@@ -200,7 +206,10 @@ async def test_a_managed_turn_with_refused_references_answers_without_spawning(t
     for name in ('a', 'b', 'c'):
         (tmp_path / f'{name}.txt').write_text(name * 1800, encoding='utf-8')
     run, authority, sent, spawned = _managed(tmp_path, monkeypatch, '@file:a.txt @file:b.txt @file:c.txt')
-    reply = await run
+    try:
+        reply = await run
+    finally:
+        GatewayRunner._shutdown_executor(authority.runner, drain_timeout=2)
     assert 'refused' in reply and not spawned and not sent
     assert authority.pending_results['adm']['result']['final_response'] == reply
 
@@ -223,9 +232,12 @@ async def test_a_bypass_session_expands_built_in_references_only(tmp_path, monke
     (tmp_path / 'notes.txt').write_text('PROJECT-NOTES', encoding='utf-8')
     register_context_reference_provider(Probe())
     try:
-        run, _authority, sent, _spawned = _managed(tmp_path, monkeypatch, '@probe:x @file:notes.txt')
-        with pytest.raises(ManagedExecutionUnknown):
-            await run
+        run, authority, sent, _spawned = _managed(tmp_path, monkeypatch, '@probe:x @file:notes.txt')
+        try:
+            with pytest.raises(ManagedExecutionUnknown):
+                await run
+        finally:
+            GatewayRunner._shutdown_executor(authority.runner, drain_timeout=2)
     finally:
         _context_reference_providers.pop('probe', None)
     assert 'PROJECT-NOTES' in sent[0]['text'] and 'PLUGIN-RAN' not in sent[0]['text']

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
+from persistence.gateway.hosted_rooms import EventConflictError, HostedTaskIdentity
+from persistence_assembly import Persistence, open_persistence, profile_scope
 
 
 ROOM_ID = "room-1"
@@ -26,11 +27,20 @@ MEMBERS = [
 ]
 
 
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
 @pytest.fixture
-def room_db(tmp_path: Path) -> tuple[Path, dict]:
-    db = tmp_path / "state.db"
+def room_db(store: Persistence) -> tuple[Persistence, dict]:
+    db = store
     room = hosted_rooms.create_room(
         db,
+        placement="profile",
         room_id=ROOM_ID,
         name="Release",
         members=MEMBERS,
@@ -40,9 +50,10 @@ def room_db(tmp_path: Path) -> tuple[Path, dict]:
     return db, room
 
 
-def _events(db: Path) -> list[dict]:
+def _events(db: Persistence) -> list[dict]:
     return hosted_rooms.read_events(
         db,
+        placement="profile",
         room_id=ROOM_ID,
         since_seq=0,
         limit=hosted_rooms.MAX_LOG_LIMIT,
@@ -50,7 +61,7 @@ def _events(db: Path) -> list[dict]:
 
 
 def _append_user(
-    db: Path,
+    db: Persistence,
     *,
     event_id: str,
     text: str,
@@ -59,6 +70,7 @@ def _append_user(
 ) -> dict:
     return hosted_rooms.append_event(
         db,
+        placement="profile",
         room_id=ROOM_ID,
         event_id=event_id,
         kind="message.user",
@@ -71,12 +83,13 @@ def _append_user(
 
 
 def _append_publication(
-    db: Path,
+    db: Persistence,
     plan: discussion.PublicationPlan,
 ) -> list[dict]:
     return [
         hosted_rooms.append_event(
             db,
+            placement="profile",
             **event.append_kwargs(ROOM_ID),
             now=time.time(),
         )
@@ -85,7 +98,7 @@ def _append_publication(
 
 
 def _append_activity(
-    db: Path,
+    db: Persistence,
     *,
     event_id: str,
     discussion_event_id: str,
@@ -93,6 +106,7 @@ def _append_activity(
 ) -> dict:
     return hosted_rooms.append_event(
         db,
+        placement="profile",
         room_id=ROOM_ID,
         event_id=event_id,
         kind="room.activity",
@@ -108,7 +122,7 @@ def _append_activity(
     )
 
 
-def _next_task(room: dict, db: Path) -> discussion.DiscussionTaskPlan:
+def _next_task(room: dict, db: Persistence) -> discussion.DiscussionTaskPlan:
     decision = discussion.plan_next_task(
         room,
         _events(db),
@@ -121,7 +135,7 @@ def _next_task(room: dict, db: Path) -> discussion.DiscussionTaskPlan:
 
 def _settle_next(
     room: dict,
-    db: Path,
+    db: Persistence,
     *,
     text: str,
 ) -> discussion.DiscussionTaskPlan:
@@ -199,6 +213,7 @@ def test_room_stop_fences_old_work_but_allows_a_later_message(room_db):
     _append_user(db, event_id="user-1", text="First", thread_id="thread-1")
     stop = hosted_rooms.request_room_stop(
         db,
+        placement="profile",
         room_id=ROOM_ID,
         cancel_id="user-stop-1",
         expected_gateway_id=str(room["authority_gateway_id"]),
@@ -218,7 +233,7 @@ def test_room_stop_fences_old_work_but_allows_a_later_message(room_db):
 
 
 def test_deterministic_task_fits_existing_driver_and_reconstructs_after_restart(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict], store,
 ):
     db, room = room_db
     user = _append_user(db, event_id="user-1", text="Check the release.")
@@ -241,12 +256,12 @@ def test_deterministic_task_fits_existing_driver_and_reconstructs_after_restart(
     }
 
     admitted = driver.admit_task(
-        db,
-        first.identity,
+        store,
+        first.identity, placement="profile",
         payload=first.payload,
         clock=time.time,
     )
-    stored = driver.get_task(db, first.identity)
+    stored = driver.get_task(store, first.identity, placement="profile")
     reconstructed = discussion.reconstruct_task_plan(
         room,
         _events(db),
@@ -261,7 +276,7 @@ def test_deterministic_task_fits_existing_driver_and_reconstructs_after_restart(
         discussion.reconstruct_task_plan(
             room,
             reopened_events,
-            driver.get_task(db, first.identity),
+            driver.get_task(store, first.identity, placement="profile"),
             local_profiles=LOCAL_PROFILES,
         )
         == first
@@ -282,7 +297,7 @@ def test_deterministic_task_fits_existing_driver_and_reconstructs_after_restart(
     ],
 )
 def test_mentions_select_handles_or_everyone(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
     text: str,
     expected_profile: str,
 ):
@@ -293,7 +308,7 @@ def test_mentions_select_handles_or_everyone(
 
 
 def test_member_mention_joins_the_next_round_not_the_current_round(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="@research lead this")
@@ -310,7 +325,7 @@ def test_member_mention_joins_the_next_round_not_the_current_round(
 
 
 def test_member_control_frames_are_relabelled_before_the_next_prompt(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     """#111564: a member reply that reproduces a Hermes control frame (mid-turn steer marker, compaction
     handoff, runtime/system notes) must not reach a peer's role=user prompt in its exact trusted shape.
@@ -354,7 +369,7 @@ def test_member_control_frames_are_relabelled_before_the_next_prompt(
 
 
 def test_plain_member_reply_does_not_wake_another_bot_round(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="@research answer the user")
@@ -371,7 +386,7 @@ def test_plain_member_reply_does_not_wake_another_bot_round(
 
 
 def test_deferred_member_turn_keeps_discussion_pending_for_exact_retry(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(
@@ -413,7 +428,7 @@ def test_real_text_is_not_a_pass():
 
 
 def test_full_pass_round_settles_without_member_messages(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Any concerns?")
@@ -432,7 +447,7 @@ def test_full_pass_round_settles_without_member_messages(
 
 
 def test_failed_members_advance_the_round_as_silence(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Any concerns?")
@@ -463,7 +478,7 @@ def test_failed_members_advance_the_round_as_silence(
 
 
 def test_failed_publication_preserves_a_typed_actionable_reason(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Please continue.")
@@ -479,8 +494,27 @@ def test_failed_publication_preserves_a_typed_actionable_reason(
     assert publication.events[0].payload["reason_code"] == "provider_auth_or_access"
 
 
+def test_failed_publication_uses_typed_agent_reason_without_publishing_provider_text(
+    room_db: tuple[Persistence, dict],
+):
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="Please continue.")
+    task = _next_task(room, db)
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        task,
+        status="failed",
+        result={"error": "Daily limit reached PRIVATE_PROVIDER_RESPONSE", "failure_reason": "billing"},
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert publication.events[0].payload["reason_code"] == "provider_quota_limit"
+    assert publication.events[0].payload["error"] == "provider_quota_limit"
+    assert "PRIVATE_PROVIDER_RESPONSE" not in str(publication.events[0].payload)
+
+
 def test_failed_publication_rejects_an_untrusted_reason_code(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Please continue.")
@@ -497,7 +531,7 @@ def test_failed_publication_rejects_an_untrusted_reason_code(
 
 
 def test_publication_is_idempotent_and_changed_result_conflicts(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Report.")
@@ -524,12 +558,12 @@ def test_publication_is_idempotent_and_changed_result_conflicts(
         result={"text": "Different."},
         local_profiles=LOCAL_PROFILES,
     )
-    with pytest.raises(hosted_rooms.EventConflictError):
+    with pytest.raises(EventConflictError):
         _append_publication(db, changed)
 
 
 def test_partial_publication_replays_same_effects_before_policy_advances(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Report.")
@@ -546,6 +580,7 @@ def test_partial_publication_replays_same_effects_before_policy_advances(
     message_effect = publication.events[0]
     hosted_rooms.append_event(
         db,
+        placement="profile",
         **message_effect.append_kwargs(ROOM_ID),
         now=time.time(),
     )
@@ -564,7 +599,7 @@ def test_partial_publication_replays_same_effects_before_policy_advances(
 
 
 def test_watermark_excludes_a_members_old_input_and_own_reply(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Old request.")
@@ -591,7 +626,7 @@ def test_watermark_excludes_a_members_old_input_and_own_reply(
 
 
 def test_newer_same_thread_user_event_cancels_a_late_result(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="First request.")
@@ -617,7 +652,7 @@ def test_newer_same_thread_user_event_cancels_a_late_result(
 
 
 def test_cross_thread_newer_user_does_not_discard_completed_old_reply(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="First request.", thread_id="thread-1")
@@ -639,7 +674,7 @@ def test_cross_thread_newer_user_does_not_discard_completed_old_reply(
 
 
 def test_oversized_member_reply_is_truncated_and_next_turn_stays_serviceable(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(
@@ -668,7 +703,7 @@ def test_oversized_member_reply_is_truncated_and_next_turn_stays_serviceable(
     assert "Earlier content omitted" in followup.payload["prompt"]
 
 
-def test_five_round_bound(room_db: tuple[Path, dict]):
+def test_five_round_bound(room_db: tuple[Persistence, dict]):
     db, room = room_db
     room["members"] = MEMBERS[:2]
     # Address ONE member at round 0 (`@research`) so the opening round has a
@@ -709,7 +744,7 @@ def test_five_round_bound(room_db: tuple[Path, dict]):
 
 
 def test_later_round_task_reconstructs_after_restart(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     # The load-bearing v2 (5-round) recovery path: an in-flight task from a
     # round >2 has a turn_id like `d1.r3.…` / `d1.r4.…`. Before widening the
@@ -749,18 +784,18 @@ def test_later_round_task_reconstructs_after_restart(
     assert late_task is not None, "expected a task in round >= 3"
 
     # Admit it to the driver, then reconstruct from a fresh log read (restart).
-    driver.admit_task(db, late_task.identity, payload=late_task.payload, clock=time.time)
+    driver.admit_task(db, late_task.identity, placement="profile", payload=late_task.payload, clock=time.time)
     reconstructed = discussion.reconstruct_task_plan(
         room,
         _events(db),
-        driver.get_task(db, late_task.identity),
+        driver.get_task(db, late_task.identity, placement="profile"),
         local_profiles=LOCAL_PROFILES,
     )
     assert reconstructed == late_task
 
 
-def test_ten_message_bound(tmp_path: Path):
-    db = tmp_path / "state.db"
+def test_ten_message_bound(store):
+    db = store
     members = [
         {
             "member_id": f"member-{profile}",
@@ -771,6 +806,7 @@ def test_ten_message_bound(tmp_path: Path):
     ]
     room = hosted_rooms.create_room(
         db,
+        placement="profile",
         room_id=ROOM_ID,
         name="Large",
         members=members,
@@ -792,7 +828,7 @@ def test_ten_message_bound(tmp_path: Path):
 
 
 def test_prompt_delta_is_bounded_to_max_delta_lines(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     for index in range(30):
@@ -859,7 +895,7 @@ def test_user_payload_is_exact_and_text_only(payload: dict):
 
 
 def test_malformed_log_and_task_reconstruction_fail_closed(
-    room_db: tuple[Path, dict],
+    room_db: tuple[Persistence, dict],
 ):
     db, room = room_db
     _append_user(db, event_id="user-1", text="Report.")
@@ -875,7 +911,7 @@ def test_malformed_log_and_task_reconstruction_fail_closed(
         )
 
     malformed = {
-        "identity": driver.TaskIdentity(
+        "identity": HostedTaskIdentity(
             room_id=task.identity.room_id,
             task_id="dtask:wrong",
             thread_id=task.identity.thread_id,
@@ -921,17 +957,17 @@ DECIDER_MEMBERS = [
 
 
 @pytest.fixture
-def decider_room_db(tmp_path: Path) -> tuple[Path, dict]:
-    db = tmp_path / "state.db"
+def decider_room_db(store: Persistence) -> tuple[Persistence, dict]:
     room = hosted_rooms.create_room(
-        db,
+        store,
+        placement="profile",
         room_id=ROOM_ID,
         name="Release",
         members=DECIDER_MEMBERS,
         authority_gateway_id=GATEWAY_ID,
         now=1,
     )
-    return db, room
+    return store, room
 
 
 def test_roster_role_defaults_to_worker_and_persists_decider():
@@ -1390,7 +1426,7 @@ def test_project_task_dag_is_deterministic(decider_room_db):
     assert a == b
 
 
-def test_member_text_guards_also_cover_the_teammate_summary_attribute(room_db: tuple[Path, dict]):
+def test_member_text_guards_also_cover_the_teammate_summary_attribute(room_db: tuple[Persistence, dict]):
     """The control-frame relabel and the teammate-tag escape are layered on the member body, and the CC-style
     ``summary`` attribute is derived from the *guarded* text. A raw summary would carry a forged control frame
     or a tag-closing payload straight past both guards into the peer's prompt."""

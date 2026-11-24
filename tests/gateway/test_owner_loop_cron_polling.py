@@ -6,7 +6,7 @@ receipt with an fsynced write (``save``). Both used to run on the owner loop: on
 (a network filesystem holding SQLite's WAL ``-shm`` lock for seconds) every poll stopped every
 socket, timer, Stop and liveness probe the gateway serves for as long as the read took.
 
-Real GatewayRunner + SessionAuthority + SessionDB; storage is slowed by wrapping the store's own
+Real GatewayRunner + SessionAuthority + store; storage is slowed by wrapping the store's own
 choke points (and the journal write), so the stall is measured as loop-tick lag, not inferred.
 """
 import asyncio
@@ -19,13 +19,15 @@ SLOW_S = 2.0  # one slow storage call; the report measured 5-58 s stalls on NFS
 MAX_LAG_S = 0.2
 
 
-def _ticker(gaps):
+def _ticker(gaps, intervals=None):
     async def tick():
         last = time.monotonic()
         while True:
             await asyncio.sleep(0.02)  # health: allow HX013 -- the ticker's period is the owner-loop stall measurement
             now = time.monotonic()
             gaps.append(now - last)
+            if intervals is not None:
+                intervals.append((last, now))
             last = now
     return asyncio.create_task(tick())
 
@@ -37,7 +39,6 @@ async def _owner(tmp_path, monkeypatch, run_job):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {'model': {}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'report', 'model': 'm', 'name': 'job'})
     monkeypatch.setattr(scheduler, 'run_job', run_job)
@@ -48,9 +49,10 @@ async def _owner(tmp_path, monkeypatch, run_job):
 
 
 def _slow_store(monkeypatch, slow):
-    """Every SessionDB read and write waits ``SLOW_S`` while ``slow`` is set, on whatever thread."""
-    from hermes_state import SessionDB
-    read, write = SessionDB._read_ctx, SessionDB._execute_write
+    """Every store read and write waits ``SLOW_S`` while ``slow`` is set, on whatever thread."""
+    from tests.fixtures.storage_holder import holder_type
+    holder = holder_type()
+    read, write = holder._read_ctx, holder._execute_write
 
     def _read_ctx(self, *args, **kwargs):
         if slow.is_set():
@@ -61,8 +63,8 @@ def _slow_store(monkeypatch, slow):
         if slow.is_set():
             time.sleep(SLOW_S)  # health: allow HX013 -- the slow storage write IS the stall under test
         return write(self, *args, **kwargs)
-    monkeypatch.setattr(SessionDB, '_read_ctx', _read_ctx)
-    monkeypatch.setattr(SessionDB, '_execute_write', _execute_write)
+    monkeypatch.setattr(holder, '_read_ctx', _read_ctx)
+    monkeypatch.setattr(holder, '_execute_write', _execute_write)
 
 
 @pytest.mark.asyncio
@@ -111,16 +113,21 @@ async def test_cron_receipt_journal_fsync_keeps_the_loop_ticking(tmp_path, monke
     runner, _authority = await _owner(tmp_path, monkeypatch, run_job)
     # Warm the fire path (cold imports of the submit/execute modules are not the write under test).
     await asyncio.wait_for(asyncio.to_thread(run_canonical_job, {'id': 'job'}, execution_id='warm'), 30)
-    real_write, slow_writes = utils.atomic_json_write, []
+    real_write, slow_writes, slow_windows = utils.atomic_json_write, [], []
 
     def slow_journal_write(path, *args, **kwargs):
-        if '/cron/admissions/' in str(path):
-            slow_writes.append(threading.get_ident())
+        if '/cron/admissions/' not in str(path):
+            return real_write(path, *args, **kwargs)
+        slow_writes.append(threading.get_ident())
+        started = time.monotonic()
+        try:
             time.sleep(SLOW_S / 2)  # health: allow HX013 -- a slow (NFS) fsync IS the stall under test
-        return real_write(path, *args, **kwargs)
+            return real_write(path, *args, **kwargs)
+        finally:
+            slow_windows.append((started, time.monotonic()))
     monkeypatch.setattr(utils, 'atomic_json_write', slow_journal_write)
-    gaps = []
-    tick = _ticker(gaps)
+    gaps, intervals = [], []
+    tick = _ticker(gaps, intervals)
     try:
         result = await asyncio.wait_for(asyncio.to_thread(run_canonical_job, {'id': 'job'}, execution_id='fire'), 30)
     finally:
@@ -128,4 +135,9 @@ async def test_cron_receipt_journal_fsync_keeps_the_loop_ticking(tmp_path, monke
         await asyncio.to_thread(runner.session_store.close_all_db_handles)
     assert result == (True, 'doc', 'answer', None)
     assert len(slow_writes) >= 2, 'the journal was not written before submit and after the receipt'
-    assert max(gaps) < MAX_LAG_S, f'owner loop stalled {max(gaps):.2f}s behind the cron journal write'
+    journal_gaps = [gap for gap, (tick_start, tick_end) in zip(gaps, intervals)
+                    if any(tick_start < write_end and tick_end > write_start
+                           for write_start, write_end in slow_windows)]
+    assert journal_gaps
+    assert max(journal_gaps) < MAX_LAG_S, (
+        f'owner loop stalled {max(journal_gaps):.2f}s behind the cron journal write')

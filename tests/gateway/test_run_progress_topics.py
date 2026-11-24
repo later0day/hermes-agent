@@ -462,7 +462,7 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None, lookup_by_session_key=lambda _: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -1776,7 +1776,7 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
 
     adapter.set_message_handler(_handler)
     adapter.stop_typing = _stop_typing
-
+    monkeypatch.setattr(adapter, "_record_delivery_obligation", lambda *args, **kwargs: asyncio.sleep(0))
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="-1001",

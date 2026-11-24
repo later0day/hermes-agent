@@ -80,7 +80,7 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"could not read this profile's [^(]+\(an internal profile-scoping bug"
          r"|served_profile_child_env\(inherit_credentials=true\)", TARGET_SCOPE_UNRESOLVED),
         (rf"authentication_error|invalid api key|{_STATUS}(?:401|403)\b", PROVIDER_AUTH_OR_ACCESS),
-        (rf"{_STATUS}402\b|out of funds|quota|balance", PROVIDER_QUOTA_LIMIT),
+        (rf"{_STATUS}402\b|out of funds|quota|balance|billing", PROVIDER_QUOTA_LIMIT),
         (rf"{_STATUS}429\b|rate.?limit", PROVIDER_RATE_LIMIT),
         # ``server[ _]?error`` / ``overloaded_error`` are the providers' own JSON spellings of the
         # agent's typed ``server_error`` / ``overloaded`` verdicts (FailoverReason), which the

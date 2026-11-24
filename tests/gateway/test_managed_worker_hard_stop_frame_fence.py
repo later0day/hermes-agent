@@ -7,9 +7,10 @@ import asyncio
 import subprocess
 import sys
 import threading
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from gateway.session_contract import SessionActor, SessionRef
 from tests.gateway.test_managed_turn_contract import assignment
@@ -84,19 +85,22 @@ for line in sys.stdin.buffer:
 @pytest.mark.platforms("linux")
 def test_worker_frames_read_no_ledger_per_frame(tmp_path, monkeypatch):
     from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, 's', 'test')
     runner = SimpleNamespace(_draining=False, _cached_agent_for=lambda route: None,
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'), persistence=storage_handle(tmp_path))
     live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
@@ -114,12 +118,15 @@ def test_worker_frames_read_no_ledger_per_frame(tmp_path, monkeypatch):
 
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         authority._stamp_claim(ref, live, row)  # the drain's claim stamp
         log.clear()
-        with pytest.raises(managed.ManagedExecutionUnknown):  # the closing bogus frame revokes the worker
-            async with asyncio.timeout(30):
-                await managed.execute_managed(authority, ref, row, policy)
+        try:
+            with pytest.raises(managed.ManagedExecutionUnknown):  # the closing bogus frame revokes the worker
+                async with asyncio.timeout(30):
+                    await managed.execute_managed(authority, ref, row, policy)
+        finally:
+            GatewayRunner._shutdown_executor(runner, drain_timeout=2)
     with db:
         asyncio.run(scenario())
     assert log.count('delta') == 20, log

@@ -57,11 +57,14 @@ def child_env():
 
 async def rpc(ws, method, **params):
     await ws.send(json.dumps({'jsonrpc': '2.0', 'id': method, 'method': method, 'params': params}))
-    async with asyncio.timeout(20):
-        while True:
-            reply = json.loads(await ws.recv())
-            if reply.get('id') == method:
-                return reply
+    try:
+        async with asyncio.timeout(20):
+            while True:
+                reply = json.loads(await ws.recv())
+                if reply.get('id') == method:
+                    return reply
+    except TimeoutError as exc:
+        raise TimeoutError(f'{method} did not answer within 20s') from exc
 
 
 def websocket(home, desc, **kw):

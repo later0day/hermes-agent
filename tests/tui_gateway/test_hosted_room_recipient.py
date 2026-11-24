@@ -6,13 +6,22 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import room_task_dag as dag
+from persistence_assembly import open_persistence, profile_scope
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 from tests.waiting import wait_until
 from tui_gateway.hosted_room_service import HostedRoomService
 
 
-def _service(db: Path) -> HostedRoomService:
-    service = HostedRoomService(_server(), db_path=db)
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
+def _service(store) -> HostedRoomService:
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = service.runtime.rpc = _FakeRPC()
     service.local_profiles = lambda: ("lead", "worker", "other")
     service.create_room(
@@ -27,9 +36,9 @@ def _service(db: Path) -> HostedRoomService:
     return service
 
 
-def test_worker_recipient_runs_only_that_worker_and_completes_its_dag_task(tmp_path: Path):
+def test_worker_recipient_runs_only_that_worker_and_completes_its_dag_task(tmp_path: Path, store):
     db = tmp_path / "state.db"
-    service = _service(db)
+    service = _service(store)
     service.start()
     try:
         event = service.send(
@@ -52,7 +61,7 @@ def test_worker_recipient_runs_only_that_worker_and_completes_its_dag_task(tmp_p
     assert len(tasks) == 1
     assert tasks[0]["subject"] == "@worker build the API"
     assert tasks[0]["owner"] == "worker"
-    attempts = driver.list_tasks(db, room_id="room-1")
+    attempts = driver.list_tasks(store, placement="profile", room_id="room-1")
     assert len(attempts) == 1
     assert attempts[0]["status"] == "settled"
     assert attempts[0]["payload"]["target_member_id"] == "worker-id"
@@ -60,9 +69,9 @@ def test_worker_recipient_runs_only_that_worker_and_completes_its_dag_task(tmp_p
     assert [event["payload"]["member_id"] for event in replies] == ["worker-id"]
 
 
-def test_worker_recipient_does_not_dispatch_extra_mentioned_worker(tmp_path: Path):
+def test_worker_recipient_does_not_dispatch_extra_mentioned_worker(tmp_path: Path, store):
     db = tmp_path / "state.db"
-    service = _service(db)
+    service = _service(store)
     service.start()
     try:
         service.send(
@@ -79,7 +88,7 @@ def test_worker_recipient_does_not_dispatch_extra_mentioned_worker(tmp_path: Pat
     finally:
         assert service.stop(timeout=2.0)
 
-    attempts = driver.list_tasks(db, room_id="room-1")
+    attempts = driver.list_tasks(store, placement="profile", room_id="room-1")
     assert len(attempts) == 1
     assert attempts[0]["payload"]["target_member_id"] == "worker-id"
     replies = [event for event in service._events("room-1") if event["kind"] == "message.member"]
@@ -87,9 +96,11 @@ def test_worker_recipient_does_not_dispatch_extra_mentioned_worker(tmp_path: Pat
 
 
 @pytest.mark.parametrize("text", ["build the API", "@other build the API"])
-def test_worker_recipient_ignores_missing_and_conflicting_mentions(tmp_path: Path, text: str):
+def test_worker_recipient_ignores_missing_and_conflicting_mentions(
+    tmp_path: Path, text: str, store
+):
     db = tmp_path / "state.db"
-    service = _service(db)
+    service = _service(store)
 
     service.send(
         room_id="room-1",
@@ -102,15 +113,15 @@ def test_worker_recipient_ignores_missing_and_conflicting_mentions(tmp_path: Pat
     assert len(tasks) == 1
     assert tasks[0]["status"] == "in_progress"
     assert tasks[0]["owner"] == "worker"
-    attempts = driver.list_tasks(db, room_id="room-1")
+    attempts = driver.list_tasks(store, placement="profile", room_id="room-1")
     assert len(attempts) == 1
     assert attempts[0]["status"] == "queued"
     assert attempts[0]["payload"]["target_member_id"] == "worker-id"
 
 
-def test_leader_recipient_keeps_ordinary_decider_ingress(tmp_path: Path):
+def test_leader_recipient_keeps_ordinary_decider_ingress(tmp_path: Path, store):
     db = tmp_path / "state.db"
-    service = _service(db)
+    service = _service(store)
     service.start()
     try:
         event = service.send(
@@ -129,14 +140,14 @@ def test_leader_recipient_keeps_ordinary_decider_ingress(tmp_path: Path):
         assert service.stop(timeout=2.0)
 
     assert dag.list_tasks(db, room_id="room-1") == []
-    attempts = driver.list_tasks(db, room_id="room-1")
+    attempts = driver.list_tasks(store, placement="profile", room_id="room-1")
     assert len(attempts) == 1
     assert attempts[0]["payload"]["target_member_id"] == "lead-id"
 
 
-def test_worker_recipient_replay_reuses_event_and_dag_assignment(tmp_path: Path):
+def test_worker_recipient_replay_reuses_event_and_dag_assignment(tmp_path: Path, store):
     db = tmp_path / "state.db"
-    service = _service(db)
+    service = _service(store)
     request = {
         "room_id": "room-1",
         "event_id": "worker-request",
@@ -153,7 +164,7 @@ def test_worker_recipient_replay_reuses_event_and_dag_assignment(tmp_path: Path)
     assert len(tasks) == 1
     assert tasks[0]["status"] == "in_progress"
     assert tasks[0]["owner"] == "worker"
-    attempts = driver.list_tasks(db, room_id="room-1")
+    attempts = driver.list_tasks(store, placement="profile", room_id="room-1")
     assert len(attempts) == 1
     assert attempts[0]["status"] == "queued"
     assert attempts[0]["payload"]["target_member_id"] == "worker-id"

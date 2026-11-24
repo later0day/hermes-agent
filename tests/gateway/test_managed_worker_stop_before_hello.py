@@ -3,10 +3,11 @@ without ever sending hello is terminated on Stop and the admission settles as in
 import asyncio
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import psutil
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from gateway.session_contract import SessionActor, SessionRef
 from tests.waiting import async_wait_until
@@ -15,6 +16,7 @@ from tests.waiting import async_wait_until
 @pytest.mark.platforms("linux")
 def test_stop_before_hello_terminates_child_and_settles_interrupted(monkeypatch):
     from gateway import session_managed_worker as managed
+    from gateway.run import GatewayRunner
     spawned = []
     original = subprocess.Popen
 
@@ -26,7 +28,10 @@ def test_stop_before_hello_terminates_child_and_settles_interrupted(monkeypatch)
     monkeypatch.setattr(managed.subprocess, 'Popen', wedged_child)
     ref = SessionRef('profile', 'session')
     checks = []
-    authority = SimpleNamespace(profile_id='profile', pending_results={}, waiters={},
+    runner = SimpleNamespace()
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SimpleNamespace(profile_id='profile', pending_results={}, waiters={}, runner=runner,
         adopt_agent=lambda session_id, generation, worker: None,
         authorize=lambda actor, ref, cap: checks.append(cap),
         check_approval_generation=lambda session_id, generation: checks.append(generation))
@@ -40,12 +45,15 @@ def test_stop_before_hello_terminates_child_and_settles_interrupted(monkeypatch)
         assert managed.interrupt_managed(authority, actor, ref, 3) is True
         async with asyncio.timeout(10):
             return await turn
-    assert asyncio.run(scenario()) == ''
-    assert checks == ['session:control', 3]
-    assert authority.pending_results['adm']['result']['interrupted'] is True
-    assert ref.session_id not in authority._managed_workers
-    child = spawned[0]
-    assert child.poll() is not None and not psutil.pid_exists(child.pid) or psutil.Process(child.pid).status() == psutil.STATUS_ZOMBIE
+    try:
+        assert asyncio.run(scenario()) == ''
+        assert checks == ['session:control', 3]
+        assert authority.pending_results['adm']['result']['interrupted'] is True
+        assert ref.session_id not in authority._managed_workers
+        child = spawned[0]
+        assert child.poll() is not None and not psutil.pid_exists(child.pid) or psutil.Process(child.pid).status() == psutil.STATUS_ZOMBIE
+    finally:
+        GatewayRunner._shutdown_executor(runner, drain_timeout=2)
 
 
 CHILD = """import json, os, sys, psutil
@@ -74,20 +82,23 @@ def test_stop_acknowledged_during_spawn_never_bootstraps_the_worker(tmp_path, mo
     from ever receiving its bootstrap; the admission settles interrupted, never as a late turn."""
     import threading
     from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import Submission
     from gateway.session_controls import AuthorityConnection
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, 's', 'test')
     runner = SimpleNamespace(_draining=False, _cached_agent_for=lambda route: None,
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'), persistence=storage_handle(tmp_path))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
@@ -108,7 +119,7 @@ def test_stop_acknowledged_during_spawn_never_bootstraps_the_worker(tmp_path, mo
 
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         turn = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
         assert await asyncio.to_thread(entered.wait, 10)
         stopped = await AuthorityConnection.interrupt(SimpleNamespace(authority=authority, actor=actor), ref,
@@ -117,8 +128,11 @@ def test_stop_acknowledged_during_spawn_never_bootstraps_the_worker(tmp_path, mo
         release.set()
         async with asyncio.timeout(20):
             return row, await turn
-    with db:
-        row, response = asyncio.run(scenario())
+    try:
+        with db:
+            row, response = asyncio.run(scenario())
+    finally:
+        GatewayRunner._shutdown_executor(runner, drain_timeout=2)
     assert response == ''
     assert authority.pending_results[row['admission_id']]['result']['interrupted'] is True
     assert not received.exists() or 'bootstrap' not in received.read_text(), received.read_text()

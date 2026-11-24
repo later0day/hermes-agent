@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { drainDeferredDomEvents } from '@/test/jsdom'
+
 import { Dialog, DialogContent } from './dialog'
 import {
   DropdownMenu,
@@ -22,13 +24,37 @@ beforeAll(() => {
   Element.prototype.scrollIntoView ??= () => undefined
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  await drainDeferredDomEvents()
   vi.useRealTimers()
 })
 
 const hover = (element: Element) => fireEvent.pointerMove(element, { pointerType: 'mouse' })
 const unhover = (element: Element) => fireEvent.pointerLeave(element, { pointerType: 'mouse' })
+
+describe('DropdownMenu teardown', () => {
+  it.each([false, true])('drains close autofocus with fakeTimers=%s', async fakeTimers => {
+    if (fakeTimers) {
+      vi.useFakeTimers()
+    }
+
+    const onCloseAutoFocus = vi.fn()
+    render(
+      <DropdownMenu open>
+        <DropdownMenuContent onCloseAutoFocus={onCloseAutoFocus}>
+          <DropdownMenuItem>Plain row</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )
+
+    cleanup()
+    await drainDeferredDomEvents()
+
+    expect(onCloseAutoFocus).toHaveBeenCalledTimes(1)
+    expect(onCloseAutoFocus.mock.calls[0][0]).toBeInstanceOf(window.CustomEvent)
+  })
+})
 
 function SearchableMenu({ withSearch = true }: { withSearch?: boolean }) {
   return (

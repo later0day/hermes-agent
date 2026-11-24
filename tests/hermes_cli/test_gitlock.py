@@ -658,6 +658,37 @@ def _fetch(clone: Path) -> subprocess.CompletedProcess:
     return subprocess.run(_FETCH, cwd=clone, capture_output=True, text=True, encoding="utf-8", check=False)
 
 
+def test_reused_current_pid_does_not_keep_a_previous_incarnations_fetch_lock(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retry in a fresh PID namespace may inherit the killed updater's PID, not its incarnation."""
+    import json
+
+    from hermes_cli import _early_recovery, update_receipt
+    from hermes_cli.gitlock import release_dead_fetch_locks
+    from hermes_cli.process_identity import _process_create_time
+
+    monkeypatch.setattr(_early_recovery, "_held_open", lambda *args, **kwargs: False)
+    ct = _process_create_time(os.getpid())
+    assert ct is not None
+    lock = repo / ".git" / "refs" / "remotes" / "origin" / "main.lock"
+    lock.parent.mkdir(parents=True)
+    for recorded_ct, released in ((ct - 0.25, True), (ct, False)):
+        lock.write_bytes(b"")
+        update_receipt.begin_update_receipt()
+        current = update_receipt._current.get()
+        current.data.update(pid=os.getpid(), pid_create_time=recorded_ct,
+                            writer_pid=os.getpid(), writer_create_time=recorded_ct)
+        started = datetime.fromisoformat(current.data["started_at"]) - timedelta(seconds=5)
+        current.data["started_at"] = started.isoformat()
+        payload = (json.dumps(current.data) + "\n").encode("utf-8")
+        update_receipt._run_file(update_receipt._receipt_dir(), current.data).write_bytes(payload)
+        update_receipt._write_latest(payload)
+        update_receipt._current.set(None)
+
+        assert release_dead_fetch_locks(repo) == ([str(lock)] if released else [])
+        assert lock.exists() is not released
+
+
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
 def test_a_killed_fetchs_ref_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_path: Path) -> None:
     """A fetch killed inside its ref transaction strands ``refs/remotes/origin/main.lock`` and git
@@ -706,8 +737,8 @@ def test_a_killed_fetchs_ref_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_
 
 # ---- a killed shallow fetch's shallow.lock (installer checkouts are `--depth 1`) ----
 
-# Upload-pack's pack-objects hook (honored from global config only) runs after the server sent
-# its shallow-info, so the client already holds shallow.lock: the kill lands in the pack transfer.
+# Upload-pack's pack-objects hook (honored from global config only) marks the server-side pack
+# transfer; the client creates shallow.lock independently, so wait for both before killing it.
 _HOLD_IN_PACK_TRANSFER = """#!/bin/sh
 : > "{held}"
 while [ ! -e "{release}" ]; do sleep 0.05; done
@@ -746,7 +777,7 @@ def test_a_killed_shallow_fetchs_shallow_lock_goes_and_the_next_fetch_lands(repo
     try:
         def reached_pack_transfer() -> bool:
             assert proc.poll() is None, f"the fetch exited early: {err.read_text(encoding='utf-8')}"
-            return held.exists()
+            return held.exists() and lock.exists()
 
         wait_until(reached_pack_transfer, timeout=30, what="the fetch reaching its pack transfer")
         assert lock.exists(), "premise: the shallow fetch holds shallow.lock"

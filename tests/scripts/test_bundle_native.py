@@ -506,6 +506,25 @@ def test_staged_cache_keeps_wheel_entries_as_links(tmp_path):
 
 
 @pytest.mark.platforms("posix")
+def test_staged_cache_rebases_absolute_wheel_links_into_the_payload(tmp_path):
+    cache = tmp_path / "cache"
+    bucket = cache / "archive-v0" / "bucket"
+    (bucket / "pkg").mkdir(parents=True)
+    (bucket / "pkg" / "__init__.py").write_text("shipped = True\n", encoding="utf-8")
+    wheel = cache / "wheels-v6" / "index" / "hash" / "pkg"
+    wheel.mkdir(parents=True)
+    os.symlink(bucket, wheel / "1.0-py3-none-any")
+
+    shipped = tmp_path / "payload" / "uv-cache"
+    native.stage_uv_cache(cache, shipped)
+
+    link = shipped / "wheels-v6" / "index" / "hash" / "pkg" / "1.0-py3-none-any"
+    assert link.is_symlink() and not os.path.isabs(os.readlink(link))
+    assert link.resolve() == (shipped / "archive-v0" / "bucket").resolve()
+    assert (link / "pkg" / "__init__.py").read_text(encoding="utf-8") == "shipped = True\n"
+
+
+@pytest.mark.platforms("posix")
 def test_cache_files_the_venv_holds_byte_for_byte_ship_as_links_into_it(tmp_path):
     payload = tmp_path / "payload"
     site = payload / "venv" / "lib" / "python3.14" / "site-packages"
@@ -719,10 +738,12 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
         # or built: a per-install venv rebuild must not depend on network
         # reachability for any package the payload already shipped.
         assert any(shipped.rglob("wheel_proof*")), "downloadable wheels ship in the full cache"
-        # uv's wheel entries are links into archive-v0/ (POSIX); each ships as the same link.
+        # uv's wheel entries keep their cache-internal target; absolute source links are
+        # rebased so the sealed payload never points back into the build machine's cache.
         for link in (path for path in cache.rglob("*") if path.is_symlink()):
             copy = shipped / link.relative_to(cache)
-            assert copy.is_symlink() and os.readlink(copy) == os.readlink(link), copy
+            assert copy.is_symlink(), copy
+            assert copy.resolve() == shipped / link.resolve().relative_to(cache), copy
         # The payload prunes its cache to the lock after staging; the rebuild below reads that.
         native.prune_uv_cache_to_lock(shipped, project)
 

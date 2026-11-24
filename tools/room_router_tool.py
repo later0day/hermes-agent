@@ -243,6 +243,15 @@ ROUTE_TO_MEMBER_SCHEMA = {
     },
 }
 
+def _route_to_member_tool(args: dict[str, Any]) -> str:
+    """Adapt the registry's argument mapping to the public routing helper."""
+    return route_to_member(
+        member=args.get("member"),
+        reason=args.get("reason", ""),
+        is_new_topic=args.get("is_new_topic", False),
+    )
+
+
 # Register route_to_member into the tool registry so
 # registry.get_definitions({'route_to_member'}) returns its schema.
 # Without this, _compute_tool_definitions finds the tool name via
@@ -254,7 +263,7 @@ _registry.register(
     name="route_to_member",
     toolset="room_observer",
     schema=ROUTE_TO_MEMBER_SCHEMA,
-    handler=route_to_member,
+    handler=_route_to_member_tool,
     check_fn=None,
     is_async=False,
     description="Route a room message to a member profile (observer-only).",

@@ -47,8 +47,8 @@ async def test_a_timeout_keeps_the_answer_already_locked(tmp_path, monkeypatch):
     monkeypatch.setattr(clarify_gateway, 'get_clarify_timeout', lambda: 1)
     out, peer = await _locked_then(tmp_path, monkeypatch, lambda *a: None)
     assert out == {'answers': {'q0': 'blue'}, 'outcome': 'timed_out'}, out
-    # The open cards still close.
-    assert any(f.get('params', {}).get('type') == 'request.cancel' for f in peer.frames)
+    # The open cards still close; fanout delivers them on its bounded writer thread.
+    await _wait_for(lambda: any(f.get('params', {}).get('type') == 'request.cancel' for f in peer.frames))
 
 
 @pytest.mark.asyncio

@@ -312,6 +312,8 @@ def _passes_filter(event: dict[str, Any], member_filter: str | None) -> bool:
 def claim_unseen_room_events(
     db_path: Path | str,
     *,
+    store,
+    placement: str,
     room_id: str,
     platform: str,
     chat_id: str,
@@ -342,7 +344,8 @@ def claim_unseen_room_events(
             member_filter = row["member_filter"]
             try:
                 page = hosted_rooms.read_events(
-                    db_path,
+                    store,
+                    placement=placement,
                     room_id=room_id,
                     since_seq=old_cursor,
                     limit=hosted_rooms.MAX_LOG_LIMIT,

@@ -94,6 +94,23 @@ def test_current_sibling_untouched(monkeypatch, tmp_path):
     assert (sibling / "config.yaml").read_bytes() == before
 
 
+def test_current_sibling_runs_stamp_independent_migrations(monkeypatch, tmp_path):
+    active = _write_profile(tmp_path / "profiles", "active", _latest_version())
+    sibling = _write_profile(tmp_path / "profiles", "work", _latest_version())
+    config_path = sibling / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["mcp_servers"] = {"legacy": {"command": "/bin/true", "disabled": True}}
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    _setup(monkeypatch, tmp_path, active)
+
+    migrated = update_cmd._migrate_sibling_profile_configs()
+
+    assert migrated == [("work", _latest_version(), _latest_version())]
+    on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert on_disk["mcp_servers"]["legacy"]["enabled"] is False
+    assert "disabled" not in on_disk["mcp_servers"]["legacy"]
+
+
 def test_unconfigured_profile_skipped(monkeypatch, tmp_path):
     active = _write_profile(tmp_path / "profiles", "active", _latest_version())
     bare = tmp_path / "profiles" / "empty"

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -222,58 +222,54 @@ it('keeps the caption and its image token in the composer when the pending-input
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
   const path = join(h.home, 'shot.png')
   writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
-  const journal = join(h.home, 'tui-pending-inputs')
-  mkdirSync(journal, { recursive: true })
+  const save = vi.spyOn(pendingInputs, 'savePendingInput')
 
   try {
     await h.submit(`/image ${path}`)
     await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
-    chmodSync(journal, 0o500)
+    save.mockImplementationOnce(() => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }) })
     await h.submit('caption [[ Image 1 ]]')
     expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false)
     expect(h.composer.state.input).toBe('caption [[ Image 1 ]]')
     expect(h.composer.refs.tokensRef.current).toEqual([expect.objectContaining({ kind: 'image', mime: 'image/png' })])
     expect(getUiState().status).toBe('input not saved')
-    chmodSync(journal, 0o700)
     await h.submit('caption [[ Image 1 ]]')
     await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
     expect(h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments).toHaveLength(1)
-  } finally { chmodSync(journal, 0o700); h.close() }
+  } finally { save.mockRestore(); h.close() }
 })
 
 it('keeps `/queue` text in the composer until the pending-input journal holds it', async () => {
   const h = mount(true)
-  const journal = join(h.home, 'tui-pending-inputs')
-  mkdirSync(journal, { recursive: true })
+  const save = vi.spyOn(pendingInputs, 'savePendingInput').mockImplementationOnce(() => {
+    throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+  })
 
   try {
-    chmodSync(journal, 0o500)
     await h.submit('/queue later please')
     expect(h.composer.state.input).toBe('/queue later please')
     expect(h.composer.refs.queueRef.current).toEqual([])
     expect(getUiState().status).toBe('input not saved')
-    chmodSync(journal, 0o700)
     await h.submit('/queue later please')
     expect(h.composer.state.input).toBe('')
     expect(h.composer.refs.queueRef.current.map(item => item.text)).toEqual(['later please'])
-  } finally { chmodSync(journal, 0o700); h.close() }
+  } finally { save.mockRestore(); h.close() }
 })
 
 it('a failed attempt write leaves the queue head claimable instead of wedged in flight', async () => {
   const h = mount(true)
-  const journal = join(h.home, 'tui-pending-inputs')
+  const save = vi.spyOn(pendingInputs, 'savePendingInput')
 
   try {
     h.composer.actions.enqueue('later please')
-    chmodSync(journal, 0o500)
+    save.mockImplementationOnce(() => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }) })
     expect(h.composer.actions.dequeue()).toBeUndefined()
     expect(h.composer.refs.queueRef.current[0]).toMatchObject({ text: 'later please' })
     expect(h.composer.refs.queueRef.current[0]!.inFlight).toBeFalsy()
-    chmodSync(journal, 0o700)
     const claimed = h.composer.actions.dequeue()
     expect(claimed).toMatchObject({ text: 'later please', inFlight: true })
     expect(typeof claimed!.settle).toBe('function')
-  } finally { chmodSync(journal, 0o700); h.close() }
+  } finally { save.mockRestore(); h.close() }
 })
 
 it('`/queue` with an image journals its attachment in the first durable write', async () => {

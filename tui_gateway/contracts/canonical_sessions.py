@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import RootModel
 
 from .base import JsonValue, Params, Result
-from .common import ProfileParams, TranscriptMessage
+from .common import CanonicalClientIdentity, ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
 from .sessions import OpenRequestEntry, TodoState
 from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
@@ -17,14 +17,6 @@ from .registry import canonical_method
 
 class CanonicalSessionParams(ProfileParams):
     session_id: str
-
-
-class CanonicalClientIdentity(Params):
-    """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
-    printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``)."""
-
-    name: str
-    version: str | None = None
 
 
 class CanonicalCreateParams(ProfileParams):
@@ -113,6 +105,13 @@ class CanonicalPendingPrompt(Result):
     choices: list[str]
     command: str | None = None
     description: str | None = None
+    # The prompt envelope's ``kind`` is approval/clarify; this is the approval card's kind.
+    approval_kind: Literal['command', 'access', 'network'] | None = None
+    path: str | None = None
+    access: Literal['read', 'read_write'] | None = None
+    host: str | None = None
+    label: str | None = None
+    risk: str | None = None
     edit: dict[str, JsonValue] | None = None
     question: str | None = None
     multi_select: bool | None = None
@@ -182,7 +181,7 @@ class CanonicalListParams(ProfileParams):
     title: str | None = None
     include_hidden: bool = False
     # Only conversations of this folder, judged on each conversation's first row by the classic CLI's
-    # ``hermes -c`` rule (``hermes_state_sessions.workspace_key``): its git repo root equals this, or
+    # ``hermes -c`` rule (``persistence.conversation.sessions.workspace_key``): its git repo root equals this, or
     # (no root recorded) its cwd is this folder or under it. Pass the caller's repo root (else its cwd).
     workspace: str | None = None
     # Each row also carries the picker fields below (off by default: a live-list poll does not pay for them).
@@ -330,6 +329,8 @@ class CanonicalCorrectionResult(RootModel):
 class CanonicalApprovalParams(CanonicalControlParams):
     prompt_id: str
     choice: str
+    # Folder/site denials only; PendingControls refuses this field for command approvals.
+    reason: str | None = None
 
 
 class CanonicalEventsParams(CanonicalSessionParams):

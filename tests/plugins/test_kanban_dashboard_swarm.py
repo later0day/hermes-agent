@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def test_kanban_board_payload_includes_history_and_swarm_graph(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
@@ -11,10 +9,11 @@ def test_kanban_board_payload_includes_history_and_swarm_graph(tmp_path, monkeyp
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
 
     from hermes_cli import kanban_db, kanban_swarm
+    from hermes_cli.kanban_db_connect import connect
     from plugins.kanban.dashboard import plugin_api
 
     kanban_db.init_db()
-    conn = kanban_db.connect()
+    conn = connect()
     try:
         root_id = kanban_db.create_task(
             conn,
@@ -81,10 +80,11 @@ def test_kanban_board_payload_includes_full_swarm_topology(tmp_path, monkeypatch
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
 
     from hermes_cli import kanban_db, kanban_swarm
+    from hermes_cli.kanban_db_connect import connect
     from plugins.kanban.dashboard import plugin_api
 
     kanban_db.init_db()
-    conn = kanban_db.connect()
+    conn = connect()
     try:
         created = kanban_swarm.create_swarm(
             conn,
@@ -135,17 +135,53 @@ def test_kanban_board_payload_includes_full_swarm_topology(tmp_path, monkeypatch
     }
 
 
-def test_dashboard_swarm_graph_reuses_board_payload_and_task_drawer():
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    css = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
-    js = bundle.read_text(encoding="utf-8")
-    styles = css.read_text(encoding="utf-8")
+def test_kanban_board_payload_uses_latest_topology_and_returns_multiple_swarms(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
 
-    assert "function SwarmGraphStrip(props)" in js
-    assert "function collectSwarmGraphs(boardData)" in js
-    assert "boardData.swarm_graphs" in js
-    assert "h(SwarmGraphStrip, {" in js
-    assert "onClick: function () { props.onOpen(node.id); }" in js
-    assert ".hermes-kanban-swarms" in styles
-    assert ".hermes-kanban-swarm-node--running" in styles
+    from hermes_cli import kanban_db, kanban_swarm
+    from hermes_cli.kanban_db_connect import connect
+    from plugins.kanban.dashboard import plugin_api
+
+    kanban_db.init_db()
+    conn = connect()
+    try:
+        first = kanban_swarm.create_swarm(
+            conn,
+            goal="Original goal",
+            workers=[kanban_swarm.SwarmWorkerSpec(profile="coder", title="First worker", body="Work")],
+            verifier_assignee="qa",
+            synthesizer_assignee="lead",
+            created_by="lead",
+        )
+        second = kanban_swarm.create_swarm(
+            conn,
+            goal="Second goal",
+            workers=[kanban_swarm.SwarmWorkerSpec(profile="coder", title="Second worker", body="Work")],
+            verifier_assignee="qa",
+            synthesizer_assignee="lead",
+            created_by="lead",
+        )
+        kanban_swarm.post_blackboard_update(
+            conn,
+            first.root_id,
+            author="lead",
+            key="topology",
+            value=first.as_dict() | {"goal": "Updated goal"},
+        )
+    finally:
+        conn.close()
+
+    payload = plugin_api.get_board(
+        tenant=None,
+        include_archived=False,
+        board=None,
+        workflow_template_id=None,
+        current_step_key=None,
+    )
+
+    graphs = {graph["root_id"]: graph for graph in payload["swarm_graphs"]}
+    assert set(graphs) == {first.root_id, second.root_id}
+    assert graphs[first.root_id]["goal"] == "Updated goal"
+    assert graphs[second.root_id]["goal"] == "Second goal"

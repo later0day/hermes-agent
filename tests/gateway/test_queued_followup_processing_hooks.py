@@ -357,6 +357,7 @@ async def test_fifo_depth_limit_preserves_every_accepted_message(monkeypatch, tm
             return {"final_response": f"done-{message}", "messages": [], "api_calls": 1}
 
     _install_fake_agent(monkeypatch, tmp_path, BlockingFirstAgent)
+    monkeypatch.setattr("gateway.delivery_ledger.ledger_enabled", lambda config=None: False)
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
     turns = []

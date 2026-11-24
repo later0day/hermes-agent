@@ -41,11 +41,18 @@ export function observeCanonicalAdmissions(observer: (admissionId: string, statu
 export function canonicalPromptParams(kind: unknown, sessionId: string, prompt: Record<string, unknown>): Record<string, unknown> {
   const choices = Array.isArray(prompt.choices) ? prompt.choices : []
 
-  return kind === 'clarify'
-    ? { session_id: sessionId, answers: prompt.answers,
-        questions: Array.isArray(prompt.questions) ? prompt.questions : [{ qid: prompt.prompt_id, question: prompt.question, choices, multi_select: prompt.multi_select }] }
-    : { session_id: sessionId, request_id: prompt.prompt_id, command: prompt.command, description: prompt.description, choices,
-        allow_permanent: choices.includes('always'), edit: prompt.edit }
+  if (kind === 'clarify') {
+    return { session_id: sessionId, answers: prompt.answers,
+      questions: Array.isArray(prompt.questions) ? prompt.questions : [{ qid: prompt.prompt_id, question: prompt.question, choices, multi_select: prompt.multi_select }] }
+  }
+
+  const approval = { session_id: sessionId, request_id: prompt.prompt_id, command: prompt.command, description: prompt.description, choices,
+    allow_permanent: choices.includes('always'), edit: prompt.edit }
+
+  return prompt.approval_kind === 'access' || prompt.approval_kind === 'network'
+    ? { ...approval, kind: prompt.approval_kind, path: prompt.path, access: prompt.access,
+        host: prompt.host, label: prompt.label, risk: prompt.risk }
+    : approval
 }
 
 // Only the authenticated adapter can establish this renderer-side provenance;
@@ -567,8 +574,12 @@ export class CanonicalDesktopProtocol {
     }
 
     const field = method === 'approval.respond' ? 'choice' : 'answer'
+    const reason = method === 'approval.respond' && (prompt.approval_kind === 'access' || prompt.approval_kind === 'network') &&
+      params.choice === 'deny' && typeof params.reason === 'string' && params.reason.trim()
+      ? { reason: params.reason.trim() }
+      : {}
 
-    return { session_id: sessionId, execution_generation: prompt.execution_generation, prompt_id: id, [field]: params[field] }
+    return { session_id: sessionId, execution_generation: prompt.execution_generation, prompt_id: id, [field]: params[field], ...reason }
   }
 
   private reconcileUnknownAdmissions(sid: string, profile: string, pending: Array<Record<string, unknown>>): void {

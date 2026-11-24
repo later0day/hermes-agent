@@ -15,7 +15,6 @@ lost attempt:
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from pathlib import Path
 
@@ -26,6 +25,8 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_owner_recovery
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_admission, seed_session
 
 NOW = int(time.time())
 HOST = kb._claimer_id().split(":", 1)[0]
@@ -51,20 +52,17 @@ def board(tmp_path, monkeypatch):
     kb.init_db()
     conn = kbc.connect()
     ledger = tmp_path / "state.db"
-    with sqlite3.connect(ledger) as store:
-        store.execute(
-            "CREATE TABLE session_admissions "
-            "(target_session_id TEXT, request_id TEXT, status TEXT, outcome TEXT)"
-        )
-    scratch = _Board(conn, ledger)
-    yield scratch
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as store:
+        seed_session(store, "sess-1", "cli")
+        yield _Board(conn, ledger, store)
     conn.close()
 
 
 class _Board:
-    def __init__(self, conn, ledger: Path):
+    def __init__(self, conn, ledger: Path, store):
         self.conn = conn
         self.ledger = ledger
+        self.store = store
 
     # --- seeding ----------------------------------------------------------------------
     def running(
@@ -100,9 +98,7 @@ class _Board:
                        {"db": str(self.ledger), "session_id": "sess-1", "pid": owner_pid or _absent_pid(base=3_950_000),
                         "request_id": request_id}, started + 3)
             if admission:
-                with sqlite3.connect(self.ledger) as store:
-                    store.execute("INSERT INTO session_admissions VALUES ('sess-1', ?, ?, ?)",
-                                  (request_id, admission[0], admission[1]))
+                seed_admission(self.store, "sess-1", request_id, *admission)
         if worker_lost:
             self.event(tid, run_id, "worker_lost",
                        {"reason": worker_lost, "claim_lock": lock, "run_id": run_id,
@@ -273,17 +269,24 @@ async def test_the_owner_records_the_loss_on_the_board_and_one_tick_disposes_of_
     """Through the gateway's loss handler: a Stop, a superseded generation or a cancellation
     records nothing; a real loss leaves one worker_lost event that the next tick books."""
     import asyncio
-    from types import SimpleNamespace
+    from types import MethodType, SimpleNamespace
+    from gateway.run import GatewayRunner
     from gateway.session_managed_worker import _record_lost_attempt
     run_id = board.running("t_owner", claim_expires_in=900, heartbeat_age=30)
     policy = _owner_policy(board, "t_owner", run_id)
-    authority = SimpleNamespace()
-    for exc, reason in [(RuntimeError(), "managed_worker_stopped"), (RuntimeError(), "stale_generation"),
-                        (asyncio.CancelledError(), "CancelledError"),
-                        (RuntimeError(), "managed_worker_failed")]:
-        recording = _record_lost_attempt(authority, policy, exc, reason, None)
-        if recording is not None:
-            await recording
+    runner = SimpleNamespace()
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SimpleNamespace(runner=runner)
+    try:
+        for exc, reason in [(RuntimeError(), "managed_worker_stopped"), (RuntimeError(), "stale_generation"),
+                            (asyncio.CancelledError(), "CancelledError"),
+                            (RuntimeError(), "managed_worker_failed")]:
+            recording = _record_lost_attempt(authority, policy, exc, reason, None)
+            if recording is not None:
+                await recording
+    finally:
+        GatewayRunner._shutdown_executor(runner, drain_timeout=2)
     events = [json.loads(r[0]) for r in board.conn.execute(
         "SELECT payload FROM task_events WHERE task_id='t_owner' AND kind='worker_lost'")]
     assert [e["reason"] for e in events] == ["managed_worker_failed"]

@@ -12,14 +12,17 @@
  *    the turn completes; transcript oracle holds.
  *  - approval (deny): the command never runs; the turn still completes (no
  *    wedged busy state); transcript oracle holds.
+ *  - folder/site: a real plugin tool waits on the generic gateway queue; the
+ *    card's target and answer round-trip without renderer-request injection.
  */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 
 import {
+  composer,
   coreAppEnv,
   createCoreSandbox,
   currentSessionId,
@@ -72,7 +75,6 @@ test('clarify and approval prompts round-trip exactly once', async () => {
   const finished = (marker: string, step = 0) =>
     expect
       .poll(() => provider.completions.some(c => c.marker === marker && c.step === step && c.finished), {
-        timeout: 120_000,
         message: `provider finished ${marker} step ${step}`
       })
       .toBe(true)
@@ -97,7 +99,7 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       ])
       await send(page, `${U(1)} ask me`, 'Enter', ws)
       const openForms = page.locator('form[data-clarify-choices], form[data-clarify-batch]').filter({ visible: true })
-      await expect(openForms).toHaveCount(1, { timeout: 120_000 })
+      await expect(openForms).toHaveCount(1)
       await expect(viewport(page).getByText(question)).toHaveCount(1)
 
       // Switching away must not settle a question whose tool is still waiting.
@@ -142,7 +144,7 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       ])
       await send(page, `${U(2)} delete run dir`, 'Enter', ws)
       const run = page.locator('[data-approval-run]').filter({ visible: true })
-      await expect(run).toHaveCount(1, { timeout: 120_000 })
+      await expect(run).toHaveCount(1)
       expect(fs.existsSync(victim), 'gated command must not run before approval').toBe(true)
       await run.click()
       await finished(U(2), 1)
@@ -164,7 +166,7 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       ])
       await send(page, `${U(3)} delete deny dir`, 'Enter', ws)
       const deny = page.locator('[data-approval-deny]').filter({ visible: true })
-      await expect(deny).toHaveCount(1, { timeout: 120_000 })
+      await expect(deny).toHaveCount(1)
       await deny.click()
       await finished(U(3), 1)
       expect(fs.existsSync(victim), 'denied command never ran').toBe(true)
@@ -172,6 +174,187 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       await expect(page.locator('[data-approval-deny]').filter({ visible: true })).toHaveCount(0)
       session.expectUserMarkers.push(U(3))
       await assertTranscriptOracle(page, ws, provider, session, 'approval deny')
+    })
+  } finally {
+    await app.close().catch(() => undefined)
+    await provider.close()
+    sandbox.cleanup()
+  }
+})
+
+test('folder and site cards resolve the real gateway approval queue', async () => {
+  const provider = await startScriptedProvider()
+  const sandbox = createCoreSandbox('approval-kinds')
+  const pluginDir = path.join(sandbox.hermesHome, 'plugins', 'approval-kinds-e2e')
+  fs.mkdirSync(pluginDir, { recursive: true })
+  fs.copyFileSync(path.join(import.meta.dirname, 'approval-kinds-plugin.py'), path.join(pluginDir, '__init__.py'))
+  fs.copyFileSync(path.join(import.meta.dirname, 'approval-kinds-plugin.yaml'), path.join(pluginDir, 'plugin.yaml'))
+  writeProviderHome(sandbox.hermesHome, provider.url, 'plugins:\n  enabled:\n    - approval-kinds-e2e\n', 'manual')
+  const accountHome = path.join(sandbox.root, 'account-home')
+  fs.mkdirSync(accountHome)
+  const { app, page } = await launchCoreApp(coreAppEnv(sandbox, { HOME: accountHome }))
+  const ws = recordWebSockets(page)
+  const session: OracleTarget = { sessionId: '', expectUserMarkers: [] }
+
+  const finished = (marker: string, step = 0) =>
+    expect
+      .poll(() => provider.completions.some(c => c.marker === marker && c.step === step && c.finished), {
+        message: `provider finished ${marker} step ${step}`
+      })
+      .toBe(true)
+
+  const completion = (marker: string, step: number) =>
+    provider.completions.find(c => c.marker === marker && c.step === step)
+
+  const decision = (marker: string) => {
+    const messages: any[] = completion(marker, 1)?.body?.messages ?? []
+    const result = messages.find(m => m?.role === 'tool' && m?.tool_call_id === `call_core_${marker}_0_0`)
+    expect(result, 'the current approval tool result reached the model').toBeDefined()
+    return JSON.parse(typeof result.content === 'string' ? result.content : JSON.stringify(result.content))
+  }
+
+  const enterLeavesPending = async (marker: string, card: Locator) => {
+    const box = composer(page)
+    await box.click()
+    await expect(box).toHaveText('')
+    await box.press('Enter')
+    // Flush key handlers and their React work before checking that no answer escaped.
+    await page.evaluate(
+      () => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    )
+    await expect(card).toHaveCount(1)
+    expect(completion(marker, 1), 'global Enter did not finish the gated tool').toBeUndefined()
+  }
+
+  const expectNoCommandRun = async (card: Locator) => {
+    await expect(card.locator('[data-approval-run]')).toHaveCount(0)
+    await expect(card.getByRole('button', { name: /^Run/ })).toHaveCount(0)
+  }
+
+  try {
+    await waitForInteractive(app, page)
+    await installDuplicateSampler(page)
+
+    await test.step('read-only folder: Enter is inert, route re-entry preserves it, Allow returns once', async () => {
+      const marker = U(4)
+      const folder = `/srv/Project  Files-${nonce}`
+      const risk = `The agent can read but not change this folder (${nonce}).`
+      provider.script(marker, [
+        {
+          text: [`${AI(4)} `, 'needs ', 'folder ', 'access'],
+          toolCalls: [
+            { name: 'approval_kinds_e2e', args: { kind: 'access', access: 'read', path: folder, risk } }
+          ]
+        },
+        { text: [`${A(4)} `, 'folder ', 'allowed'] }
+      ])
+      await send(page, `${marker} request a read-only folder`, 'Enter', ws)
+      const card = page.locator('[data-approval-kind="access"]').filter({ visible: true })
+      await expect(card).toHaveCount(1)
+      await expect(page.locator('[data-approval-kind]').filter({ visible: true })).toHaveCount(1)
+      const target = card.locator('[data-slot="tool-approval-target"]')
+      await expect(target.locator('span.font-mono')).toHaveText(folder)
+      await expect(target).toContainText('Read only')
+      await expect(target).not.toContainText('Read and write')
+      await expect(card.locator('[data-slot="tool-approval-risk"]')).toHaveText(risk)
+      await expectNoCommandRun(card)
+
+      await enterLeavesPending(marker, card)
+      const waitingSession = await currentSessionId(page)
+      await page.evaluate(() => { window.location.hash = '#/' })
+      await expect.poll(() => currentSessionId(page)).toBe('')
+      await page.evaluate(id => { window.location.hash = `#/${id}` }, waitingSession)
+      await expect.poll(() => currentSessionId(page)).toBe(waitingSession)
+      await expect(card).toHaveCount(1)
+      await expect(target.locator('span.font-mono')).toHaveText(folder)
+      expect(completion(marker, 1), 'route re-entry did not answer the queue entry').toBeUndefined()
+
+      await card.getByRole('button', { name: 'Allow', exact: true }).click()
+      await finished(marker, 1)
+      expect(decision(marker), 'the real queue decision reached the scripted model').toEqual({
+        choice: 'once',
+        kind: 'access',
+        reason: null,
+        resolved: true
+      })
+      await expect(card).toHaveCount(0)
+      session.sessionId = waitingSession
+      session.expectUserMarkers.push(marker)
+      await assertTranscriptOracle(page, ws, provider, session, 'read-only folder approval')
+    })
+
+    await test.step('read-write folder: Deny returns the trimmed reason', async () => {
+      const marker = U(5)
+      const folder = `/srv/Shared  Output-${nonce}`
+      const risk = `The agent can change and delete files in this folder (${nonce}).`
+      const reason = `Not this folder ${nonce}`
+      provider.script(marker, [
+        {
+          text: [`${AI(5)} `, 'needs ', 'write ', 'access'],
+          toolCalls: [
+            { name: 'approval_kinds_e2e', args: { kind: 'access', access: 'read_write', path: folder, risk } }
+          ]
+        },
+        { text: [`${A(5)} `, 'folder ', 'denied'] }
+      ])
+      await send(page, `${marker} request a read-write folder`, 'Enter', ws)
+      const card = page.locator('[data-approval-kind="access"]').filter({ visible: true })
+      await expect(card).toHaveCount(1)
+      await expect(page.locator('[data-approval-kind]').filter({ visible: true })).toHaveCount(1)
+      const target = card.locator('[data-slot="tool-approval-target"]')
+      await expect(target.locator('span.font-mono')).toHaveText(folder)
+      await expect(target).toContainText('Read and write')
+      await expect(target).not.toContainText('Read only')
+      await expect(card.locator('[data-slot="tool-approval-risk"]')).toHaveText(risk)
+      await expectNoCommandRun(card)
+
+      await card.getByRole('button', { name: 'Deny', exact: true }).click()
+      const reasonInput = card.getByRole('textbox', { name: 'Reason for denying' })
+      await reasonInput.fill(`  ${reason}  `)
+      await reasonInput.press('Enter')
+      await finished(marker, 1)
+      expect(decision(marker), 'the denial and trimmed reason reached the scripted model').toEqual({
+        choice: 'deny',
+        kind: 'access',
+        reason,
+        resolved: true
+      })
+      await expect(card).toHaveCount(0)
+      session.expectUserMarkers.push(marker)
+      await assertTranscriptOracle(page, ws, provider, session, 'read-write folder denial')
+    })
+
+    await test.step('site: exact host and risk, Enter is inert, Allow returns once', async () => {
+      const marker = U(6)
+      const host = `downloads-${nonce}.example`
+      const risk = `Any program in the sandbox can reach this host (${nonce}).`
+      provider.script(marker, [
+        {
+          text: [`${AI(6)} `, 'needs ', 'site ', 'access'],
+          toolCalls: [{ name: 'approval_kinds_e2e', args: { kind: 'network', host, risk } }]
+        },
+        { text: [`${A(6)} `, 'site ', 'allowed'] }
+      ])
+      await send(page, `${marker} request a site`, 'Enter', ws)
+      const card = page.locator('[data-approval-kind="network"]').filter({ visible: true })
+      await expect(card).toHaveCount(1)
+      await expect(page.locator('[data-approval-kind]').filter({ visible: true })).toHaveCount(1)
+      await expect(card.locator('[data-slot="tool-approval-target"] span.font-mono')).toHaveText(host)
+      await expect(card.locator('[data-slot="tool-approval-risk"]')).toHaveText(risk)
+      await expectNoCommandRun(card)
+
+      await enterLeavesPending(marker, card)
+      await card.getByRole('button', { name: 'Allow', exact: true }).click()
+      await finished(marker, 1)
+      expect(decision(marker), 'the real site queue decision reached the scripted model').toEqual({
+        choice: 'once',
+        kind: 'network',
+        reason: null,
+        resolved: true
+      })
+      await expect(card).toHaveCount(0)
+      session.expectUserMarkers.push(marker)
+      await assertTranscriptOracle(page, ws, provider, session, 'site approval')
     })
   } finally {
     await app.close().catch(() => undefined)

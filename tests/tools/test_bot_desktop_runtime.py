@@ -377,27 +377,33 @@ def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runt
     import fcntl
 
     scratch = in_process_runtime
-    # X lock at once, env file only much later: the lock must be free in between.
+    gate = scratch / "xlocks" / "allow-ready"
+    # Publication stays gated until the probe finishes, so a start that holds the allocation
+    # lock through bring-up cannot pass merely by becoming ready during a later polling attempt.
     (scratch / "launcher.sh").write_text(
         '#!/usr/bin/env bash\necho $$ > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"\n'
-        'sleep 1.5\n: > "$HERMES_BD_SOCKET"\nprintf \'DISPLAY=:%s\\n\' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"\nsleep 30\n',
+        'while [ ! -e "$HERMES_BD_XLOCK_DIR/allow-ready" ]; do sleep 0.05; done\n'
+        ': > "$HERMES_BD_SOCKET"\nprintf \'DISPLAY=:%s\\n\' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"\nsleep 30\n',
         encoding="utf-8")
     seen: dict = {}
 
     def probe():
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            if list((scratch / "xlocks").glob(".X*-lock")):
-                time.sleep(0.2)  # let start() notice the claim
-                with open(scratch / "alloc.lock", "a+", encoding="utf-8") as fh:
-                    try:
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        seen["free"] = True
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-                    except OSError:
-                        seen["free"] = False
-                return
-            time.sleep(0.05)
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if list((scratch / "xlocks").glob(".X*-lock")):
+                    with open(scratch / "alloc.lock", "a+", encoding="utf-8") as fh:
+                        try:
+                            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            seen["free"] = True
+                            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                            return
+                        except OSError:
+                            pass
+                time.sleep(0.05)
+            seen["free"] = False
+        finally:
+            gate.touch()
 
     t = threading.Thread(target=probe)
     t.start()

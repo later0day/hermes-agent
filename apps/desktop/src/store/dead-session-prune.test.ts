@@ -143,6 +143,20 @@ describe('__runDeadSessionPrunePass', () => {
     expect(getQueuedPrompts('live-queue-session')).toHaveLength(1)
   })
 
+  it("never prunes a new chat's queue: its first message waits there while the profile's backend restarts", async () => {
+    // A new chat's queue is keyed by its fresh draft scope, not by a session id: probed by id, every backend
+    // that answers says "session not found". A first message held for a restart (use-composer-submit) waits
+    // under that key until the backend is back and the message has been sent.
+    $sessions.set([row('unrelated')])
+    enqueueQueuedPrompt('__new__:7759f487', { text: 'a first message', attachments: [] })
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(getQueuedPrompts('__new__:7759f487').map(entry => entry.text)).toEqual(['a first message'])
+    expect(getSessionMock).not.toHaveBeenCalledWith('__new__:7759f487', undefined)
+  })
+
   it('skips ids already covered by loaded sidebar rows', async () => {
     $sessions.set([row('covered', { _lineage_root_id: 'root-covered' })])
     $pinnedSessionIds.set(['covered', 'root-covered', 'rowless-pin'])
@@ -289,6 +303,7 @@ describe('watchDeadSessionPrune', () => {
 
   it('clamps the debounce so list churn cannot starve the sweep', async () => {
     vi.useFakeTimers()
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
     const unsubscribe = watchDeadSessionPrune()
 
     try {
@@ -301,7 +316,9 @@ describe('watchDeadSessionPrune', () => {
       $sessions.set([row('a')])
       vi.advanceTimersByTime(1_000)
       $sessions.set([row('a'), row('b')])
-      expect(vi.getTimerCount()).toBe(1)
+      // jsdom schedules its own zero-delay storage-event timers; only the prune delays are this contract.
+      const pruneDelays = setTimeoutSpy.mock.calls.map(([, delay]) => delay).filter(delay => delay === 2_000 || delay === 5_000)
+      expect(pruneDelays).toEqual([2_000])
 
       vi.advanceTimersByTime(1_000)
       await vi.runOnlyPendingTimersAsync()
@@ -310,6 +327,7 @@ describe('watchDeadSessionPrune', () => {
       expect(vi.getTimerCount()).toBe(0)
     } finally {
       unsubscribe()
+      setTimeoutSpy.mockRestore()
       vi.useRealTimers()
     }
   })

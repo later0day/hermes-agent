@@ -1,8 +1,8 @@
-import { configure } from '@testing-library/react'
-import { afterEach } from 'vitest'
+import { cleanup, configure } from '@testing-library/react'
+import { afterAll, afterEach, vi } from 'vitest'
 
 import { clearPlaybackSourceCache } from './src/lib/playback-source-cache'
-import { InertResizeObserver } from './src/test/jsdom'
+import { drainDeferredDomEvents, InertResizeObserver } from './src/test/jsdom'
 
 // Shared tooltips measure their arrow through Radix's useSize hook.
 // Geometry assertions still belong in a real browser, not this inert observer. Assigned,
@@ -84,3 +84,11 @@ configure({ asyncUtilTimeout: 12_000 })
 // Resolved stream URLs outlive a mount on purpose; a test file reusing one path must not
 // inherit the previous case's source.
 afterEach(() => clearPlaybackSourceCache())
+
+afterAll(async () => {
+  cleanup()
+
+  if (vi.isFakeTimers()) {return}
+  // Keep Radix's deferred unmount focus event inside this jsdom lifetime.
+  await drainDeferredDomEvents()
+})

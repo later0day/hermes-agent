@@ -20,6 +20,7 @@ from gateway.session import SessionSource
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from hermes_cli.profiles import write_profile_meta
 from hermes_constants import get_hermes_home
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture
@@ -30,15 +31,16 @@ def team_home(tmp_path, monkeypatch):
         (home / "profiles" / name).mkdir(parents=True)
         (home / "profiles" / name / "config.yaml").write_text("{}\n", encoding="utf-8")
         write_profile_meta(home / "profiles" / name, description=desc)
-    db = tmp_path / "shared.db"
+    store = storage_handle(tmp_path)
     created = []
 
     def create_room(*, room_id, name, members):
-        room = hosted_rooms.create_room(db, room_id=room_id, name=name, members=members,
+        room = hosted_rooms.create_room(store, placement="shared", room_id=room_id, name=name, members=members,
                                         authority_gateway_id="g", now=1)
         created.append(room)
         return room
 
+    monkeypatch.setattr("tui_gateway.methods_groups._active_store", lambda: store)
     monkeypatch.setattr("tui_gateway.methods_groups.get_hosted_room_service",
                         lambda: SimpleNamespace(create_room=create_room))
     import gateway.slash_commands_room_plan as mixin

@@ -216,7 +216,7 @@ def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypa
 
 
 def test_external_worker_refuses_to_run_without_durable_ownership(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     from cron import scheduler
 
@@ -237,6 +237,9 @@ def test_external_worker_refuses_to_run_without_durable_ownership(
 
     run.assert_not_called()
     assert not ack.exists()
+    refusal = capsys.readouterr().err
+    assert "refused execution exec-1" in refusal
+    assert "durable ownership could not be established" in refusal
 
 
 def _stub_external_worker_launch(scheduler, monkeypatch):
@@ -282,6 +285,56 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     get = Mock(side_effect=lambda _execution_id: next(observed_statuses))
     monkeypatch.setattr(scheduler, "get_execution", get)
     return spawned, payloads, handoff, get
+
+
+def test_external_worker_captures_owning_profile_once_for_handoff_and_child(
+    tmp_path, monkeypatch
+):
+    from contextlib import nullcontext
+    from cron import scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    homes = [tmp_path / "first", tmp_path / "second", tmp_path / "third"]
+    reads = []
+
+    def next_home():
+        reads.append(homes[min(len(reads), len(homes) - 1)])
+        return reads[-1]
+
+    monkeypatch.setattr(scheduler, "_get_hermes_home", next_home)
+    monkeypatch.setattr(scheduler, "_fire_secret_scope", nullcontext)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, *, unit_suffix, require_restart_safe_scope=False: GatewayChildDispatch(
+            "scoped", ["scope", "--", *command]),
+    )
+    spawned, payloads, _, _ = _stub_external_worker_launch(scheduler, monkeypatch)
+    captured = {}
+
+    def build_env(**kwargs):
+        captured.update(kwargs)
+        return dict(kwargs["extra"])
+
+    monkeypatch.setattr("tools.environments.local.build_subprocess_env", build_env)
+    monkeypatch.setattr("tools.environments.local.strip_launch_profile_env", lambda env: env)
+
+    scheduler._launch_external_cron_worker(
+        {
+            "id": "job-profile",
+            "execution_id": "exec-1",
+            "prompt": "work",
+            "no_agent": True,
+            "script": "exit 0",
+            "workdir": str(tmp_path),
+            "deliver": "origin",
+        },
+    )
+
+    expected = str((tmp_path / "first").resolve())
+    assert payloads[0]["profile_home"] == expected
+    assert captured["extra"]["HERMES_HOME"] == expected
+    payload_path = Path(spawned[0][0][spawned[0][0].index("--external-worker-file") + 1])
+    assert payload_path.is_relative_to(tmp_path / "first" / "cron" / "external-workers")
 
 
 def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_probe(

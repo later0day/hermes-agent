@@ -174,6 +174,8 @@ def _errors_to_500(prefix: str) -> Iterator[None]:
 BOARD_COLUMNS: list[str] = list(kanban_workflow.DEFAULT_WORKFLOW.keys())
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+_SWARM_GRAPH_LIMIT = 8
+_SWARM_BLACKBOARD_PREFIX = "[swarm:blackboard] "
 
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
@@ -283,6 +285,107 @@ def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[d
     return rows
 
 
+def _latest_swarm_topology(conn: sqlite3.Connection, root_id: str) -> Any:
+    topology = None
+    for comment in kanban_db.list_comments(conn, root_id):
+        body = comment.body or ""
+        if not body.startswith(_SWARM_BLACKBOARD_PREFIX):
+            continue
+        try:
+            payload = json.loads(body[len(_SWARM_BLACKBOARD_PREFIX):])
+        except json.JSONDecodeError:
+            continue
+        if payload.get("key") == "topology":
+            topology = payload.get("value")
+    return topology
+
+
+def _swarm_graphs(conn: sqlite3.Connection, *, include_archived: bool = False) -> list[dict[str, Any]]:
+    """Return the latest blackboard topology for each recently active swarm root."""
+    root_rows = conn.execute(
+        """SELECT DISTINCT task_id FROM task_comments
+           WHERE body LIKE ? ORDER BY id DESC LIMIT ?""",
+        (_SWARM_BLACKBOARD_PREFIX + "%", _SWARM_GRAPH_LIMIT * 4),
+    ).fetchall()
+    graphs: list[dict[str, Any]] = []
+    seen_roots: set[str] = set()
+    for row in root_rows:
+        root_id = str(row["task_id"])
+        if root_id in seen_roots:
+            continue
+        seen_roots.add(root_id)
+        topology = _latest_swarm_topology(conn, root_id)
+        root_task = kanban_db.get_task(conn, root_id)
+        if not isinstance(topology, dict) or root_task is None:
+            continue
+        if root_task.status == "archived" and not include_archived:
+            continue
+
+        worker_ids = [str(tid) for tid in topology.get("worker_ids", []) if tid]
+        verifier_id = str(topology.get("verifier_id") or "")
+        synthesizer_id = str(topology.get("synthesizer_id") or "")
+        ordered_ids = list(dict.fromkeys(
+            tid for tid in [root_id, *worker_ids, verifier_id, synthesizer_id] if tid))
+        if len(ordered_ids) <= 1:
+            continue
+        summaries = kanban_db.latest_summaries(conn, ordered_ids)
+        run_starts = kanban_db.current_run_started_ats(conn, ordered_ids)
+        role_by_id = {root_id: "root", **{tid: "worker" for tid in worker_ids}}
+        if verifier_id:
+            role_by_id[verifier_id] = "verifier"
+        if synthesizer_id:
+            role_by_id[synthesizer_id] = "synthesizer"
+
+        nodes: list[dict[str, Any]] = []
+        status_counts: dict[str, int] = {}
+        for task_id in ordered_ids:
+            task = kanban_db.get_task(conn, task_id)
+            if task is None:
+                continue
+            status_counts[task.status] = status_counts.get(task.status, 0) + 1
+            task_d = _task_dict(task, latest_summary=summaries.get(task_id),
+                                current_run_started_at=run_starts.get(task_id))
+            task_d["swarm_role"] = role_by_id.get(task_id, "task")
+            nodes.append({"id": task_id, "role": role_by_id.get(task_id, "task"), "task": task_d})
+        if not nodes:
+            continue
+
+        existing_ids = [node["id"] for node in nodes]
+        placeholders = _placeholders(existing_ids)
+        edges = [{"parent_id": r["parent_id"], "child_id": r["child_id"]} for r in conn.execute(
+            f"""SELECT parent_id, child_id FROM task_links
+                WHERE parent_id IN ({placeholders}) AND child_id IN ({placeholders})
+                ORDER BY parent_id, child_id""",
+            tuple(existing_ids) + tuple(existing_ids)).fetchall()]
+        graph_status = "running"
+        if status_counts.get("blocked"):
+            graph_status = "blocked"
+        elif status_counts.get("running"):
+            graph_status = "running"
+        elif any(status_counts.get(s) for s in ("ready", "todo", "triage", "scheduled")):
+            graph_status = "active"
+        elif status_counts.get("done") == len(nodes):
+            graph_status = "done"
+        counts = {status: status_counts.get(status, 0) for status in (
+            "done", "blocked", "running", "ready", "todo", "triage", "scheduled", "archived")}
+        graphs.append({
+            "root_id": root_id,
+            "goal": str(topology.get("goal") or root_task.title or root_id),
+            "worker_ids": worker_ids,
+            "verifier_id": verifier_id or None,
+            "synthesizer_id": synthesizer_id or None,
+            "nodes": nodes, "edges": edges,
+            "counts": {"total": len(nodes), **counts}, "status": graph_status,
+            "created_at": root_task.created_at,
+            "updated_at": max(n["task"].get("completed_at") or n["task"].get("started_at")
+                              or n["task"].get("created_at") or 0 for n in nodes),
+        })
+        if len(graphs) >= _SWARM_GRAPH_LIMIT:
+            break
+    graphs.sort(key=lambda g: g.get("updated_at") or g.get("created_at") or 0, reverse=True)
+    return graphs
+
+
 # --- GET /board -------------------------------------------------------------
 
 def get_board(
@@ -337,6 +440,14 @@ def get_board(
         columns["done"].sort(key=lambda d: d["id"], reverse=True)
         columns["done"].sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
 
+        history_rows = conn.execute(
+            """SELECT * FROM tasks WHERE status IN ('done', 'archived')
+               ORDER BY COALESCE(completed_at, started_at, created_at) DESC,
+                        created_at DESC, id DESC LIMIT 12""").fetchall()
+        history_tasks = [kanban_db.Task.from_row(row) for row in history_rows]
+        history_summaries = kanban_db.latest_summaries(conn, [t.id for t in history_tasks])
+        history = [_task_dict(t, latest_summary=history_summaries.get(t.id)) for t in history_tasks]
+
         # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         # List of known assignees for the lane-by-profile sub-grouping.
@@ -348,7 +459,9 @@ def get_board(
         assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
-            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+            "assignees": assignees, "history": history,
+            "swarm_graphs": _swarm_graphs(conn, include_archived=include_archived),
+            "latest_event_id": int(latest_event_id), "now": int(time.time())}
 
 
 _read_board = coalesced_read(get_board)

@@ -189,7 +189,7 @@ class World:
             out.append("receipt: " + json.dumps({k: rec.get(k) for k in ("outcome", "status", "exit_code", "steps")
                                                  if k in rec}, default=str)[:3000])
         logs = self.sb.hermes_home / "logs"
-        for name in ("update.log", "errors.log"):
+        for name in ("install.log", "update.log", "errors.log"):
             p = logs / name
             if p.is_file():
                 out.append(f"--- {p} (tail)\n" + p.read_text(encoding="utf-8", errors="replace")[-3000:])
@@ -224,10 +224,9 @@ def world(root: Path, *, base: str, installer_ref: str | None = None,
             _preclone(sb, preclone, w.git_env())
         script = sb.root / "install.sh"
         script.write_text(installer_script(installer_ref), encoding="utf-8")
-        # The served repo publishes commits on main and no release tags: install main (N-1's
-        # installer ignores the variable and installs main anyway).
-        cp = sb.run(["bash", str(script), "--non-interactive"], timeout=1800, input="",
-                    env={**sb.env, "HERMES_INSTALL_CHANNEL": "main"})
+        # Root's default FHS layout is global; parallel worlds need their own documented install path.
+        cp = sb.run(["bash", str(script), "--non-interactive", "--dir", str(sb.checkout)],
+                    timeout=1800, input="", env={**sb.env, "HERMES_INSTALL_CHANNEL": "main"})
         assert cp.returncode == 0, f"install ({installer_ref or 'HEAD'} installer, base {base[:12]}) failed:\n{w.diag(cp)}"
         head = w.head()
         assert head == base, f"installer left HEAD at {head}, expected {base}\n{w.diag(cp)}"

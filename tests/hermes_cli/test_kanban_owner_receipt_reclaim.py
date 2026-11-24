@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -35,6 +34,9 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli import kanban_owner_recovery
 from hermes_cli.process_identity import worker_birth
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_admission, seed_session
 from hermes_cli.kanban_owner_recovery import (
     bound_interpreter_gone,
     owner_attempt_provably_over,
@@ -63,14 +65,12 @@ class _Board:
         kbc.init_db(self.path)
         self.conn = kbc.connect(self.path)
         self.ledger = root / "state.db"
-        with sqlite3.connect(self.ledger) as store:
-            store.execute(
-                "CREATE TABLE session_admissions "
-                "(target_session_id TEXT, request_id TEXT, status TEXT, outcome TEXT)"
-            )
+        self.store = open_persistence(profile_scope(home=root), eager=True)
+        seed_session(self.store, "sess-1", "cli")
 
     def close(self) -> None:
         self.conn.close()
+        self.store.close()
 
     # --- seeding --------------------------------------------------------------------------
     def dead_attempt(
@@ -118,9 +118,7 @@ class _Board:
                        {"pid": worker_pid, "claim_lock": lock, "started_at": worker_fingerprint},
                        started + 60)
         if admission:
-            with sqlite3.connect(self.ledger) as store:
-                store.execute("INSERT INTO session_admissions VALUES ('sess-1', ?, ?, ?)",
-                              (payload["request_id"], admission[0], admission[1]))
+            seed_admission(self.store, "sess-1", payload["request_id"], *admission)
         self.conn.commit()
         return run
 
@@ -204,6 +202,25 @@ def test_the_pause_still_holds_every_attempt_that_may_be_alive(board, shape):
     assert board.state("t_ghost")["status"] == "running"
 
 
+def test_a_started_admission_with_a_live_bound_interpreter_is_not_reclaimed(board):
+    """A live owner process does not prove that its started attempt can no longer execute."""
+    run = board.dead_attempt(
+        "t_started", worker_pid=os.getpid(),
+        worker_fingerprint=kbd._process_fingerprint(os.getpid()), worker_bound=True,
+        owner_pid=os.getpid(), owner_birth=worker_birth(psutil.Process()),
+        admission=("started", None),
+    )
+    absent = _absent_pid()
+    board.conn.execute("UPDATE tasks SET worker_pid=? WHERE id='t_started'", (absent,))
+    board.conn.execute("UPDATE task_runs SET worker_pid=? WHERE id=?", (absent, run))
+    board.conn.commit()
+
+    assert owner_reclaim_paused(board.conn, "t_started") is True
+    assert owner_attempt_provably_over(board.conn, "t_started") is False
+    assert kbd.detect_crashed_workers(board.conn) == []
+    assert board.state("t_started")["status"] == "running"
+
+
 def test_a_settled_admission_is_proof_even_while_the_owner_gateway_is_alive(board):
     """The owner is the long-lived gateway (alive by design): its settled admission, not its
     death, proves a lost managed worker's attempt over. A bound run stays the crash sweep's."""
@@ -274,8 +291,8 @@ def test_a_foreign_host_interpreter_bound_after_the_gate_keeps_its_claim(board, 
         if not calls:  # the remote owner admits and binds an interpreter right after the first look
             board.event(task_id, run, "worker_bound", {"pid": _absent_pid(base=3_700_000)}, NOW)
             board.conn.commit()
-            with sqlite3.connect(board.ledger) as store:
-                store.execute("UPDATE session_admissions SET status = 'unknown', outcome = NULL")
+            raw_holder(board.store)._execute_write(
+                lambda conn: conn.execute("UPDATE session_admissions SET status = 'unknown', outcome = NULL"))
         calls.append(verdict)
         return verdict
 
@@ -305,12 +322,64 @@ def test_a_timed_out_managed_run_is_booked_timed_out_not_left_for_the_crash_swee
             os.kill(pid, sig)
             interpreter.kill()  # _watch_submitter: the interpreter exits with its worker
             interpreter.wait()
-            with sqlite3.connect(board.ledger) as store:  # the owner settles the lost turn
-                store.execute("UPDATE session_admissions SET status = 'unknown'")
+            # The owner settles the lost turn: its next boot marks the started admission unknown.
+            board.store.admissions.recover(epoch=board.store.runtime.begin_epoch(instance_id="owner-reboot"))
 
         assert kbd.enforce_max_runtime(board.conn, signal_fn=sigterm_ends_the_attempt) == ["t_slow"]
         outcome = board.conn.execute("SELECT outcome FROM task_runs WHERE id = ?", (run,)).fetchone()[0]
         assert (board.state("t_slow")["status"], outcome) == ("ready", "timed_out")
+        assert kbd.detect_crashed_workers(board.conn) == []
+    finally:
+        for child in (worker, interpreter):
+            child.kill()
+            child.wait()
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_timeout_waits_for_the_bound_interpreters_asynchronous_exit(board, monkeypatch):
+    """The owner's watcher ends the interpreter after the submitter dies; timeout must drain
+    that exact attempt before the under-lock booking, not leave it for the next crash sweep."""
+    import threading
+
+    worker, interpreter = (subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE)
+                           for _ in range(2))
+    interpreter_poll_started = threading.Event()
+    real_poll = kbd._poll_worker_exit
+
+    def poll_worker_exit(pid, started_at=None):
+        if pid == interpreter.pid:
+            interpreter_poll_started.set()
+        return real_poll(pid, started_at)
+
+    def end_attempt_after_worker():
+        worker.wait(timeout=5)
+        if interpreter_poll_started.wait(5):
+            interpreter.kill()
+            interpreter.wait()
+            board.store.admissions.recover(
+                epoch=board.store.runtime.begin_epoch(instance_id="owner-reboot"))
+
+    monkeypatch.setattr(kbd, "_poll_worker_exit", poll_worker_exit)
+    try:
+        run = board.dead_attempt(
+            "t_async_timeout", worker_pid=worker.pid,
+            worker_fingerprint=kbd._process_fingerprint(worker.pid),
+            owner_pid=os.getpid(), owner_birth=worker_birth(psutil.Process()),
+            admission=("started", None))
+        board.event("t_async_timeout", run, "worker_bound", {
+            "pid": interpreter.pid, "started_at": kbd._process_fingerprint(interpreter.pid)}, NOW)
+        board.conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = 't_async_timeout'")
+        board.conn.commit()
+
+        def sigterm_ends_the_submitter(pid, sig):
+            os.kill(pid, sig)
+            threading.Thread(target=end_attempt_after_worker, daemon=True).start()
+
+        assert kbd.enforce_max_runtime(board.conn, signal_fn=sigterm_ends_the_submitter) == [
+            "t_async_timeout"]
+        outcome = board.conn.execute(
+            "SELECT outcome FROM task_runs WHERE id = ?", (run,)).fetchone()[0]
+        assert (board.state("t_async_timeout")["status"], outcome) == ("ready", "timed_out")
         assert kbd.detect_crashed_workers(board.conn) == []
     finally:
         for child in (worker, interpreter):

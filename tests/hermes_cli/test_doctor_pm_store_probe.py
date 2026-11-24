@@ -21,7 +21,7 @@ from pm.store import current_target, tree_digest
 
 @pytest.fixture
 def tool_store(tmp_path, monkeypatch):
-    from hermes_state_guard import _real_platform_state_root
+    from persistence.sqlite._state.guard import _real_platform_state_root
 
     # Hash a system ripgrep, never the operator's PM store that PATH may select.
     real_root = _real_platform_state_root()

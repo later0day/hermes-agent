@@ -17,7 +17,12 @@ from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._oauth_helpers import kill_tagged, make_home, run_hermes
 from tests.fakes.providers.oauth_token_server import OAuthTokenServer, unsigned_jwt
 
-pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="tagged-tree cleanup uses /proc")
+pytestmark = [
+    pytest.mark.skipif(not sys.platform.startswith("linux"), reason="tagged-tree cleanup uses /proc"),
+    # Teardown may find this test's uniquely tagged child after it was reparented;
+    # kill_tagged() signals no process without this test's OAUTH_E2E_TAG.
+    pytest.mark.live_system_guard_bypass,
+]
 
 PENDING, SLOW_DOWN, APPROVE = "authorization_pending", "slow_down", "approve"
 # Scheduler/request latency only ever makes a gap LONGER; this absorbs clock granularity.

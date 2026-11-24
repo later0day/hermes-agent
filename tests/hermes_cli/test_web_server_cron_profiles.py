@@ -13,6 +13,16 @@ import hermes_cli.web_routers.cron as _rt_cron
 import hermes_cli.web_server_cron as _web_server_cron
 
 
+def _as_store(fake):
+    from types import SimpleNamespace
+
+    def runs(job_id, window):
+        rows = fake.list_cron_job_runs(job_id, limit=window.limit, offset=window.offset)
+        return [SimpleNamespace(as_cron_row=lambda row=row: dict(row)) for row in rows]
+
+    return SimpleNamespace(sessions=SimpleNamespace(list_cron_job_runs=runs), close=fake.close)
+
+
 @pytest.fixture()
 def isolated_profiles(tmp_path, monkeypatch):
     """Give profile discovery an isolated default home with one named profile."""
@@ -170,6 +180,17 @@ def test_dashboard_create_reports_saved_but_unregistered(
     assert "private callback URL and token" not in str(exc_info.value.detail)
 
 
+def test_dashboard_create_persists_owner_and_execution_profiles(isolated_profiles):
+    worker_job = _web_server_cron._create_cron_job_sync(
+        _web_models.CronJobCreate(prompt="worker status", schedule="every 1h"), profile="worker_alpha")
+    split_job = _web_server_cron._create_cron_job_sync(
+        _web_models.CronJobCreate(prompt="delegated", schedule="every 2h", run_profile="worker_alpha"),
+        profile="default")
+    stored = _web_server_cron._call_cron_for_profile("default", "get_job", split_job["id"])
+    assert [(j["owner_profile"], j["run_profile"]) for j in (worker_job, split_job, stored)] == [
+        ("worker_alpha", "worker_alpha"), ("default", "worker_alpha"), ("default", "worker_alpha")]
+
+
 def test_notify_cron_provider_scopes_store_and_runtime_home_together(
     isolated_profiles,
     monkeypatch,
@@ -189,7 +210,7 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
     monkeypatch.setattr(
         _web_server_cron,
         "_cron_profile_dicts",
-        lambda: [{"name": "worker_alpha"}],
+        lambda **_: [{"name": "worker_alpha"}],
     )
     captured = {}
 
@@ -262,7 +283,7 @@ def test_external_provider_reconcile_fails_closed_with_multiple_profiles(
     monkeypatch.setattr(
         _web_server_cron,
         "_cron_profile_dicts",
-        lambda: [{"name": "default"}, {"name": "worker_alpha"}],
+        lambda **_: [{"name": "default"}, {"name": "worker_alpha"}],
     )
     notified = []
 
@@ -310,7 +331,7 @@ def test_builtin_provider_hook_still_fires_with_multiple_profiles(
     monkeypatch.setattr(
         _web_server_cron,
         "_cron_profile_dicts",
-        lambda: [{"name": "default"}, {"name": "worker_alpha"}],
+        lambda **_: [{"name": "default"}, {"name": "worker_alpha"}],
     )
     notified = []
 
@@ -1092,7 +1113,7 @@ async def test_cron_run_history_resolves_the_jobs_owner_profile(isolated_profile
     monkeypatch.setattr(
         _rt_cron,
         "_open_session_db_for_profile",
-        lambda profile, *, read_only: _FakeRunsDB(profile),
+        lambda profile, *, read_only: _as_store(_FakeRunsDB(profile)),
     )
 
     # Active profile is `default`; the listed job belongs to worker_alpha.
@@ -1255,7 +1276,7 @@ class TestCronRunHistoryFallback:
                 pass
 
         monkeypatch.setattr(
-            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _EmptyDB()
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _as_store(_EmptyDB())
         )
 
     def _write_output_doc(self, monkeypatch, home, job_id, filename, text):
@@ -1362,7 +1383,7 @@ class TestCronRunHistoryFallback:
                 pass
 
         monkeypatch.setattr(
-            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _FakeDB()
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _as_store(_FakeDB())
         )
         monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
         monkeypatch.setattr(
@@ -1446,7 +1467,7 @@ class TestCronRunHistoryFallback:
                 pass
 
         monkeypatch.setattr(
-            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _FakeDB()
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _as_store(_FakeDB())
         )
         monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
         monkeypatch.setattr(
@@ -1876,12 +1897,8 @@ async def test_update_cron_job_pins_the_main_model_of_the_jobs_profile(isolated_
 # --- Dashboard edit must not widen an explicit zero-tool allowlist (#148886) ---
 
 def _dashboard_form_payload(**overrides):
-    """The payload the dashboard's cron editor PUTs: every form field, always.
-
-    ``web/src/lib/cron-job.ts::buildCronJobPayload`` sends the whole form, and an
-    empty toolset picker becomes ``None`` — it cannot tell "no restriction" from
-    "the stored restriction is the zero-tool list this picker cannot render".
-    """
+    """The editor sends every field; an empty picker becomes None, which cannot
+    distinguish no restriction from an explicit zero-tool list."""
     payload = {
         "name": "zero-tool job", "prompt": "format the input", "schedule": "every 1h",
         "deliver": "local", "skills": [], "provider": None, "model": None,
@@ -1906,16 +1923,11 @@ async def test_dashboard_prompt_edit_preserves_a_zero_tool_allowlist(isolated_pr
         "worker_alpha", "create_job", prompt="format the input", schedule="every 1h",
         name="zero-tool job", enabled_toolsets=[])
     assert job["enabled_toolsets"] == []
-
     updated = await _rt_cron.update_cron_job(
-        job["id"],
-        _web_models.CronJobUpdate(updates=_dashboard_form_payload(prompt="format the input text")),
-        profile="worker_alpha",
-    )
-
-    assert updated["prompt"] == "format the input text"
-    # A prompt-only edit must leave the strictest possible allowlist intact: null here
-    # reads back as "no restriction" and hands the job every tool.
+        job["id"], _web_models.CronJobUpdate(updates=_dashboard_form_payload(prompt="format text")),
+        profile="worker_alpha")
+    assert updated["prompt"] == "format text"
+    # Null would read back as unrestricted and hand the job every tool.
     assert updated["enabled_toolsets"] == []
     stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
     assert stored["enabled_toolsets"] == []
@@ -1928,49 +1940,32 @@ async def test_dashboard_cleared_picker_still_clears_a_non_empty_allowlist(isola
         "worker_alpha", "create_job", prompt="format the input", schedule="every 1h",
         name="web-only job", enabled_toolsets=["web"])
     assert job["enabled_toolsets"] == ["web"]
-
     updated = await _rt_cron.update_cron_job(
-        job["id"],
-        _web_models.CronJobUpdate(updates=_dashboard_form_payload()),
-        profile="worker_alpha",
-    )
-
+        job["id"], _web_models.CronJobUpdate(updates=_dashboard_form_payload()), profile="worker_alpha")
     assert updated["enabled_toolsets"] is None
 
 
 def test_dashboard_create_keeps_an_explicit_empty_toolset_list(isolated_profiles):
     """The same collapse on the create route: [] must not become "unrestricted"."""
     job = _web_server_cron._create_cron_job_sync(
-        _web_models.CronJobCreate(
-            prompt="format the input", schedule="every 1h", name="created zero-tool",
-            enabled_toolsets=[]),
+        _web_models.CronJobCreate(prompt="format the input", schedule="every 1h",
+                                  name="created zero-tool", enabled_toolsets=[]),
         profile="worker_alpha")
-
     assert job["enabled_toolsets"] == []
 
 
 @pytest.mark.asyncio
 async def test_dashboard_invalid_toolsets_cannot_widen_allowlist(isolated_profiles):
-    """A non-list-shaped form value must fail, not silently replace the restriction with None.
-
-    ``CronJobUpdate.updates`` is a free-form dict, so pydantic does not vet the field on this
-    route the way ``CronJobCreate`` does; ``_cron_string_list`` answered None for an object,
-    which update_job merges as "no restriction".
-    """
+    """Malformed free-form updates bypass Pydantic's create validation and must
+    fail closed, since None would widen the stored restriction."""
     job = _web_server_cron._call_cron_for_profile(
         "worker_alpha", "create_job", name="web-only job",
         prompt="format text", schedule="every 1h", enabled_toolsets=["web"])
-
     with pytest.raises(HTTPException) as exc:
         await _rt_cron.update_cron_job(
-            job["id"],
-            _web_models.CronJobUpdate(updates={
-                "prompt": "edited text",
-                "enabled_toolsets": {"unexpected": "web"},
-            }),
-            profile="worker_alpha",
-        )
-
+            job["id"], _web_models.CronJobUpdate(updates={
+                "prompt": "edited text", "enabled_toolsets": {"unexpected": "web"}}),
+            profile="worker_alpha")
     assert exc.value.status_code == 400
     assert "enabled_toolsets" in str(exc.value.detail)
     # The refused edit wrote nothing: the restriction and the prompt both survive.
@@ -1983,6 +1978,5 @@ def test_dashboard_normalizer_rejects_a_non_list_context_from(tmp_path):
     """Same guard on the sibling list field: a malformed shape cannot clear a chained context."""
     with pytest.raises(HTTPException) as exc:
         _rt_cron._normalize_dashboard_cron_updates({"context_from": {"id": "other-job"}}, tmp_path)
-
     assert exc.value.status_code == 400
     assert "context_from" in str(exc.value.detail)

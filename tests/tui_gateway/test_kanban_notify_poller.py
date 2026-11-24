@@ -260,10 +260,17 @@ class TestNotificationPollerLoopKanbanWiring:
 
     def _start_poller(self, session: dict, monkeypatch):
         import threading
+        from tools import async_delegation
+        from tools.process_registry import process_registry
         from tui_gateway import server
 
         emits: list = []
         submits: list = []
+        monkeypatch.setattr(process_registry, "restore_completions", lambda: None)
+        monkeypatch.setattr(async_delegation, "maybe_sweep_orphaned_completions", lambda _queue: None)
+        monkeypatch.setattr(server, "_maybe_fire_tui_loop_tick", lambda *_args: None)
+        monkeypatch.setattr(server, "_maybe_fire_tui_heartbeat_tick", lambda *_args: None)
+        monkeypatch.setattr(server, "_kb_stray_delegate_keys", lambda *_args: ())
         monkeypatch.setattr(server, "_KANBAN_POLL_SECONDS", 0.01)
         monkeypatch.setattr(
             server, "_emit", lambda event, sid, payload=None: emits.append((event, payload))
@@ -294,19 +301,20 @@ class TestNotificationPollerLoopKanbanWiring:
             _time.sleep(0.02)
         return False
 
-    def _poller_session(self, *, running: bool = False) -> dict:
+    def _poller_session(self, session_key: str, *, running: bool = False) -> dict:
         import threading
 
         return {
-            "session_key": SESSION_KEY,
+            "session_key": session_key,
             "history_lock": threading.Lock(),
             "running": running,
         }
 
     def test_idle_session_gets_status_update_and_agent_turn(self, monkeypatch):
-        tid = _create_subscribed_task()
+        session_key = f"{SESSION_KEY}-idle-poller"
+        tid = _create_subscribed_task(chat_id=session_key)
         _complete(tid, summary="poller e2e done")
-        session = self._poller_session(running=False)
+        session = self._poller_session(session_key, running=False)
 
         stop, thread, emits, submits = self._start_poller(session, monkeypatch)
         try:
@@ -314,6 +322,7 @@ class TestNotificationPollerLoopKanbanWiring:
         finally:
             stop.set()
             thread.join(timeout=5)
+            assert not thread.is_alive()
 
         status_texts = [p["text"] for e, p in emits if e == "status.update" and p]
         assert any(tid in t for t in status_texts), status_texts
@@ -323,9 +332,10 @@ class TestNotificationPollerLoopKanbanWiring:
         assert not session.get("_kanban_pending")
 
     def test_busy_session_buffers_then_flushes_when_idle(self, monkeypatch):
-        tid = _create_subscribed_task()
+        session_key = f"{SESSION_KEY}-busy-poller"
+        tid = _create_subscribed_task(chat_id=session_key)
         _complete(tid, summary="buffered while busy")
-        session = self._poller_session(running=True)
+        session = self._poller_session(session_key, running=True)
 
         stop, thread, emits, submits = self._start_poller(session, monkeypatch)
         try:
@@ -344,6 +354,7 @@ class TestNotificationPollerLoopKanbanWiring:
         finally:
             stop.set()
             thread.join(timeout=5)
+            assert not thread.is_alive()
 
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []

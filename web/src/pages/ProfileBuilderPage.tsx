@@ -1,6 +1,7 @@
 import type { Translations } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { PROFILE_ID_ARG_RE } from "@hermes/shared/profile-id";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -28,8 +29,6 @@ import { errorMessage } from "@/lib/api-error";
 import { useI18n } from "@/i18n";
 import { localeSection } from "@/i18n/section";
 
-// Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 type StepId = "identity" | "model" | "skills" | "mcp" | "review";
 
@@ -139,7 +138,7 @@ export default function ProfileBuilderPage() {
   // ── Submit ────────────────────────────────────────────────────────
   const [creating, setCreating] = useState(false);
 
-  const nameValid = PROFILE_NAME_RE.test(name.trim());
+  const nameValid = PROFILE_ID_ARG_RE.test(name.trim());
 
   // Lazy-load model choices when the model step is first shown.
   const loadModels = useCallback(() => {
@@ -288,7 +287,7 @@ export default function ProfileBuilderPage() {
 
   const handleCreate = async () => {
     const n = name.trim();
-    if (!PROFILE_NAME_RE.test(n)) {
+    if (!PROFILE_ID_ARG_RE.test(n)) {
       showToast(s.invalidName, "error");
       setStep("identity");
       return;

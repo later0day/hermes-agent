@@ -3,7 +3,7 @@ import asyncio
 import subprocess
 import sys
 import threading
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -11,6 +11,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_cancelled_spawn_reaps_late_child(monkeypatch):
     from gateway import session_managed_worker as managed
+    from gateway.run import GatewayRunner
     entered, release, created = (threading.Event() for _ in range(3))
     original = subprocess.Popen
     children = []
@@ -23,7 +24,10 @@ async def test_cancelled_spawn_reaps_late_child(monkeypatch):
         return child
     monkeypatch.setattr(managed.subprocess, 'Popen', spawn)
     monkeypatch.setattr(managed, '_worker_env', lambda authority: None)
-    authority = SimpleNamespace(profile_id='profile', pending_results={})
+    runner = SimpleNamespace()
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    authority = SimpleNamespace(profile_id='profile', pending_results={}, runner=runner)
     task = asyncio.create_task(managed.execute_managed(
         authority, SimpleNamespace(session_id='s'), {'admission_id': 'unstarted'}, None))
     try:
@@ -42,3 +46,4 @@ async def test_cancelled_spawn_reaps_late_child(monkeypatch):
             child.wait(timeout=5)
             child.stdin.close()
             child.stdout.close()
+        GatewayRunner._shutdown_executor(runner, drain_timeout=2)

@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 from hermes_cli._startup_fast import project_root_str
+from hermes_cli.kanban_owner_recovery import _poll_worker_exit
+from hermes_cli.kanban_worker_log import open_task_worker_log as _open_worker_log
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -419,15 +421,6 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     return os.kill if hasattr(os, "kill") else None
 
 
-def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
-    """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
-    for _ in range(10):
-        if not _worker_alive(pid, started_at):
-            return True
-        time.sleep(0.5)
-    return False
-
-
 def _sigkill(kill, pid: int) -> bool:
     """Best-effort SIGKILL; True when the signal was delivered."""
     try:
@@ -663,8 +656,11 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
+    from hermes_cli.kanban_owner_recovery import (
+        _latest_run_event, owner_reclaim_blocked, owner_reclaim_blocked_after_kill,
+    )
     for row in rows:
+        bound = _latest_run_event(conn, row["id"], "worker_bound")
         if owner_reclaim_blocked(conn, row["id"]):
             continue
         lock = row["claim_lock"] or ""
@@ -698,6 +694,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             _poll_worker_exit(pid, started_at)
             if _worker_alive(pid, started_at):
                 killed = _sigkill(kill, pid)
+            if bound.get("pid"):
+                # The owner-side watcher may still be ending the interpreter. Drain the exact
+                # pre-kill binding before booking timed_out, or the next tick books it crashed.
+                _poll_worker_exit(int(bound["pid"]), bound.get("started_at"))
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
@@ -1587,20 +1587,20 @@ def check_respawn_guard(
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
     #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
-    #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    #    condition is not the card's (its text may still say 403), so it retries
+    #    forever, spaced, and reaches neither the breaker nor blocker_auth.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",  # runs end on whole seconds: the later insert wins a tie
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
-        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
-            ended_at = _kb._to_epoch(latest_run["ended_at"])
-            if ended_at is not None and (now - ended_at) < rl_cooldown:
-                return "infrastructure_cooldown"
+    infrastructure = (latest_run is not None and latest_run["outcome"] == "spawn_failed"
+                      and bool(_kb._json_dict(latest_run["metadata"]).get("infrastructure")))
+    ended_at = _kb._to_epoch(latest_run["ended_at"]) if infrastructure else None
+    if rl_cooldown > 0 and ended_at is not None and (now - ended_at) < rl_cooldown:
+        return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -1620,7 +1620,7 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if err and latest_outcome != "crashed" and not infrastructure and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
@@ -1693,14 +1693,14 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
-    """``profile_exists`` from ``hermes_cli.profiles``; ``None`` when it cannot be
-    imported and no allowlist is set (callers then trust the assignee).
+    """``profile_exists_here``; ``None`` when unimportable and no allowlist is set (callers then trust the assignee).
 
     With ``kanban.dispatch_profiles`` set (#110995) the predicate also requires the
     assignee to be listed, fail-closed: a ``default`` card is only claimable by homes that
     opted in, and a set allowlist whose gate cannot be built claims nothing (#147531)."""
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from hermes_cli.profiles import normalize_profile_name
+        from hermes_cli.profiles_run_elsewhere import profile_exists_here as profile_exists
     except Exception:
         if _dispatch_profile_allowlist(str) is None:
             return None
@@ -2160,11 +2160,12 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
+        from hermes_cli.kanban_worker_preflight import ProfileConfigUnavailable
         from tools.process_registry import RestartSafeScopeUnavailable
 
-        # The host refused the spawn (no restart-safe scope): nothing about the
-        # card ran, so it must not spend the card's retry budget (#114720).
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        # The host refused the spawn (no restart-safe scope) or the config backend could not serve
+        # the profile: nothing about the card ran, so it must not spend its retry budget (#114720).
+        infrastructure = isinstance(exc, (RestartSafeScopeUnavailable, ProfileConfigUnavailable))
         if infrastructure:
             _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(
@@ -2615,22 +2616,22 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
 
     Best-effort: the durable gate is ``state_meta`` in
-    ``retag_kanban_worker_sessions``; the in-process set avoids reopening
+    ``retag_worker_sessions``; the in-process set avoids reopening
     state.db on every spawn. A tick must never fail because a session DB was
     busy or missing.
     """
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from persistence_assembly import open_persistence, profile_scope
 
-        # Inside the gateway the dispatcher shares the process's registry handle; a bare
-        # SessionDB() here was one more writer connection on the same state.db (#100896).
-        db = acquire()
+        # Inside the gateway the dispatcher shares the process's store for the profile, not one more
+        # writer connection on the same state.db (#100896).
+        store = open_persistence(profile_scope())
         try:
-            db.retag_kanban_worker_sessions(workspaces_root_path)
+            store.sessions.retag_worker_sessions(workspaces_root_path)
         finally:
-            release_or_close(db)
+            store.close()
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
@@ -2640,18 +2641,6 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     """The profile owner executes; this subprocess only waits for its receipt."""
     import sys
     return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
-
-
-def _open_worker_log(task: Task, board: Optional[str]):
-    """Append-mode per-task log (a re-run on unblock appends, never overwrites),
-    rotated first. Anchored at the board root (not the shared kanban root) so
-    `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
-    log_dir = _kb.worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
-    from hermes_cli.kanban_worker_log import open_worker_log
-    return open_worker_log(log_path)
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
@@ -2703,6 +2692,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     """
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+    from hermes_cli.kanban_worker_preflight import refuse_unresolved_model
+    refuse_unresolved_model(task, workspace, board)  # raises before a worker exists when no model can
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 

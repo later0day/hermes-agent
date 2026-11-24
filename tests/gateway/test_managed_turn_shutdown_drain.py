@@ -6,7 +6,7 @@ bounded while keeping the admission's own fenced settlement (real subprocess wor
 import asyncio
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -44,6 +44,7 @@ def test_settlement_stops_a_silent_managed_worker_instead_of_waiting_unbounded(m
     Stop, the turn settles interrupted through its own path, and nothing waits on HELLO_SECONDS."""
     from gateway import run_runtime
     from gateway import session_managed_worker as managed
+    from gateway.run import GatewayRunner
     original = subprocess.Popen
 
     def silent_child(args, **kwargs):
@@ -55,6 +56,8 @@ def test_settlement_stops_a_silent_managed_worker_instead_of_waiting_unbounded(m
                                 check_approval_generation=lambda *a: None, pending_stops={}, adopted={},
                                 adopt_agent=lambda session_id, generation, worker: None)
     runner = SimpleNamespace(session_authority=authority)
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
     authority.runner = runner  # settle also hard-stops in-process turns through the runner
     row = {'admission_id': 'adm', 'principal_id': 'owner', 'generation': 3, 'payload': {'text': 'go'}}
 
@@ -66,7 +69,10 @@ def test_settlement_stops_a_silent_managed_worker_instead_of_waiting_unbounded(m
             await run_runtime.settle_gateway_runtime(runner)
         return live.task
 
-    task = asyncio.run(scenario())
-    assert task.done() and not task.cancelled() and task.result() == ''
-    assert authority.pending_results['adm']['result']['interrupted'] is True
-    assert authority._managed_workers == {}
+    try:
+        task = asyncio.run(scenario())
+        assert task.done() and not task.cancelled() and task.result() == ''
+        assert authority.pending_results['adm']['result']['interrupted'] is True
+        assert authority._managed_workers == {}
+    finally:
+        GatewayRunner._shutdown_executor(runner, drain_timeout=2)

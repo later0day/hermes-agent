@@ -2,13 +2,13 @@
 import os
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import psutil
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 AUTOMATION = 'automation:agent:main:local:dm:owned'
 
@@ -22,22 +22,26 @@ def _hello(process):
 @pytest.fixture
 def reserved(tmp_path):
     """A started automation admission (a bot DM or completion wake) and the owner's live direct child."""
-    db = SessionDB(tmp_path / 'state.db')
+    from gateway.run import GatewayRunner
+    db = storage_handle(tmp_path)
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        db.create_session('owned', 'cli')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
-                                    wake_after_worker=lambda session_id: None)
-        admitted = admit_session_input(db, epoch=epoch, principal_id=AUTOMATION, session_id='owned',
-                                       request_id='bot:dm', payload={})
-        claim_session_input(db, epoch=epoch, session_id='owned')
+        seed_session(db, 'owned', 'cli')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        runner = SimpleNamespace()
+        runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+        runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+        authority = SimpleNamespace(persistence=db, epoch=epoch, profile_id=str(tmp_path), runner=runner,
+                                    _require_admission_open=lambda: None, wake_after_worker=lambda session_id: None)
+        admitted, _ = db.admissions.admit(epoch=epoch, principal_id=AUTOMATION, session_id='owned',
+                                          request_id='bot:dm', payload={})
+        db.admissions.claim(epoch=epoch, session_id='owned')
         yield authority, admitted, process
     finally:
         process.stdin.close()
         process.wait(timeout=5)
-        db.close()
+        GatewayRunner._shutdown_executor(runner, drain_timeout=2)
 
 
 def _connection(authority, subject):
@@ -50,7 +54,7 @@ async def test_worker_adopts_an_automation_admission_as_the_owner_user(reserved)
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
     authority, admitted, process = reserved
-    scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process,
+    scope = reserve_admission_worker(authority, admission_id=admitted.admission_id, process=process,
                                      principal_id=AUTOMATION, hello=_hello(process),
                                      worker_subject=owner_worker_subject())
     identity = {k: v for k, v in scope.items() if k != 'epoch'}
@@ -63,7 +67,7 @@ async def test_the_claim_still_refuses_any_other_subject(reserved):
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
     authority, admitted, process = reserved
-    scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process,
+    scope = reserve_admission_worker(authority, admission_id=admitted.admission_id, process=process,
                                      principal_id=AUTOMATION, hello=_hello(process),
                                      worker_subject=owner_worker_subject())
     identity = {k: v for k, v in scope.items() if k != 'epoch'}

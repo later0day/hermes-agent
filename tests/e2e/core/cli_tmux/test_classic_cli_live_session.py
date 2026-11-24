@@ -30,13 +30,14 @@ from typing import Any, Callable
 import pytest
 
 from tests.e2e.core.cli_tmux._classic import ClassicHome, Pane, last_user, new_needle, require_tmux, text_of
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
+from tests.fakes.fake_llm_provider import FakeLLMServer, StallMidStream, Text, ToolCall
 
 # Process discovery, cleanup and the witness's pid accounting read /proc.
 pytestmark = pytest.mark.platforms("linux")
 
 WITNESS_DIR = Path(__file__).resolve().parent / "witness"
 TITLE = "Live session title"
+LIVE20_REPLY = "LIVE20 " + " ".join(f"w{i:03d}" for i in range(500)) + " THE-END"
 EXTRA_CONFIG = """memory:
   memory_enabled: true
   user_profile_enabled: false
@@ -77,8 +78,7 @@ def _main(record: dict[str, Any]):
         "LIVE10": lambda: ToolCall("terminal", {"command": "sleep 3; echo live10-bg-finished", "background": True,
                                                 "notify_on_complete": True}),
         "LIVE14": lambda: Text("LIVE14 background answer: computed in the background."),
-        "LIVE20": lambda: Text("LIVE20 " + " ".join(f"w{i:03d}" for i in range(500)) + " THE-END",
-                               chunk_chars=6, delay_per_chunk=0.04),
+        "LIVE20": lambda: StallMidStream(LIVE20_REPLY, after_chars=LIVE20_REPLY.index("w031")),
     }
     fn = table.get(mark)
     return fn() if fn else Text(f"{mark or 'plain'} ok.")

@@ -170,7 +170,10 @@ test('re-attaching to a running tool turn renders each segment once', async () =
       await expect(viewport(page)).toContainText(A(4))
       session.expectUserMarkers.push(U(4))
       await page.reload()
-      await expect(viewport(page)).toContainText(AI(4), { timeout: 60_000 })
+      // REST history can paint before session.resume attaches the new socket. The
+      // first answer chunk arrives with the resumed live projection, so its paint
+      // proves the provider can be released into the reattached stream.
+      await expect(viewport(page)).toContainText(A(4), { timeout: 60_000 })
       await installDuplicateSampler(page)
       hold.open()
 

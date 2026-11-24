@@ -24,3 +24,14 @@ export function stubMenuDomApis() {
   Element.prototype.releasePointerCapture ??= () => undefined
   Element.prototype.scrollIntoView ??= () => undefined
 }
+
+// Drain Radix's zero-delay unmount focus event before Vitest closes jsdom.
+export async function drainDeferredDomEvents(): Promise<void> {
+  if (vi.isFakeTimers()) {
+    await vi.advanceTimersByTimeAsync(0)
+
+    return
+  }
+
+  await new Promise(resolve => setTimeout(resolve, 0))
+}

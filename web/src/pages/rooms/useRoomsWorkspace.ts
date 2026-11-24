@@ -33,6 +33,14 @@ const TABS: RoomsWorkspaceTab[] = ["tasks", "conversation", "activity"];
 const MODES: RoomsWorkspaceMode[] = ["list", "graph", "attempts"];
 const PRESETS: RoomsWorkspacePreset[] = ["all", "needs_action", "failed", "running", "idle"];
 const OWNED_QUERY_KEYS = ["room", "tab", "task", "view", "filter", "search"] as const;
+const ACTIVE_WORK_STATUSES = new Set(["pending", "in_progress", "claimed", "deferred", "queued", "running"]);
+const ACTIVE_WORK_REFRESH_MS = 1000;
+
+function hasActiveRoomWork(workspace: RoomWorkspaceResponse): boolean {
+  return workspace.room.workspace?.driver_running === true
+    || workspace.tasks.some((task) => ACTIVE_WORK_STATUSES.has(task.status))
+    || workspace.attempts.some((attempt) => ACTIVE_WORK_STATUSES.has(attempt.status));
+}
 
 function oneOf<T extends string>(value: string | null, choices: readonly T[], fallback: T): T {
   return value && choices.includes(value as T) ? value as T : fallback;
@@ -143,9 +151,9 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
 
   useEffect(() => () => { mounted.current = false; listGuard.current.next(); roomGuard.current.next(); }, []);
 
-  const loadList = useCallback(async () => {
+  const loadList = useCallback(async (background = false) => {
     const token = listGuard.current.next();
-    setLoadingList(true); setListError(null);
+    if (!background) { setLoadingList(true); setListError(null); }
     try {
       const response = await roomsApi.listRooms(showDisbanded);
       if (!mounted.current || !listGuard.current.current(token)) return;
@@ -155,24 +163,28 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
     } catch (error) {
       if (mounted.current && listGuard.current.current(token)) { setListError(describeErrorRef.current(error)); onError(error); }
     } finally {
-      if (mounted.current && listGuard.current.current(token)) setLoadingList(false);
+      if (!background && mounted.current && listGuard.current.current(token)) setLoadingList(false);
     }
   }, [showDisbanded, onError]);
 
-  const loadRoom = useCallback(async (roomId: string | null) => {
+  const loadRoom = useCallback(async (roomId: string | null, background = false) => {
     const token = roomGuard.current.next();
     if (!roomId) { setWorkspace(null); setSelectedTaskId(null); setAncillary(initialAncillary()); setLoadingWorkspace(false); return; }
-    setLoadingWorkspace(true); setWorkspaceError(null); setWorkspace(null);
-    setAncillary(Object.fromEntries(Object.keys(initialAncillary()).map((key) => [key, { data: null, loading: true, error: null }])) as unknown as AncillaryState);
+    if (!background) {
+      setLoadingWorkspace(true); setWorkspaceError(null); setWorkspace(null);
+      setAncillary(Object.fromEntries(Object.keys(initialAncillary()).map((key) => [key, { data: null, loading: true, error: null }])) as unknown as AncillaryState);
+    }
     const commit = <K extends keyof AncillaryState>(key: K, data: AncillaryState[K]["data"] | null, error: unknown = null) => {
       if (!mounted.current || !roomGuard.current.current(token)) return;
       setAncillary((previous) => ({ ...previous, [key]: { data, loading: false, error: error ? String(error) : null } }));
     };
-    void roomsApi.getRoomTopology(roomId).then((r) => commit("topology", r)).catch((e) => commit("topology", null, e));
-    void roomsApi.getRoomPendingActions(roomId).then((r) => commit("pendingActions", r.actions)).catch((e) => commit("pendingActions", null, e));
-    void roomsApi.getRoomPeerGrants(roomId).then((r) => commit("peerGrants", r.peer_grants)).catch((e) => commit("peerGrants", null, e));
-    void roomsApi.getRoomReplicationHealth(roomId).then((r) => commit("replication", r)).catch((e) => commit("replication", null, e));
-    void roomsApi.getRoomPolicyTrace(roomId).then((r) => commit("policy", r)).catch((e) => commit("policy", null, e));
+    if (!background) {
+      void roomsApi.getRoomTopology(roomId).then((r) => commit("topology", r)).catch((e) => commit("topology", null, e));
+      void roomsApi.getRoomPendingActions(roomId).then((r) => commit("pendingActions", r.actions)).catch((e) => commit("pendingActions", null, e));
+      void roomsApi.getRoomPeerGrants(roomId).then((r) => commit("peerGrants", r.peer_grants)).catch((e) => commit("peerGrants", null, e));
+      void roomsApi.getRoomReplicationHealth(roomId).then((r) => commit("replication", r)).catch((e) => commit("replication", null, e));
+      void roomsApi.getRoomPolicyTrace(roomId).then((r) => commit("policy", r)).catch((e) => commit("policy", null, e));
+    }
     try {
       const response = await roomsApi.getRoomWorkspace(roomId);
       if (!mounted.current || !roomGuard.current.current(token)) return;
@@ -185,7 +197,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
     } catch (error) {
       if (mounted.current && roomGuard.current.current(token)) { setWorkspaceError(describeErrorRef.current(error)); onError(error); }
     } finally {
-      if (mounted.current && roomGuard.current.current(token)) setLoadingWorkspace(false);
+      if (!background && mounted.current && roomGuard.current.current(token)) setLoadingWorkspace(false);
     }
   }, [onError]);
 
@@ -197,6 +209,14 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
     const timeout = window.setTimeout(() => void loadRoom(selectedRoomId), 0);
     return () => window.clearTimeout(timeout);
   }, [loadRoom, selectedRoomId]);
+  useEffect(() => {
+    if (!selectedRoomId || !workspace || workspace.room.room_id !== selectedRoomId || !hasActiveRoomWork(workspace)) return;
+    // Each delay starts from a committed snapshot, so slow background reads cannot overlap.
+    const timeout = window.setTimeout(() => {
+      void Promise.all([loadList(true), loadRoom(selectedRoomId, true)]);
+    }, ACTIVE_WORK_REFRESH_MS);
+    return () => window.clearTimeout(timeout);
+  }, [loadList, loadRoom, selectedRoomId, workspace]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -222,7 +242,7 @@ export function useRoomsWorkspace(options: UseRoomsWorkspaceOptions = {}) {
     rooms, showDisbanded, setShowDisbanded, selectedRoomId, setSelectedRoomId,
     search, setSearch, preset, setPreset, tab, setTab, mode, setMode, selectedTaskId, setSelectedTaskId,
     workspace, loadingList, loadingWorkspace, listError, workspaceError, ancillary, busyActionId,
-    refresh, refreshList: loadList, refreshRoom: () => loadRoom(selectedRoomId),
+    refresh, refreshList: () => loadList(), refreshRoom: () => loadRoom(selectedRoomId),
     approveAction: (actionId: string) => act("approve", actionId),
     denyAction: (actionId: string) => act("deny", actionId),
   };

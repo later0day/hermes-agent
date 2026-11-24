@@ -15,9 +15,18 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import hosted_rooms
+from persistence_assembly import open_persistence, profile_scope
 from tools.process_registry import process_registry
 from tui_gateway.hosted_room_driver import room_session_title
 from tui_gateway.hosted_room_service import HostedRoomService
+
+
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 class _RPC:
@@ -35,9 +44,12 @@ def _running(proc_id: str) -> bool:
 
 
 @pytest.mark.platforms("linux", "macos")
-def test_disband_reaps_member_background_processes_only(tmp_path: Path):
+def test_disband_reaps_member_background_processes_only(tmp_path: Path, store):
     service = HostedRoomService(
-        SimpleNamespace(_sessions={}, _sessions_lock=threading.RLock()), db_path=tmp_path / "state.db")
+        SimpleNamespace(_sessions={}, _sessions_lock=threading.RLock()),
+        store=store,
+        placement="profile",
+    )
     service.local_profiles = lambda: ("lead", "worker")
     room = service.create_room(
         room_id="room-1", name="Room",
@@ -50,8 +62,13 @@ def test_disband_reaps_member_background_processes_only(tmp_path: Path):
         assert [b.room_id for b in service._served_bindings()] == ["room-1"]
         assert _running(member_job.id)  # serving the room never touches its processes
 
-        hosted_rooms.disband_room(service.db_path, room_id="room-1",
-                                  expected_gateway_id=room["authority_gateway_id"], expected_epoch=1)
+        hosted_rooms.disband_room(
+            store,
+            placement="profile",
+            room_id="room-1",
+            expected_gateway_id=room["authority_gateway_id"],
+            expected_epoch=1,
+        )
         assert service._served_bindings() == ()
 
         deadline = time.monotonic() + 10

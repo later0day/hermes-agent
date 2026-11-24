@@ -119,11 +119,33 @@ async def _publish(runner):
     runner._install_plugin_message_injector()
 
 
-async def _settle(runner, adapter, rounds: int = 200):
-    for _ in range(rounds):
-        await asyncio.sleep(0.01)
-        if not runner._background_tasks and not adapter._session_tasks and not adapter._active_sessions:
-            return
+async def _settle(runner, adapter):
+    async def wait_until_idle():
+        while True:
+            tasks = {
+                task
+                for task in (
+                    *runner._background_tasks,
+                    *adapter._background_tasks,
+                    *adapter._session_tasks.values(),
+                )
+                if not task.done()
+            }
+            if tasks:
+                await asyncio.gather(*tasks)
+                continue
+            if not adapter._session_tasks and not adapter._active_sessions:
+                return
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(wait_until_idle(), timeout=2)
+    except TimeoutError as exc:
+        raise AssertionError(
+            "gateway tasks did not settle: "
+            f"runner={runner._background_tasks!r}, background={adapter._background_tasks!r}, "
+            f"sessions={adapter._session_tasks!r}, guards={adapter._active_sessions!r}"
+        ) from exc
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,8 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg
 from agent.trace_upload import _content_to_blocks
 from agent.transports.codex_app_server_session import _build_turn_input
 from agent.vision_message_prep import _is_image_part, _salvage_text_parts
+from persistence.sqlite.conversation._store.coverage import _text_of as _coverage_text_of
+from session_rules.turns import _is_blank_user_turn
 
 
 @pytest.mark.parametrize("part_type", [{"slug": "full-time"}, ["string", "null"]])
@@ -26,6 +28,7 @@ def test_arbitrary_json_part_type_survives_message_projections(part_type) -> Non
 
     assert _is_text_only_content(content) is False
     assert ContextCompressor._is_blank_user_turn({"role": "user", "content": content}) is False
+    assert _is_blank_user_turn({"role": "user", "content": content}) is False
     assert replay_recent_images([{"role": "user", "content": content}], keep=1) == 0
 
     messages = [{"role": "tool", "tool_call_id": "call-1", "content": content}]
@@ -36,6 +39,7 @@ def test_arbitrary_json_part_type_survives_message_projections(part_type) -> Non
     assert _count_image_tokens(messages[0], 100) == 0
     assert _wire_message_shadow(messages[0])["content"] == content
     assert _durable_content(content) is None
+    assert _coverage_text_of(content) == ""
     assert _content_to_blocks(content, False) == [{"type": "text", "text": json.dumps(part)}]
     assert _build_turn_input(content) == ([{"type": "text", "text": ""}], "")
     assert _is_image_part(part) is False

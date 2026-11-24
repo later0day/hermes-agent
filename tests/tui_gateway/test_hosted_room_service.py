@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -15,22 +16,42 @@ from gateway import hosted_room_driver as driver
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import MAX_ACTIVE_POLICY_EVENTS
+from gateway.hosted_room_peer import (
+    GatewayRoomCatalog,
+    HostedMemberDispatch,
+    PROTOCOL_VERSION,
+    catalog_mapping,
+    issue_room_grant,
+)
 from tui_gateway import hosted_room_dag
 from tui_gateway.hosted_room_service import (
     HostedRoomService,
+    _RouteStatusPeerClient,
     _grant_revoke_is_terminal,
 )
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from persistence.sqlite.gateway import hosted_rooms as backend_rooms
+from persistence_assembly import open_persistence, profile_scope
 
 
-def _append_room_event(db, **kwargs):
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
+def _append_room_event(store, **kwargs):
     if kwargs.get("kind") == "message.user":
-        room = hosted_rooms.room_state(db, room_id=kwargs["room_id"])
+        room = hosted_rooms.room_state(store, placement="profile", room_id=kwargs["room_id"])
         kwargs.setdefault(
             "authority_gateway_id", str(room["authority_gateway_id"])
         )
         kwargs.setdefault("authority_epoch", int(room["authority_epoch"]))
-    return hosted_rooms.append_event(db, **kwargs)
+    return hosted_rooms.append_event(store, placement="profile", **kwargs)
 
 
 class _FakeRPC:
@@ -308,14 +329,14 @@ def _wait_for(predicate, timeout=2.0):
     raise AssertionError("condition was not reached")
 
 
-def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_path):
+def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_path, store):
     """One running task must not be counted again after it becomes stopping."""
 
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    identity = HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1")
     task = {"identity": identity, "status": "running", "cancel_id": None, "payload": {"source_event_seq": 1}}
     calls = []
 
-    def listed(_db, *, room_id, status):
+    def listed(_store, *, placement, room_id, status):
         assert room_id == "room-1"
         return [dict(task)] if task["status"] == status else []
 
@@ -334,9 +355,9 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
             "cancel_id": cancel_id, "seq": 2,
         },
     )
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service = HostedRoomService(_server(), store=store, placement="profile")
     hosted_rooms.create_room(
-        service.db_path,
+        store, placement="profile",
         room_id="room-1",
         name="Stop room",
         members=[],
@@ -348,10 +369,8 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     assert calls == ["stop-1"]
 
 
-
-
-def test_topology_projects_decider_and_worker_roles_for_dashboard(tmp_path: Path):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+def test_topology_projects_decider_and_worker_roles_for_dashboard(store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("lead", "worker")
     service.create_room(
         room_id="role-room",
@@ -370,9 +389,8 @@ def test_topology_projects_decider_and_worker_roles_for_dashboard(tmp_path: Path
     assert topology["team_lead_id"] == "lead"
 
 
-
-def test_send_with_recipient_rejects_non_member_before_append(tmp_path: Path):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+def test_send_with_recipient_rejects_non_member_before_append(store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("lead", "worker")
     service.create_room(
         room_id="recipient-room",
@@ -402,11 +420,12 @@ def test_send_with_recipient_rejects_non_member_before_append(tmp_path: Path):
     )
     assert accepted["event_id"] == "known-recipient"
 
-def test_send_to_room_with_deleted_member_profile_is_stored_once_without_raising(tmp_path: Path):
+
+def test_send_to_room_with_deleted_member_profile_is_stored_once_without_raising(store):
     """A member whose profile was deleted leaves a roster that no longer validates. send() must not answer
     "error" for a message it already committed (every retry would stack another one): upstream #143239 stores
     the Send once and lets the room driver report the stall in the room."""
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("lead", "worker")
     service.create_room(
         room_id="orphan-room", name="Orphan room",
@@ -420,9 +439,8 @@ def test_send_to_room_with_deleted_member_profile_is_stored_once_without_raising
     assert [event["event_id"] for event in service._events("orphan-room")].count("after-delete") == 1
 
 
-def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path, store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("default", "ops")
@@ -459,9 +477,8 @@ def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path:
     assert service.status("room-1")["working"] is False
 
 
-def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path, store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("default", "ops")
     service.create_room(
         room_id="room-1",
@@ -472,7 +489,7 @@ def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path)
         ],
     )
     event = _append_room_event(
-        db,
+        store,
         room_id="room-1",
         event_id="user-1",
         kind="message.user",
@@ -481,9 +498,9 @@ def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path)
     )
     binding = service.bindings()[0]
     service.prepare_room(binding)
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    task = driver.list_tasks(store, placement="profile", room_id="room-1", status="queued")[0]
     lease = driver.acquire_lease(
-        db,
+        store, placement="profile",
         room_id="room-1",
         gateway_id=binding.gateway_id,
         authority_epoch=binding.authority_epoch,
@@ -492,15 +509,15 @@ def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path)
         clock=time.time,
     )
     attempt = driver.start_task(
-        db,
+        store,
         task["identity"],
-        lease,
+        lease, placement="profile",
         expected_cancel_generation=0,
         clock=time.time,
     )
     driver.settle_task(
-        db,
-        attempt,
+        store,
+        attempt, placement="profile",
         settlement_id="reply-1",
         status="settled",
         result={"text": "done"},
@@ -520,7 +537,7 @@ def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path)
 def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
     tmp_path: Path, monkeypatch, request
 ):
-    """Real Room service chain reaches prompt.submit and publishes its reply."""
+    """The real turn's terminal callback commits SQLite before its settled session.info."""
 
     import tui_gateway.server as real_server
 
@@ -582,7 +599,29 @@ def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
     monkeypatch.setattr(real_server, "make_stream_renderer", lambda _cols: None)
     monkeypatch.setattr(real_server, "render_message", lambda _raw, _cols: None)
     monkeypatch.setattr(real_server, "_get_usage", lambda _agent: {})
-    monkeypatch.setattr(real_server, "_emit", lambda *_args, **_kwargs: None)
+    emitted = []
+    settled_info_observations = []
+
+    class _CaptureTransport:
+        def write(self, frame):
+            emitted.append(frame)
+            params = frame.get("params") or {}
+            payload = params.get("payload") or {}
+            if (
+                frame.get("method") == "event"
+                and params.get("type") == "session.info"
+                and payload.get("running") is False
+            ):
+                with sqlite3.connect(db) as conn:
+                    turn_settled_persisted = conn.execute(
+                        """SELECT 1 FROM hosted_room_events
+                           WHERE room_id = 'room-e2e' AND kind = 'turn.settled'
+                           LIMIT 1"""
+                    ).fetchone() is not None
+                settled_info_observations.append((params, turn_settled_persisted))
+            return True
+
+    monkeypatch.setattr(real_server, "_stdio_transport", _CaptureTransport())
 
     with real_server._sessions_lock:
         prior_sessions = dict(real_server._sessions)
@@ -597,7 +636,9 @@ def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
     service = None
     try:
         db = hosted_rooms.default_db_path()
-        service = HostedRoomService(real_server, db_path=db)
+        store = open_persistence(profile_scope(home=home))
+        request.addfinalizer(store.close)
+        service = HostedRoomService(real_server, store=store, placement="shared")
         service.local_profiles = lambda: ("ops", "reviewer")
         service.create_room(
             room_id="room-e2e",
@@ -672,6 +713,24 @@ def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
             assert not run_thread.is_alive()
 
     events = service._events("room-e2e")
+    completed = [
+        frame["params"]
+        for frame in emitted
+        if frame.get("method") == "event"
+        and (frame.get("params") or {}).get("type") == "message.complete"
+    ]
+    assert len(completed) == 1
+    final_infos = [
+        (params, turn_settled_persisted)
+        for params, turn_settled_persisted in settled_info_observations
+        if params["session_id"] == completed[0]["session_id"]
+        and params["seq"] > completed[0]["seq"]
+    ]
+    assert len(final_infos) == 1
+    settled_info, turn_settled_persisted = final_infos[0]
+    assert settled_info["payload"]["running"] is False
+    assert turn_settled_persisted is True
+
     member = next(event for event in events if event["kind"] == "message.member")
     assert member["actor"] == {"kind": "member", "id": "ops", "profile": "ops"}
     assert member["payload"]["text"] == "worker done"
@@ -687,14 +746,16 @@ def test_real_service_runtime_rpc_prompt_agent_terminal_publication_e2e(
         profile="ops", title="Group: room-e2e", source="bot_room"
     )
     assert resolved is not None
+    assert settled_info["payload"]["stored_session_id"] == resolved["session_id"]
+    assert settled_info["payload"]["profile_name"] == "ops"
     with real_server._sessions_lock:
         assert len(real_server._sessions) == 1
 
 
 
-def test_dashboard_relays_exact_approval_to_separate_gateway_process(tmp_path: Path):
+def test_dashboard_relays_exact_approval_to_separate_gateway_process(tmp_path: Path, store):
     db = tmp_path / "state.db"
-    gateway = HostedRoomService(_server(), db_path=db)
+    gateway = HostedRoomService(_server(), store=store, placement="profile")
     gateway.rpc = _FakeRPC()
     gateway.runtime.rpc = gateway.rpc
     gateway.rpc.owns_session = lambda session_id: session_id == "owner-session"
@@ -712,9 +773,10 @@ def test_dashboard_relays_exact_approval_to_separate_gateway_process(tmp_path: P
         event_id="user-1",
         payload={"text": "@ops inspect", "thread_id": "thread-1"},
     )
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    task = driver.list_tasks(store, placement="profile", room_id="room-1", status="queued")[0]
     lease = driver.acquire_lease(
-        db,
+        store,
+        placement="profile",
         room_id="room-1",
         gateway_id=gateway.bindings()[0].gateway_id,
         authority_epoch=1,
@@ -723,9 +785,10 @@ def test_dashboard_relays_exact_approval_to_separate_gateway_process(tmp_path: P
         clock=time.time,
     )
     attempt = driver.start_task(
-        db,
+        store,
         task["identity"],
         lease,
+        placement="profile",
         expected_cancel_generation=0,
         clock=time.time,
     )
@@ -746,7 +809,7 @@ def test_dashboard_relays_exact_approval_to_separate_gateway_process(tmp_path: P
         },
     )
 
-    dashboard = HostedRoomService(_server(), db_path=db)
+    dashboard = HostedRoomService(_server(), store=store, placement="profile")
     dashboard.rpc = _FakeRPC()
     dashboard.runtime.rpc = dashboard.rpc
     dashboard.rpc.owns_session = lambda _session_id: False
@@ -810,7 +873,7 @@ def test_dashboard_relays_exact_approval_to_separate_gateway_process(tmp_path: P
 
 
 def test_c5_manual_dag_task_auto_dispatches_and_completes_closing_the_loop(
-    tmp_path: Path,
+    tmp_path: Path, store,
 ):
     """C5: a manual task DAG drives real member turns without a decider.
 
@@ -828,7 +891,7 @@ def test_c5_manual_dag_task_auto_dispatches_and_completes_closing_the_loop(
     from gateway import room_task_dag as dag
 
     db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("default", "backend", "frontend")
@@ -890,7 +953,7 @@ def test_c5_manual_dag_task_auto_dispatches_and_completes_closing_the_loop(
 
 
 def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
-    tmp_path: Path,
+    tmp_path: Path, store,
 ):
     """A decider dispatch message must not complete its worker-owned DAG task.
 
@@ -901,7 +964,7 @@ def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
     from gateway import room_task_dag as dag
 
     db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("lead", "backend")
     service.create_room(
         room_id="room-1",
@@ -930,11 +993,12 @@ def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
         owner="backend",
         dispatch_thread_id="dagtask:t1",
     ) is not None
-    room = hosted_rooms.room_state(db, room_id="room-1")
+    room = hosted_rooms.room_state(store, placement="profile", room_id="room-1")
 
     def append(*, event_id: str, kind: str, actor: dict, payload: dict) -> None:
         hosted_rooms.append_event(
-            db,
+            store,
+            placement="profile",
             room_id="room-1",
             event_id=event_id,
             kind=kind,
@@ -984,7 +1048,7 @@ def test_c5_dag_completion_waits_for_settled_claimed_worker_reply(
     assert dag.get_task(db, room_id="room-1", task_id="t1")["status"] == "completed"
 
 
-def test_c5_ambiguous_subject_is_not_auto_dispatched(tmp_path: Path):
+def test_c5_ambiguous_subject_is_not_auto_dispatched(tmp_path: Path, store):
     """A DAG task whose subject names no single worker stays pending.
 
     Auto-dispatch requires exactly one ``@handle`` target; a bare subject (or a
@@ -994,7 +1058,7 @@ def test_c5_ambiguous_subject_is_not_auto_dispatched(tmp_path: Path):
     from gateway import room_task_dag as dag
 
     db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("default", "backend", "frontend")
@@ -1028,11 +1092,11 @@ def test_c5_ambiguous_subject_is_not_auto_dispatched(tmp_path: Path):
 
 
 
-def test_c5_unroutable_head_does_not_block_later_valid_task(tmp_path: Path):
+def test_c5_unroutable_head_does_not_block_later_valid_task(tmp_path: Path, store):
     from gateway import room_task_dag as dag
 
     db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("default", "backend", "frontend")
@@ -1072,10 +1136,10 @@ def test_c5_unroutable_head_does_not_block_later_valid_task(tmp_path: Path):
 
 def test_policy_checkpoint_bounds_replay_after_completed_room_history(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch, store,
 ):
     db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("default", "ops")
     room = service.create_room(
         room_id="room-1",
@@ -1133,7 +1197,7 @@ def test_policy_checkpoint_bounds_replay_after_completed_room_history(
                WHERE room_id='room-1'"""
         )
     _append_room_event(
-        db,
+        store,
         room_id="room-1",
         event_id="user-active",
         kind="message.user",
@@ -1151,11 +1215,20 @@ def test_policy_checkpoint_bounds_replay_after_completed_room_history(
         reads["rows"] += len(page["events"])
         return page
 
+    original_read_page = backend_rooms.read_events_page
+
+    def counted_read_page(*args, **kwargs):
+        page = original_read_page(*args, **kwargs)
+        reads["calls"] += 1
+        reads["rows"] += len(page["events"])
+        return page
+
     monkeypatch.setattr(hosted_rooms, "read_events", counted_read_events)
+    monkeypatch.setattr(backend_rooms, "read_events_page", counted_read_page)
     binding = service.bindings()[0]
     service.prepare_room(binding)
     assert reads["rows"] == 401
-    snapshot = service._policy_snapshot(hosted_rooms.room_state(db, room_id="room-1"))
+    snapshot = service._policy_snapshot(hosted_rooms.room_state(store, placement="profile", room_id="room-1"))
     assert len(snapshot.events) == 1
     assert len(snapshot.events) <= MAX_ACTIVE_POLICY_EVENTS
     with sqlite3.connect(db) as conn:
@@ -1224,25 +1297,7 @@ def test_policy_checkpoint_bounds_replay_after_completed_room_history(
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
+def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path, store):
     """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir, a
     tombstoned profile, nor a marker-less cron shell is a roster member (#106847: ``.deleted``
     failed validate_roster every cycle; #99392: side-effect dirs listed as bots)."""
@@ -1257,13 +1312,13 @@ def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
     assert (profiles / ".deleted").is_dir()
     (profiles / "shell" / "cron").mkdir(parents=True)
 
-    service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
+    service = HostedRoomService(_server(), store=store, placement="shared")
 
     assert service.local_profiles() == ("default", "ops")
 
 
 def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, store
 ):
     """A decider member's live agent is built with orchestration-only tools.
 
@@ -1279,8 +1334,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
 
     from tui_gateway import server as tui_server
 
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("lead", "backend")
     service.create_room(
         room_id="room-1",
@@ -1294,12 +1348,6 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
             },
             {"member_id": "backend", "profile": "backend", "handle": "backend"},
         ],
-    )
-
-    # The build seam reads the authority DB via default_db_path(); point it at
-    # this room's DB so the filter resolves the real persisted roster + roles.
-    monkeypatch.setattr(
-        "gateway.hosted_rooms.default_db_path", lambda: db
     )
 
     full_engineer = [
@@ -1321,9 +1369,13 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
             "profile_home": str(tmp_path / "profiles" / profile),
         }
 
+    def _room_toolsets(session: dict, toolsets):
+        return tui_server._room_decider_toolset_filter(
+            session, toolsets, persistence=store, placement="profile")
+
     # Decider: intersected with the orchestration-only allow-set — the write /
     # execution / browsing toolsets are gone, the room voice survives.
-    decider_tools = tui_server._room_decider_toolset_filter(
+    decider_tools = _room_toolsets(
         _room_session("lead"), list(full_engineer)
     )
     assert decider_tools == ["bot_room", "clarify", "todo"]
@@ -1335,14 +1387,14 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     assert "delegation" not in decider_tools
 
     # Worker: untouched — the same full engineer toolset passes through.
-    worker_tools = tui_server._room_decider_toolset_filter(
+    worker_tools = _room_toolsets(
         _room_session("backend"), list(full_engineer)
     )
     assert worker_tools == full_engineer
 
     # A decider bound to "every toolset enabled" (base None) still collapses to
     # exactly the orchestration allow-set — it can never gain write tools.
-    decider_from_all = tui_server._room_decider_toolset_filter(
+    decider_from_all = _room_toolsets(
         _room_session("lead"), None
     )
     assert decider_from_all == ["bot_room", "clarify", "todo"]
@@ -1350,12 +1402,12 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     # Normal sessions are untouched. A malformed bot_room session fails closed
     # because its worker/decider role cannot be positively established.
     assert (
-        tui_server._room_decider_toolset_filter(
+        _room_toolsets(
             {"source": "desktop", "title": "Group: room-1"}, list(full_engineer)
         )
         == full_engineer
     )
-    assert tui_server._room_decider_toolset_filter(
+    assert _room_toolsets(
         {"source": "bot_room", "title": "Untitled"}, list(full_engineer)
     ) == ["bot_room", "clarify", "todo"]
 
@@ -1367,7 +1419,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     # terminal / code_execution). The filter must bind off ``pending_title``
     # too, or F1 silently no-ops on turn one. This is exactly the seam that a
     # real qwen-plus room run exposed.
-    decider_pending = tui_server._room_decider_toolset_filter(
+    decider_pending = _room_toolsets(
         {
             "source": "bot_room",
             "pending_title": "Group: room-1",
@@ -1376,7 +1428,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
         list(full_engineer),
     )
     assert decider_pending == ["bot_room", "clarify", "todo"]
-    worker_pending = tui_server._room_decider_toolset_filter(
+    worker_pending = _room_toolsets(
         {
             "source": "bot_room",
             "pending_title": "Group: room-1",
@@ -1386,7 +1438,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
     )
     assert worker_pending == full_engineer
 
-    unknown_profile = tui_server._room_decider_toolset_filter(
+    unknown_profile = _room_toolsets(
         {
             "source": "bot_room",
             "pending_title": "Group: room-1",
@@ -1400,7 +1452,7 @@ def test_f1_decider_member_is_restricted_to_orchestration_only_tools(
         "gateway.hosted_rooms.room_state",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("db unavailable")),
     )
-    unavailable = tui_server._room_decider_toolset_filter(
+    unavailable = _room_toolsets(
         _room_session("backend"), list(full_engineer)
     )
     assert unavailable == ["bot_room", "clarify", "todo"]

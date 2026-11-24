@@ -302,7 +302,7 @@ def _persist_running(data: dict[str, Any]) -> None:
 
 
 def _owner_alive(record: dict[str, Any]) -> bool:
-    from hermes_cli.process_identity import _pid_alive_matches
+    from hermes_cli.update_lock import incarnation_live
 
     identities = {}
     for key, time_key in (("pid", "pid_create_time"), ("writer_pid", "writer_create_time")):
@@ -313,7 +313,7 @@ def _owner_alive(record: dict[str, Any]) -> bool:
             create_time = record.get(time_key)
             if pid not in identities or identities[pid] is None:
                 identities[pid] = create_time
-    return any(_pid_alive_matches(pid, create_time) is not False
+    return any(incarnation_live(pid, create_time) is not False
                for pid, create_time in identities.items())
 
 

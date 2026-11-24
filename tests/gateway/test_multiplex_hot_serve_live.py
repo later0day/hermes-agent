@@ -274,6 +274,26 @@ def test_broken_secondary_state_db_parks_only_that_profile(mux):
         stop(proc, expect=None)
 
 
+def rescan_profiles(root, *, parked, unserved):
+    """Wait for a pending rescan to publish its parked set before applying the result contract."""
+    result = control(root, 'rescan-profiles')
+    desc = control(root, 'identify')
+    if result.get('pending'):
+        expected_parked = set(parked)
+        unserved_homes = {home.resolve() for home in unserved}
+
+        def published():
+            nonlocal desc
+            desc = control(root, 'identify')
+            return (set(desc.get('parked_profiles', {})) == expected_parked
+                    and not (unserved_homes & served_homes(desc)))
+
+        wait_until(published, timeout=60, interval=.2,
+                   what=f'rescan parked {sorted(expected_parked)} and withdrew profiles')
+        result = {**result, 'parked': sorted(desc.get('parked_profiles', {}))}
+    return result, desc
+
+
 def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
     """A runtime MultiplexConfigError withdraws both new and previously served secondaries.
 
@@ -290,9 +310,8 @@ def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
         added = root / 'profiles' / 'invalid-hot'
         added.mkdir(parents=True, mode=0o700)
         (added / 'config.yaml').write_text(json.dumps(invalid), encoding='utf-8')
-        result = control(root, 'rescan-profiles')
-        desc = control(root, 'identify')
-        assert result['parked'] == ['invalid-hot'], (result, tail(mux))
+        result, desc = rescan_profiles(root, parked=['invalid-hot'], unserved=[added])
+        assert result.get('parked') == ['invalid-hot'], (result, tail(mux))
         assert added.resolve() not in served_homes(desc), desc
         assert 'invalid-hot' in desc.get('parked_profiles', {}), desc
         wait_recorded(root, lambda r: 'invalid-hot' not in r, 'invalid-hot never recorded')
@@ -301,11 +320,10 @@ def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
         # into an invalid configuration.
         assert mux['boot'].resolve() in served_homes(desc)
         (mux['boot'] / 'config.yaml').write_text(json.dumps(invalid), encoding='utf-8')
-        result = control(root, 'rescan-profiles')
-        desc = control(root, 'identify')
+        result, desc = rescan_profiles(root, parked=['boot', 'invalid-hot'], unserved=[added, mux['boot']])
         # An explicit control-socket rescan retries parked profiles by design, so the still-invalid
         # 'invalid-hot' is re-parked alongside 'boot' (never served in between).
-        assert sorted(result['parked']) == ['boot', 'invalid-hot'], (result, tail(mux))
+        assert sorted(result.get('parked', ())) == ['boot', 'invalid-hot'], (result, tail(mux))
         assert added.resolve() not in served_homes(desc), desc
         assert mux['boot'].resolve() not in served_homes(desc), desc
         assert 'boot' in desc.get('parked_profiles', {}), desc

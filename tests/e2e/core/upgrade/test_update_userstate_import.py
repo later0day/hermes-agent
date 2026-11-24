@@ -10,6 +10,7 @@ existing home untouched.
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import zipfile
@@ -42,8 +43,38 @@ def _home(root: Path, name: str) -> dict:
     return env
 
 
-def _cli(root: Path, env: dict, *args: str):
-    return H.run([PY, "-m", "hermes_cli.main", *args], env=env, cwd=root, writable=[root], timeout=300)
+def _link_or_copy(src: str, dst: str) -> str:
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+    return dst
+
+
+def _accessible_python(root: Path) -> str:
+    """Expose the PM runtime without changing its real-home permissions or ownership."""
+    if os.geteuid() != 0:
+        return PY
+    base = Path(sys.base_prefix)
+    venv = Path(PY).parent.parent
+    target = root / "unprivileged-runtime"
+    shutil.copytree(base, target / "base", copy_function=_link_or_copy)
+    shutil.copytree(venv, target / "venv", copy_function=_link_or_copy)
+    executable = target / "venv" / "bin" / "python"
+    config = target / "venv" / "pyvenv.cfg"
+    lines = [f"home = {target / 'base' / 'bin'}" if line.startswith("home = ") else line
+             for line in config.read_text(encoding="utf-8").splitlines()]
+    config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(executable)
+
+
+def _cli(root: Path, env: dict, *args: str, unprivileged: bool = False):
+    argv = [PY, "-m", "hermes_cli.main", *args]
+    if unprivileged:
+        argv[0] = _accessible_python(root)
+        argv = H.unprivileged_argv(argv)
+        env = H.unprivileged_env(env)
+    return H.run(argv, env=env, cwd=root, writable=[root], timeout=300)
 
 
 @pytest.fixture(scope="module")
@@ -115,16 +146,19 @@ def test_import_that_skips_members_reports_incomplete(archive):
     root, good = archive
     env = _home(root, "dst-partial")
     hh = Path(env["HERMES_HOME"])
+    H.prepare_unprivileged_tree(root)
     locked = hh / "skills" / "demo"
     locked.mkdir(parents=True)
     locked.chmod(0o555)  # left behind root-owned by an earlier `sudo hermes ...`
     try:
-        cp = _cli(root, env, "import", str(good), "--force")
+        cp = _cli(root, env, "import", str(good), "--force", unprivileged=True)
     finally:
         locked.chmod(0o755)
     out = cp.stdout + cp.stderr
     assert I.TRACEBACK not in out, H.describe(cp)
-    assert (hh / "config.yaml").read_text(encoding="utf-8").startswith("# from the backup"), "readable members not restored"
+    assert (hh / "config.yaml").exists(), "readable members not restored\n" + H.describe(cp)
+    assert (hh / "config.yaml").read_text(encoding="utf-8").startswith("# from the backup"), (
+        "readable members not restored\n" + H.describe(cp))
     assert not (locked / "SKILL.md").exists(), "harness: the locked directory was writable"
     if cp.returncode == 0 or RESTORED in out:
         raise Gap("import skipped skills/demo/SKILL.md yet reported success:\n" + H.describe(cp))

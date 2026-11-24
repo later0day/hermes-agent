@@ -11,40 +11,59 @@ import pytest
 
 from tests.waiting import async_wait_until
 
-_PERSON_QUEUED = {"status": "queued", "principal_id": "messaging:42", "payload": {}}
+
+def _person_queued():
+    from persistence.authority.admissions import AdmissionRecord
+    return AdmissionRecord(seq=1, admission_id="a1", request_id="r1", principal_id="messaging:42",
+                           target_session_id="sid", payload={}, intent="queue", status="queued", outcome=None,
+                           owner_epoch=None, generation=None)
 
 
-def _waiting_session(monkeypatch):
-    import hermes_state_runtime
+def _waiting_session():
     from gateway.session_contract import SessionRef
 
     readers = []
 
-    def list_session_admissions(db, *, session_id):
+    def list_admissions(*, session_id, pending_only=True):
         readers.append(threading.current_thread())
-        return [_PERSON_QUEUED]
+        return [_person_queued()]
 
-    monkeypatch.setattr(hermes_state_runtime, "list_session_admissions", list_session_admissions)
     live = SimpleNamespace(background_wait=threading.Event())
-    authority = SimpleNamespace(sessions={"sid": live}, db=object())
+    authority = SimpleNamespace(sessions={"sid": live},
+                                persistence=SimpleNamespace(admissions=SimpleNamespace(list=list_admissions)))
     return authority, SessionRef("default", "sid"), live.background_wait, readers
 
 
 @pytest.mark.asyncio
-async def test_the_wake_on_the_loop_reads_the_ledger_off_the_loop(monkeypatch):
+async def test_the_wake_on_the_loop_reads_the_ledger_off_the_loop():
     from gateway.run_plugin_injection import wake_background_wait
 
-    authority, ref, wait, readers = _waiting_session(monkeypatch)
+    authority, ref, wait, readers = _waiting_session()
     wake_background_wait(authority, ref)
     await async_wait_until(wait.is_set, timeout=5, what="the wait ended")
 
     assert readers and threading.current_thread() not in readers
 
 
-def test_the_wake_from_a_plain_thread_ends_the_wait_before_returning(monkeypatch):
+def test_a_committed_person_admission_wakes_without_re_reading_the_ledger():
+    from dataclasses import asdict
+
+    from gateway.session_authority import SessionAuthority
+
+    authority, ref, wait, readers = _waiting_session()
+    authority._publish_pending = lambda _ref: None
+    authority._receipt = lambda row: row
+
+    SessionAuthority._admitted(authority, ref, None, asdict(_person_queued()))
+
+    assert wait.is_set()
+    assert not readers
+
+
+def test_the_wake_from_a_plain_thread_ends_the_wait_before_returning():
     from gateway.run_plugin_injection import wake_background_wait
 
-    authority, ref, wait, _readers = _waiting_session(monkeypatch)
+    authority, ref, wait, _readers = _waiting_session()
     worker = threading.Thread(target=wake_background_wait, args=(authority, ref))
     worker.start()
     worker.join(5)

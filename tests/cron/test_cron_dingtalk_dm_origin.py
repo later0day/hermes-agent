@@ -41,7 +41,7 @@ class _RobotSdk:
 
 
 def _origin_for(chat_type: str) -> dict:
-    from tools.cronjob_job_args import _origin_from_env
+    from cron.job_args import _origin_from_env
 
     tokens = set_session_vars(platform="dingtalk", chat_id=DM_CHAT, chat_type=chat_type, user_id="sender-x",
                               user_id_alt=STAFF_ID, session_key="dt", async_delivery=True)

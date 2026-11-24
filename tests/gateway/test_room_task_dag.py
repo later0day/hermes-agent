@@ -16,6 +16,7 @@ from threading import Barrier
 import pytest
 
 from gateway import room_task_dag as dag
+from persistence_assembly import open_persistence, profile_scope
 
 ROOM = "room-1"
 
@@ -254,18 +255,19 @@ def test_additive_tables_invisible_to_hosted_rooms_schema_guard(tmp_path):
     # hosted_rooms also manages must not trip its schema guard.
     from gateway import hosted_rooms
     dbp = tmp_path / "state.db"
-    hosted_rooms.create_room(
-        dbp, room_id=ROOM, name="R", members=[
-            {"member_id": "m1", "profile": "plan", "handle": "plan",
-             "target": {"kind": "local", "profile": "plan"}},
-        ], authority_gateway_id="g", now=1,
-    )
-    dag.create_task(dbp, room_id=ROOM, subject="coexist")
-    # hosted_rooms still reads its own room fine after the extra tables exist.
-    assert hosted_rooms.read_events(
-        dbp, room_id=ROOM, since_seq=0, limit=hosted_rooms.MAX_LOG_LIMIT
-    ) is not None
-    assert dag.list_tasks(dbp, room_id=ROOM)[0]["subject"] == "coexist"
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        hosted_rooms.create_room(
+            store, placement="profile", room_id=ROOM, name="R", members=[
+                {"member_id": "m1", "profile": "plan", "handle": "plan",
+                 "target": {"kind": "local", "profile": "plan"}},
+            ], authority_gateway_id="g", now=1,
+        )
+        dag.create_task(dbp, room_id=ROOM, subject="coexist")
+        # hosted_rooms still reads its own room fine after the extra tables exist.
+        assert hosted_rooms.read_events(
+            store, placement="profile", room_id=ROOM, since_seq=0, limit=hosted_rooms.MAX_LOG_LIMIT
+        ) is not None
+        assert dag.list_tasks(dbp, room_id=ROOM)[0]["subject"] == "coexist"
 
 
 # ── C5 auto-dispatch integration ────────────────────────────────────────────

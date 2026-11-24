@@ -65,6 +65,7 @@ _EXEMPT_DIRS = (
     "node_modules",
     ".build",
     ".cache",
+    ".hermes-runtime",
     ".git",
     ".venv",
     "venv",
@@ -225,7 +226,9 @@ def _source_files() -> list[Path]:
         if rel_dir == Path("."):
             dirnames[:] = [
                 d for d in dirnames
-                if d not in _EXEMPT_DIRS and not _is_packaging_copy(d)
+                if d not in _EXEMPT_DIRS
+                and not _is_packaging_copy(d)
+                and not (REPO_ROOT / d / "pyvenv.cfg").is_file()
             ]
         for fname in filenames:
             if fname.endswith(".py"):

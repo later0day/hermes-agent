@@ -72,6 +72,18 @@ def test_writer_identity_cannot_resurrect_a_mismatched_owner(tmp_path):
     assert result == {"same": False, "writer": False, "control": True}
 
 
+def test_current_pid_with_an_older_incarnation_is_not_the_live_owner(tmp_path):
+    result = _run(tmp_path, """
+        ct = _process_create_time(os.getpid())
+        assert ct is not None
+        previous = {'pid': os.getpid(), 'pid_create_time': ct - 0.25}
+        current = {'pid': os.getpid(), 'pid_create_time': ct}
+        Path('result.json').write_text(json.dumps({
+            'previous': receipts._owner_alive(previous), 'current': receipts._owner_alive(current)}))
+    """)
+    assert result == {"previous": False, "current": True}
+
+
 def test_user_action_survives_interrupt_before_next_stage(tmp_path):
     result = _run(tmp_path, """
         receipts.begin_update_receipt()

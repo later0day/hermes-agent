@@ -57,6 +57,7 @@ from tests.e2e.core.upgrade._helpers import (
     wait_for,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.process_scan import children_matching, matching
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux", reason="fork()-based import isolation and bwrap sandbox are Linux-only"),
@@ -121,6 +122,22 @@ _POST_PURGE_IMPORTS = (
 _OLD_UPDATER_GRAPH = ("hermes_cli.main", "hermes_cli.update_cmd", "hermes_cli.config", "hermes_cli.gateway")
 
 _READY_RE = re.compile(r"^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)", re.MULTILINE)  # electron/backend-ready.ts
+
+
+def test_unshare_fallback_preserves_child_stdin(monkeypatch):
+    monkeypatch.setattr("tests.e2e.core.upgrade._helpers.BWRAP_OK", False)
+    monkeypatch.setenv("HERMES_E2E_UNSHARE_PID", "1")
+    cp = subprocess.run(sandbox_argv(["/bin/cat"], writable=[]), input="stdin survives", text=True,
+                        capture_output=True, timeout=10, check=False)
+    assert cp.returncode == 0 and cp.stdout == "stdin survives", describe(cp)
+
+
+def test_unshare_fallback_delivers_sigint_to_the_child(monkeypatch):
+    monkeypatch.setattr("tests.e2e.core.upgrade._helpers.BWRAP_OK", False)
+    monkeypatch.setenv("HERMES_E2E_UNSHARE_PID", "1")
+    cp = subprocess.run(sandbox_argv([PY, "-c", "import signal; signal.raise_signal(signal.SIGINT)"], writable=[]),
+                        text=True, capture_output=True, timeout=10, check=False)
+    assert cp.returncode == 130 and "KeyboardInterrupt" in cp.stderr, describe(cp)
 
 
 # --------------------------------------------------------------------------- packaging model
@@ -760,7 +777,9 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
     _sandbox_or_skip()
     psutil = pytest.importorskip("psutil")
     lock_dir = tmp_path / "host-locks"
-    env = isolated_env(tmp_path, pythonpath=WORKTREE, extra={"HERMES_GATEWAY_LOCK_DIR": str(lock_dir)})
+    env = isolated_env(tmp_path, pythonpath=WORKTREE, extra={
+        "HERMES_GATEWAY_LOCK_DIR": str(lock_dir), "PYTHONFAULTHANDLER": "1",
+    })
     reaper = _write_script(tmp_path / "runner", "subreaper.py", _SUBREAPER)
     report_path = tmp_path / "reaper.json"
     stdout_path, stderr_path = tmp_path / "serve.out", tmp_path / "serve.err"
@@ -790,13 +809,21 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
 
             # With bwrap the reaper is a child; without it (CI) it is proc itself.
             root = psutil.Process(proc.pid)
-            reaper_proc = next(p for p in [root, *root.children(recursive=True)]
-                               if p.cmdline()[1:2] == [str(reaper)])
-            serve = next(p for p in reaper_proc.children() if p.cmdline()[1:3] == ["-m", "hermes_cli.main"])
+            reaper_proc = next(iter(matching([root, *root.children(recursive=True)],
+                                             lambda p: p.cmdline()[1:2] == [str(reaper)])))
+            serve = next(iter(children_matching(reaper_proc, lambda p: p.cmdline()[1:3] == ["-m", "hermes_cli.main"])))
             descendants = [p.pid for p in serve.children(recursive=True)]
             serve.send_signal(signal.SIGTERM)
-            wait_for(lambda: report_path.exists() and report_path.stat().st_size > 0, timeout=120,
-                     what=f"serve to exit after SIGTERM (descendants at signal time: {descendants})")
+            try:
+                wait_for(lambda: report_path.exists() and report_path.stat().st_size > 0, timeout=120,
+                         what=f"serve to exit after SIGTERM (descendants at signal time: {descendants})")
+            except AssertionError as exc:
+                serve.send_signal(signal.SIGABRT)
+                try:
+                    serve.wait(timeout=5)
+                except psutil.TimeoutExpired:
+                    pass
+                raise AssertionError(f"serve did not exit after SIGTERM\n{_logs()}") from exc
             proc.wait(timeout=60)
         finally:
             kill_tree(proc)

@@ -241,6 +241,12 @@ def _die_with_owner():
     threading.Timer(ORPHAN_GRACE_SECONDS, kill).start()
 
 
+APPROVAL_NOTIFICATION_FIELDS = frozenset({
+    'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit',
+    'kind', 'path', 'access', 'host', 'label', 'risk',
+})
+
+
 class WorkerControls:
     def __init__(self, channel, route):
         self.channel, self.route = channel, route
@@ -273,14 +279,20 @@ class WorkerControls:
                 if frame == {'type': 'finish'}:
                     self.finish.set()
                     return
-                if (set(frame) != {'type', 'prompt_id', 'value'} or frame['type'] not in {'approval', 'clarify'}
+                fields = {'type', 'prompt_id', 'value'}
+                if frame.get('type') == 'approval' and 'reason' in frame:
+                    fields.add('reason')
+                if (set(frame) != fields or frame['type'] not in {'approval', 'clarify'}
                         or not isinstance(frame['prompt_id'], str) or not isinstance(frame['value'], str)
-                        or len(frame['value']) > 16384):
+                        or len(frame['value']) > 16384
+                        or ('reason' in frame and (not isinstance(frame['reason'], str) or len(frame['reason']) > 16384))):
                     raise ValueError('invalid_managed_control')
                 if frame['type'] == 'approval':
                     if frame['value'] not in {'once', 'deny', 'session', 'always'}:
                         raise ValueError('invalid_managed_control')
-                    resolve_gateway_approval(self.route, frame['value'], request_id=frame['prompt_id'])
+                    reason = frame.get('reason', '').strip() or None
+                    resolve_gateway_approval(self.route, frame['value'], request_id=frame['prompt_id'],
+                                             **({'reason': reason} if reason else {}))
                 else:
                     with self.lock:
                         state = self.clarifications.get(frame['prompt_id'])
@@ -299,8 +311,7 @@ class WorkerControls:
 
     def approval(self, data):
         from tools.approval import ack_gateway_approval
-        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
-        self.channel.send('approval', data={k: v for k, v in data.items() if k in fields})
+        self.channel.send('approval', data={k: v for k, v in data.items() if k in APPROVAL_NOTIFICATION_FIELDS})
         ack_gateway_approval(self.route, data['request_id'])
 
     def clarify(self, questions):

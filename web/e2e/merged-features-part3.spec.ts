@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Response } from "@playwright/test";
 
 /**
  * REAL functional E2E tests — Part 3.
@@ -12,6 +12,10 @@ import { test, expect, type Page } from "@playwright/test";
  */
 
 const BASE = "http://localhost:9119";
+
+function isEnvResponse(response: Response, method: string): boolean {
+  return new URL(response.url()).pathname === "/api/env" && response.request().method() === method;
+}
 
 async function fetchToken(): Promise<string> {
   const resp = await fetch(`${BASE}/`);
@@ -69,90 +73,35 @@ async function authedGoto(page: Page, path: string) {
 
 test("REAL EnvPage: set env var → Save → badge shows 'set' → Clear → badge reverts", async ({ page }) => {
   await authedGoto(page, "/env");
-  await page.waitForTimeout(2000);
-
-  // Find an unset env var row — it has a "Set" button (not "Replace" or "Clear")
-  const setBtns = page.locator("button").filter({ hasText: /^Set$|^设置$/ });
-  const setBtnCount = await setBtns.count();
-
-  if (setBtnCount === 0) {
-    // All env vars are set — find one with "Replace" button and test the replace flow instead
-    const replaceBtns = page.locator("button").filter({ hasText: /^Replace$|^替换$/ });
-    const replaceCount = await replaceBtns.count();
-    test.skip(replaceCount === 0, "No settable env vars on this profile");
-    return;
-  }
-
-  // Click the first "Set" button
-  await setBtns.first().click();
-  await page.waitForTimeout(500);
-
-  // The Set input has placeholder "Enter value" (for unset vars) or
-  // "Replace current value (...)" (for set vars). Since we clicked "Set"
-  // on an unset var, the placeholder is "Enter value".
-  const valueInput = page.locator("input[placeholder*='Enter value' i], input[placeholder*='enter' i]").first();
-  if (!(await valueInput.isVisible().catch(() => false))) {
-    // Fallback: try autofocus input
-    const af = page.locator("input[autofocus]").first();
-    if (!(await af.isVisible().catch(() => false))) {
-      test.skip(true, "Could not find edit input after clicking Set");
-      return;
-    }
-  }
-  const actualInput = (await valueInput.isVisible().catch(() => false)) ? valueInput : page.locator("input[autofocus]").first();
-  await expect(actualInput).toBeVisible();
-
-  // Type a test value
+  const envKey = "PARALLEL_API_KEY";
   const testValue = `e2e-test-${Date.now()}`;
-  await actualInput.fill(testValue);
-  await page.waitForTimeout(300);
+  const row = page.getByText(envKey, { exact: true })
+    .locator("xpath=ancestor::div[contains(@class, 'border')][1]");
 
-  // The Save button is a sibling of the input. Find it via JS.
-  const saved = await page.evaluate(() => {
-    // Try both placeholder patterns
-    let input = document.querySelector("input[placeholder*='Enter value' i]");
-    if (!input) input = document.querySelector("input[placeholder*='enter' i]");
-    if (!input) {
-      const af = document.querySelector("input[autofocus]");
-      if (af) input = af as HTMLInputElement;
-    }
-    if (!input) return false;
-    let parent = input.parentElement;
-    for (let i = 0; i < 5 && parent; i++) {
-      const btns = parent.querySelectorAll("button:not([disabled])");
-      for (const btn of btns) {
-        if (btn.textContent?.trim().match(/^(Save|保存)$/i)) {
-          (btn as HTMLElement).click();
-          return true;
-        }
-      }
-      parent = parent.parentElement;
-    }
-    return false;
-  });
-  expect(saved).toBe(true);
-  await page.waitForTimeout(1500);
+  await expect(row.getByRole("button", { name: "Set", exact: true })).toBeVisible();
+  await row.getByRole("button", { name: "Set", exact: true }).click();
+  await row.locator("input").fill(testValue);
+  const saveResponse = page.waitForResponse((response) => isEnvResponse(response, "PUT"));
+  await row.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await saveResponse).ok()).toBe(true);
 
-  // The badge for this env var should now show "set" (tone="success")
-  // The row should now have a Badge with tone="success" and text "set"
-  const successBadges = page.locator("[class*='badge'][class*='success'], [data-tone='success']");
-  expect(await successBadges.count()).toBeGreaterThan(0);
+  await expect(row.getByText("Set", { exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: `Reveal ${envKey}`, exact: true })).toBeVisible();
+  await expect(row).toContainText(`${testValue.slice(0, 4)}...${testValue.slice(-4)}`);
+  const savedVars = await (await page.request.get(`${BASE}/api/env`)).json();
+  expect(savedVars[envKey].is_set).toBe(true);
 
-  // Now find and click Clear to revert
-  const clearBtn = page.locator("button").filter({ hasText: /^Clear$|^清除$/ }).first();
-  if (await clearBtn.isVisible().catch(() => false)) {
-    // Clear may open a confirm dialog
-    await clearBtn.click();
-    await page.waitForTimeout(500);
+  await row.getByRole("button", { name: "Clear", exact: true }).click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText(envKey);
+  const clearResponse = page.waitForResponse((response) => isEnvResponse(response, "DELETE"));
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  expect((await clearResponse).ok()).toBe(true);
 
-    // Look for confirm dialog
-    const confirmBtn = page.locator("[role='dialog'] button, [role='alertdialog'] button, .fixed button")
-      .filter({ hasText: /Clear|Delete|确认|删除|清除/i }).first();
-    if (await confirmBtn.isVisible().catch(() => false)) {
-      await confirmBtn.click();
-      await page.waitForTimeout(1500);
-    }
-  }
+  await expect(row.getByRole("button", { name: "Set", exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: `Reveal ${envKey}`, exact: true })).toHaveCount(0);
+  const clearedVars = await (await page.request.get(`${BASE}/api/env`)).json();
+  expect(clearedVars[envKey].is_set).toBe(false);
 });
 
 // ═══════════════════════════════════════════════════════════════════════

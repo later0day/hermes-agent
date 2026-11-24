@@ -121,7 +121,8 @@ def test_one_logical_delivery_is_one_row_whatever_the_retries(rows):
     ]
 
 
-def test_first_reply_latency_is_one_row_per_turn_stopped_only_by_reply_text(rows):
+def test_first_reply_latency_is_one_row_per_turn_stopped_only_by_reply_text(rows, monkeypatch):
+    monkeypatch.setattr(smg, "time", SimpleNamespace(monotonic=lambda: 0.0))
     adapter = _Adapter()
     smg.start_reply_clock(SimpleNamespace(platform=Platform.TELEGRAM, chat_id="42"))
     asyncio.run(adapter._send_with_retry("42", "⏳ still working on the previous message"))  # busy ack
@@ -139,7 +140,8 @@ def test_first_reply_latency_is_one_row_per_turn_stopped_only_by_reply_text(rows
     assert rows("hermes.gateway.reply_latency") == [{"first_response_bucket": "lt_2s", "platform": "telegram"}] * 2
 
 
-def test_a_relay_delivered_turn_stops_the_clock_its_inbound_started(rows):
+def test_a_relay_delivered_turn_stops_the_clock_its_inbound_started(rows, monkeypatch):
+    monkeypatch.setattr(smg, "time", SimpleNamespace(monotonic=lambda: 0.0))
     # The connector's inbound names the platform it came from; the reply leaves through the relay.
     relay = _Adapter(platform=Platform.RELAY)
     smg.start_reply_clock(SimpleNamespace(platform=Platform.DISCORD, chat_id="c1"))

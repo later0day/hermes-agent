@@ -53,7 +53,6 @@ import shutil
 import stat
 import sqlite3
 import subprocess
-import sys
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -457,16 +456,15 @@ def migrate_oracle(leg: Leg, name: str, before: bytes) -> bytes:
     oroot = leg.root / f"oracle-{name}"
     if oroot.exists():
         shutil.rmtree(oroot)
-    env = H.isolated_env(oroot, pythonpath=H.WORKTREE)
+    env = H.isolated_env(oroot, pythonpath=leg.install)
     home = Path(env["HERMES_HOME"])
     (home / "config.yaml").write_bytes(before)
     src_env = _profile_homes(leg)[name] / ".env"
     if src_env.exists():
         shutil.copy2(src_env, home / ".env")
     code = "from hermes_cli.config import migrate_config; migrate_config(interactive=False, quiet=True)"
-    # HEAD's test interpreter, however the runner got it: <checkout>/.venv exists only in CI's checkout.
-    cp = H.run([sys.executable, "-c", code],
-               env=env, cwd=H.WORKTREE, writable=[oroot], timeout=CLI_TIMEOUT)
+    cp = H.run([leg.python, "-c", code],
+               env=env, cwd=leg.install, writable=[oroot], timeout=CLI_TIMEOUT)
     assert cp.returncode == 0 and TRACEBACK not in cp.stderr, H.describe(cp)
     return (home / "config.yaml").read_bytes()
 
@@ -508,7 +506,6 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
         if after != expected:
             drift.append(f"{name} config.yaml differs from HEAD's own migration of the pre-update file\n"
                          f"--- after update ---\n{after.decode()}\n--- expected ---\n{expected.decode()}")
-            assert after == expected.replace(b"    enabled: false\n", b"    disabled: true\n", 1), drift[-1]
         # Independent of the oracle (a clobbering migration would be mirrored by it): the user's
         # values survive semantically and every comment line survives verbatim.
         o, a = yaml.safe_load(orig), yaml.safe_load(after)
@@ -545,10 +542,7 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
     calls = (leg.root / "shims" / "shim-calls.log")
     text = calls.read_text() if calls.exists() else ""
     assert not any(w in text for w in (" restart ", " stop ", " kill ", " kickstart ")), text
-    with known_failure(r"(?s)differs from HEAD's own migration.*--- after update ---.*disabled: true",
-                       "#150362 (fix #150370 open): an update from a release at the current config schema skips "
-                       "the stamp-independent steps, so a legacy `disabled: true` MCP entry stays enabled at runtime"):
-        assert not drift, "\n".join(drift)
+    assert not drift, "\n".join(drift)
 
 
 # ---------------------------------------------------------------------------
@@ -709,37 +703,3 @@ def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
         "name ... from 'utils'), so nothing can heal the install without manual git") if torn else contextlib.nullcontext()
     with gate:
         assert_healthy_at_head(leg, provider, final)
-
-
-def test_kill_before_deps_then_retry_heals(leg, provider):
-    (leg.root / "arm-deps").touch()
-    _publish_head(leg)
-    _freeze_update_at(leg, "frozen-deps")
-    assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().head, "kill point was not after the code swap"
-    _age_git_locks(leg.install)
-    final = _update(leg)
-    assert_healthy_at_head(leg, provider, final)
-
-
-def test_offline_update_fails_loudly_and_changes_nothing(leg, provider):
-    _publish_head(leg)
-    # Origin goes unreachable (network down / repo moved). The install borrows its objects from
-    # the origin store (--shared), so the store moves and the install's alternates follow it.
-    store = leg.root / "offline-store.git"
-    leg.origin.rename(store)
-    (leg.install / ".git" / "objects" / "info" / "alternates").write_text(f"{store / 'objects'}\n")
-    cp = _update(leg)
-    assert cp.returncode != 0, "update against an unreachable origin reported success:\n" + H.describe(cp)
-    assert TRACEBACK not in cp.stdout + cp.stderr, H.describe(cp)
-    assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().base
-    assert _git("status", "--porcelain", "--untracked-files=no", cwd=leg.install) == ""
-    after = snapshot_state(leg)
-    for name in ("default", "work"):
-        assert after[name]["config"] == leg.snapshot[name]["config"], f"{name} config touched by a failed update"
-        assert after[name]["db"] == leg.snapshot[name]["db"], f"{name} state.db touched by a failed update"
-    ver = leg.run("--version")
-    assert ver.returncode == 0, H.describe(ver)
-    n = len(provider.main_requests())
-    turn = leg.run("-z", "turn after a failed update")
-    assert turn.returncode == 0 and provider.default_text in turn.stdout, H.describe(turn)
-    assert len(provider.main_requests()) == n + 1

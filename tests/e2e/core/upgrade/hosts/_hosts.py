@@ -68,10 +68,14 @@ def configure(sb: I.Sandbox, provider: FakeLLMServer) -> None:
     (sb.hermes_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n", encoding="utf-8")
 
 
-def turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str, *, env: dict | None = None) -> subprocess.CompletedProcess:
+def turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str, *, env: dict | None = None,
+         unprivileged: bool = False) -> subprocess.CompletedProcess:
     """One ``hermes -z`` turn that must reach the provider exactly once and print its reply."""
     n = len(provider.main_requests())
-    cp = H.run([sb.hermes, "-z", marker], env=env or sb.env, cwd=sb.root, writable=[sb.root], timeout=900)
+    argv = [sb.hermes, "-z", marker]
+    if unprivileged:
+        argv = H.unprivileged_argv(argv)
+    cp = H.run(argv, env=env or sb.env, cwd=sb.root, writable=[sb.root], timeout=900)
     assert cp.returncode == 0 and I.TRACEBACK not in cp.stdout + cp.stderr, I.describe(cp)
     assert provider.default_text in cp.stdout, "the reply never reached stdout:\n" + I.describe(cp)
     new = provider.main_requests()[n:]

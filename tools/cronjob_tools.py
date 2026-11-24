@@ -55,10 +55,10 @@ from cron.job_args import (
     _normalize_optional_job_value,
     _origin_from_env,
     _repeat_display,
+    _resolve_context_from_refs,
     _resolve_cron_context_deliver,
     _split_monitor_arg,
     _validate_bot_chat_deliver,
-    _validate_context_from_refs,
     _validate_cron_base_url,
     _validate_cron_script_path)
 from tools.delegate_tool_config import _get_max_async_children
@@ -508,28 +508,24 @@ def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, An
     compression chain), or ``{}`` when no run session exists (no_agent job, refused fire)."""
     if not execution_id:
         return {}
-    import sqlite3
-
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import SessionWindow
+    from persistence.core.errors import PersistenceError
+    from persistence_assembly import open_persistence_reader
     # A missing or locked state.db costs the notice its usage line, never the completion.
     try:
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-    except (sqlite3.Error, OSError):
-        return {}
-    try:
-        run = next((r for r in db.list_cron_job_runs(job_id, limit=50)
-                    if r.get("cron_execution_id") == execution_id), None)
-        if run is None:
-            return {}
-        rows = [db.get_session(sid) or {} for sid in db.get_compression_chain(run["id"])]
-    except sqlite3.Error as exc:
+        with open_persistence_reader(get_hermes_home()) as reader:
+            run = next((r for r in reader.sessions.list_cron_job_runs(job_id, SessionWindow(limit=50))
+                        if r.cron_execution_id == execution_id), None)
+            if run is None:
+                return {}
+            rows = [row for sid in reader.lineage.chain(run.entry.session.session_id)
+                    if (row := reader.sessions.get(sid)) is not None]
+    except (PersistenceError, OSError) as exc:
         logger.debug("cronjob run: run-session usage lookup failed for %s: %s", job_id, exc)
         return {}
-    finally:
-        db.close()
-    model = next((r["model"] for r in reversed(rows) if r.get("model")), None)
-    return {"api_calls": sum(int(r.get("api_call_count") or 0) for r in rows), **({"model": model} if model else {})}
+    model = next((r.model for r in reversed(rows) if r.model), None)
+    return {"api_calls": sum(int(r.api_call_count or 0) for r in rows), **({"model": model} if model else {})}
 
 
 def _manual_run_completion(
@@ -696,6 +692,7 @@ def _action_create(a: dict[str, Any]) -> str:
                 success=False)
     elif not prompt and not canonical_skills:
         return tool_error("create requires either prompt or at least one skill", success=False)
+    context_from = a["context_from"]
     error = (
         (prompt and _scan_cron_prompt(prompt))
         or (script and _validate_cron_script_path(script))
@@ -706,13 +703,13 @@ def _action_create(a: dict[str, Any]) -> str:
         # bot-chat targets are machine-local: fail the CREATE, not the run.
         or _validate_bot_chat_deliver(deliver)
         # failure_deliver shares deliver's grammar and validators.
-        or _validate_bot_chat_deliver(_normalize_deliver_param(a["failure_deliver"]))
-        or (a["context_from"] and _validate_context_from_refs(
-            [a["context_from"]] if isinstance(a["context_from"], str) else a["context_from"])))
+        or _validate_bot_chat_deliver(_normalize_deliver_param(a["failure_deliver"])))
+    if not error and context_from:
+        refs = [context_from] if isinstance(context_from, str) else context_from
+        context_from, error = _resolve_context_from_refs(refs)
     if error:
         return tool_error(error, success=False)
 
-    context_from = a["context_from"]
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
 
@@ -1008,7 +1005,7 @@ def _update_context_from(job: dict[str, Any], a: dict[str, Any], updates: dict[s
     if continuity is not None:
         refs = _apply_continuity(refs, continuity) or []
     if refs:
-        ref_error = _validate_context_from_refs(refs)
+        refs, ref_error = _resolve_context_from_refs(refs)
         if ref_error:
             return ref_error
     updates["context_from"] = refs or None

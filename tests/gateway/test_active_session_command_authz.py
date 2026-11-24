@@ -274,6 +274,7 @@ async def test_overlapping_refused_commands_hand_the_session_back_to_its_owner()
     await adapter.handle_message(_event(OWNER, "write the report"))
     await asyncio.wait_for(started.wait(), 5)
     key = next(iter(adapter._session_tasks))
+    owner_task = adapter._session_tasks[key]
     guards, commands = [adapter._active_sessions[key]], []
     for message_id in gates:
         stop = _event(MEMBER, "/stop")
@@ -286,7 +287,8 @@ async def test_overlapping_refused_commands_hand_the_session_back_to_its_owner()
         await asyncio.wait_for(command, 5)
     assert adapter._active_sessions.get(key) is guards[0]
     finish.set()
-    await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)
+    await asyncio.wait_for(asyncio.gather(owner_task, return_exceptions=True), 5)
+    assert key not in adapter._active_sessions
 
 
 @pytest.mark.asyncio
@@ -351,10 +353,12 @@ async def test_a_stop_before_the_owners_task_first_runs_leaves_no_stale_guard(se
     helper = asyncio.create_task(release_once_started())
     await adapter.handle_message(_event(OWNER, "write the report"))
     key = next(iter(adapter._session_tasks))
+    owner_task = adapter._session_tasks[key]
     await asyncio.wait_for(adapter.handle_message(_event(sender, "/stop")), 5)  # before the task's first step
     await helper
     finish.set()
-    await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)
+    await asyncio.wait_for(asyncio.gather(owner_task, return_exceptions=True), 5)
+    assert key not in adapter._active_sessions
 
 
 @pytest.mark.asyncio

@@ -73,7 +73,8 @@ jobs:
         # from pytest's parsed counts rather than the progress line's display format.
         run: |
           if ! scripts/run_tests.sh --fail-on-skip \
-              tests/tools/test_ssh_environment.py tests/tools/test_docker_backend_real.py; then
+              tests/tools/test_ssh_environment.py tests/tools/test_docker_backend_real.py \
+              tests/tools/test_docker_sandbox_scope_real.py; then
             echo "::error::real-backend tests failed or skipped (a skip means the sshd or docker image was not wired through)"
             exit 1
           fi

@@ -46,6 +46,6 @@ async def test_bound_chat_is_admitted_for_the_bound_profile(tmp_path, monkeypatc
         store.close()
     finally:
         for authority in list(getattr(runner, "session_authorities", []) or []):
-            authority.db.close()
+            authority.persistence.close()
         for _, home in homes:
             process_ownership.release(home)

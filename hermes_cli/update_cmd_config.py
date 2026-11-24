@@ -59,13 +59,14 @@ def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None,
             token = set_hermes_home_override(profile_home)
             try:
                 current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
-                if current_ver >= latest_ver:
+                if current_ver > latest_ver:
                     continue
                 results = migrate_config(interactive=False, quiet=True)
                 if stopped is not None and results.get("failed_step") is not None:
                     stopped[name] = results["failed_step"]
                 after_ver, _ = check_config_version(raise_on_parse_error=True)
-                if after_ver > current_ver:
+                changed = after_ver > current_ver or bool(results["config_added"] or results["warnings"])
+                if changed:
                     migrated.append((name, current_ver, after_ver))
                     if notes is not None:
                         # config_added also lists the new default keys; those are not changes.
@@ -166,6 +167,40 @@ def _ask_configure_new_options(*, assume_yes: bool, gateway_mode: bool) -> str:
         return "n"
 
 
+def _apply_stamp_independent_migration(
+    *, current_ver: int, latest_ver: int, version_bump_only: bool
+) -> tuple[list[str], Exception | None]:
+    from hermes_cli.config import migrate_config
+    if version_bump_only:
+        print()
+        print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
+    try:
+        results = migrate_config(interactive=False, quiet=True)
+        if results.get("failed_step") is not None:
+            return [f"stopped at v{results['failed_step']}"], None
+        if version_bump_only:
+            print("  ✓ Config format updated (no new settings to configure)")
+        elif results["config_added"] or results["warnings"]:
+            print("  ✓ Configuration updated!")
+        else:
+            print("  ✓ Configuration is up to date")
+        # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
+        # unattended update never silently changes config (config_added holds only mutations here).
+        # In this branch missing_config is empty, so config_added can only contain migration-step
+        # mutations, not missing-key listings. See #81946, #86656.
+        for note in results.get("config_added") or []:
+            print(f"  ℹ {note}")
+        for warning in results.get("warnings") or []:
+            print(f"  ⚠️  {warning}")
+        return [], None
+    except Exception as exc:
+        logger.debug("Config format update failed during update", exc_info=True)
+        print(f"  ⚠️  Config format update failed: {exc}")
+        print("     Run 'hermes config migrate' to retry.")
+        # Not a silent success: owed, so the caller's guard records ``config_migration``.
+        return [f"format v{current_ver} → v{latest_ver} was not written: {exc}"], exc
+
+
 def _check_and_apply_config_migration(
     *, assume_yes: bool = False, gateway_mode: bool = False, pre_update_snapshot_id: str | None = None
 ) -> None:
@@ -200,33 +235,15 @@ def _check_and_apply_config_migration(
     sibling_stopped: dict[str, int] = {}
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = not has_new_options and current_ver < latest_ver
+    current_schema_pass = not has_new_options and current_ver == latest_ver
     needs_migration = has_new_options or current_ver < latest_ver
 
-    if version_bump_only:
-        # Only the format version changed (defaults merge transparently); prompting
-        # would look like a no-op on yes — apply silently and say what happened.
-        print()
-        print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
-        try:
-            _mig_results = migrate_config(interactive=False, quiet=True)
-            if _mig_results.get("failed_step") is None:
-                print("  ✓ Config format updated (no new settings to configure)")
-            else:
-                owed.append(f"stopped at v{_mig_results['failed_step']}")
-            # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
-            # unattended update never silently changes config (config_added holds only mutations here).
-            # In this branch missing_config is empty, so config_added can only contain migration-step
-            # mutations, not missing-key listings. See #81946, #86656.
-            for _note in _mig_results.get("config_added") or []:
-                print(f"  ℹ {_note}")
-            for _warn in _mig_results.get("warnings") or []:
-                print(f"  ⚠️  {_warn}")
-        except Exception as _mig_err:
-            print(f"  ⚠️  Config format update failed: {_mig_err}")
-            print("     Run 'hermes config migrate' to retry.")
-            # Not a silent success: owed, so the caller's guard records ``config_migration``.
-            owed.append(f"format v{current_ver} → v{latest_ver} was not written: {_mig_err}")
-            owed_cause = _mig_err
+    if version_bump_only or current_schema_pass:
+        # Stamp-independent migrations still owe a pass when the schema is current.
+        migration_owed, owed_cause = _apply_stamp_independent_migration(
+            current_ver=current_ver, latest_ver=latest_ver, version_bump_only=version_bump_only
+        )
+        owed.extend(migration_owed)
     elif needs_migration:
         print()
         # Show WHAT changed, not just a count, for an informed yes/no.
@@ -266,6 +283,8 @@ def _check_and_apply_config_migration(
             if _name in sibling_stopped:  # advanced, then stopped: not an update to report as done
                 print(f"  ⚠️  Profile '{_name}': config migration stopped at v{sibling_stopped[_name]}"
                       f" (v{_from_ver} → v{_to_ver} applied)")
+            elif _from_ver == _to_ver:
+                print(f"  ✓ Profile '{_name}': configuration migrated (v{_to_ver})")
             else:
                 print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
             for _note in sibling_notes.get(_name, ()):

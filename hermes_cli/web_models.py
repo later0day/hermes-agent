@@ -353,6 +353,7 @@ class CronJobCreate(BaseModel):
     catch_up: Optional[StrictBool] = None
     # Header/footer wrapping: None inherits cron.wrap_response; a bool overrides it per job.
     wrap_response: Optional[StrictBool] = None
+    run_profile: Optional[str] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict

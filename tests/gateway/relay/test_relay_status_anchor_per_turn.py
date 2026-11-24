@@ -83,7 +83,7 @@ async def _gateway(tmp_path, instance, extra):
             finally:
                 await adapter.disconnect()
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 def _actions(outgoing):
@@ -226,6 +226,11 @@ async def test_queued_turns_each_show_and_clear_their_own_status(tmp_path, monke
                                what='a heartbeat after the queued messages')
         release.set()
         await async_wait_until(lambda: executed == ['first', 'second', 'third'], timeout=20, what='all turns ran')
+        replies = ('first done', 'reply second', 'reply third')
+        await async_wait_until(
+            lambda: all(any(a.get('op') == 'send' and a.get('content') == text for a in _actions(outgoing))
+                        for text in replies),
+            timeout=10, what='every queued turn posted its reply')
         await _settle(outgoing)
         actions = _actions(outgoing)
         assert _left_working(actions) == set()

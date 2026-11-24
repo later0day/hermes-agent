@@ -843,6 +843,34 @@ def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
             pass
 
 
+def _spawn_owned_posix_probe(argv: Sequence[str], **popen_kwargs) -> subprocess.Popen:
+    # The launcher waits for registration before exec; EOF means the owner exited first.
+    from hermes_cli.process_identity import own_process_groups
+
+    read_fd, write_fd = os.pipe()
+    launcher = (
+        "import os,sys\n"
+        "fd=int(sys.argv[1])\n"
+        "if os.read(fd,1):\n"
+        " os.close(fd)\n"
+        " os.execvp(sys.argv[2],sys.argv[2:])\n"
+    )
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", launcher, str(read_fd), *argv],
+            pass_fds=(read_fd,), **popen_kwargs)
+    finally:
+        os.close(read_fd)
+    try:
+        own_process_groups([proc.pid])
+        os.write(write_fd, b"\n")
+    except (BrokenPipeError, ProcessLookupError):
+        pass
+    finally:
+        os.close(write_fd)
+    return proc
+
+
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
     env: Mapping[str, str] | None = None, cwd: str | os.PathLike[str] | None = None,
@@ -871,27 +899,24 @@ def bounded_probe_run(
     # detached-spawn: ok — awaited probe; a timeout or failure tree-kills its group (kill_and_drain)
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     job = None
+    owned = owned and not IS_WINDOWS
     try:
-        # Windows: contain the probe in a Job Object. `taskkill /T` walks LIVE parent pids, and a
-        # Cygwin/MSYS `exec` lets the forked stub exit once the new image runs, so a Git Bash grandchild
-        # (`sleep`, `cat`) has a dead parent and survives the tree-kill holding our pipes (#73403, proven
-        # on windows-latest). KILL_ON_JOB_CLOSE reaches it regardless of ancestry.
-        from hermes_cli.local_runtime.processes import spawn_server
-
-        proc, job = spawn_server(
-            list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        probe_kwargs = dict(
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
             text=True, encoding="utf-8", errors=errors,
             env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
+        if owned:
+            from hermes_cli.process_identity import release_process_group_once_empty
+            proc = _spawn_owned_posix_probe(list(argv), **probe_kwargs)
+        else:
+            # Windows: contain the probe in a Job Object so no launcher or helper can escape it.
+            from hermes_cli.local_runtime.processes import spawn_server
+            proc, job = spawn_server(list(argv), **probe_kwargs)
     except Exception:
         if raise_on_spawn_failure:
             raise
         return None
-    owned = owned and not IS_WINDOWS
-    if owned:
-        from hermes_cli.process_identity import own_process_groups, release_process_group_once_empty
-
-        own_process_groups([proc.pid])
     try:
         stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except Exception:

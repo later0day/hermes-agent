@@ -70,6 +70,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 import { installedHubEntry } from "@/lib/skill-hub-installed";
+import { buildLearnNavigationState } from "@/lib/learn-handoff";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -261,12 +262,14 @@ export default function SkillsPage() {
     if (dir) segs.push(`local source: ${dir}`);
     if (url) segs.push(`URL: ${url}`);
     if (text) segs.push(text);
-    // Flatten to a single line — the chat composer submits on the first Enter.
-    const composed = segs.join("; ").replace(/\s*\n\s*/g, " ").trim();
-    if (!composed) return;
+    const learnState = buildLearnNavigationState(segs.join("; "));
+    if (!learnState) return;
     setLearnOpen(false);
-    navigate(`/chat?learn=${encodeURIComponent(composed)}`);
-  }, [learnDir, learnUrl, learnText, navigate]);
+    const target = selectedProfile
+      ? `/chat?profile=${encodeURIComponent(selectedProfile)}`
+      : "/chat";
+    navigate(target, { state: learnState });
+  }, [learnDir, learnUrl, learnText, navigate, selectedProfile]);
   const openEditEditor = useCallback((skillName: string) => {
     setEditorSkill(skillName);
     setEditorOpen(true);

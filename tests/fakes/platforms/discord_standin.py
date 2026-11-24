@@ -715,6 +715,54 @@ class DiscordStandin(StandinServer):
         self.dispatch("INTERACTION_CREATE", inter)
         return inter
 
+    def modal(self, interaction: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """The MODAL callback the adapter returned for a component interaction, once it arrives."""
+        for call in reversed(self.calls_of("interaction_callback")):
+            if (not call.faulted and str(call.params.get("interaction_id")) == interaction["id"]
+                    and int(call.params.get("type") or 0) == 9):
+                return call.params.get("data") or {}
+        return None
+
+    def submit_modal(self, user_id: str, interaction: dict[str, Any], modal: dict[str, Any],
+                     values: dict[str, str]) -> dict[str, Any]:
+        """Submit the modal opened by ``interaction`` as a fresh INTERACTION_CREATE (type 5)."""
+        def submitted(field: dict[str, Any]) -> dict[str, Any]:
+            out: dict[str, Any] = {"type": field.get("type")}
+            custom_id = field.get("custom_id")
+            if custom_id:
+                out["custom_id"] = custom_id
+            if custom_id in values:
+                out["value"] = values[custom_id]
+            if field.get("components"):
+                out["components"] = [submitted(child) for child in field["components"]]
+            if field.get("component"):
+                out["component"] = submitted(field["component"])
+            return out
+
+        components = [submitted(row) for row in modal.get("components") or []]
+        iid, token = self.snowflake(), f"itoken-{self.snowflake()}"
+        ch = self.channels[interaction["channel_id"]]
+        user = {k: v for k, v in self.user(user_id).items() if not k.startswith("_")}
+        inter: dict[str, Any] = {
+            "id": iid, "application_id": APP_ID, "type": 5,
+            "data": {"custom_id": modal["custom_id"], "components": components},
+            "channel_id": ch["id"], "channel": {k: v for k, v in ch.items() if k != "recipients"} | {"type": ch["type"]},
+            "token": token, "version": 1, "message": interaction.get("message"),
+            "app_permissions": ALL_PERMISSIONS, "locale": "en-US", "entitlements": [],
+            "authorizing_integration_owners": {"0": GUILD_ID} if ch.get("guild_id") else {"1": str(user_id)},
+            "context": 0 if ch.get("guild_id") else 1, "attachment_size_limit": 26214400,
+        }
+        if ch.get("guild_id"):
+            inter["guild_id"] = ch["guild_id"]
+            inter["member"] = {**self.member(user_id, with_user=False), "user": user,
+                               "permissions": ALL_PERMISSIONS}
+            inter["guild_locale"] = "en-US"
+        else:
+            inter["user"] = user
+        self.interactions[token] = {**inter, "_user": user}
+        self.dispatch("INTERACTION_CREATE", inter)
+        return inter
+
     def redeliver(self, payload: dict[str, Any]) -> None:
         """Deliver the very same MESSAGE_CREATE again (a gateway replay of an already-seen event)."""
         self.dispatch("MESSAGE_CREATE", payload)

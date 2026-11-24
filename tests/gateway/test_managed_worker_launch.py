@@ -13,6 +13,7 @@ import time
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
+from tests.process_scan import children_matching
 from tests.waiting import async_wait_until
 
 
@@ -61,6 +62,11 @@ class Model(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+            tool_calls = message.get('tool_calls') or []
+            if tool_calls and tool_calls[0]['id'] == 'managed-tool':
+                self.server.terminal_tool_written.set()
+            elif tool_calls and tool_calls[0]['id'] == 'managed-clarify':
+                self.server.clarify_written.set()
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -110,6 +116,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         peer.command = f'printf MANAGED_TOOL_EFFECT; while test ! -e {gate}; do sleep .1; done'
         peer.tool_args = {'background': True}
     peer.blocked, peer.release = threading.Event(), threading.Event()
+    peer.terminal_tool_written, peer.clarify_written = threading.Event(), threading.Event()
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
     thread.start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
@@ -163,11 +170,15 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
                             return found
                         assert time.monotonic() < deadline, ('no open ' + kind + ' prompt', snapshot)
                         await asyncio.sleep(.05)
+                assert await asyncio.to_thread(peer.terminal_tool_written.wait, 240), (
+                    home / 'restart.log').read_text()
                 approval = await prompt('approval')
                 assert target.exists()
                 answered = await rpc(ws, 'approval.respond', session_id=sid,
                     execution_generation=approval['execution_generation'], prompt_id=approval['prompt_id'], choice='once')
                 assert answered['result']['status'] == 'resolved', answered
+                assert await asyncio.to_thread(peer.clarify_written.wait, 240), (
+                    home / 'restart.log').read_text()
                 clarify = await prompt('clarify')
                 assert not target.exists()
                 if worker_action == 'stop':
@@ -185,8 +196,15 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             assert await asyncio.to_thread(peer.blocked.wait, 240), (home / 'restart.log').read_text()
             workers = query('SELECT execution_id,status FROM worker_executions WHERE session_id=?', (sid,))
             assert len(workers) == 1, workers
-            children = [p for p in psutil.Process(owner.pid).children() if p.cmdline()[-2:] == ['-m', 'agent.managed_worker']]
-            assert len(children) == 1, [(p.pid, p.cmdline()) for p in psutil.Process(owner.pid).children()]
+            siblings = []
+
+            def is_managed_worker(child):
+                command = child.cmdline()
+                siblings.append((child, command))
+                return command[-2:] == ['-m', 'agent.managed_worker']
+
+            children = children_matching(owner.pid, is_managed_worker)
+            assert len(children) == 1, [(p.pid, command) for p, command in siblings]
             pid = children[0].pid
             opened = [json.loads(line) for line in audit.read_text().splitlines()]
             # Positive control: the witness hook is live in the owner, so worker silence is real.
@@ -211,6 +229,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         # Viewer connection is gone while the real model still holds the turn.
         assert psutil.Process(pid).is_running()
         peer.release.set()
+        terminal_deadline = time.monotonic() + 40
         await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?', (
             'managed-input',)) == [('terminal',)], timeout=40, interval=.05, what='managed turn terminal')
         async with websocket(home, desc) as ws:
@@ -244,6 +263,9 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             assert started['output'] == 'Background process started', started
             background = psutil.Process(started['pid'])
             assert background.is_running() and background.status() != psutil.STATUS_ZOMBIE, started
+            await async_wait_until(lambda: not psutil.pid_exists(pid),
+                                   timeout=max(0, terminal_deadline - time.monotonic()), interval=.05,
+                                   what='worker interpreter reaped')
             assert not psutil.pid_exists(pid), 'worker interpreter still alive after settlement'
             # The next admission's worker adopts it from the profile checkpoint (process_manage).
             assert started['pid'] in [e['pid'] for e in json.loads((home / 'processes.json').read_text())]

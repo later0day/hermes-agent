@@ -18,6 +18,8 @@ from gateway.hosted_room_peer import (
     catalog_mapping,
     issue_room_grant,
 )
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from persistence_assembly import open_persistence, profile_scope
 from tests.tui_gateway.test_hosted_room_service import (
     _ApprovalPeerClient,
     _ExpiredGrantPeerClient,
@@ -37,8 +39,31 @@ from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from tui_gateway.hosted_room_service import HostedRoomService, _RouteStatusPeerClient
 
 
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
+def _mock_task_reads(monkeypatch, rows):
+    """Give status() and approval operations the same task snapshot."""
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: list(rows))
+
+    def room_task_summary(_store, *, placement, room_id, statuses):
+        room_rows = [row for row in rows if row["identity"].room_id == room_id]
+        counts = {}
+        for row in room_rows:
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
+        return counts, [row for row in room_rows if row["status"] in statuses]
+
+    monkeypatch.setattr(driver, "room_task_summary", room_task_summary)
+
+
 def test_local_pending_approval_requires_exact_task_generation_and_request(
     tmp_path: Path,
+    store,
 ):
     class ApprovalRPC(_FakeRPC):
         def __init__(self) -> None:
@@ -49,8 +74,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
             self.approvals.append((session_id, request_id, choice))
             return {"resolved": 1}
 
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     rpc = ApprovalRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -68,10 +92,10 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
         event_id="user-1",
         payload={"text": "@ops inspect", "thread_id": "thread-1"},
     )
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    task = driver.list_tasks(store, placement="profile", room_id="room-1", status="queued")[0]
     binding = service.bindings()[0]
     lease = driver.acquire_lease(
-        db,
+        store, placement="profile",
         room_id="room-1",
         gateway_id=binding.gateway_id,
         authority_epoch=binding.authority_epoch,
@@ -80,13 +104,13 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
         clock=time.time,
     )
     driver.start_task(
-        db,
+        store,
         task["identity"],
-        lease,
+        lease, placement="profile",
         expected_cancel_generation=0,
         clock=time.time,
     )
-    task = driver.get_task(db, task["identity"])
+    task = driver.get_task(store, task["identity"], placement="profile")
     service.runtime._report_pending_action(
         task,
         session_id="ops-session",
@@ -124,8 +148,8 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
 
 def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
     tmp_path: Path,
+    store,
 ):
-    db = tmp_path / "state.db"
     peer = _FakePeerClient()
     route = PeerMemberRoute(
         home_install_id="install-home",
@@ -140,7 +164,7 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
     )
     service = HostedRoomService(
         _server(),
-        db_path=db,
+        store=store, placement="profile",
         peer_routes={("room-1", "member-reviewer"): route},
         peer_clients={"install-peer": peer},
     )
@@ -194,8 +218,8 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
 
 def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
     tmp_path: Path,
+    store,
 ):
-    db = tmp_path / "state.db"
     route = PeerMemberRoute(
         home_install_id="install-home",
         member_id="member-peer",
@@ -208,7 +232,7 @@ def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
     )
     service = HostedRoomService(
         _server(),
-        db_path=db,
+        store=store, placement="profile",
         peer_routes={("room-1", "member-peer"): route},
         peer_clients={"install-peer": _UnavailablePeerClient()},
     )
@@ -261,8 +285,7 @@ def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
         for event in events
     )
 
-def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
-    db = tmp_path / "state.db"
+def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path, store):
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
             target_profile="default",
@@ -280,7 +303,7 @@ def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
         trace_id="trace-room-1",
         grant="signed.room.grant",
     )
-    first = HostedRoomService(_server(), db_path=db)
+    first = HostedRoomService(_server(), store=store, placement="profile")
     first.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -290,19 +313,19 @@ def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
         catalog=catalog,
     )
 
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
     restored = restarted.peer_routes[("room-1", "member-peer")]
     assert restored.target_install_id == "install-peer"
     assert restored.target_profile == "reviewer"
     assert restored.grant == "signed.room.grant"
     assert ("room-1", "member-peer") in restarted.peer_clients
 
-def test_one_corrupt_stored_route_does_not_hide_healthy_peers(tmp_path: Path):
+def test_one_corrupt_stored_route_does_not_hide_healthy_peers(tmp_path: Path, store):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     for room_id, member_id in (("room-good", "member-good"), ("room-bad", "member-bad")):
         route = PeerMemberRoute(
             home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -329,7 +352,7 @@ def test_one_corrupt_stored_route_does_not_hide_healthy_peers(tmp_path: Path):
             ("http://public-plaintext.example.test", "room-bad"),
         )
 
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
 
     assert ("room-good", "member-good") in restarted.peer_routes
     assert ("room-bad", "member-bad") not in restarted.peer_routes
@@ -337,8 +360,8 @@ def test_one_corrupt_stored_route_does_not_hide_healthy_peers(tmp_path: Path):
 
 def test_unpublished_roomlink_v1_route_is_quarantined_for_reinvitation(
     tmp_path: Path,
+    store,
 ):
-    db = tmp_path / "state.db"
     legacy_catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
             target_profile="default",
@@ -357,7 +380,7 @@ def test_unpublished_roomlink_v1_route_is_quarantined_for_reinvitation(
         trace_id="trace-room-1",
         grant="legacy-v1-grant",
     )
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -367,7 +390,7 @@ def test_unpublished_roomlink_v1_route_is_quarantined_for_reinvitation(
         catalog=legacy_catalog,
     )
 
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
 
     assert restarted.peer_routes == {}
     assert restarted.status()["link_load_error"] == (
@@ -376,8 +399,9 @@ def test_unpublished_roomlink_v1_route_is_quarantined_for_reinvitation(
 
 def test_peer_member_without_route_fails_closed_instead_of_running_locally(
     tmp_path: Path,
+    store,
 ):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.create_room(
         room_id="room-1",
         name="Peer room",
@@ -410,10 +434,9 @@ def test_peer_member_without_route_fails_closed_instead_of_running_locally(
         )
 
 def test_registration_disk_failure_does_not_publish_live_route(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, store
 ):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -445,10 +468,10 @@ def test_registration_disk_failure_does_not_publish_live_route(
 
 def test_room_route_revocation_is_remote_first_and_removes_local_state(
     tmp_path: Path,
+    store,
 ):
     from gateway import hosted_room_links
 
-    db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -463,7 +486,7 @@ def test_room_route_revocation_is_remote_first_and_removes_local_state(
         grant="signed.room.grant",
     )
     peer = _FakePeerClient()
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -476,12 +499,11 @@ def test_room_route_revocation_is_remote_first_and_removes_local_state(
     assert service.revoke_room_routes("room-1") == 1
     assert peer.revoked == ["signed.room.grant"]
     assert ("room-1", "member-peer") not in service.peer_routes
-    assert hosted_room_links.load_room_links(db) == ()
+    assert hosted_room_links.load_room_links(store, placement="profile") == ()
 
-def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
+def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path, store):
     from gateway import hosted_room_links
 
-    db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -495,7 +517,7 @@ def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
         trace_id="trace-room-1",
         grant="signed.room.grant",
     )
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -508,12 +530,11 @@ def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
     with pytest.raises(RuntimeError, match="offline during revocation"):
         service.revoke_room_routes("room-1")
     assert ("room-1", "member-peer") in service.peer_routes
-    assert len(hosted_room_links.load_room_links(db)) == 1
+    assert len(hosted_room_links.load_room_links(store, placement="profile")) == 1
 
-def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
+def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path, store):
     from gateway import hosted_room_links
 
-    db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -528,7 +549,7 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
         trace_id="trace-room-1",
         grant="expired.room.grant",
     )
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -540,12 +561,12 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
 
     assert service.revoke_room_routes("room-1") == 1
     assert ("room-1", "member-peer") not in service.peer_routes
-    assert hosted_room_links.load_room_links(db) == ()
+    assert hosted_room_links.load_room_links(store, placement="profile") == ()
 
 def test_expired_grant_surfaces_needs_reauthorization_without_secret(
     tmp_path: Path,
+    store,
 ):
-    db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -559,7 +580,7 @@ def test_expired_grant_surfaces_needs_reauthorization_without_secret(
         trace_id="trace-room-1",
         grant="signed.room.grant",
     )
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -612,7 +633,7 @@ def test_expired_grant_surfaces_needs_reauthorization_without_secret(
         }
     ]
     assert "signed.room.grant" not in repr(status)
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
     assert restarted.status("room-1")["peer_routes"] == status["peer_routes"]
 
     rotated = PeerMemberRoute(
@@ -634,15 +655,15 @@ def test_expired_grant_surfaces_needs_reauthorization_without_secret(
         catalog=catalog,
     )
     assert restarted.status("room-1")["peer_routes"][0]["status"] == "ready"
-    after_rotation = HostedRoomService(_server(), db_path=db)
+    after_rotation = HostedRoomService(_server(), store=store, placement="profile")
     assert after_rotation.peer_routes[("room-1", "member-peer")].grant == (
         "rotated.room.grant"
     )
 
 def test_not_admitted_dispatch_persists_unavailable_route_until_success(
     tmp_path: Path,
+    store,
 ):
-    db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -657,7 +678,7 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
         grant="signed.room.grant",
     )
     peer = _NotAdmittedPeerClient()
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -687,7 +708,7 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
     )
     binding = service.bindings()[0]
     task = {
-        "identity": driver.TaskIdentity(
+        "identity": HostedTaskIdentity(
             "room-1", "task-peer", "thread-1", "turn-1"
         ),
         "execution_generation": 1,
@@ -717,7 +738,7 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
 
     assert caught.value.not_admitted is True
     assert service.status("room-1")["peer_routes"][0]["status"] == "unavailable"
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
     assert restarted.status("room-1")["peer_routes"][0]["status"] == "unavailable"
 
     peer.offline = False
@@ -732,7 +753,7 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
     )
     assert service.status("room-1")["peer_routes"][0]["status"] == "ready"
 
-def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
+def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path, store):
     now = time.time()
     secret = b"s" * 32
     catalog = GatewayRoomCatalog.from_mapping(
@@ -779,8 +800,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         grant=old_grant,
     )
     peer = _RefreshingPeerClient(new_grant)
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -808,7 +828,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
             },
         ],
     )
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    identity = HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1")
     transport = service._resolve_member_transport(
         service.bindings()[0],
         {
@@ -847,7 +867,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         peer.dispatches[0]["execution_policy_digest"]
         == catalog.execution_policy.policy_digest
     )
-    assert HostedRoomService(_server(), db_path=db).peer_routes[
+    assert HostedRoomService(_server(), store=store, placement="profile").peer_routes[
         ("room-1", "member-peer")
     ].grant == new_grant
 
@@ -943,10 +963,9 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
     assert refreshed == []
     assert peer.dispatches == []
 
-def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypatch):
-    db = tmp_path / "state.db"
-    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
-        "identity": driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1"),
+def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypatch, store):
+    _mock_task_reads(monkeypatch, [{
+        "identity": HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1"),
         "execution_generation": 2,
         "status": "running",
         "payload": {"target_member_id": "member-peer", "target_profile": "reviewer"},
@@ -965,7 +984,7 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypa
         grant="signed.room.grant",
     )
     peer = _ApprovalPeerClient()
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -997,7 +1016,7 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypa
             }
         ],
     )
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    identity = HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1")
     transport = service._resolve_member_transport(
         service.bindings()[0],
         {
@@ -1067,10 +1086,10 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypa
     ]
     assert service.status("room-1")["pending_actions"] == []
 
-def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path, monkeypatch):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
-    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
-        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path, monkeypatch, store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
+    _mock_task_reads(monkeypatch, [{
+        "identity": HostedTaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
         "execution_generation": 1, "status": "running", "payload": {"target_profile": "local"}}])
     rpc = _FakeRPC()
     service.rpc = rpc
@@ -1110,10 +1129,9 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path, monke
     assert service.status("room-1")["pending_actions"] == []
 
 def test_pending_local_approval_survives_restart_and_generic_action_relays(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, store,
 ):
-    db = tmp_path / "state.db"
-    first = HostedRoomService(_server(), db_path=db)
+    first = HostedRoomService(_server(), store=store, placement="profile")
     first._set_pending_action(
         "room-1",
         "local",
@@ -1127,12 +1145,12 @@ def test_pending_local_approval_survives_restart_and_generic_action_relays(
         },
     )
 
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
     rpc = _FakeRPC()
     restarted.rpc = rpc
     restarted.runtime.rpc = rpc
-    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
-        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+    _mock_task_reads(monkeypatch, [{
+        "identity": HostedTaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
         "execution_generation": 3, "status": "running", "payload": {"target_profile": "local"}}])
     dashboard_action = restarted.pending_actions("room-1")["actions"][0]
     assert dashboard_action["action_id"] == "approval-local-1"
@@ -1155,16 +1173,16 @@ def test_pending_local_approval_survives_restart_and_generic_action_relays(
         }
     ]
     assert restarted.pending_actions("room-1")["actions"] == []
-    after_resolution = HostedRoomService(_server(), db_path=db)
+    after_resolution = HostedRoomService(_server(), store=store, placement="profile")
     assert after_resolution.pending_actions("room-1")["actions"] == []
 
-def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path, monkeypatch):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path, monkeypatch, store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
-    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
-        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+    _mock_task_reads(monkeypatch, [{
+        "identity": HostedTaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
         "execution_generation": 1, "status": "running", "payload": {"target_profile": "local"}}])
     action = {
         "kind": "approval",
@@ -1195,8 +1213,7 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path,
         "approval-B"
     )
 
-def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
-    db = tmp_path / "state.db"
+def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path, store):
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -1211,7 +1228,7 @@ def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
         grant="signed.room.grant",
     )
     peer = _RecoveringPeerClient()
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -1239,7 +1256,7 @@ def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
             },
         ],
     )
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    identity = HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1")
 
     service._resolve_member_transport(
         service.bindings()[0],

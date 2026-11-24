@@ -118,7 +118,7 @@ class PtyHermes:
     """One interactive ``hermes`` process on a PTY with an emulated screen."""
 
     def __init__(self, root: Path, argv_tail: list[str], llm: FakeLLMServer | None, *, rows: int, cols: int,
-                 extra_config: str = "") -> None:
+                 extra_config: str = "", extra_env: dict[str, str] | None = None) -> None:
         """``llm=None``: the caller already wrote ``root/home/.hermes`` (e.g. a native-runtime home)."""
         self.root = root
         self.home = root / "home"
@@ -144,6 +144,7 @@ class PtyHermes:
             TMPDIR=str(root / "tmp"), TERM="xterm-256color", COLORTERM="truecolor",
             PYTHONUNBUFFERED="1", HERMES_STATE_DB_GUARD_BYPASS="1",
         )
+        env.update(extra_env or {})
         if "--tui" in argv_tail:
             # The prebuilt-bundle launch, as tui_pty does. A checkout launch first asks whether
             # ui-tui/dist is current, which only PM's node may answer; the sandbox home has no PM

@@ -12,6 +12,8 @@ import pytest
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from persistence_assembly import open_persistence, profile_scope
 from tests.tui_gateway.test_hosted_room_service import (
     _BlockingFirstRPC,
     _FakeRPC,
@@ -21,6 +23,14 @@ from tests.tui_gateway.test_hosted_room_service import (
     _wait_for,
 )
 from tui_gateway.hosted_room_service import HostedRoomService
+
+
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 class _ResearchTeamRPC(_FakeRPC):
@@ -64,9 +74,8 @@ class _ResearchTeamRPC(_FakeRPC):
         return {"accepted": True}
 
 
-def test_research_team_runs_parallel_followups_and_synthesis_through_runtime(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+def test_research_team_runs_parallel_followups_and_synthesis_through_runtime(tmp_path: Path, store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     rpc = _ResearchTeamRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -137,13 +146,12 @@ def test_research_team_runs_parallel_followups_and_synthesis_through_runtime(tmp
         for event in member_messages
         if event["payload"]["member_id"] != "c"
     )
-    assert not driver.list_tasks(db, room_id="research-room", status="running")
-    assert not driver.list_tasks(db, room_id="research-room", status="queued")
+    assert not driver.list_tasks(store, placement="profile", room_id="research-room", status="running")
+    assert not driver.list_tasks(store, placement="profile", room_id="research-room", status="queued")
 
 
-def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_path: Path):
-    db = tmp_path / "state.db"
-    first = HostedRoomService(_server(), db_path=db)
+def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_path: Path, store):
+    first = HostedRoomService(_server(), store=store, placement="profile")
     first_rpc = _ResearchTeamRPC()
     first.rpc = first_rpc
     first.runtime.rpc = first_rpc
@@ -182,7 +190,7 @@ def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_
         for event in before
     )
     old_lease = first.runtime._leases["research-room"]
-    driver.release_lease(db, old_lease, clock=time.time)
+    driver.release_lease(store, old_lease, placement="profile", clock=time.time)
 
     created_sessions = dict(first_rpc.sessions)
     assert {profile for profile, _title in first_rpc.creates} == {
@@ -192,7 +200,7 @@ def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_
     }
     assert len(first_rpc.creates) == 3
 
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
     restarted_rpc = _ResearchTeamRPC(sessions=created_sessions)
     # The new model sessions resume at the synthesis turn; prior responses are
     # recovered from SQLite rather than regenerated through this transport.
@@ -244,15 +252,16 @@ def test_research_team_restarts_midway_and_finishes_from_durable_room_state(tmp_
     )
     for _ in range(3):
         restarted.runtime._process_room(restarted_binding)
-        if not driver.list_tasks(db, room_id="research-room", status="queued"):
+        if not driver.list_tasks(store, placement="profile", room_id="research-room", status="queued"):
             break
-    assert not driver.list_tasks(db, room_id="research-room", status="queued")
-    assert not driver.list_tasks(db, room_id="research-room", status="running")
+    assert not driver.list_tasks(store, placement="profile", room_id="research-room", status="queued")
+    assert not driver.list_tasks(store, placement="profile", room_id="research-room", status="running")
 
 
-def test_research_team_pending_permission_survives_restart_and_relays_exact_action(tmp_path: Path, monkeypatch):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+def test_research_team_pending_permission_survives_restart_and_relays_exact_action(
+    tmp_path: Path, monkeypatch, store
+):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service._set_pending_action(
         "research-room",
         "a",
@@ -270,12 +279,12 @@ def test_research_team_pending_permission_survives_restart_and_relays_exact_acti
         },
     )
 
-    restarted = HostedRoomService(_server(), db_path=db)
+    restarted = HostedRoomService(_server(), store=store, placement="profile")
     rpc = _FakeRPC()
     restarted.rpc = rpc
     restarted.runtime.rpc = rpc
     monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
-        "identity": driver.TaskIdentity("research-room", "site-a-fetch", "thread-1", "turn-1"),
+        "identity": HostedTaskIdentity("research-room", "site-a-fetch", "thread-1", "turn-1"),
         "execution_generation": 2, "status": "running", "payload": {"target_profile": "a"}}])
     actions = restarted.pending_actions("research-room")["actions"]
     assert len(actions) == 1
@@ -301,9 +310,9 @@ def test_research_team_pending_permission_survives_restart_and_relays_exact_acti
 
 def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
     tmp_path: Path,
+    store,
 ):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _PromptRecordingRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("default", "ops")
@@ -330,6 +339,7 @@ def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
             for event in service._events("room-1")
         )
     )
+    db = tmp_path / "state.db"
     with sqlite3.connect(db) as conn:
         assert conn.execute(
             """SELECT COUNT(*) FROM hosted_room_policy_transcript
@@ -354,9 +364,8 @@ def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
     assert "User (user): @hermes continue" in prompt
 
 
-def test_active_same_thread_followup_waits_for_current_task(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+def test_active_same_thread_followup_waits_for_current_task(tmp_path: Path, store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _BlockingFirstRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("default", "ops")
@@ -397,9 +406,9 @@ def test_active_same_thread_followup_waits_for_current_task(tmp_path: Path):
 
 def test_thread_transcript_prunes_committed_message_and_settlement_together(
     tmp_path: Path,
+    store,
 ):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.local_profiles = lambda: ("default", "ops")
@@ -426,7 +435,7 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
     assert service.stop(timeout=5.0)
     for index in range(24):
         _append_room_event(
-            db,
+            store,
             room_id="room-1",
             event_id=f"user-tail-{index}",
             kind="message.user",
@@ -434,7 +443,7 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
             payload={"text": f"tail {index}", "thread_id": "thread-1"},
         )
 
-    room = hosted_rooms.room_state(db, room_id="room-1")
+    room = hosted_rooms.room_state(store, placement="profile", room_id="room-1")
     snapshot = service._policy_snapshot(room)
     assert len(snapshot.events) == 24
     assert {event["kind"] for event in snapshot.events} == {"message.user"}
@@ -446,24 +455,24 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
     )
 
 
-def test_service_derives_room_deadline_from_agent_timeout(tmp_path: Path, monkeypatch):
+def test_service_derives_room_deadline_from_agent_timeout(tmp_path: Path, monkeypatch, store):
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "90")
 
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service = HostedRoomService(_server(), store=store, placement="profile")
 
     assert service.runtime.turn_timeout_seconds == 120.0
 
 
 def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
     tmp_path: Path,
+    store,
 ):
     now = [100.0]
 
     def clock():
         return now[0]
 
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.runtime.clock = clock
@@ -483,9 +492,10 @@ def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
         event_id="user-resilience",
         payload={"text": "Check this", "thread_id": "thread-1"},
     )
-    first = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    first = driver.list_tasks(store, placement="profile", room_id="room-1", status="queued")[0]
     old_lease = driver.acquire_lease(
-        db,
+        store,
+        placement="profile",
         room_id="room-1",
         gateway_id=service.bindings()[0].gateway_id,
         authority_epoch=1,
@@ -494,9 +504,10 @@ def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
         clock=clock,
     )
     old_attempt = driver.start_task(
-        db,
+        store,
         first["identity"],
         old_lease,
+        placement="profile",
         expected_cancel_generation=0,
         clock=clock,
     )
@@ -527,12 +538,12 @@ def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
         "room-1", retry_action["action_id"], "approve"
     )
     assert handled == {"ok": True, "message": "Room turn retry queued"}
-    requeued = driver.get_task(db, first["identity"])
+    requeued = driver.get_task(store, placement="profile", identity=first["identity"])
     assert requeued["status"] == "queued"
     assert service.pending_actions("room-1")["actions"] == []
 
     service.runtime._process_room(binding)
-    retried = driver.get_task(db, first["identity"])
+    retried = driver.get_task(store, placement="profile", identity=first["identity"])
     assert retried["status"] == "settled"
     service.runtime._process_room(binding)
     assert retried["execution_generation"] == old_attempt.execution_generation + 1
@@ -549,14 +560,13 @@ def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
     ) == 1
 
 
-def test_research_team_deferred_site_retry_advances_generation_and_settles(tmp_path: Path):
+def test_research_team_deferred_site_retry_advances_generation_and_settles(tmp_path: Path, store):
     now = [100.0]
 
     def clock():
         return now[0]
 
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
     service.runtime.clock = clock
@@ -573,7 +583,7 @@ def test_research_team_deferred_site_retry_advances_generation_and_settles(tmp_p
         ],
     )
     _append_room_event(
-        db,
+        store,
         room_id="research-room",
         event_id="dagdispatch:site-a-fetch",
         kind="message.user",
@@ -584,9 +594,10 @@ def test_research_team_deferred_site_retry_advances_generation_and_settles(tmp_p
         },
     )
     service.prepare_room(service.bindings()[0])
-    task = driver.list_tasks(db, room_id="research-room", status="queued")[0]
+    task = driver.list_tasks(store, placement="profile", room_id="research-room", status="queued")[0]
     old_lease = driver.acquire_lease(
-        db,
+        store,
+        placement="profile",
         room_id="research-room",
         gateway_id=service.bindings()[0].gateway_id,
         authority_epoch=1,
@@ -595,9 +606,10 @@ def test_research_team_deferred_site_retry_advances_generation_and_settles(tmp_p
         clock=clock,
     )
     old_attempt = driver.start_task(
-        db,
+        store,
         task["identity"],
         old_lease,
+        placement="profile",
         expected_cancel_generation=0,
         clock=clock,
     )
@@ -607,7 +619,7 @@ def test_research_team_deferred_site_retry_advances_generation_and_settles(tmp_p
     now[0] = 108.0
     service.runtime._process_room(binding)
 
-    deferred = driver.get_task(db, task["identity"])
+    deferred = driver.get_task(store, placement="profile", identity=task["identity"])
     assert deferred["status"] == "deferred"
     action = next(
         item
@@ -623,14 +635,13 @@ def test_research_team_deferred_site_retry_advances_generation_and_settles(tmp_p
         "research-room", action["action_id"], "approve"
     ) == {"ok": True, "message": "Room turn retry queued"}
     service.runtime._process_room(binding)
-    retried = driver.get_task(db, task["identity"])
+    retried = driver.get_task(store, placement="profile", identity=task["identity"])
     assert retried["status"] == "settled"
     assert retried["execution_generation"] == old_attempt.execution_generation + 1
 
 
-def test_research_team_stop_cancels_all_active_research_without_final_report(tmp_path: Path):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+def test_research_team_stop_cancels_all_active_research_without_final_report(tmp_path: Path, store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("research", "site_a", "site_b")
     service.create_room(
         room_id="research-room",
@@ -646,10 +657,10 @@ def test_research_team_stop_cancels_all_active_research_without_final_report(tmp
         event_id="research-request",
         payload={"text": "Compare source A and source B", "thread_id": "research-thread"},
     )
-    assert driver.list_tasks(db, room_id="research-room", status="queued")
+    assert driver.list_tasks(store, placement="profile", room_id="research-room", status="queued")
     assert service.stop_room("research-room", cancel_id="leader-cancel") == 1
     service.prepare_room(service.bindings()[0])
-    tasks = driver.list_tasks(db, room_id="research-room")
+    tasks = driver.list_tasks(store, placement="profile", room_id="research-room")
     assert tasks and all(task["status"] == "cancelled" for task in tasks)
     events = service._events("research-room")
     assert any(event["kind"] == "room.stop_requested" for event in events)
@@ -661,10 +672,9 @@ def test_research_team_stop_cancels_all_active_research_without_final_report(tmp
 
 
 def test_stop_fence_prevents_the_next_room_member_from_starting(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, store
 ):
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     monkeypatch.setattr(service, "local_profiles", lambda: ("default", "ops"))
     service.create_room(
         room_id="room-1",
@@ -679,12 +689,12 @@ def test_stop_fence_prevents_the_next_room_member_from_starting(
         event_id="user-1",
         payload={"text": "Inspect the release", "thread_id": "thread-1"},
     )
-    assert len(driver.list_tasks(db, room_id="room-1")) == 1
+    assert len(driver.list_tasks(store, placement="profile", room_id="room-1")) == 1
 
     assert service.stop_room("room-1", cancel_id="stop-1") == 1
     service.prepare_room(service.bindings()[0])
 
-    tasks = driver.list_tasks(db, room_id="room-1")
+    tasks = driver.list_tasks(store, placement="profile", room_id="room-1")
     assert len(tasks) == 1
     assert tasks[0]["status"] == "cancelled"
     assert any(
@@ -694,6 +704,7 @@ def test_stop_fence_prevents_the_next_room_member_from_starting(
 
 def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
     tmp_path: Path,
+    store,
 ):
     class PendingStopRPC(_FakeRPC):
         def __init__(self) -> None:
@@ -706,8 +717,7 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
         def interrupt(self, *, profile, session_id, source, expected_task_id):
             return None
 
-    db = tmp_path / "state.db"
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=store, placement="profile")
     rpc = PendingStopRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -725,10 +735,11 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
         event_id="user-1",
         payload={"text": "@ops inspect", "thread_id": "thread-1"},
     )
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    task = driver.list_tasks(store, placement="profile", room_id="room-1", status="queued")[0]
     binding = service.bindings()[0]
     lease = driver.acquire_lease(
-        db,
+        store,
+        placement="profile",
         room_id="room-1",
         gateway_id=binding.gateway_id,
         authority_epoch=binding.authority_epoch,
@@ -737,9 +748,10 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
         clock=time.time,
     )
     driver.start_task(
-        db,
+        store,
         task["identity"],
         lease,
+        placement="profile",
         expected_cancel_generation=0,
         clock=time.time,
     )
@@ -753,6 +765,6 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
             require_acknowledged=True,
         )
 
-    stopping = driver.get_task(db, task["identity"])
+    stopping = driver.get_task(store, placement="profile", identity=task["identity"])
     assert stopping["status"] == "stopping"
     assert stopping["cancel_id"] == "stop-1"

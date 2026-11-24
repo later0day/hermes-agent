@@ -34,6 +34,8 @@ from agent.conversation_compression import (
     resolve_compression_fallback_route,
     run_compress_context_with_progress_timeout,
 )
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 CHAIN_ENTRY = {
     "provider": "custom",
@@ -297,17 +299,16 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
 
     import agent.conversation_compression as cc
     from agent.auxiliary_client import AuxiliaryExplicitCancellation
-    from hermes_state import SessionDB
 
     session_id = "STALL_FALLBACK_SAME_TURN"
-    db = SessionDB(db_path=Path(tmp_path) / "state.db")
-    db.create_session(session_id, source="cli")
+    db = storage_handle(Path(tmp_path))
+    seed_session(db, session_id, "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=db, session_id=session_id, skip_context_files=True, skip_memory=True,
+            persistence=db, session_id=session_id, skip_context_files=True, skip_memory=True,
         )
     agent._compression_feasibility_checked = True
     agent.compression_in_place = True
@@ -317,11 +318,13 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
     original = [{"role": "user", "content": f"m{i} " + "x" * 400} for i in range(20)]
     live = list(original)
     routes = []
+    primary_started = threading.Event()
 
     def fake_compress(messages, **kwargs):
         route = take_pinned_summary_route()
         routes.append((route["label"] if route else None, kwargs.get("bypass_cooldown", False)))
         if route is None:
+            primary_started.set()
             cancelled = getattr(compressor, "_compression_cancelled_check", None)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and not (callable(cancelled) and cancelled()):
@@ -331,6 +334,11 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
 
     compressor.compress = fake_compress
     real_route = cc.resolve_compression_fallback_route
+    real_await = cc._await_worker_within_budget
+
+    def await_after_primary_started(future, worker_fence, **kwargs):
+        assert primary_started.wait(timeout=2.0)
+        return real_await(future, worker_fence, **kwargs)
 
     def route_after_primary_unwound():
         # Pin the race outcome from the report: the primary persisted its backoff before the retry ran.
@@ -341,6 +349,7 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
 
     monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.4, 4.0))
     monkeypatch.setattr(cc, "resolve_compression_fallback_route", route_after_primary_unwound)
+    monkeypatch.setattr(cc, "_await_worker_within_budget", await_after_primary_started)
     with _patch_chain([CHAIN_ENTRY]):
         out_msgs, _prompt = agent._compress_context(live, "sys", approx_tokens=50_000)
 

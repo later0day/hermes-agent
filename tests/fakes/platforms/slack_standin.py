@@ -295,6 +295,11 @@ class SlackStandin(StandinServer):
         users = str(p.get("users", "")).split(",")[0]
         return {"channel": self._channel("D" + users[1:])}
 
+    def _m_views_open(self, p: dict[str, Any]) -> dict[str, Any]:
+        view = dict(p.get("view") or {})
+        view["id"] = f"V{next(self._ids):08d}"
+        return {"view": view}
+
     def _thread_messages(self, channel: str, ts: str) -> list[dict[str, Any]]:
         with self._lock:
             msgs = list(self._history.get(channel, []))
@@ -525,6 +530,18 @@ class SlackStandin(StandinServer):
                    "message": message, "state": {"values": {}},
                    "response_url": self._new_response_url(channel, user_id), "actions": [act]}
         return self.push("interactive", payload, accepts_response_payload=False)
+
+    def view_submission(self, user_id: str, view: dict[str, Any],
+                        state_values: dict[str, Any]) -> dict[str, Any]:
+        """A user submits a view returned by ``views.open`` over the real Socket Mode connection."""
+        submitted = dict(view)
+        submitted["state"] = {"values": state_values}
+        payload = {"type": "view_submission", "team": {"id": TEAM_ID, "domain": "standin"},
+                   "user": {"id": user_id, "username": f"user{user_id.lower()}", "name": f"user{user_id.lower()}",
+                            "team_id": TEAM_ID},
+                   "api_app_id": APP_ID, "token": "verification-token", "view": submitted,
+                   "is_cleared": False}
+        return self.push("interactive", payload, accepts_response_payload=True)
 
     def slash(self, user_id: str, channel: str, command: str, text: str = "") -> dict[str, Any]:
         payload = {"token": "verification-token", "team_id": TEAM_ID, "team_domain": "standin",

@@ -301,8 +301,9 @@ def _write_rotated(data: dict[str, Any]) -> Path:
     from pm.filesystem import lock_fd
     from pm.lock import _write
 
-    d = _receipt_dir()
-    d.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    d = mkdir_under_hermes_home(_receipt_dir())
     path = d / _receipt_name(data)
     # Concurrent completions share latest.json; serialize its replacement.
     with (d / ".pm-write.lock").open("a+b") as lock:
