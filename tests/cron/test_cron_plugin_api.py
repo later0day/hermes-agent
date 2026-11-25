@@ -381,6 +381,51 @@ def test_no_job_id_uses_firing_origin_even_if_mutated_or_edited_mid_run(home_cha
         exit_cron_execution(token)
 
 
+HOSTED_ENSURE_PLUGIN = '''
+from cron.plugin_api import ensure_named_job
+
+
+def register(ctx):
+    def ensure(**kwargs):
+        job = ensure_named_job(
+            "hosted-follow-up", prompt="check in", schedule="every 1h", deliver="local")
+        return {"id": job["id"], "prompt": job["prompt"], "deliver": job["deliver"]}
+    ctx.register_hook("post_llm_call", ensure)
+'''
+
+
+@pytest.mark.platforms("any")  # each profile's consumer runs in a real plugin-host child
+def test_standalone_plugin_host_ensures_named_jobs_in_per_profile_stores(tmp_path, monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    from tests.hermes_cli.test_plugin_host import _home_with_plugins
+
+    ids, homes = {}, {}
+    for profile in ("one", "two"):
+        root = tmp_path / profile
+        homes[profile] = _home_with_plugins(
+            root, monkeypatch, {"hostedensure": HOSTED_ENSURE_PLUGIN}, isolation="host")
+        manager = PluginManager()
+        manager.discover_and_load()
+        try:
+            assert manager._plugins["hostedensure"].error is None
+            first = manager.invoke_hook("post_llm_call", session_id="s")
+            again = manager.invoke_hook("post_llm_call", session_id="s")
+            assert again == first
+            assert first[0]["prompt"] == "check in"
+            assert first[0]["deliver"] == "local"
+            ids[profile] = first[0]["id"]
+        finally:
+            manager.unload()
+            manager._plugin_host().shutdown()
+
+    assert ids["one"] != ids["two"]
+    for profile in ("one", "two"):
+        with jobs.use_cron_store(homes[profile]):
+            stored = _all_jobs()
+            assert [job["id"] for job in stored] == [ids[profile]]
+            assert stored[0]["name"] == "hosted-follow-up"
+
+
 HOSTED_HOOK_PLUGIN = '''
 from cron.plugin_api import delivery_platforms
 

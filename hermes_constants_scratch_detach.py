@@ -11,6 +11,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import hermes_constants_scratch as rules
@@ -42,14 +43,18 @@ def spawn_prune(scratch: Path) -> None:
     stdio = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     try:
         try:
-            subprocess.Popen(argv, close_fds=True, **stdio, **windows_detach_popen_kwargs())
+            proc = subprocess.Popen(argv, close_fds=True, **stdio, **windows_detach_popen_kwargs())
         except PermissionError:
             if sys.platform != "win32":
                 raise
             # A job object without BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB.
-            subprocess.Popen(argv, close_fds=True, **stdio, creationflags=windows_detach_flags_without_breakaway())
+            proc = subprocess.Popen(argv, close_fds=True, **stdio,
+                                    creationflags=windows_detach_flags_without_breakaway())
     except (OSError, RuntimeError) as exc:
         logger.debug("scratch prune: could not start the detached pass for %s: %s", scratch, exc)
+        return
+    # health: allow HX012 -- wait() reaps this one child and never reads profile or secret context
+    threading.Thread(target=proc.wait, name=f"scratch-prune-{proc.pid}-reaper", daemon=True).start()
 
 
 def _encode_lineage(chain: list[tuple[int, float]] | None) -> str:

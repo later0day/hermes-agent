@@ -11,7 +11,8 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { singleFlight } from './create-dialog'
+import { canonicalCreationOwner, singleFlight } from './create-dialog'
+import type { RosterRow } from './types'
 
 // The dialog is a 1200-line surface pulling in most of the SDK; the helper
 // under test touches none of it, so a self-returning stub keeps the module
@@ -30,6 +31,35 @@ vi.mock('@hermes/plugin-sdk', async () => {
     get: (target, key) =>
       typeof key === 'symbol' || key in target ? target[key as string] : key === 'then' ? undefined : stub,
     has: () => true
+  })
+})
+
+describe('canonicalCreationOwner', () => {
+  it('pins every creation RPC to the source that created the profile', () => {
+    const bot = { name: 'reviewer', title: 'Reviewer' } as RosterRow
+
+    expect(canonicalCreationOwner(bot, 'local')).toEqual({
+      ...bot,
+      connectionId: 'local',
+      sourceScoped: true,
+      route: {
+        connectionId: 'local',
+        mode: 'local',
+        profile: 'reviewer',
+        targetProfile: 'reviewer'
+      }
+    })
+  })
+
+  it('does not re-home a bot created on the active remote source', () => {
+    const owner = canonicalCreationOwner({ name: 'reviewer' } as RosterRow, 'cloud-a')
+
+    expect(owner.route).toEqual({
+      connectionId: 'cloud-a',
+      mode: 'remote',
+      profile: 'reviewer',
+      targetProfile: 'reviewer'
+    })
   })
 })
 

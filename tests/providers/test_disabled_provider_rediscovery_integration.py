@@ -7,10 +7,7 @@ process boundary while the original process retains its provider-home layer.
 
 from __future__ import annotations
 
-import errno
-import json
 import os
-import shutil
 import subprocess
 import sys
 import textwrap
@@ -18,6 +15,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from tests.pm._fixtures import seed_warm_pm
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,57 +58,6 @@ def _write_import_marker_plugin(plugin_dir: Path, *, name: str, marker: Path) ->
 def _settle_plugin_parent(home: Path) -> None:
     settled = time.time() - 60
     os.utime(home / "plugins", (settled, settled))
-
-
-def _copy_tree(source: Path, target: Path) -> None:
-    target.mkdir(parents=True)
-    with os.scandir(source) as entries:
-        for entry in entries:
-            src, dst = Path(entry.path), target / entry.name
-            if entry.is_symlink():
-                dst.symlink_to(os.readlink(src))
-            elif entry.is_dir(follow_symlinks=False):
-                _copy_tree(src, dst)
-            else:
-                try:
-                    os.link(src, dst)
-                except OSError as exc:
-                    if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES}:
-                        raise
-                    shutil.copy2(src, dst)
-
-
-def _seed_warm_pm(home: Path) -> None:
-    """Keep this rediscovery test independent of cold PM provisioning and network speed."""
-    from pm.environments import install_key, venv_python
-    from pm.packages import Venv
-    from pm.runtime import _inputs
-
-    source_venv = Path(sys.prefix)
-    source_generation = source_venv.parent
-    assert source_generation.parent.name == "test-environment", source_generation
-    state = home / "installs" / install_key(REPO_ROOT)
-    app_generation = state / "environments" / "e2e"
-    _copy_tree(source_generation, app_generation)
-    app_python = venv_python(app_generation / "venv")
-    (state / "facts.json").write_text(json.dumps({
-        "schema": 1,
-        "packages": {"venv": {
-            "environment": str(app_python.parent.parent),
-            "extras": [],
-            "resolved_lock": str(REPO_ROOT / "uv.lock"),
-            "stamp": Venv(REPO_ROOT).expected_stamp([], plugin_dirs=[]),
-        }},
-    }), encoding="utf-8")
-
-    pm_generation = state / "pm-runtime" / "generations" / "seed"
-    _copy_tree(source_venv, pm_generation)
-    pm_python = venv_python(pm_generation)
-    inputs = _inputs(REPO_ROOT, pm_python)
-    (pm_generation / "pm-runtime.json").write_text(json.dumps({"inputs": inputs}), encoding="utf-8")
-    (state / "pm-runtime" / "selected.json").write_text(json.dumps({
-        "inputs": inputs, "generation": "generations/seed",
-    }), encoding="utf-8")
 
 
 def test_disabled_providers_are_neither_imported_nor_host_extracted(provider_home, monkeypatch):
@@ -165,7 +113,7 @@ def test_real_cli_enable_rediscovers_without_touching_plugin_stamps(provider_hom
     watched = (provider_home / "plugins", plugin_dir / "plugin.yaml", plugin_dir / "__init__.py")
     stamps_before = {path: path.stat().st_mtime_ns for path in watched}
 
-    _seed_warm_pm(provider_home)
+    seed_warm_pm(provider_home, REPO_ROOT)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"

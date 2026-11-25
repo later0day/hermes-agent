@@ -125,6 +125,7 @@ def _interrupt(tui: TmuxTui, llm: FakeLLMServer, cells) -> None:
     partial = [c for _s, r, c in rows if r == "assistant"]
     db_raw = _norm(partial[0]) if partial else ""
     screen_raw = _screen_partial(tui.rows(history=True))
+    shown = re.findall(r"\bi1w\d{3}\b", screen_raw)
     # Raw text, not whole tokens: the cut lands mid-word, and that half word counts too.
     cells.add("interrupt_screen_matches_db",
               "" if db_raw and db_raw == screen_raw

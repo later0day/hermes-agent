@@ -1,9 +1,10 @@
 """Live E2E: vault fill through the REAL browser_exec path (Browser Use CLI + Hermes' packaged Chromium).
 
 Proves problem (1) of the #106480 re-review is fixed: on the default browser backend the login page lives in
-a tab browser_exec opened, the supervisor is attached by browser_exec itself, browser_vault_fill focuses the
-tab on the bound origin and injects the password over the supervisor's CDP WebSocket, and the secret is absent
-from every model-facing result. Also exercises a payment fill (confirm gate, card fields, decline = no write).
+a tab browser_exec opened, the supervisor is attached by browser_exec itself, browser_vault_fill writes to the
+tab browser_exec currently drives and injects the password over the supervisor's CDP WebSocket, and the secret
+is absent from every model-facing result. Also exercises a payment fill (confirm gate, card fields, decline =
+no write).
 
 Run: HERMES_E2E_BROWSER=1 <venv>/bin/python evals/vault_fill_live_e2e.py
 """
@@ -65,6 +66,7 @@ def main() -> int:
         _exec("new_tab('about:blank')")
         _exec(f"new_tab({origin + '/login'!r}); wait_for_load()")
         _exec(f"new_tab({origin + '/checkout'!r}); wait_for_load(); print(page_info()['url'])")
+        _exec(f"goto_url({origin + '/login'!r}); wait_for_load()")
 
         sup = SUPERVISOR_REGISTRY.get(TASK)
         assert sup is not None, "browser_exec did not attach a supervisor for its task (problem 1 regressed)"
@@ -92,6 +94,7 @@ def main() -> int:
         print("login: identifier and password landed in the /login tab; model-facing read is scrubbed")
 
         ap.request_elicitation_consent = lambda *a, **k: "decline"
+        _exec(f"goto_url({origin + '/checkout'!r}); wait_for_load()")
         out = json.loads(bvt.browser_vault_fill(card.id, task_id=TASK))
         assert out["error_type"] == "payment_declined", out
         assert sup.focus_page(origin, accept=bvt._TAB_PROBES["payment"])["ok"]
@@ -100,6 +103,7 @@ def main() -> int:
         print("payment: declined confirmation wrote nothing")
 
         ap.request_elicitation_consent = lambda *a, **k: "accept"
+        _exec(f"goto_url({origin + '/checkout'!r}); wait_for_load()")
         raw = bvt.browser_vault_fill(card.id, task_id=TASK)
         out = json.loads(raw)
         print("payment fill:", out)
@@ -109,10 +113,11 @@ def main() -> int:
         assert r.get("result") == "4111111111111111|07/29|987|DE|", r
         print("payment: card/expiry/cvc filled on the /checkout tab, email untouched, select untouched without a value")
 
-        # save-on-page: the supervisor's default page is the blank first tab; the tool must find the login
-        # tab itself (Browser Use daemon tabs are how a real session looks) and bind the item to ITS origin.
+        # save-on-page: browser_exec drives a blank tab; the tool must find the login tab itself
+        # (Browser Use daemon tabs are how a real session looks) and bind the item to ITS origin.
         from agent.vault_backends import unlock as vault_unlock
         store.remove_item(login.id)
+        _exec("new_tab('about:blank')")
         sup.evaluate_runtime("document.querySelector('input[name=pw]') && (document.querySelector('input[name=pw]').value = '')")
         assert sup.focus_page("about:blank")["ok"] is False  # about: pages are never candidates
         vault_unlock.set_save_login_prompt_callback(lambda o, site: {"identifier": "new@b.c", "password": "pw-SAVE-5150"})

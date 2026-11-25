@@ -618,6 +618,7 @@ def test_a_fork_whose_worker_cannot_start_settles_and_never_holds_up_the_next_tu
 _E2E_PLUGIN = '''
 import json, sys
 
+from hermes_cli.plugin_session import fork_origin
 from tools.terminal_tool import _get_approval_callback
 
 PROBE = sys.modules["_fork_probe"]
@@ -636,7 +637,8 @@ def _handler(name):
 
 
 def _log(name, **kw):
-    PROBE.events.append({"event": name, "aux_task": kw.get("aux_task"), "plugin_id": kw.get("plugin_id")})
+    PROBE.events.append({"event": name, "aux_task": kw.get("aux_task"), "plugin_id": kw.get("plugin_id"),
+                         "fork_origin": fork_origin()})
 
 
 def register(ctx):
@@ -727,6 +729,9 @@ def test_real_fork_keeps_cache_parity_and_calls_only_whitelisted_tools(monkeypat
     assert [e["event"] for e in run.probe.events] == ["pre_api_request", "post_api_request"] * 2 + [
         "pre_auxiliary_call", "post_auxiliary_call"] * 2
     assert {(e["aux_task"], e["plugin_id"]) for e in run.probe.events[4:]} == {("plugin_fork", PLUGIN)}
+    # Both the request hook and its cleanup hook run inside the same real fork identity.
+    origin = f"plugin_fork:{PLUGIN}"
+    assert [e["fork_origin"] for e in run.probe.events] == [""] * 4 + [origin] * 4
 
 
 def test_real_fork_stops_at_its_input_budget(monkeypatch):

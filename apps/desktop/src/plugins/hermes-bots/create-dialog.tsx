@@ -281,6 +281,26 @@ function liveRosterRow(name: string, connectionId: string, fallback: RosterRow):
   return live ?? (connectionId && connectionId !== active ? { ...fallback, connectionId, sourceScoped: true } : fallback)
 }
 
+export function canonicalCreationOwner(bot: RosterRow, connectionId: string): RosterRow {
+  const owner = connectionId.trim()
+
+  if (!owner || typeof host.requestProfile !== 'function') {
+    return bot
+  }
+
+  return {
+    ...bot,
+    connectionId: owner,
+    sourceScoped: true,
+    route: {
+      connectionId: owner,
+      mode: owner === 'local' ? 'local' : 'remote',
+      profile: bot.name,
+      targetProfile: bot.name
+    }
+  }
+}
+
 function useDraftProfile(
   createdRef: { current: null | string },
   flightRef: { current: Promise<null | string> | null }
@@ -762,7 +782,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         // the ONE caller allowed to request the intro turn — genuine New
         // Agent creation. Click-path resolution (openBotCanonicalChat) mints
         // silently so a resolution miss never burns a turn (ScottFive).
-        const sid = await createCanonicalChat(slug, {
+        const sid = await createCanonicalChat(canonicalCreationOwner(bot, createdOn), {
           kickoff: !needsModel
         })
 

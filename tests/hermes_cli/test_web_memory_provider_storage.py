@@ -299,6 +299,8 @@ def test_the_enable_command_run_from_another_shell_enables_only_the_inspected_ho
     import hermes_yaml as yaml
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from plugins.memory import parked_provider_notice
+    from pm.environments import install_key
+    from tests.pm._fixtures import seed_warm_pm
 
     homes = [tmp_path / rel for rel in (_NATIVE, _NATIVE_WORK, _CUSTOM, _CUSTOM_WORK, _LOOSE)]
     for home in homes:
@@ -320,8 +322,15 @@ def test_the_enable_command_run_from_another_shell_enables_only_the_inspected_ho
     assert "external memory is off" in notice, notice
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
-    # A shell somewhere else follows the notice: its own HERMES_HOME (or none), with HERMES_HOME set when told to.
     repo = Path(__file__).resolve().parents[2]
+    seed_warm_pm(tmp_path / inspected, repo)
+    pm_state = tmp_path / inspected / "installs" / install_key(repo)
+    generations_before = (
+        sorted(p.name for p in (pm_state / "environments").iterdir()),
+        sorted(p.name for p in (pm_state / "pm-runtime" / "generations").iterdir()),
+    )
+
+    # A shell somewhere else follows the notice: its own HERMES_HOME (or none), with HERMES_HOME set when told to.
     env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
     env.update(HOME=str(tmp_path), PYTHONPATH=str(repo), **({"HERMES_HOME": str(tmp_path / shell)} if shell else {}))
     told = re.search(r"with HERMES_HOME set to (.+)\.$", notice)
@@ -332,6 +341,11 @@ def test_the_enable_command_run_from_another_shell_enables_only_the_inspected_ho
                          capture_output=True, text=True, timeout=120, check=False)
 
     assert run.returncode == 0, (notice, run.stdout, run.stderr)
+    generations_after = (
+        sorted(p.name for p in (pm_state / "environments").iterdir()),
+        sorted(p.name for p in (pm_state / "pm-runtime" / "generations").iterdir()),
+    )
+    assert generations_after == generations_before
     target = tmp_path / inspected / "config.yaml"
     assert "ownprov" not in (yaml.safe_load(target.read_text(encoding="utf-8"))["plugins"].get("disabled") or ()), notice
     assert {p: data for p, data in before.items() if p != target} == {

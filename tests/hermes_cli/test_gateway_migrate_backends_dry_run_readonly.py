@@ -173,6 +173,9 @@ def test_status_and_restore_without_a_migration_change_nothing(scratch):
     """The other entry points that never change a home without a migration. (A real ``--apply`` is not run
     here: on this machine it would install a gateway service; the engine's tests drive it on a fake host.)"""
     user, env, old, port, _with_unit = scratch
+    # Start from an initialized account; the dry-run case above deliberately leaves this first-call write unmade.
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=10) as response:
+        assert json.loads(response.read()).get("install_id")
     assert _settled(env).returncode == 0
     before = _snapshot(user)
 

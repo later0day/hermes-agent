@@ -489,6 +489,20 @@ def test_timeout_counts_the_fork_build(provider, issued, monkeypatch):
     assert len(provider.requests) == sent
 
 
+def test_ordinary_run_conversation_masks_an_outer_fork_origin(provider):
+    """A regular agent turn owns no detached-fork label, even when its caller's context carries one."""
+    from agent.turn_facade import bind_detached_fork_origin
+    from hermes_cli.plugin_session import fork_origin
+
+    parent = _make_parent()
+    observed = []
+    provider.replies.append(lambda: observed.append(fork_origin()) or _response('ok', usage=_usage()))
+    with bind_detached_fork_origin('plugin_fork:outer'):
+        assert parent.run_conversation('ordinary turn')['final_response'] == 'ok'
+        assert fork_origin() == 'plugin_fork:outer'  # the caller's own binding is restored
+    assert observed == ['']
+
+
 @pytest.mark.parametrize('fails', [False, True], ids=['success', 'error'])
 def test_text_only_fork_origin_is_bound_for_auxiliary_hooks(provider, issued, monkeypatch, fails):
     from agent import auxiliary_hooks

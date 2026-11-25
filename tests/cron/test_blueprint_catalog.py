@@ -6,9 +6,13 @@ the docs generator. Uses an isolated HERMES_HOME for anything that touches the
 cron job store.
 """
 
+import ast
 import importlib
 import json
+import re
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -170,6 +174,73 @@ class TestCommandHandler:
         for blueprint in (bp for bp in CATALOG if bp.skills):
             seed = handle_blueprint_command(blueprint.key).agent_seed
             assert seed and f"skills={list(blueprint.skills)!r}" in seed, blueprint.key
+
+    def test_conversational_seed_real_agent_create_preserves_skills(self, isolated_home, monkeypatch):
+        """The conversational path, not just its seed text, carries every skill into the job store."""
+        from hermes_cli.blueprint_cmd import handle_blueprint_command
+        from run_agent import AIAgent
+
+        blueprint = get_blueprint("weekly-review")
+        seed = handle_blueprint_command(blueprint.key).agent_seed
+        assert seed is not None
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+
+        def response(content=None, tool_calls=None):
+            message = SimpleNamespace(
+                role="assistant", content=content, tool_calls=tool_calls, reasoning_content=None)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=message, finish_reason="tool_calls" if tool_calls else "stop")],
+                model="test/model",
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            )
+
+        requests = []
+
+        def complete(**request):
+            requests.append(request)
+            if len(requests) > 1:
+                return response("Scheduled.")
+            # The stand-in obeys the seed it actually received; it cannot supply skills out of band.
+            assert request["messages"][-1] == {"role": "user", "content": seed}
+            match = re.search(r"Include skills=(\[[^\n]*\]) in the create call\.", seed)
+            assert match is not None
+            arguments = {
+                "action": "create",
+                "name": blueprint.title,
+                "schedule": "0 18 * * 0",
+                "prompt": blueprint.prompt_template,
+                "deliver": "local",
+                "skills": ast.literal_eval(match.group(1)),
+            }
+            call = SimpleNamespace(
+                id="create-weekly-review", type="function",
+                function=SimpleNamespace(name="cronjob_manage", arguments=json.dumps(arguments)),
+            )
+            return response(tool_calls=[call])
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = complete
+        with (
+            patch("agent.process_bootstrap.OpenAI", return_value=client),
+            patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        ):
+            agent = AIAgent(
+                api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
+                enabled_toolsets=["cronjob"], max_iterations=4, quiet_mode=True,
+                skip_context_files=True, skip_memory=True,
+            )
+            agent._cached_system_prompt = "You are helpful."
+            agent.skip_background_review = True
+            result = agent.run_conversation(seed)
+
+        assert result["final_response"] == "Scheduled."
+        assert len(requests) == 2
+        [tool_result] = [message for message in requests[1]["messages"]
+                         if message.get("role") == "tool" and message.get("tool_call_id") == "create-weekly-review"]
+        assert json.loads(tool_result["content"])["success"] is True
+        [job] = isolated_home.load_jobs()
+        assert job["skills"] == list(blueprint.skills)
 
     def test_fill_refuses_prompt_injection_in_slot_value(self, isolated_home):
         """Slot text lands in the stored prompt; the direct-create shortcut applies the

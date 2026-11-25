@@ -40,6 +40,42 @@ print(json.dumps({"outside": ctx.current_cron_execution(), "profile": ctx.profil
                   "executions": list_executions(job_id="probe")}, default=str))
 '''
 
+_HOSTED_DELIVERY_PLUGIN = '''
+import json, os
+from pathlib import Path
+
+
+def register(ctx):
+    def record(tool_name=None, **kwargs):
+        if tool_name != "cronjob_manage":
+            return
+        run = ctx.current_cron_execution()
+        seen = {
+            "identity": dict(run) if run is not None else None,
+            "firing": ctx.cron_delivery_platforms(),
+            "stored": ctx.cron_delivery_platforms(run.job_id) if run is not None else None,
+            "result": json.loads(kwargs.get("result") or "{}"),
+        }
+        Path(os.environ["HERMES_HOME"], "hosted-seen.json").write_text(json.dumps(seen))
+    ctx.register_hook("post_tool_call", record)
+'''
+
+_HOSTED_TICK = '''
+import json
+from cron import scheduler, scheduler_authority
+from cron.executions import list_executions
+from tests.cron.conftest import owner_execution_runner
+scheduler_authority.run_canonical_job = owner_execution_runner()
+from hermes_cli.plugins import get_plugin_manager
+manager = get_plugin_manager()
+try:
+    scheduler.tick(verbose=False, sync=True)
+    print(json.dumps({"executions": list_executions(job_id="probe")}, default=str))
+finally:
+    manager.unload()
+    manager._plugin_host().shutdown()
+'''
+
 
 def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path):
     from hermes_time import now
@@ -86,6 +122,55 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
     assert ident["started_at"] == execution["started_at"]
     assert ident["profile"] == report["profile"]
     assert report["outside"] is None
+
+
+def test_hosted_hook_keeps_firing_delivery_after_ticked_job_edits_itself(tmp_path):
+    from hermes_time import now
+
+    home = tmp_path / "home"
+    plugin_dir = home / "plugins" / "hosted-cron-snapshot"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hosted-cron-snapshot\nversion: 0.0.1\n")
+    (plugin_dir / "__init__.py").write_text(_HOSTED_DELIVERY_PLUGIN)
+    with FakeLLMServer([
+        ToolCall("cronjob_manage", {"action": "update", "job_id": "probe", "deliver": "local"}),
+        Text("done"),
+    ]) as srv:
+        write_hermes_home(
+            home, srv.base_url,
+            extra_config=(
+                "cron:\n  allow_agent_scheduling: true\n"
+                "plugins:\n  enabled: [hosted-cron-snapshot]\n  isolation: host\n"
+            ),
+        )
+        (home / "cron").mkdir()
+        (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{
+            "id": "probe", "name": "hosted identity probe", "prompt": "change your delivery",
+            "schedule": {"kind": "interval", "minutes": 240},
+            "next_run_at": (now() - timedelta(minutes=1)).isoformat(),
+            "enabled": True, "state": "scheduled", "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "42"},
+            "repeat": {"times": None, "completed": 0}}]}))
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("HERMES_", "_HERMES_"))
+               and not k.endswith(("_API_KEY", "_TOKEN"))}
+        env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+        result = subprocess.run([sys.executable, "-c", _HOSTED_TICK], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=180, check=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    seen = json.loads((home / "hosted-seen.json").read_text())
+    (execution,) = report["executions"]
+    stored = json.loads((home / "cron" / "jobs.json").read_text())["jobs"]
+
+    assert seen["result"]["success"] is True
+    assert seen["identity"]["job_id"] == "probe"
+    assert seen["identity"]["execution_id"] == execution["id"]
+    assert seen["identity"]["source"] == execution["source"] == "builtin"
+    assert seen["firing"] == ["telegram"]
+    assert seen["stored"] == []
+    assert [job["deliver"] for job in stored] == ["local"]
 
 
 def test_identity_is_scoped_and_not_inherited_by_delegated_children():

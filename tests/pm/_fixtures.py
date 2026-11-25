@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from functools import partial
 from contextlib import contextmanager
+import errno
 import hashlib
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import importlib
@@ -16,6 +17,7 @@ import sys
 import tarfile
 import threading
 import zipfile
+from unittest.mock import patch
 
 import pytest
 
@@ -94,6 +96,79 @@ def _run(command, *, cwd: Path, env: dict) -> str:
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
+
+
+def _copy_tree(source: Path, target: Path) -> None:
+    target.mkdir(parents=True)
+    with os.scandir(source) as entries:
+        for entry in entries:
+            src, dst = Path(entry.path), target / entry.name
+            if entry.is_symlink():
+                dst.symlink_to(os.readlink(src))
+            elif entry.is_dir(follow_symlinks=False):
+                _copy_tree(src, dst)
+            else:
+                try:
+                    os.link(src, dst)
+                except OSError as exc:
+                    if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES}:
+                        raise
+                    shutil.copy2(src, dst)
+
+
+def seed_warm_pm(home: Path, repo: Path) -> None:
+    """Keep real CLI tests independent of cold PM provisioning and network speed."""
+    import pm.runtime as pm_runtime
+    from pm.environments import install_key, store_root, venv_python
+    from pm.extras import committed_generation_extras
+    from pm.lock import Lockfile
+    from pm.packages import Venv
+    from pm.paths import lockfile_path
+    from pm.registry import get_package
+    from pm.store import current_target
+
+    source_venv = Path(sys.prefix)
+    source_generation = source_venv.parent
+    assert source_generation.parent.name == "test-environment", source_generation
+    state = home / "installs" / install_key(repo)
+    app_generation = state / "environments" / "e2e"
+    _copy_tree(source_generation, app_generation)
+    app_python = venv_python(app_generation / "venv")
+    facts_path = state / "facts.json"
+    facts_path.write_text(json.dumps({
+        "schema": 1,
+        "packages": {"venv": {
+            "environment": str(app_python.parent.parent),
+            "extras": [],
+            "resolved_lock": str(repo / "uv.lock"),
+            "stamp": Venv(repo).expected_stamp([], plugin_dirs=[]),
+        }},
+    }), encoding="utf-8")
+    with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+        os.environ.pop("HERMES_RUNTIME_DIR", None)
+        extras = committed_generation_extras(repo)
+        python_package = get_package("python")
+        target = current_target()
+        version = Lockfile(lockfile_path()).version("python")
+        pinned_python = python_package.binary(
+            store_root(repo) / python_package.store_entry(version, target), target)
+        inputs = pm_runtime._inputs(Path(pm_runtime.__file__).resolve().parent, pinned_python)
+    facts_path.write_text(json.dumps({
+        "schema": 1,
+        "packages": {"venv": {
+            "environment": str(app_python.parent.parent),
+            "extras": extras,
+            "resolved_lock": str(repo / "uv.lock"),
+            "stamp": Venv(repo).expected_stamp(extras, plugin_dirs=[]),
+        }},
+    }), encoding="utf-8")
+
+    pm_generation = state / "pm-runtime" / "generations" / "seed"
+    _copy_tree(source_venv, pm_generation)
+    (pm_generation / "pm-runtime.json").write_text(json.dumps({"inputs": inputs}), encoding="utf-8")
+    (state / "pm-runtime" / "selected.json").write_text(json.dumps({
+        "inputs": inputs, "generation": "generations/seed",
+    }), encoding="utf-8")
 
 
 def _ar_member(name: str, data: bytes) -> bytes:

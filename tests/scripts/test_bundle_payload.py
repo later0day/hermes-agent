@@ -26,6 +26,24 @@ def test_sealed_snapshot_keeps_the_whatsapp_bridge(tmp_path):
     assert not (destination / "scripts/bundles/payload.py").exists()
 
 
+def test_sealed_snapshot_omits_a_runtime_tree_absent_from_the_revision(tmp_path):
+    """A historical payload without the WhatsApp bridge still archives successfully."""
+    root = Path(__file__).resolve().parents[2]
+    revision = "f1311ad3dee49216284342333d216ded2459685a"
+    probe = subprocess.run(
+        ["git", "ls-tree", "-d", "--name-only", revision, "--", "scripts/whatsapp-bridge"],
+        cwd=root, check=False, capture_output=True, text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout == "", "fixture revision unexpectedly contains the WhatsApp bridge"
+
+    destination = tmp_path / "agent"
+    snapshot(root, revision, destination, exclude=INERT_SNAPSHOT_DIRS)
+
+    assert (destination / "run_agent.py").is_file()
+    assert not (destination / "scripts/whatsapp-bridge").exists()
+
+
 def test_release_version_comes_from_the_release_identity_not_the_checkout(tmp_path):
     (tmp_path / "pyproject.toml").write_text('[project]\nversion="0.0.0"\n', encoding="utf-8")
     assert release_version(tmp_path, "v1.2.3") == "1.2.3"

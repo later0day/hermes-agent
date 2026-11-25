@@ -92,6 +92,35 @@ def test_a_short_lived_process_still_completes_its_due_prune(tmp_path):
         user_shell.wait(timeout=30)
 
 
+@pytest.mark.platforms("linux")
+def test_detached_prune_is_reaped_while_its_launcher_stays_alive(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    home = tmp_path / "home"
+    scratch = get_scratch_dir(home, prune=False)
+    doomed = _idle_entry(scratch, "old-lane")
+    ready = tmp_path / "ready"
+    launcher_code = (
+        "import signal, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+        "from hermes_constants_scratch_detach import spawn_prune; spawn_prune(Path(sys.argv[2])); "
+        "Path(sys.argv[3]).touch(); signal.pause()"
+    )
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", launcher_code, str(repo), str(scratch), str(ready)],
+        stdin=subprocess.DEVNULL,
+    )
+    try:
+        wait_until(ready.exists, timeout=30, what="the live launcher starting its detached prune")
+        log_file = home / "logs" / "scratch-prune.log"
+        wait_until(lambda: log_file.exists() and f"removed {str(doomed)!r} (" in log_file.read_text(encoding="utf-8-sig"),
+                   timeout=60, what="the detached prune removing the idle entry")
+        assert not doomed.exists()
+        wait_until(lambda: not psutil.Process(launcher.pid).children(), timeout=10,
+                   what="the live launcher reaping its detached prune")
+    finally:
+        launcher.kill()
+        launcher.wait(timeout=30)
+
+
 @pytest.mark.platforms("linux")  # /proc starttime and prctl(PR_SET_NAME)
 def test_launcher_ancestry_stamp_is_boot_relative_even_for_a_non_utf8_name(tmp_path):
     """The ancestry stamp the detached pass compares is the kernel's start tick, never a

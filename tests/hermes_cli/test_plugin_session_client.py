@@ -411,6 +411,133 @@ async def test_a_plugin_s_slash_command_reads_its_session_s_viewers_and_no_turn_
         await client.connection.close()
 
 
+SESSION_CREATE_SOURCE_PLUGIN = '''
+import json
+import os
+
+OUT = {out!r}
+
+
+def register(ctx):
+    def record(**kw):
+        with open(OUT, "a", encoding="utf-8") as out:
+            out.write(json.dumps({{
+                "pid": os.getpid(),
+                "source": ctx.session_source(),
+                "child": ctx.in_delegated_child(),
+                "descendant": ctx.in_delegated_child(include_subprocesses=True),
+                "origin": ctx.fork_origin(),
+            }}) + "\\n")
+    ctx.register_hook("post_llm_call", record)
+'''
+
+
+class _DelegatingModel(BaseHTTPRequestHandler):
+    """One real parent delegation, then final answers from the child and parent."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        self.server.requests.append(body)
+        messages = body.get('messages', [])
+        is_child = 'You are a focused subagent' in json.dumps(messages[:1])
+        answered = any(message.get('role') == 'tool' for message in messages)
+        message = {'role': 'assistant', 'content': 'CHILD_DONE' if is_child else 'PARENT_DONE'}
+        if not is_child and not answered:
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'delegate-source', 'type': 'function', 'function': {
+                    'name': 'delegate_task', 'arguments': json.dumps({'goal': 'CHILD_SOURCE'}),
+                },
+            }]}
+        choice = {'index': 0, 'message': message,
+                  'finish_reason': 'tool_calls' if message.get('tool_calls') else 'stop'}
+        frame = {'id': 'origin-model', 'model': 'origin-model', 'choices': [choice],
+                 'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}
+        kind = 'application/json'
+        if body.get('stream'):
+            choice['delta'] = choice.pop('message')
+            for index, call in enumerate(choice['delta'].get('tool_calls', [])):
+                call['index'] = index
+            payload = ('data: ' + json.dumps(frame) + '\n\ndata: [DONE]\n\n').encode()
+            kind = 'text/event-stream'
+        else:
+            payload = json.dumps(frame).encode()
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', kind)
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+@pytest.mark.platforms('any')  # the gateway and plugin host are child processes
+def test_session_create_source_reaches_a_hosted_plugin_and_a_real_delegated_child(tmp_path):
+    """A real RPC ``session.create`` launches a GUI session; its hosted plugin calls back over RPC
+    from both the ordinary parent turn and the child run by the real ``delegate_task`` tool."""
+    from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+    from tests.waiting import wait_until
+
+    root = Path(__file__).resolve().parents[2]
+    home, user = tmp_path / 'state', tmp_path / 'user'
+    home.mkdir(mode=0o700)
+    user.mkdir()
+    out = tmp_path / 'origins.jsonl'
+    plugin = home / 'plugins' / 'originprobe'
+    plugin.mkdir(parents=True)
+    (plugin / 'plugin.yaml').write_text(json.dumps({'name': 'originprobe', 'version': '1.0'}))
+    (plugin / '__init__.py').write_text(SESSION_CREATE_SOURCE_PLUGIN.format(out=str(out)))
+    model = ThreadingHTTPServer(('127.0.0.1', 0), _DelegatingModel)
+    model.requests = []
+    thread = threading.Thread(target=model.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{model.server_port}/v1'
+    (home / 'config.yaml').write_text(json.dumps({
+        'gateway': {'multiplex_profiles': False},
+        'model': {'provider': 'custom', 'default': 'origin-model', 'base_url': base},
+        'streaming': {'enabled': False},
+        'auxiliary': {'title_generation': {'enabled': False}},
+        'terminal': {'cwd': str(home)},
+        'plugins': {'enabled': ['originprobe'], 'isolation': 'host'},
+    }))
+    env = child_env() | dict(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
+        PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, PYTHONUNBUFFERED='1')
+
+    async def drive(desc):
+        async with websocket(home, desc) as ws:
+            created = await rpc(ws, 'session.create', request_id='origin', source='gui', cwd=str(home),
+                                toolsets=['delegation'])
+            assert 'result' in created, created
+            session_id = created['result']['session_id']
+            submitted = await rpc(ws, 'prompt.submit', session_id=session_id, submission_id='origin-turn',
+                                  text='DELEGATE_SOURCE')
+            assert submitted.get('result', {}).get('status') == 'queued', submitted
+            await asyncio.to_thread(wait_until, lambda: _terminal(home, ('origin-turn',)), timeout=90)
+
+    try:
+        with daemon(root, home, env, barrier=False) as (proc, desc):
+            asyncio.run(drive(desc))
+            gateway_pid = proc.pid
+    finally:
+        model.shutdown()
+        model.server_close()
+        thread.join(timeout=5)
+
+    assert out.exists(), ((home / 'restart.log').read_text(), model.requests)
+    records = [json.loads(line) for line in out.read_text().splitlines()]
+    parents = [record for record in records if not record['child']]
+    children = [record for record in records if record['child']]
+    assert len(parents) == 2 and len(children) == 1, records  # tool-call and final parent turns; one child turn
+    assert all(record['source'] == 'gui' and record['origin'] == '' for record in records), records
+    assert children[0]['descendant'] is True
+    assert all(record['descendant'] is False for record in parents)
+    assert {record['pid'] for record in records} == {records[0]['pid']}
+    assert records[0]['pid'] != gateway_pid  # the observations really came from the plugin host
+
+
 def test_session_source_is_the_launch_policy_s_label_inside_a_local_session_s_turn(tmp_path, monkeypatch):
     from hermes_cli.plugin_session import session_source
     assert session_source() == ''  # no policy bound
