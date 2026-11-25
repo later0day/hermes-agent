@@ -188,7 +188,7 @@ describe('profile creation warnings', () => {
 
     dialog.unmount()
     await act(async () => finishReadiness())
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage' }), { kickoff: true }))
     expect(mocks.notify.mock.calls.filter(([notice]) => notice.kind === 'warning')).toEqual([
       [expect.objectContaining({ title: 'inbox-triage — local', message: warnings.join('\n'), persistent: true })]
     ])
@@ -212,7 +212,7 @@ describe('profile creation warnings', () => {
       return 'session-1'
     })
     fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: false }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage' }), { kickoff: false }))
     dialog.unmount()
     await act(async () => clearResumeToasts(undefined))
     // The existing stack retains its front card; expanding exposes both notices.
@@ -442,7 +442,7 @@ describe('profile creation warnings', () => {
     mocks.request.mockImplementation(base)
     fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'second' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('second', { kickoff: true }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith(expect.objectContaining({ name: 'second' }), { kickoff: true }))
     expect(screen.queryByText(text => text.includes(warnings[0]))).toBeNull()
   })
 })

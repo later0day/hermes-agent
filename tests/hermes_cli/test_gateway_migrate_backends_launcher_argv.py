@@ -8,6 +8,7 @@ cannot tell where the inline source ends. These tests run a real process with ex
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -25,13 +26,17 @@ _ARGS = ["dashboard", "--no-open", "--host", "127.0.0.1", "--port", "59119"]
 
 
 @pytest.fixture
-def launcher_dashboard(monkeypatch):
+def launcher_dashboard(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
     proc = subprocess.Popen([sys.executable, "-I", "-c", _LAUNCHER_SOURCE, *_ARGS],
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env={**os.environ, "HERMES_HOME": str(home)})
     # The real scan, narrowed to this process: other backends running on the machine (another test run's,
     # whose HERMES_HOME may sit under the real home) must not reach the report's per-backend reads.
     scan = gmb._running_backends
     monkeypatch.setattr(gmb, "_running_backends", lambda: [row for row in scan() if row[0] == proc.pid])
+    monkeypatch.setattr(gmb, "_installed_units", list)
     try:
         wait_until(lambda: psutil.Process(proc.pid).cmdline()[-1:] == ["59119"], timeout=10,
                    what="the launcher-shaped process is running")

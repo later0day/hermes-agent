@@ -69,7 +69,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     for name in ("pm", "hermes_cli", "hermes_platform", "hermes_agent", "utils"):
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "hermes_bootstrap.py",
-                 "setup-hermes.sh"):
+                 "hermes_scope.py", "setup-hermes.sh"):
         shutil.copy2(ROOT / name, source / name)
     # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog),
     # its config/env layer consults the stdlib-only safe-worker policy, and the update path's wait
@@ -77,8 +77,11 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     # a dependency on the agent runtime.
     (source / "agent").mkdir()
     for name in ("__init__.py", "jiter_preload.py", "i18n.py", "i18n_layers.py", "i18n_languages.py",
-                 "safe_worker_policy.py", "deadline.py"):
+                 "safe_worker_policy.py", "secret_scope.py", "deadline.py"):
         shutil.copy2(ROOT / "agent" / name, source / "agent" / name)
+    (source / "tools").mkdir()
+    for name in ("__init__.py", "mcp_tool_common.py"):
+        shutil.copy2(ROOT / "tools" / name, source / "tools" / name)
     (source / "locales").mkdir()
     shutil.copy2(ROOT / "locales/en.yaml", source / "locales/en.yaml")
     wheels = source / "wheels"
@@ -86,9 +89,11 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     _wheel(wheels, "installer_probe", "1.0")
     recipe = tomllib.loads((source / "pm/pyproject.toml").read_text())
     yaml_dep = next(d for d in recipe["project"]["dependencies"] if d.startswith("ruamel.yaml"))
+    app_recipe = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    dotenv_dep = next(d for d in app_recipe["project"]["dependencies"] if d.startswith("python-dotenv"))
     (source / "pyproject.toml").write_text(
         '[project]\nname="installer-fixture"\nversion="1"\nrequires-python=">=3.14"\n'
-        f'dependencies=["installer-probe==1.0",{json.dumps(yaml_dep)}]\n'
+        f'dependencies=["installer-probe==1.0",{json.dumps(yaml_dep)},{json.dumps(dotenv_dep)}]\n'
         '[project.optional-dependencies]\nall=[]\n[dependency-groups]\ndev=[]\ntest=[]\n'
         '[tool.uv]\npackage=false\n'
         '[tool.uv.sources]\ninstaller-probe={path="wheels/installer_probe-1.0-py3-none-any.whl"}\n',

@@ -1,5 +1,3 @@
-import { availableParallelism } from 'node:os'
-
 import type { TestProjectConfiguration } from 'vitest/config'
 import { defineConfig } from 'vitest/config'
 
@@ -26,10 +24,7 @@ const reactUi: TestProjectConfiguration = {
     // same cold cost when a beforeEach does `vi.resetModules()` + `await
     // import(...)` (65 files); one timed out at 10s on CI (#120318).
     testTimeout: 15_000,
-    hookTimeout: 30_000,
-    // The workspace CI runner starts several Vitest suites concurrently;
-    // full-host pools starve cold module transforms past the test budget.
-    maxWorkers: Math.max(1, Math.floor(availableParallelism() / 6))
+    hookTimeout: 30_000
   }
 }
 
