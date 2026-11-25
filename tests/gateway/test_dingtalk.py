@@ -35,6 +35,19 @@ class _FakeChatbotMessage(SimpleNamespace):
             is_in_at_list=bool(data.get("isInAtList") or data.get("is_in_at_list")),
         )
 
+
+def _card_response(*, success=True, result=None):
+    return SimpleNamespace(body=SimpleNamespace(success=success, result=result))
+
+
+def _webhook_response(*, errcode=0, errmsg="ok"):
+    return SimpleNamespace(
+        status_code=200,
+        text="ok",
+        json=lambda: {"errcode": errcode, "errmsg": errmsg},
+    )
+
+
 @pytest.fixture(autouse=True)
 def _fake_dingtalk_optional_sdks(monkeypatch):
     """Keep DingTalk adapter tests hermetic when optional SDKs are absent."""
@@ -126,6 +139,7 @@ class TestSend:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = "OK"
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
 
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_response)
@@ -144,6 +158,27 @@ class TestSend:
         assert payload["markdown"]["text"] == "Hello!"
 
     @pytest.mark.asyncio
+    async def test_webhook_business_rejection_uses_proactive_fallback(self):
+        from gateway.platforms.base import SendResult
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_webhook_response(errcode=310000, errmsg="session webhook expired"))
+        adapter._send_markdown_proactive = AsyncMock(
+            return_value=SendResult(success=True, message_id="native-1"))
+
+        result = await adapter.send(
+            "chat-123", "Hello!",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "native-1"
+        adapter._send_markdown_proactive.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_send_image_renders_markdown_image(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
@@ -151,6 +186,7 @@ class TestSend:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = "OK"
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
 
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_response)
@@ -771,7 +807,7 @@ class TestSendExecApproval:
         adapter._http_client = AsyncMock()
         adapter._get_valid_webhook = lambda chat_id: ("https://api.dingtalk.com/x", 9999999999999)
         adapter._http_client.post = AsyncMock(
-            return_value=SimpleNamespace(status_code=200, text="ok")
+            return_value=_webhook_response()
         )
         result = await adapter.send_exec_approval(
             "chat-1", "rm -rf /", "session-1", "test"
@@ -809,7 +845,7 @@ class TestSendVideoVoiceFallback:
         adapter._http_client = AsyncMock()
         adapter._get_valid_webhook = lambda chat_id: ("https://api.dingtalk.com/x", 9999999999999)
         adapter._http_client.post = AsyncMock(
-            return_value=SimpleNamespace(status_code=200, text="ok")
+            return_value=_webhook_response()
         )
         result = await adapter.send_video(
             "chat-1", "https://example.com/video.mp4", caption="look"
@@ -889,9 +925,12 @@ class TestProactiveMarkdownFallback:
         monkeypatch.setattr(dt, "tea_util_models", SimpleNamespace(RuntimeOptions=_FakeModel), raising=False)
         adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={"card_template_id": "tmpl-1"}))
         adapter._card_sdk = MagicMock()
-        adapter._card_sdk.create_card_with_options_async = AsyncMock()
-        adapter._card_sdk.deliver_card_with_options_async = AsyncMock()
-        adapter._card_sdk.streaming_update_with_options_async = AsyncMock()
+        adapter._card_sdk.create_card_with_options_async = AsyncMock(
+            return_value=_card_response(result="created"))
+        adapter._card_sdk.deliver_card_with_options_async = AsyncMock(
+            return_value=_card_response(result=[SimpleNamespace(success=True, error_msg=None)]))
+        adapter._card_sdk.streaming_update_with_options_async = AsyncMock(
+            return_value=_card_response(result=True))
         adapter._get_access_token = AsyncMock(return_value="token")
         result = await adapter._send_markdown_proactive("chat-1", "hello world")
         assert result.success
@@ -1044,7 +1083,7 @@ class TestSendImageFileUpload:
         adapter._http_client = AsyncMock()
         adapter._get_valid_webhook = lambda chat_id: ("https://api.dingtalk.com/x", 9999999999999)
         adapter._http_client.post = AsyncMock(
-            return_value=SimpleNamespace(status_code=200, text="ok")
+            return_value=_webhook_response()
         )
         result = await adapter.send_image_file(
             "chat-1", "https://example.com/image.png", caption="look"
@@ -1212,9 +1251,12 @@ class TestCardLifecycle:
             extra={"card_template_id": "tmpl-1"},
         ))
         a._card_sdk = MagicMock()
-        a._card_sdk.create_card_with_options_async = AsyncMock()
-        a._card_sdk.deliver_card_with_options_async = AsyncMock()
-        a._card_sdk.streaming_update_with_options_async = AsyncMock()
+        a._card_sdk.create_card_with_options_async = AsyncMock(
+            return_value=_card_response(result="created"))
+        a._card_sdk.deliver_card_with_options_async = AsyncMock(
+            return_value=_card_response(result=[SimpleNamespace(success=True, error_msg=None)]))
+        a._card_sdk.streaming_update_with_options_async = AsyncMock(
+            return_value=_card_response(result=True))
         a._http_client = AsyncMock()
         a._get_access_token = AsyncMock(return_value="token")
         # Minimal message context
@@ -1229,6 +1271,46 @@ class TestCardLifecycle:
             "https://api.dingtalk.com/x", 9999999999999,
         )
         return a
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rejection", [
+        "create",
+        "deliver_top_level",
+        "deliver_target",
+        "stream_top_level",
+        "stream_result",
+    ])
+    async def test_card_business_rejection_is_not_success(self, adapter_with_card, rejection):
+        a = adapter_with_card
+        rejections = {
+            "create": ("create_card_with_options_async", _card_response(success=False)),
+            "deliver_top_level": ("deliver_card_with_options_async", _card_response(success=False)),
+            "deliver_target": ("deliver_card_with_options_async", _card_response(
+                result=[SimpleNamespace(success=False, error_msg="target rejected")])),
+            "stream_top_level": ("streaming_update_with_options_async", _card_response(
+                success=False, result=False)),
+            "stream_result": ("streaming_update_with_options_async", _card_response(
+                success=True, result=False)),
+        }
+        method_name, response = rejections[rejection]
+        getattr(a._card_sdk, method_name).return_value = response
+
+        result = await a._create_and_stream_card(
+            "chat-1", a._message_contexts["chat-1"], "Hello")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_card_business_rejection_falls_back_to_webhook(self, adapter_with_card):
+        a = adapter_with_card
+        a._card_sdk.create_card_with_options_async.return_value = _card_response(success=False)
+        a._http_client.post = AsyncMock(return_value=_webhook_response())
+
+        result = await a.send("chat-1", "Hello")
+
+        assert result.success is True
+        a._http_client.post.assert_awaited_once()
+        a._card_sdk.streaming_update_with_options_async.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_final_reply_finalizes_card(self, adapter_with_card):
@@ -1358,9 +1440,12 @@ class TestDingTalkAdapterAICards:
 
         # Mock the card SDK with proper async methods
         mock_card_sdk = MagicMock()
-        mock_card_sdk.create_card_with_options_async = AsyncMock()
-        mock_card_sdk.deliver_card_with_options_async = AsyncMock()
-        mock_card_sdk.streaming_update_with_options_async = AsyncMock()
+        mock_card_sdk.create_card_with_options_async = AsyncMock(
+            return_value=_card_response(result="created"))
+        mock_card_sdk.deliver_card_with_options_async = AsyncMock(
+            return_value=_card_response(result=[SimpleNamespace(success=True, error_msg=None)]))
+        mock_card_sdk.streaming_update_with_options_async = AsyncMock(
+            return_value=_card_response(result=True))
         adapter._card_sdk = mock_card_sdk
 
         # Mock access token

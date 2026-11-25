@@ -1556,9 +1556,12 @@ def _deliver_standalone(
             elif media_files:
                 # Text is already on screen; the native sender handles attachments only.
                 result, err = _standalone_send(t, "", media_files)
-        elif webhook_issue:
-            result, err = None, f"delivery error: {webhook_issue}"
         else:
+            if webhook_issue:
+                logger.warning(
+                    "Job '%s': %s; trying standalone DingTalk delivery",
+                    job["id"], webhook_issue,
+                )
             result, err = _standalone_send(t, content, media_files)
     else:
         result, err = _standalone_send(t, content, media_files)

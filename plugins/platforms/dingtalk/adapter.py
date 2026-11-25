@@ -843,12 +843,38 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
             resp = await self._http_client.post(
                 session_webhook, json=payload, timeout=15.0
             )
-            if resp.status_code < 300:
+            return await self._handle_webhook_response(
+                resp, chat_id, content, at_payload, metadata, emotion_names, fire_final_reaction,
+            )
+        except httpx.TimeoutException:
+            return SendResult(
+                success=False, error="Timeout sending message to DingTalk"
+            )
+        except Exception as e:
+            logger.exception("[%s] Send error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_webhook_response(
+        self, resp, chat_id, content, at_payload, metadata, emotion_names, fire_final_reaction,
+    ) -> SendResult:
+        business_error = None
+        if resp.status_code < 300:
+            try:
+                data = resp.json()
+            except ValueError:
+                return SendResult(success=False, error="DingTalk webhook returned a non-JSON success response")
+            if not isinstance(data, dict):
+                return SendResult(success=False, error="DingTalk webhook returned an invalid success response")
+            if data.get("errcode") == 0:
                 self._fire_custom_reactions(chat_id, emotion_names)
                 if fire_final_reaction:
                     self._fire_done_reaction(chat_id)
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
-            body = resp.text
+            detail = str(data.get("errmsg") or "unknown")[:200]
+            business_error = f"DingTalk webhook API error {data.get('errcode')}: {detail}"
+            logger.warning("[%s] %s", self.name, business_error)
+        body = resp.text
+        if resp.status_code >= 300:
             logger.warning(
                 "[%s] Send failed HTTP %d (%d response bytes)",
                 self.name, resp.status_code, len(body),
@@ -856,35 +882,22 @@ class DingTalkAdapter(DingTalkReactionsMixin, DingTalkCardsMixin, DingTalkMediaM
             logger.debug(
                 "[%s] Send failed response body: %s", self.name, body[:200]
             )
-            # A webhook that DingTalk rejects (expired mid-flight -> 400
-            # "expired", robot removed from group, etc.) is just as dead as a
-            # missing one. Fall back to the proactive path rather than losing
-            # the reply. We only retry on 4xx (the webhook itself is bad); 5xx
-            # is a transient DingTalk server issue where a retry against the
-            # SAME dead webhook is pointless.
-            if 400 <= resp.status_code < 500:
-                logger.warning(
-                    "[%s] webhook rejected (HTTP %d) — falling back to "
-                    "robot-native proactive send for chat_id=%s",
-                    self.name, resp.status_code, chat_id,
-                )
-                fallback = await self._send_markdown_proactive(
-                    chat_id, content, at_payload, metadata,
-                    emotion_names=emotion_names,
-                    fire_final_reaction=fire_final_reaction,
-                )
-                if fallback.success:
-                    return fallback
-            return SendResult(
-                success=False, error=f"HTTP {resp.status_code}: {body[:200]}"
+        # Only explicit rejection falls back; 5xx and timeouts remain uncertain.
+        if business_error or 400 <= resp.status_code < 500:
+            logger.warning(
+                "[%s] webhook rejected — falling back to robot-native proactive send",
+                self.name,
             )
-        except httpx.TimeoutException:
-            return SendResult(
-                success=False, error="Timeout sending message to DingTalk"
+            fallback = await self._send_markdown_proactive(
+                chat_id, content, at_payload, metadata,
+                emotion_names=emotion_names,
+                fire_final_reaction=fire_final_reaction,
             )
-        except Exception as e:
-            logger.error("[%s] Send error: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            if fallback.success:
+                return fallback
+        return SendResult(
+            success=False, error=business_error or f"HTTP {resp.status_code}: {body[:200]}"
+        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
@@ -1516,8 +1529,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 resp = await client.post(webhook_url, json={"msgtype": "text", "text": {"content": message}})
                 resp.raise_for_status()
                 data = resp.json()
-                if data.get("errcode", 0) != 0:
-                    return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
+                if not isinstance(data, dict) or data.get("errcode") != 0:
+                    detail = data.get("errmsg", "unknown") if isinstance(data, dict) else "invalid response"
+                    return send_error(f"DingTalk API error: {str(detail)[:200]}")
                 result = {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)

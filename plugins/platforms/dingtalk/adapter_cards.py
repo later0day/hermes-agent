@@ -24,6 +24,24 @@ def _dt():
     return adapter
 
 
+def _require_card_success(response, operation: str, *, delivery: bool = False, streaming: bool = False) -> None:
+    """The SDK raises for HTTP errors only; a 2xx body can still reject the card operation."""
+    body = getattr(response, "body", None)
+    if body is None or getattr(body, "success", None) is not True:
+        raise RuntimeError(f"DingTalk AI Card {operation} returned business failure")
+    if delivery:
+        results = getattr(body, "result", None)
+        if not results:
+            raise RuntimeError("DingTalk AI Card delivery returned no delivery result")
+        for item in results:
+            if getattr(item, "success", None) is not True:
+                detail = str(getattr(item, "error_msg", "") or "")[:200]
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(f"DingTalk AI Card delivery rejected{suffix}")
+    if streaming and getattr(body, "result", None) is not True:
+        raise RuntimeError("DingTalk AI Card streaming update returned business failure")
+
+
 class DingTalkCardsMixin:
     async def _close_streaming_siblings(self, chat_id: str) -> None:
         """Finalize open streaming cards for this chat at the start of every ``send()`` — the gateway has no "turn end" signal, so this is what closes lingering tool-progress cards."""
@@ -116,7 +134,8 @@ class DingTalkCardsMixin:
             if at_users:
                 create_kwargs["card_at_user_ids"] = list(at_users.keys())
             create_request = models.CreateCardRequest(**create_kwargs)
-            await self._sdk_call(self._card_sdk.create_card_with_options_async, create_request, models.CreateCardHeaders, token)
+            create_response = await self._sdk_call(self._card_sdk.create_card_with_options_async, create_request, models.CreateCardHeaders, token)
+            _require_card_success(create_response, "creation")
             if is_group:
                 open_space_id = f"dtv1.card//IM_GROUP.{getattr(message, 'conversation_id', '') or ''}"
                 deliver_kwargs: dict[str, Any] = {"robot_code": self._robot_code}
@@ -129,7 +148,8 @@ class DingTalkCardsMixin:
             else:
                 return logger.warning("[%s] AI Card skipped: missing sender_staff_id for DM", self.name)
             deliver_request = models.DeliverCardRequest(out_track_id=out_track_id, user_id_type=1, open_space_id=open_space_id, **deliver_model)
-            await self._sdk_call(self._card_sdk.deliver_card_with_options_async, deliver_request, models.DeliverCardHeaders, token)
+            deliver_response = await self._sdk_call(self._card_sdk.deliver_card_with_options_async, deliver_request, models.DeliverCardHeaders, token)
+            _require_card_success(deliver_response, "delivery", delivery=True)
             await self._stream_card_content(out_track_id, token, content, finalize=finalize)
             logger.info("[%s] AI Card %s: %s", self.name, "created+finalized" if finalize else "created (streaming)", out_track_id)
             return SendResult(success=True, message_id=out_track_id)
@@ -171,7 +191,8 @@ class DingTalkCardsMixin:
             out_track_id=out_track_id, guid=str(uuid.uuid4()), key=card_content_key, content=content[: self.MAX_MESSAGE_LENGTH],
             is_full=True, is_finalize=finalize, is_error=False,
         )
-        await self._sdk_call(self._card_sdk.streaming_update_with_options_async, stream_request, _dt().dingtalk_card_models.StreamingUpdateHeaders, token)
+        response = await self._sdk_call(self._card_sdk.streaming_update_with_options_async, stream_request, _dt().dingtalk_card_models.StreamingUpdateHeaders, token)
+        _require_card_success(response, "streaming update", streaming=True)
 
     def _current_card_content_key(self) -> str:
         """The AI Card content variable from this adapter's own profile config, else DingTalk's default."""

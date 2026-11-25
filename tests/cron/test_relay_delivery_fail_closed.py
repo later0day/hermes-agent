@@ -15,8 +15,11 @@ relay guard and so has to be checked for a bypass.
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 
 from cron.scheduler_delivery import _deliver_result
 
@@ -59,6 +62,35 @@ def _failing_relay(platform):
     relay.send_voice = AsyncMock(return_value=MagicMock(success=False))
     relay.supports_inchannel_continuable = False
     return relay
+
+
+def _native_dingtalk_config():
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+
+    return GatewayConfig(
+        platforms={
+            Platform.DINGTALK: PlatformConfig(
+                enabled=True,
+                home_channel=HomeChannel(
+                    platform=Platform.DINGTALK,
+                    chat_id="cidAAA",
+                    name="Owner Group",
+                ),
+            ),
+        },
+    )
+
+
+def _mock_webhook_response(monkeypatch, body):
+    def handler(_request):
+        return httpx.Response(200, json=body)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
+    )
 
 
 def test_failed_relay_delivery_does_not_retry_standalone(monkeypatch):
@@ -183,20 +215,7 @@ def test_native_dingtalk_still_uses_the_session_webhook_fallback(monkeypatch):
     session webhook is the *only* way to reach the origin chat, and it is a
     credential this process legitimately owns.  It must still fire.
     """
-    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-
-    config = GatewayConfig(
-        platforms={
-            Platform.DINGTALK: PlatformConfig(
-                enabled=True,
-                home_channel=HomeChannel(
-                    platform=Platform.DINGTALK,
-                    chat_id="cidAAA",
-                    name="Owner Group",
-                ),
-            ),
-        },
-    )
+    config = _native_dingtalk_config()
     standalone_send = AsyncMock(return_value={"success": True})
     webhook_send = AsyncMock(return_value={"success": True})
 
@@ -223,6 +242,66 @@ def test_native_dingtalk_still_uses_the_session_webhook_fallback(monkeypatch):
         "delivery path"
     )
     assert result is None, f"native webhook delivery should succeed, got {result!r}"
+
+
+def test_expired_origin_webhook_falls_back_to_standalone(monkeypatch):
+    standalone_send = AsyncMock(return_value={"success": True})
+    webhook_send = AsyncMock(return_value={"success": True})
+    job = {
+        "id": "expired-dingtalk",
+        "deliver": "dingtalk",
+        "origin": {"platform": "dingtalk", "chat_id": "cidAAA"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=_native_dingtalk_config()),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch("gateway.outbound.send._send_to_platform", new=standalone_send),
+        patch(
+            "cron.scheduler_delivery_origin._resolve_dingtalk_origin_session_webhook_status",
+            return_value=(None, "DingTalk session_webhook is expired"),
+        ),
+        patch("cron.scheduler_delivery_origin._send_dingtalk_session_webhook", new=webhook_send),
+    ):
+        result = _deliver_result(job, "scheduled result", adapters=None, loop=None)
+
+    standalone_send.assert_awaited_once()
+    webhook_send.assert_not_awaited()
+    assert result is None
+
+
+def test_rejected_origin_webhook_falls_back_to_standalone(monkeypatch):
+    _mock_webhook_response(monkeypatch, {"errcode": 310000, "errmsg": "expired"})
+    standalone_send = AsyncMock(return_value={"success": True})
+    job = {
+        "id": "rejected-dingtalk",
+        "deliver": "dingtalk",
+        "origin": {"platform": "dingtalk", "chat_id": "cidAAA"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=_native_dingtalk_config()),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch("gateway.outbound.send._send_to_platform", new=standalone_send),
+        patch(
+            "cron.scheduler_delivery_origin._resolve_dingtalk_origin_session_webhook_status",
+            return_value=("https://dingtalk.example/session", None),
+        ),
+    ):
+        result = _deliver_result(job, "scheduled result", adapters=None, loop=None)
+
+    standalone_send.assert_awaited_once()
+    assert result is None
+
+
+def test_origin_webhook_http_200_requires_zero_errcode(monkeypatch):
+    from cron.scheduler_delivery_origin import _send_dingtalk_session_webhook
+
+    _mock_webhook_response(monkeypatch, {"errcode": 0, "errmsg": "ok"})
+    result = asyncio.run(
+        _send_dingtalk_session_webhook("https://dingtalk.example/session", "scheduled result"))
+
+    assert result == {"success": True, "platform": "dingtalk"}
 
 
 def test_relay_fail_closed_comment_documents_the_invariant():

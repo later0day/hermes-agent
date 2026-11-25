@@ -147,6 +147,16 @@ async def _send_dingtalk_session_webhook(session_webhook: str, content: str) -> 
         if resp.status_code >= 300:
             return {"error": (
                 f"DingTalk session_webhook send failed HTTP {resp.status_code}: {resp.text[:200]}")}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"error": "DingTalk session_webhook returned a non-JSON success response"}
+        if not isinstance(data, dict):
+            return {"error": "DingTalk session_webhook returned an invalid success response"}
+        if data.get("errcode") != 0:
+            detail = str(data.get("errmsg") or "unknown")[:200]
+            return {"error": f"DingTalk session_webhook API error {data.get('errcode')}: {detail}"}
         return {"success": True, "platform": "dingtalk"}
     except (httpx.HTTPError, ValueError) as exc:
-        return {"error": f"DingTalk session_webhook send failed: {exc}"}
+        detail = str(exc).replace(session_webhook, "<redacted>")[:300]
+        return {"error": f"DingTalk session_webhook send failed: {detail}"}
