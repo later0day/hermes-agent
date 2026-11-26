@@ -169,6 +169,47 @@ class _RunnerState:
         self.status[key] = fields
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", [True, False])
+async def test_hot_start_retires_orphaned_previews_only_for_published_adapters(monkeypatch, published):
+    from gateway.run_platform_reconcile import BuildPrint
+    from gateway import stream_preview_recovery
+
+    adapter = types.SimpleNamespace()
+    runner = _runner(types.SimpleNamespace())
+    runner.adapters = {}
+    runner.config = types.SimpleNamespace(platforms={})
+    runner.delivery_router = types.SimpleNamespace(adapters={})
+    runner._multiplex_on = lambda: False
+    runner._primary_claim_refused = lambda _platform, _adapter: False
+
+    async def prepare(_platform, _config, _build_print):
+        return adapter
+
+    async def connect(_pending):
+        return []
+
+    async def aggregate(_raw, _retryable, _nonretryable):
+        if published:
+            runner.adapters[Platform.TELEGRAM] = adapter
+        return int(published)
+
+    runner._prepare_primary_adapter = prepare
+    runner._start_connect_pending = connect
+    runner._start_aggregate_connect_results = aggregate
+    cleanup = types.SimpleNamespace(calls=[])
+
+    async def record_cleanup(_runner, *, platform):
+        cleanup.calls.append(platform)
+        return 0
+
+    monkeypatch.setattr(stream_preview_recovery, "cleanup_orphaned_stream_previews", record_cleanup)
+    await runner._hot_start_primary_platforms([
+        (Platform.TELEGRAM, PlatformConfig(enabled=True), BuildPrint("config", "env")),
+    ])
+    assert cleanup.calls == ([Platform.TELEGRAM] if published else [])
+
+
 def test_disabled_platform_finishes_its_in_flight_turn_before_it_goes_down(monkeypatch):
     import hermes_cli.gateway as gateway_cli
     monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 30.0)

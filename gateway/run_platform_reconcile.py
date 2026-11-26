@@ -518,6 +518,12 @@ class GatewayPlatformReconcileMixin:
                 pending.append((platform, platform_config, adapter))
             raw = await self._start_connect_pending(pending)
             await self._start_aggregate_connect_results(raw or [], [], [])
+            from gateway.stream_preview_recovery import cleanup_orphaned_stream_previews
+            for platform, _platform_config, adapter in pending:
+                if self.adapters.get(platform) is not adapter:
+                    continue
+                with _log_suppressed(logging.WARNING, "Orphaned stream-preview cleanup after hot start failed: %s"):
+                    await cleanup_orphaned_stream_previews(self, platform=platform)
         self.delivery_router.adapters = self.adapters
         if getattr(self, "_failed_platforms", None):
             self._ensure_reconnect_watcher_running()
