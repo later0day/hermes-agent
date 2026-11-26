@@ -284,7 +284,8 @@ class TurnStatusCardConfig:
     edit_interval: float = 0.5
     preview_max_len: int = 40
     assistant_preview_max_len: int = 900
-    max_tools: int = 12
+    max_tools: int = 6
+    verbose: bool = False
     # Activate the status card after this many streaming-delta characters
     # accumulate, even if no tool / commentary / reasoning event has
     # arrived yet. Keeps short answers card-free while still giving long
@@ -302,9 +303,8 @@ class TurnStatusCardCoordinator:
 
     _MEDIA_RE = re.compile(r"(?:\[\[audio_as_voice\]\]\s*)?MEDIA:\S+")
 
-    # Single growing-dot spinner — 4 frames, one dot that gets progressively bigger.
-    # · → • → ● → ⬤ conveys "building up" without the clutter of accumulating chars.
-    _SPINNER: list[str] = ["·", "•", "●", "⬤"]
+    # Braille rotation keeps a constant visual width and avoids a grow-then-reset jump.
+    _SPINNER: list[str] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     def __init__(
         self,
@@ -347,6 +347,11 @@ class TurnStatusCardCoordinator:
     @property
     def active(self) -> bool:
         return self._active
+
+    def set_verbose(self, verbose: bool) -> None:
+        self.config.verbose = bool(verbose)
+        if self._active:
+            self._dirty = True
 
     def on_delta(self, text: Optional[str]) -> None:
         if text is None:
@@ -614,7 +619,7 @@ class TurnStatusCardCoordinator:
         lines.append(f"**{t('gateway.status_card.heading')}**")
         lines.append(self._status_line())
 
-        if self._tool_order:
+        if self.config.verbose and self._tool_order:
             lines.append("")
             # Show a spinner next to the header while any tool is still running
             running_any = any(
@@ -622,7 +627,7 @@ class TurnStatusCardCoordinator:
             )
             header_spinner = f" {self._SPINNER[self._frame]}" if running_any else ""
             lines.append(f"**🛠 {t('gateway.status_card.tools_heading')}**{header_spinner}")
-            order = self._tool_order[-max(1, int(self.config.max_tools or 12)):]
+            order = self._tool_order[-max(1, int(self.config.max_tools or 6)):]
             hidden = max(0, len(self._tool_order) - len(order))
             if hidden:
                 lines.append(f"- {t('gateway.status_card.tools_hidden', count=hidden)}")
@@ -664,7 +669,6 @@ class TurnStatusCardCoordinator:
         frame: int = 0,
         now: Optional[float] = None,
     ) -> str:
-        # Single dot grows · → • → ● → ⬤ to show activity without clutter.
         if entry.status == "running":
             icon = cls._SPINNER[frame % len(cls._SPINNER)]
         elif entry.status == "failed":
@@ -839,11 +843,18 @@ def maybe_start_turn_status_card(runner: Any, turn_ctx: Any, disp: Any, source: 
         preview_len = int(preview_len or 40)
     except (TypeError, ValueError):
         preview_len = 40
+    session_key = getattr(turn_ctx, "session_key", None)
+    session_state = runner._peek_session_state(session_key) if session_key else None
+    verbose = bool(session_state and session_state.conversation.status_card_verbose)
     turn_ctx.turn_status_card_holder[0] = TurnStatusCardCoordinator(
         adapter=adapter,
         chat_id=source.chat_id,
         metadata=turn_ctx._progress_metadata,
-        config=TurnStatusCardConfig(edit_interval=0.5, preview_max_len=preview_len if preview_len > 0 else 40),
+        config=TurnStatusCardConfig(
+            edit_interval=0.5,
+            preview_max_len=preview_len if preview_len > 0 else 40,
+            verbose=verbose,
+        ),
     )
 
 

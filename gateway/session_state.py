@@ -77,6 +77,7 @@ class ConversationState:
     # (channel_prompt, parent_chat_id) of the last non-internal turn; internal events reuse it
     channel_pin: Optional[tuple[Optional[str], Optional[str]]] = None
     vc_last: Optional[str] = None  # last voice-channel context delivered
+    status_card_verbose: bool = False  # /agent verbose: full tool rows instead of concise progress
 
     def clear(self) -> None:
         """Reset every field to its default, so new fields are cleared automatically."""

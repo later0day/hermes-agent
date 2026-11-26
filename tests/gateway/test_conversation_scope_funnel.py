@@ -23,6 +23,8 @@ def _bare_runner() -> GatewayRunner:
     runner._running_agents = {KEY: object()}
     runner._session_state(KEY).turn.started_ts = 1.0
     runner._session_state(KEY).persistent.run_generation = 7
+    runner._session_state(KEY).conversation.status_card_verbose = True
+    runner._session_state(OTHER).conversation.status_card_verbose = True
     return runner
 
 
@@ -34,6 +36,8 @@ def test_funnel_leaves_turn_scoped_and_generation_state_alone():
     assert runner._session_state(KEY).turn.started_ts
     # Generation counter is monotonic by design (#28686) — never reset.
     assert runner._session_state(KEY).persistent.run_generation == 7
+    assert not runner._session_state(KEY).conversation.status_card_verbose
+    assert runner._session_state(OTHER).conversation.status_card_verbose
 
 
 

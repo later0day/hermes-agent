@@ -15,7 +15,7 @@ from agent.i18n import t
 
 logger = logging.getLogger("gateway.run")
 
-_USAGE = "Usage: /agent <use|clear|status|webhook|list|create|delete> ..."
+_USAGE = "Usage: /agent <use|clear|status|verbose|webhook|list|create|delete> ..."
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,6 +129,9 @@ class GatewayAgentCommandsMixin:
         action = parts[1].lower()
         args = parts[2:]
 
+        if action == "verbose":
+            return self._agent_toggle_status_card_verbose(source)
+
         if not bool(getattr(config, "multiplex_profiles", False)):
             return (
                 "Dynamic profile binding is disabled. "
@@ -161,6 +164,21 @@ class GatewayAgentCommandsMixin:
             event=event, source=source, config=config, store=store, args=args, source_key=source_key,
             chat_level_key=chat_level_key, actor_user_id=actor_user_id, actor_user_name=actor_user_name,
         ))
+
+    def _agent_toggle_status_card_verbose(self, source: Any) -> str:
+        state = self._session_state(self._session_key_for_source(source))
+        verbose = not state.conversation.status_card_verbose
+        state.conversation.status_card_verbose = verbose
+
+        turn_ctx = state.turn.ctx
+        holder = getattr(turn_ctx, "turn_status_card_holder", None) if turn_ctx else None
+        card = holder[0] if holder else None
+        if card is not None:
+            card.set_verbose(verbose)
+
+        if verbose:
+            return "Status card: full tool details enabled. `/agent verbose` returns to concise mode."
+        return "Status card: concise progress enabled. `/agent verbose` shows full tool details."
 
     async def _agent_status(self, c: _AgentCommand) -> str:
         source, store, source_key, chat_level_key = c.source, c.store, c.source_key, c.chat_level_key

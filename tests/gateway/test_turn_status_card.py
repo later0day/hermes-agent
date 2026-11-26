@@ -118,8 +118,52 @@ def make_card(adapter: FakeStatusAdapter) -> TurnStatusCardCoordinator:
         adapter=adapter,
         chat_id="chat-1",
         metadata={"thread_id": "thread-1"},
+        config=TurnStatusCardConfig(edit_interval=0.01, preview_max_len=24, verbose=True),
+    )
+
+
+@pytest.mark.asyncio
+async def test_concise_default_hides_tool_rows_and_live_toggle_restores_them():
+    adapter = FakeStatusAdapter()
+    card = TurnStatusCardCoordinator(
+        adapter=adapter,
+        chat_id="chat-1",
+        metadata={"thread_id": "thread-1"},
         config=TurnStatusCardConfig(edit_interval=0.01, preview_max_len=24),
     )
+    task = asyncio.create_task(card.run())
+
+    card.on_commentary("正在检查登录状态")
+    card.on_tool_progress(
+        "tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"},
+        tool_call_id="call-1", index=0,
+    )
+    await wait_until(lambda: adapter.sends)
+    concise = adapter.sends[0]["content"]
+    assert "正在检查登录状态" in concise
+    assert "**🛠 工具**" not in concise
+    assert "read_file" not in concise
+    assert "gateway/run.py" not in concise
+
+    card.set_verbose(True)
+    await wait_until(lambda: adapter.edits and "read_file" in adapter.edits[-1]["content"])
+    assert "**🛠 工具**" in adapter.edits[-1]["content"]
+    assert "gateway/run.py" in adapter.edits[-1]["content"]
+
+    card.set_verbose(False)
+    await wait_until(lambda: "read_file" not in adapter.edits[-1]["content"])
+    card.on_tool_progress(
+        "tool.completed", "read_file", None, None,
+        duration=0.3, is_error=False, tool_call_id="call-1", index=0,
+    )
+    card.finish()
+    await task
+
+    final_content = adapter.edits[-1]["content"]
+    assert "✅ 1 工具" in final_content
+    assert "0.3s" in final_content
+    assert "答案见下方" in final_content
+    assert "read_file" not in final_content
 
 
 @pytest.mark.asyncio
@@ -239,6 +283,32 @@ async def test_duplicate_tool_names_are_tracked_by_call_id():
 
 
 @pytest.mark.asyncio
+async def test_default_tool_window_keeps_latest_six():
+    adapter = FakeStatusAdapter()
+    card = make_card(adapter)
+    for index in range(8):
+        call_id = f"call-{index}"
+        card.on_tool_progress(
+            "tool.started", "web_search", f"query {index}", {"query": f"query {index}"},
+            tool_call_id=call_id,
+        )
+        card.on_tool_progress(
+            "tool.completed", "web_search", None, None,
+            duration=0.1, is_error=False, tool_call_id=call_id,
+        )
+    card.finish()
+    await card.run()
+
+    content = adapter.edits[-1]["content"]
+    assert "✅ 8 工具" in content
+    assert "… 省略较早的 2 个工具" in content
+    assert "query 0" not in content
+    assert "query 1" not in content
+    for index in range(2, 8):
+        assert f"`web_search` · query {index} · 0.1s" in content
+
+
+@pytest.mark.asyncio
 async def test_delta_below_threshold_does_not_create_card():
     """Short streaming-only answers stay card-free."""
     adapter = FakeStatusAdapter()
@@ -318,6 +388,7 @@ async def test_tool_event_after_delta_activation_drops_streaming_only_flag():
             edit_interval=0.01,
             preview_max_len=24,
             delta_activation_threshold=20,
+            verbose=True,
         ),
     )
     task = asyncio.create_task(card.run())
@@ -338,8 +409,8 @@ async def test_tool_event_after_delta_activation_drops_streaming_only_flag():
 
     latest = adapter.edits[-1]["content"]
     assert "正在生成回答" not in latest
-    # Running rows use the animated spinner glyph (· → • → ● → ⬤), not a
-    # static ▶, so assert on the stable emoji + tool-name suffix.
+    # Running rows use an animated spinner, not a static ▶, so assert on
+    # the stable emoji + tool-name suffix.
     assert "🐍 `read_file`" in latest
 
     card.finish()
@@ -378,10 +449,9 @@ async def test_running_tool_glyph_and_inline_elapsed():
     """Running tools render with the animated spinner glyph and an
     inline elapsed timer.
 
-    Per the local "lively card" redesign, the running row shows
-    ``<spinner> <emoji> `name` · preview · 0.0s…`` where the spinner
-    animates · → • → ● → ⬤ and the elapsed timer updates while the
-    tool runs (the trailing … marks it as still in-flight).
+    The running row shows ``<spinner> <emoji> `name` · preview · 0.0s…``;
+    the elapsed timer updates while the tool runs (the trailing … marks
+    it as still in-flight).
     """
     adapter = FakeStatusAdapter()
     card = make_card(adapter)
@@ -471,6 +541,7 @@ async def test_error_summary_is_capped_to_configured_length():
             edit_interval=0.01,
             preview_max_len=24,
             error_summary_max_len=40,
+            verbose=True,
         ),
     )
     task = asyncio.create_task(card.run())
@@ -914,6 +985,7 @@ async def test_run_agent_uses_turn_status_card_instead_of_progress_bubbles(monke
     install_gateway_fakes(monkeypatch, tmp_path)
 
     source = SessionSource(platform=Platform.DINGTALK, chat_id="chat-1")
+    runner._session_state("agent:main:dingtalk:dm:chat-1").conversation.status_card_verbose = True
     result = await runner._run_agent(
         message="run tests",
         context_prompt="",
@@ -946,6 +1018,7 @@ async def test_run_agent_maps_subagent_tools_into_turn_status_card(monkeypatch, 
     install_gateway_fakes(monkeypatch, tmp_path, agent_cls=SubagentTurnStatusAgent)
 
     source = SessionSource(platform=Platform.DINGTALK, chat_id="chat-1")
+    runner._session_state("agent:main:dingtalk:dm:chat-1").conversation.status_card_verbose = True
     result = await runner._run_agent(
         message="research IP sites",
         context_prompt="",

@@ -122,6 +122,30 @@ async def test_multiplex_off_rejects(env):
 
 
 @pytest.mark.asyncio
+async def test_verbose_toggles_only_this_conversation_and_updates_live_card(env):
+    r = _runner(env.store, multiplex=False, audit_path=env.audit_path)
+    src = _source()
+    other = _source(chat_id="group-y")
+    session_key = r._session_key_for_source(src)
+    state = r._session_state(session_key)
+    card = SimpleNamespace(verbose=None, set_verbose=lambda value: setattr(card, "verbose", value))
+    state.turn.ctx = SimpleNamespace(turn_status_card_holder=[card])
+
+    assert state.conversation.status_card_verbose is False
+    out = await r._handle_agent_command(_event(src, "/agent verbose"))
+    assert "full tool details" in out
+    assert state.conversation.status_card_verbose is True
+    assert card.verbose is True
+    assert r._session_state(r._session_key_for_source(other)).conversation.status_card_verbose is False
+    assert env.store.get_binding(build_source_binding_key(src)) is None
+
+    out = await r._handle_agent_command(_event(src, "/agent verbose"))
+    assert "concise progress" in out
+    assert state.conversation.status_card_verbose is False
+    assert card.verbose is False
+
+
+@pytest.mark.asyncio
 async def test_usage_line_when_no_action(env):
     r = _runner(env.store, audit_path=env.audit_path)
     out = await r._handle_agent_command(_event(_source(), "/agent"))

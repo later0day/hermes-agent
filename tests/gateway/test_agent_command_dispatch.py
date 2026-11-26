@@ -58,6 +58,21 @@ async def test_agent_command_is_handled_by_the_gateway_not_sent_to_the_model(run
 
 
 @pytest.mark.asyncio
+async def test_non_admin_can_toggle_their_status_card_but_cannot_rebind(runner):
+    source, (handled, reply) = await _dispatch(runner, "/agent verbose", "u1")
+    assert handled and "full tool details" in reply
+    key = runner._session_key_for_source(source)
+    assert runner._session_state(key).conversation.status_card_verbose is True
+
+    source, (handled, reply) = await _dispatch(runner, "/agent use coder", "u1")
+    assert handled and "admin" in reply
+    binding_key = build_source_binding_key(
+        source, group_sessions_per_user=True, thread_sessions_per_user=False,
+    )
+    assert runner._source_agent_binding_store.get_binding(binding_key) is None
+
+
+@pytest.mark.asyncio
 async def test_only_an_explicitly_configured_admin_can_rebind_a_chat(runner):
     def bound(source):
         key = build_source_binding_key(source, group_sessions_per_user=True, thread_sessions_per_user=False)

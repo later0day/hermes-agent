@@ -39,4 +39,31 @@ def test_card_streaming_follows_the_gateway_switch(monkeypatch, tmp_path, platfo
 
     maybe_start_turn_status_card(runner, turn_ctx, disp, source)
 
-    assert (turn_ctx.turn_status_card_holder[0] is not None) is expected
+    card = turn_ctx.turn_status_card_holder[0]
+    assert (card is not None) is expected
+    if card is not None:
+        assert card.config.verbose is False
+
+
+def test_card_inherits_the_conversation_verbose_preference(monkeypatch, tmp_path):
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner.config = SimpleNamespace(
+        streaming=StreamingConfig(enabled=True),
+        thread_sessions_per_user=False, group_sessions_per_user=False, stt_enabled=False,
+    )
+    runner._delivery_adapter_for = lambda source: SimpleNamespace(SUPPORTS_TURN_STATUS_CARD=True)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm")
+    disp = dataclasses.replace(runner._run_agent_display_settings(source), tool_progress_enabled=False,
+                               _thinking_enabled=False, interim_assistant_messages_enabled=False)
+    session_key = "agent:main:telegram:dm:c1"
+    runner._session_state(session_key).conversation.status_card_verbose = True
+    turn_ctx = SimpleNamespace(
+        turn_status_card_holder=[None], _progress_metadata={}, session_key=session_key,
+    )
+
+    maybe_start_turn_status_card(runner, turn_ctx, disp, source)
+
+    assert turn_ctx.turn_status_card_holder[0].config.verbose is True
