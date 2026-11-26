@@ -214,6 +214,7 @@ export interface ForkSections {
     fieldRequired: string;
     fixFields: string;
     savedHot: string;
+    savedNeedsSetup: string;
     saved: string;
     saveFailed: string;
     toggleFailed: string;
