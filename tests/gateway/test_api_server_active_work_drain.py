@@ -19,7 +19,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_runs as _api_runs
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import APIServerAdapter, _admit_api_agent_request
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_constants import get_hermes_home
@@ -93,6 +93,33 @@ class TestAPIServerAdapterWorkCount:
                 )
 
         assert response.status == 404
+
+
+    @pytest.mark.asyncio
+    async def test_completed_request_persists_the_released_work_count(self):
+        """The turn's own release still sees this HTTP reservation; response finalization must
+        publish the count again after dropping it, or the idle gateway stays visibly busy."""
+        runner, _ = make_restart_runner()
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter.gateway_runner = runner
+        runner.adapters = {Platform.API_SERVER: adapter}
+        writes = []
+
+        @_admit_api_agent_request
+        async def finish_turn(self, request):
+            runner._persist_active_agents()
+            return web.json_response({"ok": True})
+
+        app = web.Application()
+        app.router.add_post("/turn", finish_turn.__get__(adapter, APIServerAdapter))
+        with patch.object(adapter, "_check_auth", return_value=None), patch(
+                "gateway.run._write_runtime_status_quiet",
+                side_effect=lambda **kwargs: writes.append(kwargs["active_agents"])):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post("/turn")
+
+        assert response.status == 200
+        assert writes == [1, 0]
 
 
     def test_counts_live_run_task_before_agent_creation(self):

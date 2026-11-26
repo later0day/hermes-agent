@@ -777,9 +777,7 @@ _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextV
 
 
 def _admit_api_agent_request(handler):
-    """Reserve an authenticated API turn before its handler first awaits: drain check +
-    reservation in one non-awaiting block so a request admitted just before shutdown can't go
-    invisible while parsing its body. The mutable reservation releases the slot exactly once."""
+    """Authenticate and reserve API work before the first await; release its mutable reservation exactly once."""
     @wraps(handler)
     async def _wrapped(self, request, *args, **kwargs):
         auth_err = (
@@ -798,6 +796,8 @@ def _admit_api_agent_request(handler):
             return await handler(self, request, *args, **kwargs)
         finally:
             _release_pending_api_work(self, reservation)
+            if self.gateway_runner is not None:
+                self.gateway_runner._persist_active_agents()
             _api_agent_request_reservation.reset(token)
     return _wrapped
 
